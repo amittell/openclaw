@@ -25,6 +25,7 @@ import {
   renderBeaconLines,
 } from "./discover.js";
 import { addGatewayRunCommand } from "./run.js";
+import { addGatewayToolsCommands } from "./tools.js";
 
 function runGatewayCommand(action: () => Promise<void>, label?: string) {
   return runCommandWithRuntime(defaultRuntime, action, (err) => {
@@ -99,6 +100,10 @@ export function registerGatewayCli(program: Command) {
             ["openclaw gateway status", "Show service status and probe reachability."],
             ["openclaw gateway discover", "Find local and wide-area gateway beacons."],
             ["openclaw gateway call health", "Call a gateway RPC method directly."],
+            [
+              "openclaw gateway tools invoke --tool sessions_list --session-key agent:main:main",
+              "Invoke a gateway tool with session context.",
+            ],
           ])}\n\n${theme.muted("Docs:")} ${formatDocsLink("/cli/gateway", "docs.openclaw.ai/cli/gateway")}\n`,
       ),
   );
@@ -274,4 +279,6 @@ export function registerGatewayCli(program: Command) {
         }
       }, "gateway discover failed");
     });
+
+  addGatewayToolsCommands(gateway);
 }
