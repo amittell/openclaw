@@ -742,13 +742,14 @@ export class AcpSessionManager {
           }
           if (!retryFreshHandle && runtime && handle && meta && meta.mode !== "oneshot") {
             const cleanupTimeoutMs = 5000;
-            const reconcileTimeout = new Promise<never>((_, reject) =>
-              setTimeout(
-                () =>
-                  reject(new Error(`acp-manager: reconcile timed out after ${cleanupTimeoutMs}ms`)),
-                cleanupTimeoutMs,
-              ),
-            );
+            const reconcileAbortController = new AbortController();
+            let reconcileTimerId: ReturnType<typeof setTimeout> | undefined;
+            const reconcileTimeout = new Promise<never>((_, reject) => {
+              reconcileTimerId = setTimeout(() => {
+                reconcileAbortController.abort();
+                reject(new Error(`acp-manager: reconcile timed out after ${cleanupTimeoutMs}ms`));
+              }, cleanupTimeoutMs);
+            });
             try {
               ({ handle } = await Promise.race([
                 this.reconcileRuntimeSessionIdentifiers({
@@ -758,6 +759,7 @@ export class AcpSessionManager {
                   handle,
                   meta,
                   failOnStatusError: false,
+                  signal: reconcileAbortController.signal,
                 }),
                 reconcileTimeout,
               ]));
@@ -765,6 +767,8 @@ export class AcpSessionManager {
               logVerbose(
                 `acp-manager: runTurn cleanup reconcile failed for ${sessionKey}: ${String(error)}`,
               );
+            } finally {
+              clearTimeout(reconcileTimerId);
             }
           }
           if (!retryFreshHandle && runtime && handle && meta && meta.mode === "oneshot") {
@@ -1357,6 +1361,7 @@ export class AcpSessionManager {
     meta: SessionAcpMeta;
     runtimeStatus?: AcpRuntimeStatus;
     failOnStatusError: boolean;
+    signal?: AbortSignal;
   }): Promise<{
     handle: AcpRuntimeHandle;
     meta: SessionAcpMeta;
