@@ -602,7 +602,13 @@ export class AcpSessionManager {
       throw new AcpRuntimeError("ACP_SESSION_INIT_FAILED", "ACP session key is required.");
     }
     await this.evictIdleRuntimeHandles({ cfg: input.cfg });
-    await this.withSessionActor(sessionKey, async () => {
+    // Pass input.signal so throwIfAborted() fires before any work starts when
+    // the queue drains for a turn whose caller already timed out (ghost turn
+    // prevention). Without this, the queued runTurn executes fully even after
+    // withTimeout() has already rejected the caller. refs #17258
+    await this.withSessionActor(
+      sessionKey,
+      async () => {
       const turnStartedAt = Date.now();
       const actorKey = normalizeActorKey(sessionKey);
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -763,7 +769,9 @@ export class AcpSessionManager {
           continue;
         }
       }
-    });
+      },
+      input.signal,
+    );
   }
 
   async cancelSession(params: {
