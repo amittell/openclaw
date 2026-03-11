@@ -688,7 +688,7 @@ export class AcpSessionManager {
             } else if (event.type === "text_delta" || event.type === "tool_call") {
               sawTurnOutput = true;
             }
-            if (input.onEvent) {
+            if (input.onEvent && !combinedSignal.aborted) {
               await input.onEvent(event);
             }
           }
