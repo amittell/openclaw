@@ -29,6 +29,19 @@ export type SubscribeEmbeddedPiSessionParams = {
   onPartialReply?: (payload: { text?: string; mediaUrls?: string[] }) => void | Promise<void>;
   onAssistantMessageStart?: () => void | Promise<void>;
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void | Promise<void>;
+  /**
+   * Called after each model API response with the latest accumulated token
+   * usage for this run. Used by spawned-session runners to incrementally
+   * persist token counts in sessions.json so activity-watchers can detect
+   * that the session is alive between tool-call round-trips.
+   */
+  onUsageSnapshot?: (usage: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  }) => void;
   enforceFinalTag?: boolean;
   config?: OpenClawConfig;
   sessionKey?: string;

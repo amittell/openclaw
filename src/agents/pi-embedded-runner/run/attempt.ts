@@ -1519,6 +1519,7 @@ export async function runEmbeddedAttempt(
         shouldEmitToolResult: params.shouldEmitToolResult,
         shouldEmitToolOutput: params.shouldEmitToolOutput,
         onToolResult: params.onToolResult,
+        onUsageSnapshot: params.onUsageSnapshot,
         onReasoningStream: params.onReasoningStream,
         onReasoningEnd: params.onReasoningEnd,
         onBlockReply: params.onBlockReply,
