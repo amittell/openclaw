@@ -282,6 +282,18 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       usage.total ??
       (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
     usageTotals.total += usageTotal;
+    // Notify the caller with the latest accumulated snapshot so long-running
+    // spawned-session runners can persist token counts incrementally instead
+    // of only at run end.
+    if (params.onUsageSnapshot) {
+      params.onUsageSnapshot({
+        input: usageTotals.input || undefined,
+        output: usageTotals.output || undefined,
+        cacheRead: usageTotals.cacheRead || undefined,
+        cacheWrite: usageTotals.cacheWrite || undefined,
+        total: usageTotals.total || undefined,
+      });
+    }
   };
   const getUsageTotals = () => {
     const hasUsage =

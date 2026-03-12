@@ -42,6 +42,7 @@ import { buildWorkspaceSkillSnapshot } from "../agents/skills.js";
 import { getSkillsSnapshotVersion } from "../agents/skills/refresh.js";
 import { normalizeSpawnedRunMetadata } from "../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
+import { deriveSessionTotalTokens } from "../agents/usage.js";
 import { ensureAgentWorkspace } from "../agents/workspace.js";
 import { normalizeReplyPayload } from "../auto-reply/reply/normalize-reply.js";
 import {
@@ -58,6 +59,7 @@ import {
   isSilentReplyText,
   SILENT_REPLY_TOKEN,
 } from "../auto-reply/tokens.js";
+import type { ReplyPayload } from "../auto-reply/types.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveCommandSecretRefsViaGateway } from "../cli/command-secret-gateway.js";
 import { getAgentRuntimeCommandSecretTargetIds } from "../cli/command-secret-targets.js";
@@ -72,6 +74,7 @@ import {
   resolveAgentIdFromSessionKey,
   type SessionEntry,
   updateSessionStore,
+  updateSessionStoreEntry,
 } from "../config/sessions.js";
 import { resolveSessionTranscriptFile } from "../config/sessions/transcript.js";
 import {
@@ -317,6 +320,69 @@ async function persistAcpTurnTranscript(params: {
   return sessionEntry;
 }
 
+/**
+ * Minimum interval between intermediate session-flush writes (ms).
+ * Prevents excessive I/O on agents that produce many rapid tool calls.
+ */
+const SESSION_FLUSH_INTERVAL_MS = 10_000; // 10 s
+
+/**
+ * Creates lightweight callbacks for incrementally persisting session activity
+ * (updatedAt, totalTokens) in sessions.json during a long-running agent
+ * command turn. This is exclusively for spawned subagent sessions dispatched
+ * via the agent-command path (agentCommandInternal), which previously only
+ * updated sessions.json once at run end via updateSessionStoreAfterAgentRun.
+ *
+ * Direct/inbound sessions go through the auto-reply pipeline and already
+ * call persistSessionUsageUpdate after each model response, so they do not
+ * need this mechanism.
+ */
+function createAgentSessionFlusher(params: { storePath: string; sessionKey: string }) {
+  let lastFlushAt = 0;
+
+  const flush = (totalTokens?: number) => {
+    const now = Date.now();
+    // Always flush when we have a fresh totalTokens value; otherwise debounce
+    // to avoid hammering the session store on agents with rapid tool calls.
+    if (totalTokens === undefined && now - lastFlushAt < SESSION_FLUSH_INTERVAL_MS) {
+      return;
+    }
+    lastFlushAt = now;
+    void updateSessionStoreEntry({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      update: async (_entry) => {
+        const patch: Partial<SessionEntry> = { updatedAt: now };
+        if (typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens > 0) {
+          patch.totalTokens = totalTokens;
+          patch.totalTokensFresh = true;
+        }
+        return patch;
+      },
+    }).catch(() => {
+      // Best-effort: flush failures must not interrupt the agent run.
+    });
+  };
+
+  return {
+    /** Touch updatedAt on each tool result (no usage data needed). */
+    onToolResult: (_payload: ReplyPayload): void => {
+      flush();
+    },
+    /** Update totalTokens + updatedAt after each model API response. */
+    onUsageSnapshot: (usage: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      total?: number;
+    }): void => {
+      const totalTokens = deriveSessionTotalTokens({ usage });
+      flush(totalTokens);
+    },
+  };
+}
+
 function runAgentAttempt(params: {
   providerOverride: string;
   modelOverride: string;
@@ -340,6 +406,16 @@ function runAgentAttempt(params: {
   resolvedVerboseLevel: VerboseLevel | undefined;
   agentDir: string;
   onAgentEvent: (evt: { stream: string; data?: Record<string, unknown> }) => void;
+  /** Flush updatedAt on each tool result completion. See createAgentSessionFlusher. */
+  onToolResult?: (payload: ReplyPayload) => void;
+  /** Flush totalTokens + updatedAt after each model API response. See createAgentSessionFlusher. */
+  onUsageSnapshot?: (usage: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  }) => void;
   primaryProvider: string;
   sessionStore?: Record<string, SessionEntry>;
   storePath?: string;
@@ -496,6 +572,8 @@ function runAgentAttempt(params: {
     agentDir: params.agentDir,
     allowTransientCooldownProbe: params.allowTransientCooldownProbe,
     onAgentEvent: params.onAgentEvent,
+    onToolResult: params.onToolResult,
+    onUsageSnapshot: params.onUsageSnapshot,
     bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature,
   });
@@ -1097,6 +1175,14 @@ async function agentCommandInternal(
         hasSessionModelOverride: Boolean(storedModelOverride),
       });
 
+      // For sessions with a store path, create flush callbacks so that
+      // updatedAt and totalTokens are updated incrementally during the run.
+      // This prevents activity-watchers from misidentifying long-running
+      // spawned subagent sessions as stuck (they previously stayed frozen at
+      // spawn time until the run finished).
+      const sessionFlusher =
+        storePath && sessionKey ? createAgentSessionFlusher({ storePath, sessionKey }) : undefined;
+
       // Track model fallback attempts so retries on an existing session don't
       // re-inject the original prompt as a duplicate user message.
       let fallbackAttemptIndex = 0;
@@ -1136,6 +1222,8 @@ async function agentCommandInternal(
             sessionStore,
             storePath,
             allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
+            onToolResult: sessionFlusher?.onToolResult,
+            onUsageSnapshot: sessionFlusher?.onUsageSnapshot,
             onAgentEvent: (evt) => {
               // Track lifecycle end for fallback emission below.
               if (
