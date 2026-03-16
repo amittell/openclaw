@@ -458,6 +458,10 @@ export async function runCronIsolatedAgentTurn(params: {
   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>> | undefined;
   let fallbackProvider = liveSelection.provider;
   let fallbackModel = liveSelection.model;
+  // Capture original model/provider before runPrompt may reassign liveSelection
+  // via fallback. Needed for an accurate `isFromFallback` comparison after the run.
+  const originalProvider = liveSelection.provider;
+  const originalModel = liveSelection.model;
   const runStartedAt = Date.now();
   let runEndedAt = runStartedAt;
   try {
@@ -711,7 +715,9 @@ export async function runCronIsolatedAgentTurn(params: {
     // Only persist the runtime model when the primary was used. A fallback model
     // is a transient choice; writing it back would prevent the primary from being
     // retried on future runs once it recovers.
-    const isFromFallback = modelUsed !== model || providerUsed !== provider;
+    // Compare against the *original* model/provider captured before `runPrompt`
+    // reassigned the outer variables via fallback result (#48417).
+    const isFromFallback = modelUsed !== originalModel || providerUsed !== originalProvider;
     if (!isFromFallback) {
       setSessionRuntimeModel(cronSession.sessionEntry, {
         provider: providerUsed,

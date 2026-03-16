@@ -849,6 +849,7 @@ async function agentCommandInternal(
         defaultModel: model,
         fallbackProvider,
         fallbackModel,
+        isFromFallback: fallbackModel !== model || fallbackProvider !== provider,
         result,
       });
     }
