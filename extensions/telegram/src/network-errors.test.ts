@@ -250,9 +250,9 @@ describe("isSafeToRetrySendError", () => {
     expect(isSafeToRetrySendError(err)).toBe(false);
   });
 
-  it("allows retry for grammY 'failed after N attempts' envelope error", () => {
+  it("does NOT allow retry for grammY 'failed after N attempts' envelope error (ambiguous transport failure)", () => {
     const err = new Error("Network request for 'sendMessage' failed after 3 attempts.");
-    expect(isSafeToRetrySendError(err)).toBe(true);
+    expect(isSafeToRetrySendError(err)).toBe(false);
   });
 
   it("detects pre-connect error nested in cause chain", () => {
