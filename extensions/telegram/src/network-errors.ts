@@ -264,12 +264,12 @@ export function isSafeToRetrySendError(err: unknown): boolean {
       return true;
     }
 
-    // grammY "Network request for X failed after N attempts" indicates a
-    // transport-level failure — the request never reached Telegram.
-    const message = formatErrorMessage(candidate).trim().toLowerCase();
-    if (message && GRAMMY_NETWORK_REQUEST_FAILED_AFTER_RE.test(message)) {
-      return true;
-    }
+    // NOTE: grammY "Network request for X failed after N attempts" envelopes
+    // are NOT safe to retry for sends. These are ambiguous transport failures —
+    // the underlying request may have been written and accepted by Telegram
+    // before the connection was reset/timed out. Retrying would risk duplicate
+    // user-visible messages. These remain recoverable for idempotent operations
+    // (polling, webhooks) via isRecoverableTelegramNetworkError.
   }
   return false;
 }
