@@ -45,8 +45,11 @@ export async function sendChunkedTelegramReplyText<
   replyQuoteText?: string;
   quoteOnlyOnFirstChunk?: boolean;
   markDelivered?: (progress: TProgress) => void;
+  /** Optional predicate — return true to silently skip a chunk without marking delivered. */
+  shouldSkipChunk?: (chunk: TChunk) => boolean;
   sendChunk: (opts: {
     chunk: TChunk;
+    /** True for the first chunk that is actually sent (skipped chunks are not counted). */
     isFirstChunk: boolean;
     replyToMessageId?: number;
     replyMarkup?: TReplyMarkup;
@@ -54,14 +57,16 @@ export async function sendChunkedTelegramReplyText<
   }) => Promise<boolean | void>;
 }): Promise<void> {
   const applyDelivered = params.markDelivered ?? markDelivered;
-  let firstSentChunk = false;
+  let sentChunkCount = 0;
   for (let i = 0; i < params.chunks.length; i += 1) {
     const chunk = params.chunks[i];
     if (!chunk) {
       continue;
     }
-    const isFirstChunk = i === 0;
-    const isFirstSentChunk = !firstSentChunk;
+    if (params.shouldSkipChunk?.(chunk)) {
+      continue;
+    }
+    const isFirstChunk = sentChunkCount === 0;
     const replyToMessageId = resolveReplyToForSend({
       replyToId: params.replyToId,
       replyToMode: params.replyToMode,
@@ -75,14 +80,14 @@ export async function sendChunkedTelegramReplyText<
       chunk,
       isFirstChunk,
       replyToMessageId,
-      replyMarkup: isFirstSentChunk ? params.replyMarkup : undefined,
+      replyMarkup: isFirstChunk ? params.replyMarkup : undefined,
       replyQuoteText: shouldAttachQuote ? params.replyQuoteText : undefined,
     });
     if (sent === false) {
       continue;
     }
-    firstSentChunk = true;
     markReplyApplied(params.progress, replyToMessageId);
     applyDelivered(params.progress);
+    sentChunkCount += 1;
   }
 }

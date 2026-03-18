@@ -131,6 +131,7 @@ async function deliverTextReply(params: {
     replyMarkup: params.replyMarkup,
     replyQuoteText: params.replyQuoteText,
     markDelivered,
+    shouldSkipChunk: (chunk) => !chunk.html?.trim() && !chunk.text?.trim(),
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup, replyQuoteText }) => {
       if (isHtmlWhitespaceOnly(chunk.text)) {
         logVerbose("telegram: skipping empty chunk in deliverTextReply");
@@ -186,20 +187,27 @@ async function sendPendingFollowUpText(params: {
     replyToMode: params.replyToMode,
     replyMarkup: params.replyMarkup,
     markDelivered,
+    shouldSkipChunk: (chunk) => !chunk.html?.trim() && !chunk.text?.trim(),
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup }) => {
       if (isHtmlWhitespaceOnly(chunk.text)) {
         logVerbose("telegram: skipping empty chunk in sendPendingFollowUpText");
         return false;
       }
-      const messageId = await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
-        replyToMessageId,
-        thread: params.thread,
-        textMode: "html",
-        plainText: chunk.text,
-        linkPreview: params.linkPreview,
-        silent: params.silent,
-        replyMarkup,
-      });
+      const messageId = await sendTelegramText(
+        params.bot,
+        params.chatId,
+        chunk.html,
+        params.runtime,
+        {
+          replyToMessageId,
+          thread: params.thread,
+          textMode: "html",
+          plainText: chunk.text,
+          linkPreview: params.linkPreview,
+          silent: params.silent,
+          replyMarkup,
+        },
+      );
       return messageId != null;
     },
   });

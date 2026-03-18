@@ -142,7 +142,8 @@ export async function sendTelegramText(
     return res.message_id;
   };
 
-  // Markdown can render to empty HTML for syntax-only chunks; recover with plain text.
+  // Markdown can render to empty HTML for syntax-only chunks; if plain fallback is also
+  // empty (e.g. a whitespace-only trailing chunk), silently skip rather than 400-erroring.
   if (!htmlText.trim()) {
     if (!hasFallbackText) {
       logVerbose("telegram sendMessage skipped: empty formatted text and empty plain fallback");
