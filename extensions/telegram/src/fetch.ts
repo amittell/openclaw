@@ -169,7 +169,7 @@ function buildTelegramConnectOptions(params: {
   keepAlive?: boolean;
   keepAliveInitialDelay?: number;
   lookup?: LookupFunction;
-} | null {
+} {
   const connect: {
     autoSelectFamily?: boolean;
     autoSelectFamilyAttemptTimeout?: number;
@@ -251,18 +251,12 @@ function resolveTelegramDispatcherPolicy(params: {
   const explicitProxyUrl = params.proxyUrl?.trim();
   if (explicitProxyUrl) {
     return {
-      policy: connect
-        ? {
-            mode: "explicit-proxy",
-            proxyUrl: explicitProxyUrl,
-            allowPrivateProxy: true,
-            proxyTls: { ...connect },
-          }
-        : {
-            mode: "explicit-proxy",
-            proxyUrl: explicitProxyUrl,
-            allowPrivateProxy: true,
-          },
+      policy: {
+        mode: "explicit-proxy",
+        proxyUrl: explicitProxyUrl,
+        allowPrivateProxy: true,
+        proxyTls: { ...connect },
+      },
       mode: "explicit-proxy",
     };
   }
@@ -270,7 +264,8 @@ function resolveTelegramDispatcherPolicy(params: {
     return {
       policy: {
         mode: "env-proxy",
-        ...(connect ? { connect: { ...connect }, proxyTls: { ...connect } } : {}),
+        connect: { ...connect },
+        proxyTls: { ...connect },
       },
       mode: "env-proxy",
     };
@@ -278,7 +273,7 @@ function resolveTelegramDispatcherPolicy(params: {
   return {
     policy: {
       mode: "direct",
-      ...(connect ? { connect: { ...connect } } : {}),
+      connect: { ...connect },
     },
     mode: "direct",
   };
