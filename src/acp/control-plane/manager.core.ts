@@ -683,6 +683,9 @@ export class AcpSessionManager {
             if (combinedSignal.aborted) {
               input.onCombinedAbort();
             } else {
+              // { once: true } ensures the listener is automatically removed
+              // after it fires, preventing any AbortSignal + unremoved-listener
+              // resource leak for long-lived sessions.
               combinedSignal.addEventListener("abort", input.onCombinedAbort, { once: true });
             }
           }
