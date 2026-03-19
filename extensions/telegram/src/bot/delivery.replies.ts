@@ -153,6 +153,9 @@ async function deliverTextReply(params: {
           replyMarkup,
         },
       );
+      // sendTelegramText returns undefined when the send was silently skipped
+      // (empty text after fallback). Signal to sendChunkedTelegramReplyText
+      // that delivered state should not be marked for this chunk.
       if (messageId == null) {
         return false;
       }
@@ -261,6 +264,8 @@ async function sendTelegramVoiceFallbackText(opts: {
       silent: opts.silent,
       replyMarkup: !sentAnyChunk ? opts.replyMarkup : undefined,
     });
+    // sendTelegramText returns undefined when silently skipped — only count
+    // the chunk as sent when a real messageId was returned.
     if (messageId != null) {
       if (firstDeliveredMessageId == null) {
         firstDeliveredMessageId = messageId;
