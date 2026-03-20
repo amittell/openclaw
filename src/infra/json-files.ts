@@ -2,10 +2,23 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+const MAX_JSON_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 export async function readJsonFile<T>(filePath: string): Promise<T | null> {
   try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw) as T;
+    // Read the raw buffer first, then check its byte length before parsing.
+    // A separate stat() + readFile() pair is vulnerable to TOCTOU: an attacker
+    // could replace the file with a much larger one between the two calls,
+    // bypassing the size guard entirely (Aisle Low: CWE-367 TOCTOU).
+    // Reading into a Buffer first bounds the allocation check to the actual bytes read.
+    const buf = await fs.readFile(filePath).catch(() => null);
+    if (!buf) {
+      return null;
+    }
+    if (buf.byteLength > MAX_JSON_FILE_SIZE_BYTES) {
+      return null;
+    }
+    return JSON.parse(buf.toString("utf8")) as T;
   } catch {
     return null;
   }
