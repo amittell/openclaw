@@ -679,13 +679,26 @@ export class AcpSessionManager {
             // single hook that fires regardless of which path short-circuits
             // onEvent. refs PR #36860 comment 2924797850.
             if (input.onCombinedAbort) {
+              const safeOnCombinedAbort = () => {
+                // Wrap in try/catch so a throwing caller-provided callback cannot
+                // propagate uncaught and crash the abort listener or the session
+                // actor queue. Errors are logged but otherwise suppressed.
+                // refs PR #49420 finding 2 (Low).
+                try {
+                  input.onCombinedAbort!();
+                } catch (err) {
+                  logVerbose(
+                    `acp-manager: onCombinedAbort callback threw: ${err instanceof Error ? err.message : String(err)}`,
+                  );
+                }
+              };
               if (combinedSignal.aborted) {
-                input.onCombinedAbort();
+                safeOnCombinedAbort();
               } else {
                 // { once: true } ensures the listener is automatically removed
                 // after it fires, preventing any AbortSignal + unremoved-listener
                 // resource leak for long-lived sessions.
-                combinedSignal.addEventListener("abort", input.onCombinedAbort, { once: true });
+                combinedSignal.addEventListener("abort", safeOnCombinedAbort, { once: true });
               }
             }
             // Abort-awareness for in-flight onEvent callbacks:

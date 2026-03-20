@@ -220,6 +220,12 @@ export async function tryDispatchAcpReply(params: {
   }
 
   let queuedFinal = false;
+  // Delivery-layer abort controller: aborted when the turn's combined abort
+  // signal fires (timeout OR cancelSession). Threading this into routeReply
+  // enables cooperative cancellation of in-flight sends so a late-completing
+  // delivery cannot deliver stale content after the turn error reply has already
+  // been sent. refs PR #49420 finding 1 (Medium).
+  const deliveryAbortController = new AbortController();
   const delivery = createAcpDispatchDeliveryCoordinator({
     cfg: params.cfg,
     ctx: params.ctx,
@@ -231,6 +237,7 @@ export async function tryDispatchAcpReply(params: {
     originatingChannel: params.originatingChannel,
     originatingTo: params.originatingTo,
     onReplyStart: params.onReplyStart,
+    abortSignal: deliveryAbortController.signal,
   });
 
   const identityPendingBeforeTurn = isSessionIdentityPending(
@@ -352,10 +359,14 @@ export async function tryDispatchAcpReply(params: {
         // synchronously when the timeout fires, before any microtask runs.
         // This covers early abort (e.g. during runTurn's setup await points)
         // before the combined signal is constructed inside manager.core.
+        // Also abort the delivery controller so any in-flight routeReply
+        // send is cooperatively cancelled — preventing late deliveries from
+        // arriving after the turn error reply. refs PR #49420 finding 1.
         signal?.addEventListener(
           "abort",
           () => {
             turnAbortFired = true;
+            deliveryAbortController.abort(new Error("ACP turn timed out"));
           },
           { once: true },
         );
@@ -380,9 +391,13 @@ export async function tryDispatchAcpReply(params: {
           // This broadens the guard beyond the withTimeout signal alone,
           // ensuring in-flight deliver() calls are suppressed for ALL abort
           // sources — not just the timeout path.
+          // Also abort the delivery controller so any in-flight routeReply
+          // send is cooperatively cancelled — preventing late deliveries from
+          // arriving after the turn error reply. refs PR #49420 finding 1.
           // refs review comment 2924797850 on PR #36860.
           onCombinedAbort: () => {
             turnAbortFired = true;
+            deliveryAbortController.abort(new Error("ACP turn aborted"));
           },
           signal,
         });

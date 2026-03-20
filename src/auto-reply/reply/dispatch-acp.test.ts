@@ -742,4 +742,56 @@ describe("tryDispatchAcpReply", () => {
       }),
     );
   });
+
+  it("threads delivery abort signal into routeReply so in-flight sends are cooperatively cancelled on turn abort", async () => {
+    // Regression guard: when the turn's combined abort fires (via onCombinedAbort),
+    // the delivery abort controller must be aborted so that any in-flight routeReply
+    // call receives an aborted signal and can short-circuit — preventing late
+    // deliveries from arriving after the turn error reply. refs PR #49420 finding 1.
+    setReadyAcpResolution();
+
+    const capturedAbortSignals: (AbortSignal | undefined)[] = [];
+    routeMocks.routeReply.mockImplementation(async (params: unknown) => {
+      const p = params as { abortSignal?: AbortSignal };
+      capturedAbortSignals.push(p.abortSignal);
+      return { ok: true, messageId: "mock" };
+    });
+
+    let capturedOnCombinedAbort: (() => void) | undefined;
+    managerMocks.runTurn.mockImplementationOnce(
+      async ({
+        onEvent,
+        onCombinedAbort,
+      }: {
+        onEvent: (event: unknown) => Promise<void>;
+        onCombinedAbort?: () => void;
+      }) => {
+        capturedOnCombinedAbort = onCombinedAbort;
+        await onEvent({ type: "text_delta", text: "partial", tag: "agent_message_chunk" });
+        await onEvent({ type: "done" });
+      },
+    );
+
+    await runDispatch({
+      bodyForAgent: "abort-signal-threading-test",
+      shouldRouteToOriginating: true,
+    });
+
+    // routeReply must have been called with an abortSignal that is not null.
+    expect(capturedAbortSignals.length).toBeGreaterThan(0);
+    for (const signal of capturedAbortSignals) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      // Signal must NOT be aborted yet (turn completed normally).
+      expect(signal?.aborted).toBe(false);
+    }
+
+    // After onCombinedAbort fires, the delivery abort signal must be aborted.
+    expect(capturedOnCombinedAbort).toBeDefined();
+    capturedOnCombinedAbort!();
+
+    // All captured signals should now be aborted.
+    for (const signal of capturedAbortSignals) {
+      expect(signal?.aborted).toBe(true);
+    }
+  });
 });

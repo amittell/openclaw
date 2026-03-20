@@ -1845,4 +1845,65 @@ describe("AcpSessionManager", () => {
     // onCombinedAbort must have been called exactly once when cancelSession fired.
     expect(onCombinedAbortCalls).toHaveLength(1);
   });
+
+  it("does not propagate uncaught exceptions from a throwing onCombinedAbort callback", async () => {
+    // Regression guard: if the caller-provided onCombinedAbort throws, the error
+    // must be caught and logged — not allowed to propagate through the AbortSignal
+    // listener and crash the session actor queue. refs PR #49420 finding 2 (Low).
+    const runtimeState = createRuntime();
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    hoisted.readAcpSessionEntryMock.mockReturnValue({
+      sessionKey: "agent:codex:acp:session-2",
+      storeSessionKey: "agent:codex:acp:session-2",
+      acp: readySessionMeta(),
+    });
+
+    let enteredRun = false;
+    runtimeState.runTurn.mockImplementation(async function* (input: { signal?: AbortSignal }) {
+      enteredRun = true;
+      await new Promise<void>((resolve) => {
+        if (input.signal?.aborted) {
+          resolve();
+          return;
+        }
+        input.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      yield { type: "done" as const, stopReason: "cancel" };
+    });
+
+    const manager = new AcpSessionManager();
+    const runPromise = manager
+      .runTurn({
+        cfg: baseCfg,
+        sessionKey: "agent:codex:acp:session-2",
+        text: "long task",
+        mode: "prompt",
+        requestId: "r-throwing-abort",
+        // Callback that throws — must not crash the abort path.
+        onCombinedAbort: () => {
+          throw new Error("onCombinedAbort intentional test error");
+        },
+      })
+      .catch(() => {
+        // May reject if the runtime throws on abort — expected.
+      });
+
+    await vi.waitFor(() => {
+      expect(enteredRun).toBe(true);
+    });
+
+    // cancelSession fires the combined signal, which calls onCombinedAbort.
+    // runPromise must resolve without an unhandled rejection even though the
+    // callback throws.
+    await manager.cancelSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-2",
+      reason: "manual-cancel",
+    });
+    // If the throwing callback propagated, runPromise would reject here.
+    await expect(runPromise).resolves.toBeUndefined();
+  });
 });

@@ -54,6 +54,11 @@ export function createAcpDispatchDeliveryCoordinator(params: {
   originatingChannel?: string;
   originatingTo?: string;
   onReplyStart?: () => Promise<void> | void;
+  /** Optional abort signal threaded from the turn timeout / cancelSession abort
+   * controller. When provided, in-flight routeReply sends can be cooperatively
+   * cancelled so late completions cannot deliver stale content after the turn
+   * error reply has already been sent. refs PR #49420 finding 1 (Medium). */
+  abortSignal?: AbortSignal;
 }): AcpDispatchDeliveryCoordinator {
   const state: AcpDispatchDeliveryState = {
     startedReplyLifecycle: false,
@@ -158,6 +163,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
         accountId: params.ctx.AccountId,
         threadId: params.ctx.MessageThreadId,
         cfg: params.cfg,
+        abortSignal: params.abortSignal,
       });
       if (!result.ok) {
         logVerbose(
