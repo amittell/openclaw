@@ -156,7 +156,10 @@ export async function updateAuthProfileStoreWithLock(params: {
       // Locked writers must reload from disk, not from any runtime snapshot.
       // Otherwise a live gateway can overwrite fresher CLI/config-auth writes
       // with stale in-memory auth state during usage/cooldown updates.
-      const store = params.agentLocalOnly
+      // Also load agent-local-only view when agentDir is set to prevent
+      // credential scope bleed from the merged main+agent store.
+      const useLocalOnly = params.agentLocalOnly || params.agentDir !== undefined;
+      const store = useLocalOnly
         ? loadAgentLocalAuthProfileStore(params.agentDir)
         : loadAuthProfileStoreForAgent(params.agentDir);
       const shouldSave = params.updater(store);
