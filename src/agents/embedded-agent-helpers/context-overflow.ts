@@ -86,6 +86,11 @@ const CONTEXT_OVERFLOW_HINT_RE =
 const RATE_LIMIT_HINT_RE =
   /rate limit|too many requests|requests per (?:minute|hour|day)|quota|throttl|429\b|tokens per day/i;
 
+/** Detect Anthropic's 429 response for long contexts that require extra usage. */
+export function isAnthropicLongContextUsageError(errorMessage: string): boolean {
+  return errorMessage.toLowerCase().includes("extra usage is required for long context");
+}
+
 export function isLikelyContextOverflowError(errorMessage?: string): boolean {
   if (!errorMessage) {
     return false;
@@ -98,6 +103,12 @@ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
 
   if (isReasoningConstraintErrorMessage(errorMessage)) {
     return false;
+  }
+
+  // This Anthropic 429 is constrained by context size, so compact and retry
+  // before the broader billing and rate-limit classifiers can claim it.
+  if (isAnthropicLongContextUsageError(errorMessage)) {
+    return true;
   }
 
   // Billing/quota errors can contain patterns like "request size exceeds" or
