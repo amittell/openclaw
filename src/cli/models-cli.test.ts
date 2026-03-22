@@ -7,16 +7,19 @@ const mocks = vi.hoisted(() => ({
   modelsStatusCommand: vi.fn().mockResolvedValue(undefined),
   noopAsync: vi.fn(async () => undefined),
   modelsAuthLoginCommand: vi.fn().mockResolvedValue(undefined),
+  githubCopilotLoginCommand: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { modelsStatusCommand, modelsAuthLoginCommand } = mocks;
+const { modelsStatusCommand, modelsAuthLoginCommand, githubCopilotLoginCommand } = mocks;
 
 vi.mock("../commands/models.js", () => ({
+  githubCopilotLoginCommand: mocks.githubCopilotLoginCommand,
   modelsStatusCommand: mocks.modelsStatusCommand,
   modelsAliasesAddCommand: mocks.noopAsync,
   modelsAliasesListCommand: mocks.noopAsync,
   modelsAliasesRemoveCommand: mocks.noopAsync,
   modelsAuthAddCommand: mocks.noopAsync,
+  modelsAuthCleanCommand: mocks.noopAsync,
   modelsAuthLoginCommand: mocks.modelsAuthLoginCommand,
   modelsAuthOrderClearCommand: mocks.noopAsync,
   modelsAuthOrderGetCommand: mocks.noopAsync,
@@ -40,6 +43,7 @@ vi.mock("../commands/models.js", () => ({
 describe("models cli", () => {
   beforeEach(() => {
     modelsAuthLoginCommand.mockClear();
+    githubCopilotLoginCommand.mockClear();
     modelsStatusCommand.mockClear();
   });
 
@@ -71,11 +75,12 @@ describe("models cli", () => {
       from: "user",
     });
 
-    expect(modelsAuthLoginCommand).toHaveBeenCalledTimes(1);
-    expect(modelsAuthLoginCommand).toHaveBeenCalledWith(
+    // login-github-copilot now delegates to githubCopilotLoginCommand directly
+    // (not modelsAuthLoginCommand) — verify the correct command was invoked
+    // with the expected params.
+    expect(githubCopilotLoginCommand).toHaveBeenCalledTimes(1);
+    expect(githubCopilotLoginCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        provider: "github-copilot",
-        method: "device",
         yes: true,
       }),
       expect.any(Object),
