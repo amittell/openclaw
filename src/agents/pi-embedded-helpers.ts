@@ -30,6 +30,7 @@ export {
   isCloudflareOrHtmlErrorPage,
   isCloudCodeAssistFormatError,
   isCompactionFailureError,
+  isAnthropicLongContextUsageError,
   isContextOverflowError,
   isLikelyContextOverflowError,
   isFailoverAssistantError,
