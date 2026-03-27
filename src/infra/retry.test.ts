@@ -37,6 +37,7 @@ async function runRetryAfterCase(params: {
   minDelayMs: number;
   maxDelayMs: number;
   retryAfterMs: number;
+  jitter?: number;
 }): Promise<number[]> {
   vi.clearAllTimers();
   vi.useFakeTimers();
@@ -47,7 +48,7 @@ async function runRetryAfterCase(params: {
       attempts: 2,
       minDelayMs: params.minDelayMs,
       maxDelayMs: params.maxDelayMs,
-      jitter: 0,
+      jitter: params.jitter ?? 0,
       retryAfterMs: () => params.retryAfterMs,
       onRetry: (info) => delays.push(info.delayMs),
     });
@@ -303,6 +304,30 @@ describe("retryAsync", () => {
       retryAfterMs: 65_000,
     });
     expect(delays[0]).toBeGreaterThanOrEqual(65_000);
+  });
+
+  it("clamps retryAfterMs exceeding Node timer max to MAX_TIMER_TIMEOUT_MS to prevent overflow", async () => {
+    // 3_000_000_000 ms (3B) exceeds Node.js setTimeout max of 2^31-1 (~2.147B ms).
+    // Without clamping it silently overflows to ~1 ms, becoming an instant retry hammer.
+    const delays = await runRetryAfterCase({
+      minDelayMs: 0,
+      maxDelayMs: Number.POSITIVE_INFINITY,
+      retryAfterMs: 3_000_000_000,
+    });
+    expect(delays[0]).toBe(MAX_TIMER_TIMEOUT_MS);
+    expect(delays[0]).toBeLessThan(3_000_000_000);
+  });
+
+  it("clamps final retryAfter delay to MAX_TIMER_TIMEOUT_MS even after jitter pushes it upward", async () => {
+    // The pre-jitter value is safe, but positive jitter near the cap must still
+    // re-clamp before it reaches Node's overflow range.
+    const delays = await runRetryAfterCase({
+      minDelayMs: 0,
+      maxDelayMs: Number.POSITIVE_INFINITY,
+      retryAfterMs: 2_000_000_000,
+      jitter: 0.1,
+    });
+    expect(delays[0]).toBeLessThanOrEqual(MAX_TIMER_TIMEOUT_MS);
   });
 });
 
