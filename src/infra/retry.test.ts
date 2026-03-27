@@ -218,6 +218,13 @@ describe("retryAsync", () => {
     }
   });
 
+  it("does not cap retryAfterMs to maxDelayMs — server delay is honored in full", async () => {
+    // retry_after from the server (500ms) must not be capped by maxDelayMs (100ms).
+    // The server-dictated window must be fully honored to avoid hammering a rate-limited endpoint.
+    const delays = await runRetryAfterCase({ minDelayMs: 0, maxDelayMs: 100, retryAfterMs: 500 });
+    expect(delays[0]).toBe(500);
+  });
+
   it("keeps overflowed numeric overload backoff delays at the safe timer ceiling", async () => {
     vi.clearAllTimers();
     vi.useFakeTimers();
@@ -248,9 +255,9 @@ describe("retryAsync", () => {
       expectedDelay: 500,
     },
     {
-      name: "clamps retryAfterMs to maxDelayMs",
+      name: "does not cap retryAfterMs to maxDelayMs",
       params: { minDelayMs: 0, maxDelayMs: 100, retryAfterMs: 500 },
-      expectedDelay: 100,
+      expectedDelay: 500,
     },
     {
       name: "clamps retryAfterMs to minDelayMs",
