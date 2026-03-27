@@ -292,6 +292,18 @@ describe("retryAsync", () => {
       vi.useRealTimers();
     }
   });
+
+  it("honors large retryAfterMs exceeding maxDelayMs (e.g. 65s flood-control with 30s cap)", async () => {
+    // Telegram can issue retry_after values well above the 30 s default maxDelayMs.
+    // The delay must not be capped — firing before the server window would re-hit 429
+    // and exhaust all attempts.
+    const delays = await runRetryAfterCase({
+      minDelayMs: 0,
+      maxDelayMs: 30_000,
+      retryAfterMs: 65_000,
+    });
+    expect(delays[0]).toBeGreaterThanOrEqual(65_000);
+  });
 });
 
 describe("resolveRetryConfig", () => {
