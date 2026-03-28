@@ -259,6 +259,7 @@ export async function runCronIsolatedAgentTurn(params: {
     // been inherited from a shared interactive session.
     payloadModel: params.job.payload.kind === "agentTurn" ? params.job.payload.model : undefined,
   });
+  cronSession.sessionEntry.status = "running";
   const runSessionId = cronSession.sessionEntry.sessionId;
   const runSessionKey = baseSessionKey.startsWith("cron:")
     ? `${agentSessionKey}:run:${runSessionId}`
@@ -705,13 +706,19 @@ export async function runCronIsolatedAgentTurn(params: {
       }
     }
   } catch (err) {
+    cronSession.sessionEntry.status = "failed";
+    await persistSessionEntry();
     return withRunSession({ status: "error", error: String(err) });
   }
 
   if (isAborted()) {
+    cronSession.sessionEntry.status = "timeout";
+    await persistSessionEntry();
     return withRunSession({ status: "error", error: abortReason() });
   }
   if (!runResult) {
+    cronSession.sessionEntry.status = "failed";
+    await persistSessionEntry();
     return withRunSession({ status: "error", error: "cron isolated run returned no result" });
   }
   const finalRunResult = runResult;
@@ -804,10 +811,18 @@ export async function runCronIsolatedAgentTurn(params: {
         provider: providerUsed,
       };
     }
+    // Resolve payload outcome early so we can set the session status before persisting.
+    const payloadOutcome = resolveCronPayloadOutcome({
+      payloads,
+      runLevelError: finalRunResult.meta?.error,
+    });
+    cronSession.sessionEntry.status = payloadOutcome.hasFatalErrorPayload ? "failed" : "done";
     await persistSessionEntry();
   }
 
   if (isAborted()) {
+    cronSession.sessionEntry.status = "timeout";
+    await persistSessionEntry();
     return withRunSession({ status: "error", error: abortReason(), ...telemetry });
   }
   let {
