@@ -15,6 +15,11 @@ CLEAN_COMMITS=(
   "17a97e50d5|57137|fix(auth): sync env-var-backed token credentials into agent auth store (auth-only replay)"
 )
 
+FOLLOWUP_COMMITS=(
+  "63237c0ffd|4050307baf|59242|fix(telegram): restore self-authored reply-media guard"
+  "635eac269b|3f08b85d42|59243|test(contracts): avoid heavy plugin-sdk testing imports"
+)
+
 POST_DIST_CARRIES=(
   "a621c7b237|fix(telegram): restore retry behaviour for 429 rate-limit and failed-after network errors"
   "dcef07efe0|fix(telegram): address PR #40383 review feedback"
@@ -59,8 +64,8 @@ Environment:
 
 Notes:
   - prepare creates or switches to the upgrade branch from BASE_TAG.
-  - replay-clean cherry-picks the low-friction carry batch with -x provenance.
-  - status reports the clean replay batch plus the audited post-dist delta from rh-bot.
+  - replay-clean cherry-picks the low-friction carry batch plus validated follow-up carries with -x provenance.
+  - status reports the clean replay batch, follow-up carries, and the audited post-dist delta from rh-bot.
 EOF
 }
 
@@ -135,6 +140,26 @@ replayed_marker_present() {
   [[ -n "$(git log --grep="cherry picked from commit ${sha}" --format=%H -n 1 HEAD)" ]]
 }
 
+commit_present_on_head() {
+  local sha="$1"
+  git rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1 || return 1
+  git merge-base --is-ancestor "$sha" HEAD >/dev/null 2>&1
+}
+
+replayed_or_present() {
+  local source_sha="$1"
+  local integrated_sha="${2:-}"
+
+  replayed_marker_present "$source_sha" && return 0
+  commit_present_on_head "$source_sha" && return 0
+
+  if [[ -n "$integrated_sha" ]]; then
+    commit_present_on_head "$integrated_sha" && return 0
+  fi
+
+  return 1
+}
+
 replay_commit() {
   local sha="$1"
   local pr="$2"
@@ -171,6 +196,10 @@ replay_clean() {
     IFS='|' read -r sha pr label <<<"$entry"
     replay_commit "$sha" "$pr" "$label"
   done
+  for entry in "${FOLLOWUP_COMMITS[@]}"; do
+    IFS='|' read -r sha _integrated_sha pr label <<<"$entry"
+    replay_commit "$sha" "$pr" "$label"
+  done
 
   log "clean batch replay complete"
   print_status
@@ -186,7 +215,18 @@ print_status() {
   local entry sha pr label
   for entry in "${CLEAN_COMMITS[@]}"; do
     IFS='|' read -r sha pr label <<<"$entry"
-    if replayed_marker_present "$sha"; then
+    if replayed_or_present "$sha"; then
+      printf '  [done] PR #%s %s\n' "$pr" "$label"
+    else
+      printf '  [todo] PR #%s %s\n' "$pr" "$label"
+    fi
+  done
+
+  printf '\nFollow-up carries:\n'
+  local integrated_sha
+  for entry in "${FOLLOWUP_COMMITS[@]}"; do
+    IFS='|' read -r sha integrated_sha pr label <<<"$entry"
+    if replayed_or_present "$sha" "$integrated_sha"; then
       printf '  [done] PR #%s %s\n' "$pr" "$label"
     else
       printf '  [todo] PR #%s %s\n' "$pr" "$label"
@@ -196,7 +236,7 @@ print_status() {
   printf '\nAudited post-dist carries from build/patched-2026.3.28:\n'
   for entry in "${POST_DIST_CARRIES[@]}"; do
     IFS='|' read -r sha label <<<"$entry"
-    if replayed_marker_present "$sha"; then
+    if replayed_or_present "$sha"; then
       printf '  [done] %s\n' "$label"
     else
       printf '  [todo] %s\n' "$label"

@@ -33,6 +33,19 @@ The script cherry-picks these commits with `-x` provenance:
    `fix(auth): sync env-var-backed token credentials into agent auth store`
    This intentionally replays the auth-only commit, not the stacked overload-backoff commits from the PR branch.
 
+## Follow-up carries now included in replay-clean
+
+After the initial host rollout and Telegram regression investigation, two additional low-risk carries
+were added to the upgrade line and to `replay-clean`:
+
+1. `63237c0ffd` / PR `#59242`
+   `fix(telegram): restore self-authored reply-media guard`
+   This restores the missing helper used by the debounced reply-media path.
+2. `635eac269b` / PR `#59243`
+   `test(contracts): avoid heavy plugin-sdk testing imports`
+   This is a first-party test/DX fix only. It does not change runtime behavior, but it keeps focused
+   Telegram and inbound-contract test lanes from paying the broad `openclaw/plugin-sdk/testing` import tax.
+
 ## Manual queue after the clean batch
 
 Run:
@@ -69,6 +82,15 @@ These are now integrated on `upgrade/2026-03-31` as:
 4. `d3918e53ad`
 5. `54306cd15d`
 6. `b52958d28b`
+
+## April 1 follow-up carries now integrated on the branch
+
+These additional carries are now integrated on `upgrade/2026-03-31` as:
+
+1. `4050307baf`
+   `fix(telegram): restore self-authored reply-media guard`
+2. `3f08b85d42`
+   `test(contracts): avoid heavy plugin-sdk testing imports`
 
 Two older candidates did not require extra replay:
 
@@ -139,9 +161,12 @@ Expected signs:
   the repo checkout.
 - `doctor --fix` initially failed because only `npx pnpm` existed. A global `pnpm@10` install fixed
   the UI-rebuild path.
-- The narrowed Telegram reply-media test still hung on both local and `rh-bot`; treat service
-  health plus the targeted non-Telegram suites as the practical gate until that test hang is
-  understood.
+- The narrowed Telegram reply-media hang was traced to a missing
+  `isSelfAuthoredTelegramMessage(...)` helper in `extensions/telegram/src/bot-handlers.runtime.ts`.
+  That fix is now carried on the branch, and the targeted reply-media tests pass again.
+- Focused Telegram and inbound-context tests were also slowed by first-party imports of
+  `openclaw/plugin-sdk/testing`. The branch now carries a narrow test-only fix that switches those
+  internal tests to the direct contract helper path and lazy-loads the Slack harness.
 
 For local macOS smoke tests during integration:
 
