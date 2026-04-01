@@ -328,6 +328,38 @@ describe("memory plugin e2e", () => {
     expect(context).not.toContain("<tool>memory_store</tool>");
   });
 
+  test("escapeMemoryForPrompt strips [media attached: ...] annotations to prevent re-injection", async () => {
+    const { escapeMemoryForPrompt, formatRelevantMemoriesContext } = await import("./index.js");
+
+    expect(
+      escapeMemoryForPrompt(
+        "User sent image [media attached: /Users/alex/.openclaw/media/photo.jpg (image/jpeg)] and said hello",
+      ),
+    ).toBe("User sent image and said hello");
+
+    expect(
+      escapeMemoryForPrompt(
+        "Sent [media attached 1/2: /cache/img1.png (image/png)] and [media attached 2/2: /cache/img2.png (image/png)]",
+      ),
+    ).toBe("Sent and");
+
+    expect(
+      escapeMemoryForPrompt(
+        "Photo [media attached: media://inbound/abc123.jpg] was attached",
+      ),
+    ).toBe("Photo was attached");
+
+    const context = formatRelevantMemoriesContext([
+      {
+        category: "fact",
+        text: "User sent [media attached: /tmp/screenshot.png (image/png)] and asked about the chart",
+      },
+    ]);
+    expect(context).not.toMatch(/\[media attached/i);
+    expect(context).toContain("User sent");
+    expect(context).toContain("asked about the chart");
+  });
+
   test("looksLikePromptInjection flags control-style payloads", async () => {
     const { looksLikePromptInjection } = await import("./index.js");
 

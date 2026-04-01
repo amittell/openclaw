@@ -282,8 +282,21 @@ export function looksLikePromptInjection(text: string): boolean {
   return PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+/**
+ * Pattern matching [media attached: ...] and [media attached N/M: ...] annotations.
+ * These are written by the Gateway's claim-check offload when a user sends an image.
+ * When a message containing such an annotation is stored as a long-term memory and
+ * later recalled, the verbatim text must NOT be re-interpreted as a live media
+ * reference by detectImageReferences() — doing so causes the bot to "see" images
+ * from previous conversations.
+ */
+const MEDIA_ATTACHED_PATTERN = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
+
 export function escapeMemoryForPrompt(text: string): string {
-  return text.replace(/[&<>"']/g, (char) => PROMPT_ESCAPE_MAP[char] ?? char);
+  // Strip [media attached: ...] annotations before HTML-escaping so that
+  // detectImageReferences() cannot re-parse them as live media references.
+  const stripped = text.replace(MEDIA_ATTACHED_PATTERN, "").replace(/\s{2,}/g, " ").trim();
+  return stripped.replace(/[&<>"']/g, (char) => PROMPT_ESCAPE_MAP[char] ?? char);
 }
 
 export function formatRelevantMemoriesContext(
