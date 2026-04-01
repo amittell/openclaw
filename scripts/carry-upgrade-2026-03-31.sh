@@ -15,6 +15,20 @@ CLEAN_COMMITS=(
   "17a97e50d5|57137|fix(auth): sync env-var-backed token credentials into agent auth store (auth-only replay)"
 )
 
+POST_DIST_CARRIES=(
+  "a621c7b237|fix(telegram): restore retry behaviour for 429 rate-limit and failed-after network errors"
+  "dcef07efe0|fix(telegram): address PR #40383 review feedback"
+  "e17556d847|fix(telegram): address review feedback on hasTelegramRetryAfterParameter"
+  "e20d108a7e|fix(agents): stop transient live-switch mismatches"
+  "68c3e9b06b|feat(memory-lancedb): add memory_refresh tool for atomic replace and conflict preview (#43498)"
+  "3e14ff5802|fix(gateway): prevent session death loop on overloaded fallback"
+)
+
+POST_DIST_ABSORBED=(
+  "0ad068d2f2|fix: complete cron isolated model-switch retry (#57972)|already functionally present on upgrade/2026-03-31 during rh-bot audit; no separate replay commit required"
+  "42bf4998d3|fix(telegram): reset webhook cleanup latch after polling 409 conflicts (#39205)|already contained in upstream v2026.3.31"
+)
+
 MANUAL_QUEUE=(
   "56529|fix/overload-backoff-ceiling-v2|manual reconcile|src/agents/pi-embedded-runner/run.ts"
   "56537|fix/fallback-model-no-persist-v2|manual reconcile|src/agents/command/session-store.ts; src/cron/isolated-agent/run.ts"
@@ -46,7 +60,7 @@ Environment:
 Notes:
   - prepare creates or switches to the upgrade branch from BASE_TAG.
   - replay-clean cherry-picks the low-friction carry batch with -x provenance.
-  - status reports which clean commits are already replayed on the current branch.
+  - status reports the clean replay batch plus the audited post-dist delta from rh-bot.
 EOF
 }
 
@@ -177,6 +191,21 @@ print_status() {
     else
       printf '  [todo] PR #%s %s\n' "$pr" "$label"
     fi
+  done
+
+  printf '\nAudited post-dist carries from build/patched-2026.3.28:\n'
+  for entry in "${POST_DIST_CARRIES[@]}"; do
+    IFS='|' read -r sha label <<<"$entry"
+    if replayed_marker_present "$sha"; then
+      printf '  [done] %s\n' "$label"
+    else
+      printf '  [todo] %s\n' "$label"
+    fi
+  done
+  for entry in "${POST_DIST_ABSORBED[@]}"; do
+    IFS='|' read -r sha label note <<<"$entry"
+    printf '  [absorbed] %s\n' "$label"
+    printf '    note: %s\n' "$note"
   done
 }
 
