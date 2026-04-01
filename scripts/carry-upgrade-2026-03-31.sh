@@ -20,6 +20,10 @@ FOLLOWUP_COMMITS=(
   "635eac269b|3f08b85d42|59243|test(contracts): avoid heavy plugin-sdk testing imports"
 )
 
+LOCAL_CARRIES=(
+  "7d0f609e0b|fix(memory-lancedb): strip media annotations from recalled memories"
+)
+
 POST_DIST_CARRIES=(
   "a621c7b237|fix(telegram): restore retry behaviour for 429 rate-limit and failed-after network errors"
   "dcef07efe0|fix(telegram): address PR #40383 review feedback"
@@ -64,8 +68,8 @@ Environment:
 
 Notes:
   - prepare creates or switches to the upgrade branch from BASE_TAG.
-  - replay-clean cherry-picks the low-friction carry batch plus validated follow-up carries with -x provenance.
-  - status reports the clean replay batch, follow-up carries, and the audited post-dist delta from rh-bot.
+  - replay-clean cherry-picks the low-friction carry batch, validated follow-up carries, and local carries with -x provenance.
+  - status reports the clean replay batch, follow-up carries, local carries, and the audited post-dist delta from rh-bot.
 EOF
 }
 
@@ -162,21 +166,21 @@ replayed_or_present() {
 
 replay_commit() {
   local sha="$1"
-  local pr="$2"
+  local ref="$2"
   local label="$3"
 
   if replayed_marker_present "$sha"; then
-    log "skip PR #$pr ($label): already replayed"
+    log "skip $ref ($label): already replayed"
     return 0
   fi
 
   git rev-parse --verify --quiet "${sha}^{commit}" >/dev/null \
     || fail "missing commit $sha; fetch the relevant origin branch first"
 
-  log "cherry-picking PR #$pr ($label) from $sha"
+  log "cherry-picking $ref ($label) from $sha"
   if ! git cherry-pick -x "$sha"; then
     printf '\n' >&2
-    printf 'Cherry-pick stopped on %s (PR #%s).\n' "$sha" "$pr" >&2
+    printf 'Cherry-pick stopped on %s (%s).\n' "$sha" "$ref" >&2
     printf 'Resolve conflicts, then run:\n' >&2
     printf '  git cherry-pick --continue\n' >&2
     printf 'or abort with:\n' >&2
@@ -194,11 +198,15 @@ replay_clean() {
   local entry sha pr label
   for entry in "${CLEAN_COMMITS[@]}"; do
     IFS='|' read -r sha pr label <<<"$entry"
-    replay_commit "$sha" "$pr" "$label"
+    replay_commit "$sha" "PR #$pr" "$label"
   done
   for entry in "${FOLLOWUP_COMMITS[@]}"; do
     IFS='|' read -r sha _integrated_sha pr label <<<"$entry"
-    replay_commit "$sha" "$pr" "$label"
+    replay_commit "$sha" "PR #$pr" "$label"
+  done
+  for entry in "${LOCAL_CARRIES[@]}"; do
+    IFS='|' read -r sha label <<<"$entry"
+    replay_commit "$sha" "local carry" "$label"
   done
 
   log "clean batch replay complete"
@@ -230,6 +238,16 @@ print_status() {
       printf '  [done] PR #%s %s\n' "$pr" "$label"
     else
       printf '  [todo] PR #%s %s\n' "$pr" "$label"
+    fi
+  done
+
+  printf '\nLocal carries:\n'
+  for entry in "${LOCAL_CARRIES[@]}"; do
+    IFS='|' read -r sha label <<<"$entry"
+    if replayed_or_present "$sha"; then
+      printf '  [done] %s\n' "$label"
+    else
+      printf '  [todo] %s\n' "$label"
     fi
   done
 

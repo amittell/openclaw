@@ -46,6 +46,15 @@ were added to the upgrade line and to `replay-clean`:
    This is a first-party test/DX fix only. It does not change runtime behavior, but it keeps focused
    Telegram and inbound-contract test lanes from paying the broad `openclaw/plugin-sdk/testing` import tax.
 
+## Local carry now included in replay-clean
+
+One host-local fix was also transplanted onto the `2026.3.31` upgrade line and added to `replay-clean`:
+
+1. `7d0f609e0b`
+   `fix(memory-lancedb): strip media annotations from recalled memories`
+   This strips `[media attached: ...]` claim-check annotations from recalled long-term memories before
+   prompt assembly so historical memories cannot be misread as live image references.
+
 ## Manual queue after the clean batch
 
 Run:
@@ -91,6 +100,8 @@ These additional carries are now integrated on `upgrade/2026-03-31` as:
    `fix(telegram): restore self-authored reply-media guard`
 2. `3f08b85d42`
    `test(contracts): avoid heavy plugin-sdk testing imports`
+3. `7d0f609e0b`
+   `fix(memory-lancedb): strip media annotations from recalled memories`
 
 Two older candidates did not require extra replay:
 
