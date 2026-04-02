@@ -600,6 +600,27 @@ describe("deliverReplies", () => {
     );
   });
 
+  it("silently skips when text is only <br> HTML whitespace", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn();
+    const bot = { api: { sendMessage } } as unknown as Bot;
+
+    for (const brOnlyText of ["<br>", "<br/>", "<br />\n<br>", "<p></p>", "<div></div>"]) {
+      sendMessage.mockClear();
+      const result = await deliverReplies({
+        replies: [{ text: brOnlyText }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      });
+      expect(sendMessage, `expected no send for text=${JSON.stringify(brOnlyText)}`).not.toHaveBeenCalled();
+      expect(result.delivered, `expected delivered=false for text=${JSON.stringify(brOnlyText)}`).toBe(false);
+    }
+  });
+
   it("skips whitespace-only text replies without calling Telegram", async () => {
     const runtime = createRuntime();
     const sendMessage = vi.fn();
@@ -617,6 +638,56 @@ describe("deliverReplies", () => {
       }),
     ).resolves.toEqual({ delivered: false });
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("skips HTML-only whitespace replies (<br>, <p></p>, etc.) without calling Telegram", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn();
+    const bot = { api: { sendMessage } } as unknown as Bot;
+
+    // These can arrive from active-turn recovery or interrupted model output.
+    for (const htmlOnlyText of ["<br>", "<br/>", "<br />\n<br>", "<p></p>", "<div></div>"]) {
+      sendMessage.mockClear();
+      const result = await deliverReplies({
+        replies: [{ text: htmlOnlyText }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      });
+      expect(
+        sendMessage,
+        `expected no send for text=${JSON.stringify(htmlOnlyText)}`,
+      ).not.toHaveBeenCalled();
+      expect(
+        result.delivered,
+        `expected delivered=false for text=${JSON.stringify(htmlOnlyText)}`,
+      ).toBe(false);
+    }
+  });
+
+  it("does not skip replies with real text content alongside HTML tags", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn().mockResolvedValue({
+      message_id: 10,
+      chat: { id: "123" },
+    });
+    const bot = createBot({ sendMessage });
+
+    await expect(
+      deliverReplies({
+        replies: [{ text: "Hello<br>World" }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      }),
+    ).resolves.toEqual({ delivered: true });
+    expect(sendMessage).toHaveBeenCalled();
   });
 
   it("uses reply_to_message_id when quote text is provided", async () => {

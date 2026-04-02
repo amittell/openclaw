@@ -43,6 +43,25 @@ import {
 
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+
+// Matches HTML tags that contribute only whitespace when rendered: <br>, <br/>,
+// <p>, </p>, <div>, </div> and any runs of Unicode whitespace.
+const HTML_WHITESPACE_TAGS_RE = /<br\s*\/?>|<\/?(?:p|div)>/gi;
+
+/**
+ * Returns true when a string is empty or contains only HTML whitespace tags
+ * (<br>, <br/>, <p>, </p>, <div>, </div>) and/or Unicode whitespace.
+ *
+ * Models occasionally emit bare HTML like `<br>` as the entire reply body
+ * (e.g. during active-turn recovery). Since markdown-it parses with `html: false`,
+ * these tags survive as literal text through the formatting pipeline and bypass
+ * the core outbound `sanitizeForPlainText` path.
+ */
+function isHtmlWhitespaceOnly(value: string | null | undefined): boolean {
+  if (!value) return true;
+  return value.replace(HTML_WHITESPACE_TAGS_RE, "").trim() === "";
+}
+
 const GrammyErrorCtor: typeof GrammyError | undefined =
   typeof GrammyError === "function" ? GrammyError : undefined;
 
@@ -95,7 +114,9 @@ function markDelivered(progress: DeliveryProgress): void {
 function filterEmptyTelegramTextChunks<T extends { text: string }>(chunks: readonly T[]): T[] {
   // Telegram rejects whitespace-only text payloads; drop them before sendMessage so
   // hook-mutated or model-emitted empty replies become a no-op instead of a 400.
-  return chunks.filter((chunk) => chunk.text.trim().length > 0);
+  // Also strip HTML whitespace tags — models can emit bare `<br>` or `<p></p>`
+  // which are non-empty strings but render as whitespace.
+  return chunks.filter((chunk) => !isHtmlWhitespaceOnly(chunk.text));
 }
 
 async function deliverTextReply(params: {
@@ -625,6 +646,16 @@ export async function deliverReplies(params: {
         continue;
       }
       params.runtime.error?.(danger("reply missing text/media"));
+      continue;
+    }
+
+    // Guard: skip replies whose text is only HTML whitespace tags (e.g. "<br>",
+    // "<br/>", "<p></p>"). These can arrive from active-turn recovery or
+    // interrupted model output. The chunk-level isHtmlWhitespaceOnly guards
+    // below would also catch this, but an early bail-out avoids unnecessary
+    // hook invocations and markdown processing.
+    if (reply?.text && !hasMedia && isHtmlWhitespaceOnly(reply.text)) {
+      logVerbose("telegram reply text is HTML-only whitespace; skipping");
       continue;
     }
 
