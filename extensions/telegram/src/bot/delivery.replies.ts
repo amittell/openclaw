@@ -43,6 +43,7 @@ import {
 
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+const HTML_WHITESPACE_TAGS_RE = /<br\s*\/?>|<\/?(?:p|div)>/gi;
 const GrammyErrorCtor: typeof GrammyError | undefined =
   typeof GrammyError === "function" ? GrammyError : undefined;
 
@@ -92,10 +93,17 @@ function markDelivered(progress: DeliveryProgress): void {
   progress.deliveredCount += 1;
 }
 
+function isHtmlWhitespaceOnly(value: string | null | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+  return value.replace(HTML_WHITESPACE_TAGS_RE, "").trim() === "";
+}
+
 function filterEmptyTelegramTextChunks<T extends { text: string }>(chunks: readonly T[]): T[] {
   // Telegram rejects whitespace-only text payloads; drop them before sendMessage so
   // hook-mutated or model-emitted empty replies become a no-op instead of a 400.
-  return chunks.filter((chunk) => chunk.text.trim().length > 0);
+  return chunks.filter((chunk) => !isHtmlWhitespaceOnly(chunk.text));
 }
 
 async function deliverTextReply(params: {
@@ -124,6 +132,10 @@ async function deliverTextReply(params: {
     replyQuoteText: params.replyQuoteText,
     markDelivered,
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup, replyQuoteText }) => {
+      if (isHtmlWhitespaceOnly(chunk.text)) {
+        logVerbose("telegram: skipping empty chunk in deliverTextReply");
+        return false;
+      }
       const messageId = await sendTelegramText(
         params.bot,
         params.chatId,
@@ -140,9 +152,13 @@ async function deliverTextReply(params: {
           replyMarkup,
         },
       );
+      if (messageId == null) {
+        return false;
+      }
       if (firstDeliveredMessageId == null) {
         firstDeliveredMessageId = messageId;
       }
+      return true;
     },
   });
   return firstDeliveredMessageId;
@@ -171,7 +187,11 @@ async function sendPendingFollowUpText(params: {
     replyMarkup: params.replyMarkup,
     markDelivered,
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup }) => {
-      await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
+      if (isHtmlWhitespaceOnly(chunk.text)) {
+        logVerbose("telegram: skipping empty chunk in sendPendingFollowUpText");
+        return false;
+      }
+      const messageId = await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
         replyToMessageId,
         thread: params.thread,
         textMode: "html",
@@ -180,6 +200,7 @@ async function sendPendingFollowUpText(params: {
         silent: params.silent,
         replyMarkup,
       });
+      return messageId != null;
     },
   });
 }
@@ -212,27 +233,31 @@ async function sendTelegramVoiceFallbackText(opts: {
   replyQuoteText?: string;
 }): Promise<number | undefined> {
   let firstDeliveredMessageId: number | undefined;
-  const chunks = filterEmptyTelegramTextChunks(opts.chunkText(opts.text));
-  let appliedReplyTo = false;
+  const chunks = opts.chunkText(opts.text);
+  let sentAnyChunk = false;
   for (let i = 0; i < chunks.length; i += 1) {
     const chunk = chunks[i];
-    // Only apply reply reference, quote text, and buttons to the first chunk.
-    const replyToForChunk = !appliedReplyTo ? opts.replyToId : undefined;
+    if (!chunk || isHtmlWhitespaceOnly(chunk.text)) {
+      logVerbose("telegram: skipping empty chunk in sendTelegramVoiceFallbackText");
+      continue;
+    }
+    // Only apply reply reference, quote text, and buttons to the first sent chunk.
+    const replyToForChunk = !sentAnyChunk ? opts.replyToId : undefined;
     const messageId = await sendTelegramText(opts.bot, opts.chatId, chunk.html, opts.runtime, {
       replyToMessageId: replyToForChunk,
-      replyQuoteText: !appliedReplyTo ? opts.replyQuoteText : undefined,
+      replyQuoteText: !sentAnyChunk ? opts.replyQuoteText : undefined,
       thread: opts.thread,
       textMode: "html",
       plainText: chunk.text,
       linkPreview: opts.linkPreview,
       silent: opts.silent,
-      replyMarkup: !appliedReplyTo ? opts.replyMarkup : undefined,
+      replyMarkup: !sentAnyChunk ? opts.replyMarkup : undefined,
     });
-    if (firstDeliveredMessageId == null) {
-      firstDeliveredMessageId = messageId;
-    }
-    if (replyToForChunk) {
-      appliedReplyTo = true;
+    if (messageId != null) {
+      if (firstDeliveredMessageId == null) {
+        firstDeliveredMessageId = messageId;
+      }
+      sentAnyChunk = true;
     }
   }
   return firstDeliveredMessageId;
@@ -395,11 +420,17 @@ async function deliverMediaReply(params: {
               replyMarkup: params.replyMarkup,
               replyQuoteText: params.replyQuoteText,
             });
-            if (firstDeliveredMessageId == null) {
-              firstDeliveredMessageId = fallbackMessageId;
+            if (fallbackMessageId != null) {
+              if (firstDeliveredMessageId == null) {
+                firstDeliveredMessageId = fallbackMessageId;
+              }
+              markReplyApplied(params.progress, voiceFallbackReplyTo);
+              markDelivered(params.progress);
+            } else {
+              logVerbose(
+                "telegram voice fallback text produced no sendable chunks; skipping delivery mark",
+              );
             }
-            markReplyApplied(params.progress, voiceFallbackReplyTo);
-            markDelivered(params.progress);
             continue;
           }
           if (isCaptionTooLong(voiceErr)) {
@@ -625,6 +656,10 @@ export async function deliverReplies(params: {
         continue;
       }
       params.runtime.error?.(danger("reply missing text/media"));
+      continue;
+    }
+    if (reply?.text && !hasMedia && isHtmlWhitespaceOnly(reply.text)) {
+      logVerbose("telegram reply text is HTML-only whitespace; skipping");
       continue;
     }
 
