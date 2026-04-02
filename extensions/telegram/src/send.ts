@@ -30,6 +30,7 @@ import { splitTelegramCaption } from "./caption.js";
 import { resolveTelegramApiBase, resolveTelegramFetch } from "./fetch.js";
 import { renderTelegramHtmlText, splitTelegramHtmlChunks } from "./format.js";
 import {
+  EMPTY_TEXT_ERR_RE,
   isRecoverableTelegramNetworkError,
   isTelegramRateLimitError,
   isSafeToRetrySendError,
@@ -398,7 +399,7 @@ function removeMessageThreadIdParam<TParams extends TelegramThreadScopedParams |
 }
 
 function isTelegramHtmlParseError(err: unknown): boolean {
-  return PARSE_ERR_RE.test(formatErrorMessage(err));
+  return PARSE_ERR_RE.test(formatErrorMessage(err)) || EMPTY_TEXT_ERR_RE.test(formatErrorMessage(err));
 }
 
 function buildTelegramThreadReplyParams(params: {

@@ -51,15 +51,17 @@ export async function sendChunkedTelegramReplyText<
     replyToMessageId?: number;
     replyMarkup?: TReplyMarkup;
     replyQuoteText?: string;
-  }) => Promise<void>;
+  }) => Promise<boolean | void>;
 }): Promise<void> {
   const applyDelivered = params.markDelivered ?? markDelivered;
+  let firstSentChunk = false;
   for (let i = 0; i < params.chunks.length; i += 1) {
     const chunk = params.chunks[i];
     if (!chunk) {
       continue;
     }
     const isFirstChunk = i === 0;
+    const isFirstSentChunk = !firstSentChunk;
     const replyToMessageId = resolveReplyToForSend({
       replyToId: params.replyToId,
       replyToMode: params.replyToMode,
@@ -69,13 +71,17 @@ export async function sendChunkedTelegramReplyText<
       Boolean(replyToMessageId) &&
       Boolean(params.replyQuoteText) &&
       (params.quoteOnlyOnFirstChunk !== true || isFirstChunk);
-    await params.sendChunk({
+    const sent = await params.sendChunk({
       chunk,
       isFirstChunk,
       replyToMessageId,
-      replyMarkup: isFirstChunk ? params.replyMarkup : undefined,
+      replyMarkup: isFirstSentChunk ? params.replyMarkup : undefined,
       replyQuoteText: shouldAttachQuote ? params.replyQuoteText : undefined,
     });
+    if (sent === false) {
+      continue;
+    }
+    firstSentChunk = true;
     markReplyApplied(params.progress, replyToMessageId);
     applyDelivered(params.progress);
   }
