@@ -619,6 +619,49 @@ describe("deliverReplies", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("skips HTML-only whitespace replies without calling Telegram", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn();
+    const bot = { api: { sendMessage } } as unknown as Bot;
+
+    for (const htmlOnlyText of ["<br>", "<br/>", "<br />\n<br>", "<p></p>", "<div></div>"]) {
+      sendMessage.mockClear();
+      const result = await deliverReplies({
+        replies: [{ text: htmlOnlyText }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      });
+      expect(sendMessage, `expected no send for text=${JSON.stringify(htmlOnlyText)}`).not.toHaveBeenCalled();
+      expect(result.delivered, `expected delivered=false for text=${JSON.stringify(htmlOnlyText)}`).toBe(false);
+    }
+  });
+
+  it("does not skip replies with real text content alongside HTML tags", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn().mockResolvedValue({
+      message_id: 10,
+      chat: { id: "123" },
+    });
+    const bot = createBot({ sendMessage });
+
+    await expect(
+      deliverReplies({
+        replies: [{ text: "Hello<br>World" }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      }),
+    ).resolves.toEqual({ delivered: true });
+    expect(sendMessage).toHaveBeenCalled();
+  });
+
   it("uses reply_to_message_id when quote text is provided", async () => {
     const runtime = createRuntime();
     const sendMessage = vi.fn().mockResolvedValue({
@@ -680,6 +723,29 @@ describe("deliverReplies", () => {
       expect.stringContaining("Hello there"),
       expect.any(Object),
     );
+  });
+
+  it("does not mark delivery when voice fallback text has no sendable content", async () => {
+    const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
+      voiceError: createVoiceMessagesForbiddenError(),
+    });
+
+    mockMediaLoad("note.ogg", "audio/ogg", "voice");
+
+    await expect(
+      deliverReplies({
+        replies: [{ mediaUrl: "https://example.com/note.ogg", text: "<br>", audioAsVoice: true }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      }),
+    ).resolves.toEqual({ delivered: false });
+
+    expect(sendVoice).toHaveBeenCalledTimes(1);
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("keeps disable_notification on voice fallback text when silent is true", async () => {
