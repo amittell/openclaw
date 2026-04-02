@@ -22,6 +22,7 @@ FOLLOWUP_COMMITS=(
 
 LOCAL_CARRIES=(
   "7d0f609e0b|fix(memory-lancedb): strip media annotations from recalled memories"
+  "9846d8588c|fix(telegram): reconcile empty-text delivery on 2026.3.31"
 )
 
 POST_DIST_CARRIES=(
@@ -44,7 +45,6 @@ MANUAL_QUEUE=(
   "49429|fix/auth-clean-v2|manual reconcile|src/agents/auth-profiles.runtime.ts; src/agents/auth-profiles/store.ts"
   "49431|feat/inbound-drain-queue-v3|manual reconcile|src/gateway/server-startup.ts; src/infra/system-events.ts"
   "49420|fix/acp-dispatch-abort-signal-v3|manual reconcile|src/auto-reply/reply/dispatch-acp.ts"
-  "49391|fix/empty-text-silent-skip-v2|manual reconcile|extensions/telegram/src/bot/delivery.replies.ts; extensions/telegram/src/bot/delivery.test.ts"
   "49220|fix/memory-session-index-strip-inbound-meta|manual reconcile|packages/memory-host-sdk/src/host/session-files.ts; src/utils/directive-tags.ts"
   "43498|feat/memory-lancedb-refresh|manual reconcile|packages/memory-host-sdk/src/host/session-files.ts; extensions/memory-lancedb/index.ts"
   "43497|feat/subagent-restart-resume-phase1|manual reconcile|src/agents/subagent-registry.ts"

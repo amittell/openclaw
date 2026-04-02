@@ -46,14 +46,20 @@ were added to the upgrade line and to `replay-clean`:
    This is a first-party test/DX fix only. It does not change runtime behavior, but it keeps focused
    Telegram and inbound-contract test lanes from paying the broad `openclaw/plugin-sdk/testing` import tax.
 
-## Local carry now included in replay-clean
+## Local carries now included in replay-clean
 
-One host-local fix was also transplanted onto the `2026.3.31` upgrade line and added to `replay-clean`:
+Two host-local fixes are now transplanted onto the `2026.3.31` upgrade line and added to `replay-clean`:
 
 1. `7d0f609e0b`
    `fix(memory-lancedb): strip media annotations from recalled memories`
    This strips `[media attached: ...]` claim-check annotations from recalled long-term memories before
    prompt assembly so historical memories cannot be misread as live image references.
+2. `9846d8588c`
+   `fix(telegram): reconcile empty-text delivery on 2026.3.31`
+   This folds the host-side empty-text work back onto the audited `3.31` branch: shared empty-text
+   rejection matching, correct first-sent-chunk bookkeeping for reply buttons/reply-to, HTML-only
+   whitespace guards (`<br>`, `<p></p>`, `<div></div>`), and the voice-fallback no-delivery fix when
+   no Telegram chunk was actually sent.
 
 ## Manual queue after the clean batch
 
@@ -102,6 +108,8 @@ These additional carries are now integrated on `upgrade/2026-03-31` as:
    `test(contracts): avoid heavy plugin-sdk testing imports`
 3. `7d0f609e0b`
    `fix(memory-lancedb): strip media annotations from recalled memories`
+4. `9846d8588c`
+   `fix(telegram): reconcile empty-text delivery on 2026.3.31`
 
 Two older candidates did not require extra replay:
 
@@ -155,12 +163,15 @@ On macOS LaunchAgent installs, confirm the live service is using the repo checko
 
 ```bash
 launchctl print gui/$(id -u)/ai.openclaw.gateway | sed -n '1,80p'
+openclaw --version
+node dist/index.js --version
 ```
 
 Expected signs:
 
 - `arguments` points at `<repo>/dist/index.js`
 - `OPENCLAW_SERVICE_VERSION` is `2026.3.31`
+- `openclaw --version` matches `node dist/index.js --version`
 - `openclaw health` reports the gateway as healthy after restart
 
 ## Rh-bot rollout notes
@@ -178,6 +189,10 @@ Expected signs:
 - Focused Telegram and inbound-context tests were also slowed by first-party imports of
   `openclaw/plugin-sdk/testing`. The branch now carries a narrow test-only fix that switches those
   internal tests to the direct contract helper path and lazy-loads the Slack harness.
+- `mac-mini.lan` later drifted because a bot checked out `amittell/fix/empty-text-silent-skip`
+  directly on April 2, 2026 instead of rebasing/cherry-picking the fixes onto `upgrade/2026-03-31`.
+  That old branch was based on `2026.3.24`, so the checkout and CLI downgraded even though the
+  LaunchAgent plist still advertised `OPENCLAW_SERVICE_VERSION=2026.3.31`.
 
 For local macOS smoke tests during integration:
 
