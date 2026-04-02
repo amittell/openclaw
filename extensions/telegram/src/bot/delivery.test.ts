@@ -600,6 +600,33 @@ describe("deliverReplies", () => {
     );
   });
 
+  it("silently skips when text is only <br> HTML whitespace", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn();
+    const bot = { api: { sendMessage } } as unknown as Bot;
+
+    for (const brOnlyText of ["<br>", "<br/>", "<br />\n<br>", "<p></p>", "<div></div>"]) {
+      sendMessage.mockClear();
+      const result = await deliverReplies({
+        replies: [{ text: brOnlyText }],
+        chatId: "123",
+        token: "tok",
+        runtime,
+        bot,
+        replyToMode: "off",
+        textLimit: 4000,
+      });
+      expect(
+        sendMessage,
+        `expected no send for text=${JSON.stringify(brOnlyText)}`,
+      ).not.toHaveBeenCalled();
+      expect(
+        result.delivered,
+        `expected delivered=false for text=${JSON.stringify(brOnlyText)}`,
+      ).toBe(false);
+    }
+  });
+
   it("silently skips when formatted and plain fallback text are both empty", async () => {
     const runtime = createRuntime();
     const sendMessage = vi.fn();
@@ -726,7 +753,11 @@ describe("deliverReplies", () => {
 
     await deliverWith({
       replies: [
-        { mediaUrl: "https://example.com/note.ogg", text: "Hello there", audioAsVoice: true },
+        {
+          mediaUrl: "https://example.com/note.ogg",
+          text: "Hello there",
+          audioAsVoice: true,
+        },
       ],
       runtime,
       bot,
@@ -756,7 +787,11 @@ describe("deliverReplies", () => {
 
     await deliverWith({
       replies: [
-        { mediaUrl: "https://example.com/note.ogg", text: "Hello there", audioAsVoice: true },
+        {
+          mediaUrl: "https://example.com/note.ogg",
+          text: "Hello there",
+          audioAsVoice: true,
+        },
       ],
       runtime,
       bot,
@@ -833,7 +868,13 @@ describe("deliverReplies", () => {
 
     await expect(
       deliverWith({
-        replies: [{ mediaUrl: "https://example.com/note.ogg", text: "Hello", audioAsVoice: true }],
+        replies: [
+          {
+            mediaUrl: "https://example.com/note.ogg",
+            text: "Hello",
+            audioAsVoice: true,
+          },
+        ],
         runtime,
         bot,
       }),
@@ -948,7 +989,12 @@ describe("deliverReplies", () => {
     const bot = createBot({ sendMessage, pinChatMessage });
 
     await deliverReplies({
-      replies: [{ text: "chunk-one\n\nchunk-two", channelData: { telegram: { pin: true } } }],
+      replies: [
+        {
+          text: "chunk-one\n\nchunk-two",
+          channelData: { telegram: { pin: true } },
+        },
+      ],
       chatId: "123",
       token: "tok",
       runtime,
@@ -958,7 +1004,9 @@ describe("deliverReplies", () => {
     });
 
     expect(pinChatMessage).toHaveBeenCalledTimes(1);
-    expect(pinChatMessage).toHaveBeenCalledWith("123", 101, { disable_notification: true });
+    expect(pinChatMessage).toHaveBeenCalledWith("123", 101, {
+      disable_notification: true,
+    });
   });
 
   it("continues when pinning fails", async () => {

@@ -37,6 +37,18 @@ import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 import { sendChunkedTelegramReplyText } from "./reply-threading.js";
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+// Matches HTML tags that contribute only whitespace when rendered: <br>, <br/>,
+// <p>, </p>, <div>, </div>.
+const HTML_WHITESPACE_TAGS_RE = /<br\s*\/?>|<\/?(?:p|div)>/gi;
+
+/**
+ * Returns true when a string is empty or contains only HTML whitespace tags
+ * (<br>, <br/>, <p>, </p>, <div>, </div>) and/or Unicode whitespace.
+ */
+function isHtmlWhitespaceOnly(value: string | null | undefined): boolean {
+  if (!value) return true;
+  return value.replace(HTML_WHITESPACE_TAGS_RE, "").trim() === "";
+}
 const GrammyErrorCtor: typeof GrammyError | undefined =
   typeof GrammyError === "function" ? GrammyError : undefined;
 
@@ -71,7 +83,10 @@ function buildChunkTextResolver(params: {
       if (!nested.length && chunk) {
         chunks.push({
           html: wrapFileReferencesInHtml(
-            markdownToTelegramHtml(chunk, { tableMode: params.tableMode, wrapFileRefs: false }),
+            markdownToTelegramHtml(chunk, {
+              tableMode: params.tableMode,
+              wrapFileRefs: false,
+            }),
           ),
           text: chunk,
         });
@@ -131,7 +146,7 @@ async function deliverTextReply(params: {
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup, replyQuoteText }) => {
       // Silently skip empty chunks instead of sending a blank message that
       // would trigger a Telegram API error.
-      if (!chunk.html?.trim() && !chunk.text?.trim()) {
+      if (isHtmlWhitespaceOnly(chunk.text)) {
         logVerbose("telegram: skipping empty chunk in deliverTextReply");
         return false;
       }
@@ -187,7 +202,7 @@ async function sendPendingFollowUpText(params: {
     replyMarkup: params.replyMarkup,
     markDelivered,
     sendChunk: async ({ chunk, replyToMessageId, replyMarkup }) => {
-      if (!chunk.html?.trim() && !chunk.text?.trim()) {
+      if (isHtmlWhitespaceOnly(chunk.text)) {
         logVerbose("telegram: skipping empty chunk in sendPendingFollowUpText");
         return false;
       }
@@ -248,7 +263,7 @@ async function sendTelegramVoiceFallbackText(opts: {
   let sentAnyChunk = false;
   for (let i = 0; i < chunks.length; i += 1) {
     const chunk = chunks[i];
-    if (!chunk || (!chunk.html?.trim() && !chunk.text?.trim())) {
+    if (!chunk || isHtmlWhitespaceOnly(chunk.text)) {
       logVerbose("telegram: skipping empty chunk in sendTelegramVoiceFallbackText");
       continue;
     }
@@ -301,7 +316,9 @@ async function deliverMediaReply(params: {
     const isFirstMedia = first;
     const media = await params.mediaLoader(
       mediaUrl,
-      buildOutboundMediaLoadOptions({ mediaLocalRoots: params.mediaLocalRoots }),
+      buildOutboundMediaLoadOptions({
+        mediaLocalRoots: params.mediaLocalRoots,
+      }),
     );
     const kind = kindFromMime(media.contentType ?? undefined);
     const isGif = isGifMedia({
@@ -343,7 +360,9 @@ async function deliverMediaReply(params: {
         thread: params.thread,
         requestParams: mediaParams,
         send: (effectiveParams) =>
-          params.bot.api.sendAnimation(params.chatId, file, { ...effectiveParams }),
+          params.bot.api.sendAnimation(params.chatId, file, {
+            ...effectiveParams,
+          }),
       });
       if (firstDeliveredMessageId == null) {
         firstDeliveredMessageId = result.message_id;
@@ -394,7 +413,9 @@ async function deliverMediaReply(params: {
             requestParams,
             shouldLog,
             send: (effectiveParams) =>
-              params.bot.api.sendVoice(params.chatId, file, { ...effectiveParams }),
+              params.bot.api.sendVoice(params.chatId, file, {
+                ...effectiveParams,
+              }),
           });
           if (firstDeliveredMessageId == null) {
             firstDeliveredMessageId = result.message_id;
@@ -484,7 +505,9 @@ async function deliverMediaReply(params: {
           thread: params.thread,
           requestParams: mediaParams,
           send: (effectiveParams) =>
-            params.bot.api.sendAudio(params.chatId, file, { ...effectiveParams }),
+            params.bot.api.sendAudio(params.chatId, file, {
+              ...effectiveParams,
+            }),
         });
         if (firstDeliveredMessageId == null) {
           firstDeliveredMessageId = result.message_id;
@@ -498,7 +521,9 @@ async function deliverMediaReply(params: {
         thread: params.thread,
         requestParams: mediaParams,
         send: (effectiveParams) =>
-          params.bot.api.sendDocument(params.chatId, file, { ...effectiveParams }),
+          params.bot.api.sendDocument(params.chatId, file, {
+            ...effectiveParams,
+          }),
       });
       if (firstDeliveredMessageId == null) {
         firstDeliveredMessageId = result.message_id;
