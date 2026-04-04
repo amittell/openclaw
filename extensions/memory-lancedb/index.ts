@@ -94,7 +94,15 @@ class MemoryDB {
   }
 
   private async doInitialize(): Promise<void> {
-    const lancedb = await loadLanceDbModule();
+    // Graceful degradation: catch native module load failures (e.g. after a
+    // hot-reload where the native addon resolver is broken — requires full
+    // gateway restart to recover). Re-throw with a clear prefix so callers
+    // can distinguish LanceDB issues from other DB errors.
+    const lancedb = await loadLanceDbModule().catch((err: unknown) => {
+      const msg = `[memory-lancedb] LanceDB native module failed to load: ${err instanceof Error ? err.message : String(err)} — memory tools disabled`;
+      console.error(msg);
+      throw new Error(msg, { cause: err });
+    });
     this.db = await lancedb.connect(this.dbPath);
     const tables = await this.db.tableNames();
 
@@ -295,7 +303,10 @@ const MEDIA_ATTACHED_PATTERN = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
 export function escapeMemoryForPrompt(text: string): string {
   // Strip [media attached: ...] annotations before HTML-escaping so that
   // detectImageReferences() cannot re-parse them as live media references.
-  const stripped = text.replace(MEDIA_ATTACHED_PATTERN, "").replace(/\s{2,}/g, " ").trim();
+  const stripped = text
+    .replace(MEDIA_ATTACHED_PATTERN, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   return stripped.replace(/[&<>"']/g, (char) => PROMPT_ESCAPE_MAP[char] ?? char);
 }
 
@@ -366,7 +377,20 @@ export default definePluginEntry({
   configSchema: memoryConfigSchema,
 
   register(api: OpenClawPluginApi) {
-    const cfg = memoryConfigSchema.parse(api.pluginConfig);
+    // Graceful degradation: catch config parse errors (e.g. schema drift after
+    // an upgrade adds/removes config keys) and LanceDB native module load
+    // failures (e.g. after a hot-reload that breaks native addon resolution).
+    // On any init error we log a clear warning and return early WITHOUT
+    // registering any tools — so the rest of openclaw continues to work.
+    let cfg: ReturnType<typeof memoryConfigSchema.parse>;
+    try {
+      cfg = memoryConfigSchema.parse(api.pluginConfig);
+    } catch (err) {
+      console.error(
+        `[memory-lancedb] config error: ${err instanceof Error ? err.message : String(err)} — memory tools disabled`,
+      );
+      return;
+    }
     const resolvedDbPath = api.resolvePath(cfg.dbPath!);
     const { model, dimensions, apiKey, baseUrl } = cfg.embedding;
 
