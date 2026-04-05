@@ -117,6 +117,11 @@ function loadBundledModule(modulePath: string, rootDir: string): unknown {
 }
 
 function loadGeneratedBundledChannelEntries(): readonly GeneratedBundledChannelEntry[] {
+  // TODO(#61259): remove once jiti loading depth is addressed upstream.
+  if (process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS === "1") {
+    log.info("[channels] OPENCLAW_SKIP_CHANNEL_PLUGINS=1; skipping bundled channel plugin loading");
+    return [];
+  }
   const discovery = discoverOpenClawPlugins({ cache: false });
   const manifestRegistry = loadPluginManifestRegistry({
     cache: false,
