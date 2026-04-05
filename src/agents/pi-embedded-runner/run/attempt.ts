@@ -14,6 +14,7 @@ import {
   ensureGlobalUndiciEnvProxyDispatcher,
   ensureGlobalUndiciStreamTimeouts,
 } from "../../../infra/net/undici-global-dispatcher.js";
+import { resolveStateDir } from "../../../config/paths.js";
 import { clearActiveTurn, writeActiveTurn } from "../../../infra/pending-inbound-store.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import {
