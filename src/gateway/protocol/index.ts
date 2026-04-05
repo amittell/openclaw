@@ -435,8 +435,6 @@ export const validateSkillsBinsParams = lazyCompile<SkillsBinsParams>(SkillsBins
 export const validateSkillsInstallParams =
   lazyCompile<SkillsInstallParams>(SkillsInstallParamsSchema);
 export const validateSkillsUpdateParams = lazyCompile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
-export const validateSkillsSearchParams = lazyCompile<SkillsSearchParams>(SkillsSearchParamsSchema);
-export const validateSkillsDetailParams = lazyCompile<SkillsDetailParams>(SkillsDetailParamsSchema);
 export const validateCronListParams = lazyCompile<CronListParams>(CronListParamsSchema);
 export const validateCronStatusParams = lazyCompile<CronStatusParams>(CronStatusParamsSchema);
 export const validateCronAddParams = lazyCompile<CronAddParams>(CronAddParamsSchema);
@@ -467,9 +465,6 @@ export const validateExecApprovalsGetParams = lazyCompile<ExecApprovalsGetParams
 );
 export const validateExecApprovalsSetParams = lazyCompile<ExecApprovalsSetParams>(
   ExecApprovalsSetParamsSchema,
-);
-export const validateExecApprovalGetParams = lazyCompile<ExecApprovalGetParams>(
-  ExecApprovalGetParamsSchema,
 );
 export const validateExecApprovalRequestParams = lazyCompile<ExecApprovalRequestParams>(
   ExecApprovalRequestParamsSchema,
