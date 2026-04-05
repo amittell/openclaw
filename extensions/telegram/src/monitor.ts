@@ -39,8 +39,10 @@ export function createTelegramRunnerOptions(cfg: OpenClawConfig): RunOptions<unk
     },
     runner: {
       fetch: {
-        // Match grammY defaults
-        timeout: 30,
+        // Leave headroom below the 30s long-poll edge. In production, quiet bots
+        // were repeatedly failing at ~30.0s with "Network request for 'getUpdates'
+        // failed!" before Telegram returned the empty long-poll response.
+        timeout: 25,
         // Request reactions without dropping default update types.
         allowed_updates: resolveTelegramAllowedUpdates(),
       },
