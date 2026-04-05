@@ -1,4 +1,23 @@
-import { createRequire } from "node:module";
+type ProcessWithBuiltinModule = NodeJS.Process & {
+  getBuiltinModule?: (id: string) => { createRequire?: (filename: string) => NodeJS.Require } | undefined;
+  mainModule?: {
+    require?: (id: string) => { createRequire?: (filename: string) => NodeJS.Require } | undefined;
+  };
+};
+
+function tryCreateRequire(moduleUrl: string): NodeJS.Require | null {
+  try {
+    const proc = process as ProcessWithBuiltinModule;
+    const createRequire =
+      proc.getBuiltinModule?.("node:module")?.createRequire ??
+      proc.getBuiltinModule?.("module")?.createRequire ??
+      proc.mainModule?.require?.("node:module")?.createRequire ??
+      proc.mainModule?.require?.("module")?.createRequire;
+    return typeof createRequire === "function" ? createRequire(moduleUrl) : null;
+  } catch {
+    return null;
+  }
+}
 
 declare const __OPENCLAW_VERSION__: string | undefined;
 const CORE_PACKAGE_NAME = "openclaw";
@@ -22,7 +41,10 @@ function readVersionFromJsonCandidates(
   opts: { requirePackageName?: boolean } = {},
 ): string | null {
   try {
-    const require = createRequire(moduleUrl);
+    const require = tryCreateRequire(moduleUrl);
+    if (!require) {
+      return null;
+    }
     for (const candidate of candidates) {
       try {
         const parsed = require(candidate) as { name?: string; version?: string };
