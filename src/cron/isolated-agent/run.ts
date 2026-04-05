@@ -253,6 +253,10 @@ export async function runCronIsolatedAgentTurn(params: {
     nowMs: now,
     // Isolated cron runs must not carry prior turn context across executions.
     forceNew: params.job.sessionTarget === "isolated",
+    // Pass payload model so resolveCronSession can clear stale model-selection
+    // overrides (providerOverride, modelOverride, fallbackNotice*) that may have
+    // been inherited from a shared interactive session.
+    payloadModel: params.job.payload.kind === "agentTurn" ? params.job.payload.model : undefined,
   });
   const runSessionId = cronSession.sessionEntry.sessionId;
   const runSessionKey = baseSessionKey.startsWith("cron:")
