@@ -211,8 +211,6 @@ const PROMPT_INJECTION_PATTERNS = [
   /\b(run|execute|call|invoke)\b.{0,40}\b(tool|command)\b/i,
 ];
 
-const MEDIA_ATTACHED_PATTERN = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
-
 const PROMPT_ESCAPE_MAP: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
