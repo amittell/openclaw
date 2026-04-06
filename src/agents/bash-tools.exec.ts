@@ -778,7 +778,8 @@ async function validateScriptFileForShellBleed(params: {
       // attackers can route script content through forms our fast parser cannot validate.
       throw new Error(
         "exec preflight: complex interpreter invocation detected; refusing to run without script preflight validation. " +
-          "Use a direct `python <file>.py` or `node <file>.js` command.",
+          "Use a direct `python <file>.py` or `node <file>.js` command, set `workdir` instead of `cd ... &&`, " +
+          "and avoid shell chaining like pipes, `echo $?`, background jobs, or `source ...;` around interpreter calls.",
       );
     }
     return;

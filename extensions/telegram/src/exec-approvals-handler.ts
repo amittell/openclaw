@@ -27,6 +27,9 @@ import {
 import { editMessageReplyMarkupTelegram, sendMessageTelegram, sendTypingTelegram } from "./send.js";
 
 const log = createSubsystemLogger("telegram/exec-approvals");
+const TELEGRAM_APPROVAL_TEXT_SOFT_LIMIT = 3_500;
+const TELEGRAM_APPROVAL_TRUNCATION_NOTICE =
+  "\n\n[approval prompt truncated for Telegram; use the inline buttons below to approve or deny]";
 
 type ApprovalRequest = ExecApprovalRequest | PluginApprovalRequest;
 type ApprovalResolved = ExecApprovalResolved | PluginApprovalResolved;
@@ -38,6 +41,21 @@ type TelegramPendingDelivery = {
   text: string;
   buttons: ReturnType<typeof resolveTelegramInlineButtons>;
 };
+
+function isTelegramMessageTooLongError(error: unknown): boolean {
+  return /message is too long/i.test(String(error));
+}
+
+function truncateTelegramApprovalText(text: string): string {
+  if (text.length <= TELEGRAM_APPROVAL_TEXT_SOFT_LIMIT) {
+    return text;
+  }
+  const budget = Math.max(
+    0,
+    TELEGRAM_APPROVAL_TEXT_SOFT_LIMIT - TELEGRAM_APPROVAL_TRUNCATION_NOTICE.length,
+  );
+  return `${text.slice(0, budget)}${TELEGRAM_APPROVAL_TRUNCATION_NOTICE}`;
+}
 
 export type TelegramExecApprovalHandlerOpts = {
   token: string;
@@ -135,7 +153,7 @@ export class TelegramExecApprovalHandler {
               : undefined,
         },
       }),
-      deliverTarget: async ({ preparedTarget, pendingContent }) => {
+      deliverTarget: async ({ preparedTarget, pendingContent, request }) => {
         await this.sendTyping(preparedTarget.chatId, {
           cfg: this.opts.cfg,
           token: this.opts.token,
@@ -145,7 +163,7 @@ export class TelegramExecApprovalHandler {
             : {}),
         }).catch(() => {});
 
-        const result = await this.sendMessage(preparedTarget.chatId, pendingContent.text, {
+        const sendOptions = {
           cfg: this.opts.cfg,
           token: this.opts.token,
           accountId: this.opts.accountId,
@@ -153,7 +171,23 @@ export class TelegramExecApprovalHandler {
           ...(preparedTarget.messageThreadId != null
             ? { messageThreadId: preparedTarget.messageThreadId }
             : {}),
-        });
+        };
+        let result;
+        try {
+          result = await this.sendMessage(preparedTarget.chatId, pendingContent.text, sendOptions);
+        } catch (error) {
+          if (!isTelegramMessageTooLongError(error)) {
+            throw error;
+          }
+          const truncatedText = truncateTelegramApprovalText(pendingContent.text);
+          if (truncatedText === pendingContent.text) {
+            throw error;
+          }
+          log.warn(
+            `telegram exec approvals: request ${request.id} exceeded Telegram message limits; retrying with truncated preview`,
+          );
+          result = await this.sendMessage(preparedTarget.chatId, truncatedText, sendOptions);
+        }
         return {
           chatId: result.chatId,
           messageId: result.messageId,
