@@ -346,7 +346,9 @@ export function loadAuthProfileStoreForRuntime(
 }
 
 export function loadAuthProfileStoreForSecretsRuntime(agentDir?: string): AuthProfileStore {
-  return loadAuthProfileStoreForRuntime(agentDir, { readOnly: true, allowKeychainPrompt: false });
+  // Secrets runtime must materialize CLI-backed OAuth profiles onto disk so
+  // other processes (for example the scheduler) read the same auth store.
+  return loadAuthProfileStoreForRuntime(agentDir, { allowKeychainPrompt: false });
 }
 
 export function ensureAuthProfileStore(
