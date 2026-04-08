@@ -28,12 +28,16 @@ vi.mock("../plugins/provider-runtime.js", () => ({
 
 let clearRuntimeAuthProfileStoreSnapshots: typeof import("./auth-profiles.js").clearRuntimeAuthProfileStoreSnapshots;
 let loadAuthProfileStoreForRuntime: typeof import("./auth-profiles.js").loadAuthProfileStoreForRuntime;
+let loadAuthProfileStoreForSecretsRuntime: typeof import("./auth-profiles.js").loadAuthProfileStoreForSecretsRuntime;
 
 describe("auth profiles read-only external CLI sync", () => {
   beforeEach(async () => {
     vi.resetModules();
-    ({ clearRuntimeAuthProfileStoreSnapshots, loadAuthProfileStoreForRuntime } =
-      await import("./auth-profiles.js"));
+    ({
+      clearRuntimeAuthProfileStoreSnapshots,
+      loadAuthProfileStoreForRuntime,
+      loadAuthProfileStoreForSecretsRuntime,
+    } = await import("./auth-profiles.js"));
     clearRuntimeAuthProfileStoreSnapshots();
     mocks.syncExternalCliCredentials.mockClear();
   });
@@ -41,6 +45,43 @@ describe("auth profiles read-only external CLI sync", () => {
   afterEach(() => {
     clearRuntimeAuthProfileStoreSnapshots();
     vi.clearAllMocks();
+  });
+
+  it("persists external CLI credentials when secrets runtime loads the auth store", () => {
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-auth-secrets-sync-"));
+    try {
+      const authPath = path.join(agentDir, "auth-profiles.json");
+      const baseline: AuthProfileStore = {
+        version: AUTH_STORE_VERSION,
+        profiles: {
+          "openai:default": {
+            type: "api_key",
+            provider: "openai",
+            key: "sk-test",
+          },
+        },
+      };
+      fs.writeFileSync(authPath, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
+
+      const loaded = loadAuthProfileStoreForSecretsRuntime(agentDir);
+
+      expect(mocks.syncExternalCliCredentials).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ log: false }),
+      );
+      expect(loaded.profiles["minimax-portal:default"]).toMatchObject({
+        type: "oauth",
+        provider: "minimax-portal",
+      });
+
+      const persisted = JSON.parse(fs.readFileSync(authPath, "utf8")) as AuthProfileStore;
+      expect(persisted.profiles["minimax-portal:default"]).toMatchObject({
+        type: "oauth",
+        provider: "minimax-portal",
+      });
+    } finally {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   it("syncs external CLI credentials in-memory without writing auth-profiles.json in read-only mode", () => {
