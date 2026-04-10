@@ -1,3 +1,4 @@
+import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { defaultRuntime } from "../runtime.js";
 import { isCronSessionKey } from "../sessions/session-key-utils.js";
@@ -24,8 +25,8 @@ import {
   buildCompactAnnounceStatsLine,
   dedupeLatestChildCompletionRows,
   filterCurrentDirectChildCompletionRows,
-  readLatestSubagentOutputWithRetry,
-  readSubagentOutput,
+  readLatestSubagentOutputCandidateWithRetry,
+  readSubagentOutputCandidate,
   type SubagentRunOutcome,
   waitForSubagentRunOutcome,
 } from "./subagent-announce-output.js";
@@ -85,6 +86,31 @@ function buildAnnounceSteerMessage(events: AgentInternalEvent[]): string {
     formatAgentInternalEventsForPrompt(events) ||
     "A background task finished. Process the completion update now."
   );
+}
+
+function extractAnnounceMediaUrls(text?: string): string[] {
+  if (!text?.trim()) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      (parseReplyDirectives(text).mediaUrls ?? [])
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+  );
+}
+
+function buildTerminalFailureFindings(outcome: SubagentRunOutcome): string | undefined {
+  if (outcome.status === "error") {
+    return outcome.error?.trim()
+      ? `Task failed before producing a final artifact: ${outcome.error.trim()}`
+      : "Task failed before producing a final artifact.";
+  }
+  if (outcome.status === "timeout") {
+    return "Task timed out before producing a final artifact.";
+  }
+  return undefined;
 }
 
 function hasUsableSessionEntry(entry: unknown): boolean {
@@ -262,6 +288,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterDepth >= 1 || isCronSessionKey(targetRequesterSessionKey);
 
     let childCompletionFindings: string | undefined;
+    let replyMediaUrls: string[] = [];
     let subagentRegistryRuntime:
       | Awaited<ReturnType<typeof loadSubagentRegistryRuntime>>
       | undefined;
@@ -343,20 +370,32 @@ export async function runSubagentAnnounceFlow(params: {
         Boolean(fallbackReply) &&
         (isAnnounceSkip(fallbackReply) || isSilentReplyText(fallbackReply, SILENT_REPLY_TOKEN));
 
-      if (!reply) {
-        reply = await readSubagentOutput(params.childSessionKey, outcome);
+      let replyCandidate =
+        !reply && params.waitForCompletion !== false
+          ? await readSubagentOutputCandidate(params.childSessionKey, outcome)
+          : undefined;
+
+      if (replyCandidate?.status === "terminal") {
+        reply = replyCandidate.rawText;
+        replyMediaUrls = replyCandidate.mediaUrls;
       }
 
-      if (!reply?.trim()) {
-        reply = await readLatestSubagentOutputWithRetry({
+      if ((!reply?.trim() && replyMediaUrls.length === 0) || replyCandidate?.status === "interim") {
+        const retriedCandidate = await readLatestSubagentOutputCandidateWithRetry({
           sessionKey: params.childSessionKey,
           maxWaitMs: params.timeoutMs,
           outcome,
         });
+        replyCandidate = retriedCandidate;
+        if (retriedCandidate.status === "terminal") {
+          reply = retriedCandidate.rawText;
+          replyMediaUrls = retriedCandidate.mediaUrls;
+        }
       }
 
-      if (!reply?.trim() && fallbackReply && !fallbackIsSilent) {
+      if (!reply?.trim() && replyMediaUrls.length === 0 && fallbackReply && !fallbackIsSilent) {
         reply = fallbackReply;
+        replyMediaUrls = extractAnnounceMediaUrls(fallbackReply);
       }
 
       // A worker can finish just after the first wait request timed out.
@@ -364,7 +403,11 @@ export async function runSubagentAnnounceFlow(params: {
       // the final completion event prefers the authoritative terminal state.
       // This is best-effort; if the recheck fails, keep the known timeout
       // outcome instead of dropping the announcement entirely.
-      if (outcome?.status === "timeout" && reply?.trim() && params.waitForCompletion !== false) {
+      if (
+        outcome?.status === "timeout" &&
+        (reply?.trim() || replyMediaUrls.length > 0) &&
+        params.waitForCompletion !== false
+      ) {
         try {
           const rechecked = await waitForSubagentRunOutcome(params.childRunId, 0);
           const applied = applySubagentWaitOutcome({
@@ -381,11 +424,22 @@ export async function runSubagentAnnounceFlow(params: {
         }
       }
 
-      if (isAnnounceSkip(reply) || isSilentReplyText(reply, SILENT_REPLY_TOKEN)) {
+      if (reply && (isAnnounceSkip(reply) || isSilentReplyText(reply, SILENT_REPLY_TOKEN))) {
         if (fallbackReply && !fallbackIsSilent) {
           reply = fallbackReply;
+          replyMediaUrls = extractAnnounceMediaUrls(fallbackReply);
         } else {
           return true;
+        }
+      }
+
+      if (!reply?.trim() && replyMediaUrls.length === 0) {
+        const failureFindings = outcome ? buildTerminalFailureFindings(outcome) : undefined;
+        if (failureFindings) {
+          reply = failureFindings;
+        } else {
+          shouldDeleteChildSession = false;
+          return false;
         }
       }
     }
@@ -406,7 +460,14 @@ export async function runSubagentAnnounceFlow(params: {
 
     const taskLabel = params.label || params.task || "task";
     const announceSessionId = childSessionId || "unknown";
-    const findings = childCompletionFindings || reply || "(no output)";
+    const findings =
+      childCompletionFindings || reply || buildTerminalFailureFindings(outcome) || "(no output)";
+    const findingsMediaUrls =
+      childCompletionFindings != null
+        ? extractAnnounceMediaUrls(childCompletionFindings)
+        : replyMediaUrls.length > 0
+          ? replyMediaUrls
+          : extractAnnounceMediaUrls(reply);
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -458,6 +519,7 @@ export async function runSubagentAnnounceFlow(params: {
         status: outcome.status,
         statusLabel,
         result: findings,
+        ...(findingsMediaUrls.length > 0 ? { mediaUrls: findingsMediaUrls } : {}),
         statsLine,
         replyInstruction,
       },

@@ -1,9 +1,8 @@
+import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
-import {
-  captureSubagentCompletionReplyUsing,
-  readLatestSubagentOutputWithRetryUsing,
-} from "./subagent-announce-capture.js";
+import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import { captureSubagentCompletionReplyUsing } from "./subagent-announce-capture.js";
 import {
   callGateway,
   loadConfig,
@@ -48,6 +47,13 @@ type SubagentOutputSnapshot = {
   toolCallCount: number;
 };
 
+export type SubagentOutputCandidate = {
+  status: "none" | "interim" | "terminal";
+  rawText?: string;
+  text?: string;
+  mediaUrls: string[];
+};
+
 export type AgentWaitResult = {
   status?: string;
   startedAt?: number;
@@ -59,6 +65,152 @@ export type SubagentRunOutcome = {
   status: "ok" | "error" | "timeout" | "unknown";
   error?: string;
 };
+
+const INTERIM_SUBAGENT_OUTPUT_HINTS = [
+  "on it",
+  "pulling everything together",
+  "give me a few",
+  "give me a few min",
+  "few minutes",
+  "let me compile",
+  "i'll gather",
+  "i will gather",
+  "working on it",
+  "retrying now",
+  "should be about",
+  "should have your summary",
+  "it'll auto-announce when done",
+  "it will auto-announce when done",
+  "subagent spawned",
+  "spawned a subagent",
+  "auto-announce when done",
+  "both subagents are running",
+  "wait for them to report back",
+  "still cooking",
+  "switching stacks",
+  "provider flake",
+  "provider flaked",
+  "trying another provider",
+  "trying another model",
+  "falling back to another model",
+  "fallback model",
+  "hang tight",
+] as const;
+
+const PREMATURE_COMPLETION_ONLY_PATTERNS: readonly RegExp[] = [
+  /^(?:done|all done|all set|finished|complete|completed|ready|it'?s done|job done)[.!]*$/i,
+  /^(?:done|finished|complete|completed|ready)[.!]*\s+(?:now|boss|mate|bro|lol)[.!]*$/i,
+] as const;
+
+function normalizeSubagentOutputHintText(value: string): string {
+  return normalizeLowercaseStringOrEmpty(value).replace(/\s+/g, " ");
+}
+
+function isLikelyInterimSubagentOutputText(value: string): boolean {
+  const normalized = normalizeSubagentOutputHintText(value);
+  if (!normalized) {
+    return false;
+  }
+  const words = normalized.split(" ").filter(Boolean).length;
+  return words <= 45 && INTERIM_SUBAGENT_OUTPUT_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function isLikelyPrematureCompletionOnlyText(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  const words = normalizeSubagentOutputHintText(normalized).split(" ").filter(Boolean).length;
+  if (words > 6) {
+    return false;
+  }
+  return PREMATURE_COMPLETION_ONLY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function normalizeReplyMediaUrls(rawText?: string): string[] {
+  if (!rawText?.trim()) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      (parseReplyDirectives(rawText).mediaUrls ?? [])
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+  );
+}
+
+function buildSubagentOutputCandidate(params: {
+  rawText?: string;
+  outcome?: SubagentRunOutcome;
+}): SubagentOutputCandidate {
+  const rawText = params.rawText?.trim();
+  if (!rawText) {
+    return { status: "none", mediaUrls: [] };
+  }
+
+  const parsed = parseReplyDirectives(rawText);
+  const mediaUrls = normalizeReplyMediaUrls(rawText);
+  const text = parsed.text.trim() || undefined;
+
+  if (isAnnounceSkip(rawText) || isSilentReplyText(rawText, SILENT_REPLY_TOKEN)) {
+    return {
+      status: "terminal",
+      rawText,
+      text,
+      mediaUrls,
+    };
+  }
+
+  if (mediaUrls.length > 0) {
+    return {
+      status: "terminal",
+      rawText,
+      text,
+      mediaUrls,
+    };
+  }
+
+  if (!text) {
+    return {
+      status:
+        params.outcome?.status === "error" || params.outcome?.status === "timeout"
+          ? "terminal"
+          : "interim",
+      rawText,
+      mediaUrls,
+    };
+  }
+
+  if (isLikelyInterimSubagentOutputText(text) || isLikelyPrematureCompletionOnlyText(text)) {
+    return {
+      status: "interim",
+      rawText,
+      text,
+      mediaUrls,
+    };
+  }
+
+  return {
+    status: "terminal",
+    rawText,
+    text,
+    mediaUrls,
+  };
+}
+
+function renderSubagentOutputCandidate(candidate: SubagentOutputCandidate): string | undefined {
+  if (candidate.status !== "terminal") {
+    return undefined;
+  }
+  if (candidate.rawText?.trim()) {
+    return candidate.rawText;
+  }
+  if (candidate.mediaUrls.length > 0) {
+    return candidate.mediaUrls.map((url) => `MEDIA:${url}`).join("\n");
+  }
+  return undefined;
+}
 
 function extractToolResultText(content: unknown): string {
   if (typeof content === "string") {
@@ -220,41 +372,77 @@ function formatSubagentPartialProgress(
   return parts.join("\n\n") || undefined;
 }
 
-function selectSubagentOutputText(
+function selectSubagentOutputCandidate(
   snapshot: SubagentOutputSnapshot,
   outcome?: SubagentRunOutcome,
-): string | undefined {
+): SubagentOutputCandidate {
   if (snapshot.latestSilentText) {
-    return snapshot.latestSilentText;
+    return buildSubagentOutputCandidate({ rawText: snapshot.latestSilentText, outcome });
   }
   if (snapshot.latestAssistantText) {
-    return snapshot.latestAssistantText;
+    return buildSubagentOutputCandidate({ rawText: snapshot.latestAssistantText, outcome });
   }
   const partialProgress = formatSubagentPartialProgress(snapshot, outcome);
   if (partialProgress) {
-    return partialProgress;
+    return buildSubagentOutputCandidate({ rawText: partialProgress, outcome });
   }
-  return snapshot.latestRawText;
+  if (snapshot.latestRawText) {
+    return buildSubagentOutputCandidate({ rawText: snapshot.latestRawText, outcome });
+  }
+  return { status: "none", mediaUrls: [] };
 }
 
-export async function readSubagentOutput(
+export async function readSubagentOutputCandidate(
   sessionKey: string,
   outcome?: SubagentRunOutcome,
-): Promise<string | undefined> {
+): Promise<SubagentOutputCandidate> {
   const history = await subagentAnnounceOutputDeps.callGateway({
     method: "chat.history",
     params: { sessionKey, limit: 100 },
   });
   const messages = Array.isArray(history?.messages) ? history.messages : [];
-  const selected = selectSubagentOutputText(summarizeSubagentOutputHistory(messages), outcome);
-  if (selected?.trim()) {
+  const selected = selectSubagentOutputCandidate(summarizeSubagentOutputHistory(messages), outcome);
+  if (selected.status !== "none") {
     return selected;
   }
   const latestAssistant = await subagentAnnounceOutputDeps.readLatestAssistantReply({
     sessionKey,
     limit: 100,
   });
-  return latestAssistant?.trim() ? latestAssistant : undefined;
+  return buildSubagentOutputCandidate({ rawText: latestAssistant, outcome });
+}
+
+export async function readSubagentOutput(
+  sessionKey: string,
+  outcome?: SubagentRunOutcome,
+): Promise<string | undefined> {
+  const candidate = await readSubagentOutputCandidate(sessionKey, outcome);
+  return renderSubagentOutputCandidate(candidate);
+}
+
+export async function readLatestSubagentOutputCandidateWithRetry(params: {
+  sessionKey: string;
+  maxWaitMs: number;
+  outcome?: SubagentRunOutcome;
+}): Promise<SubagentOutputCandidate> {
+  const retryIntervalMs = isFastTestMode() ? FAST_TEST_RETRY_INTERVAL_MS : 100;
+  const maxWaitMs = Math.max(0, Math.min(params.maxWaitMs, 15_000));
+  let waitedMs = 0;
+  let latest: SubagentOutputCandidate = { status: "none", mediaUrls: [] };
+  while (waitedMs < maxWaitMs) {
+    latest = await readSubagentOutputCandidate(params.sessionKey, params.outcome);
+    if (latest.status === "terminal") {
+      return latest;
+    }
+    const remainingMs = maxWaitMs - waitedMs;
+    if (remainingMs <= 0) {
+      break;
+    }
+    const sleepMs = Math.min(retryIntervalMs, remainingMs);
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
+    waitedMs += sleepMs;
+  }
+  return latest;
 }
 
 export async function readLatestSubagentOutputWithRetry(params: {
@@ -262,13 +450,8 @@ export async function readLatestSubagentOutputWithRetry(params: {
   maxWaitMs: number;
   outcome?: SubagentRunOutcome;
 }): Promise<string | undefined> {
-  return await readLatestSubagentOutputWithRetryUsing({
-    sessionKey: params.sessionKey,
-    maxWaitMs: params.maxWaitMs,
-    outcome: params.outcome,
-    retryIntervalMs: isFastTestMode() ? FAST_TEST_RETRY_INTERVAL_MS : 100,
-    readSubagentOutput,
-  });
+  const candidate = await readLatestSubagentOutputCandidateWithRetry(params);
+  return renderSubagentOutputCandidate(candidate);
 }
 
 export async function waitForSubagentRunOutcome(

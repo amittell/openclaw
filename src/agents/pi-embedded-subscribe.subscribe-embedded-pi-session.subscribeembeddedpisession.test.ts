@@ -109,6 +109,48 @@ describe("subscribeEmbeddedPiSession", () => {
     });
   }
 
+  it("attaches local media from subagent completion events instead of sending text-only done replies", async () => {
+    const onBlockReply = vi.fn();
+    const { emit } = createSubscribedHarness({
+      runId: "run",
+      onBlockReply,
+      blockReplyBreak: "message_end",
+      internalEvents: [
+        {
+          type: "task_completion",
+          source: "subagent",
+          childSessionKey: "agent:main:subagent:worker",
+          announceType: "subagent task",
+          taskLabel: "generate flyer",
+          status: "ok",
+          statusLabel: "completed successfully",
+          result: "Generated flyer.\nMEDIA:/tmp/generated-flyer.png",
+          mediaUrls: ["/tmp/generated-flyer.png"],
+          replyInstruction: "Reply normally.",
+        },
+      ],
+    });
+
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitAssistantTextDelta(emit, "Done.");
+    emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Done." }],
+      },
+    });
+    emit({ type: "agent_end" });
+    await flushBlockReplyCallbacks();
+
+    expect(onBlockReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Done.",
+        mediaUrls: ["/tmp/generated-flyer.png"],
+      }),
+    );
+  });
+
   it.each(THINKING_TAG_CASES)(
     "streams <%s> reasoning via onReasoningStream without leaking into final text",
     async ({ open, close }) => {

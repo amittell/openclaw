@@ -1925,6 +1925,119 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("user prompt should not be announced");
   });
 
+  it("suppresses interim progress chatter until a terminal media result exists", async () => {
+    chatHistoryMock
+      .mockResolvedValueOnce({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Still cooking — switching stacks after a provider flake." },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Generated image.\nMEDIA:/tmp/generated.png" }],
+          },
+        ],
+      });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-media-after-progress",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as {
+      params?: { message?: string; internalEvents?: Array<Record<string, unknown>> };
+    };
+    const msg = call?.params?.message as string;
+    const event = call?.params?.internalEvents?.[0];
+    expect(msg).toContain("Generated image.");
+    expect(msg).not.toContain("Still cooking");
+    expect(event?.mediaUrls).toEqual(["/tmp/generated.png"]);
+  });
+
+  it("does not announce completion-only chatter before an artifact exists", async () => {
+    chatHistoryMock.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-generic-done",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      expectsCompletionMessage: true,
+      timeoutMs: 50,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      task: "do thing",
+    });
+
+    expect(didAnnounce).toBe(false);
+    expect(agentSpy).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("delivers a terminal failure instead of leaking interim progress text", async () => {
+    chatHistoryMock.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Still cooking — switching stacks after a provider flake." },
+          ],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-terminal-failure",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      expectsCompletionMessage: true,
+      timeoutMs: 50,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "error", error: "upload exploded" },
+      task: "do thing",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const msg = call?.params?.message as string;
+    expect(msg).toContain("Task failed before producing a final artifact: upload exploded");
+    expect(msg).not.toContain("Still cooking");
+  });
+
   it("queues announce delivery back into requester subagent session", async () => {
     embeddedRunMock.isEmbeddedPiRunActive.mockReturnValue(true);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockReturnValue(false);
