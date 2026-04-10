@@ -67,7 +67,7 @@ describe("auth profiles read-only external CLI sync", () => {
 
       expect(mocks.syncExternalCliCredentials).toHaveBeenCalledWith(
         expect.any(Object),
-        expect.objectContaining({ log: false }),
+        expect.objectContaining({ log: true }),
       );
       expect(loaded.profiles["minimax-portal:default"]).toMatchObject({
         type: "oauth",

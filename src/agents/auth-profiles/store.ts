@@ -246,18 +246,22 @@ function loadAuthProfileStoreForAgent(
   }
   const asStore = loadPersistedAuthProfileStore(agentDir);
   if (asStore) {
-    // Runtime secret activation must remain read-only:
-    // sync external CLI credentials in-memory, but never persist while readOnly.
+    let mutated = false;
     if (shouldSyncExternalCliCredentials(options)) {
-      syncExternalCliCredentialsTimed(asStore, { log: !readOnly });
+      mutated = syncExternalCliCredentialsTimed(asStore, { log: !readOnly });
     }
     if (!readOnly) {
-      writeCachedAuthProfileStore({
-        authPath,
-        authMtimeMs: readAuthStoreMtimeMs(authPath),
-        stateMtimeMs: readAuthStoreMtimeMs(statePath),
-        store: asStore,
-      });
+      const forceReadOnly = process.env.OPENCLAW_AUTH_STORE_READONLY === "1";
+      if (mutated && !forceReadOnly) {
+        saveAuthProfileStore(asStore, agentDir);
+      } else {
+        writeCachedAuthProfileStore({
+          authPath,
+          authMtimeMs: readAuthStoreMtimeMs(authPath),
+          stateMtimeMs: readAuthStoreMtimeMs(statePath),
+          store: asStore,
+        });
+      }
     }
     return asStore;
   }
