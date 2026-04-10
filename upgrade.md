@@ -405,6 +405,30 @@ These are the highest-risk carries because they touch active-run lifecycle, auth
 
 ---
 
+## Validation status (checked on 2026-04-10)
+
+What I re-validated on this prep branch:
+
+- `bash -n scripts/carry-upgrade-v2026.4.9.sh` ✅
+- `bash -n scripts/export-distpatches-v2026.4.9.sh` ✅
+- `scripts/export-distpatches-v2026.4.9.sh` reruns cleanly and leaves the branch clean ✅
+- `scripts/carry-upgrade-v2026.4.9.sh replay-safe` succeeds from a fresh `v2026.4.9` worktree ✅
+- `git am distpatches/v2026.4.9/clean/*.patch` succeeds from a fresh `v2026.4.9` worktree ✅
+- `git am` of `local/local-telegram-longpoll-headroom.patch` succeeds after the clean patch batch ✅
+
+### Validation caveats
+
+1. `local/local-memory-lancedb-strip-media-annotations.patch` does **not** apply cleanly via raw sequential `git am` after the clean patch batch.
+   - The underlying carry is still valid: the original commit cherry-picks cleanly on top of `v2026.4.9` and is included in `replay-safe`.
+   - Operational call: for the live run, use the **replay script / cherry-pick path** for this carry unless we explicitly re-export a rebased sequential patch.
+2. I compared the new carry inventory against the old `upgrade/2026-03-31` carry list.
+   - The only old explicit carries not separately represented now are `#59242` and `#59243`.
+   - `#59242` (self-authored reply-media guard) is effectively covered by the `#57280` manual diff family.
+   - `#59243` was a test-only import-lightening carry and is **not** currently called out separately; re-audit it only if contract/plugin import tests regress during the live pass.
+3. I did **not** run the full unit/build matrix in the disposable worktrees because dependencies were not installed there.
+   - So this prep branch is validated for **artifact correctness + replay mechanics**, not yet for a cold dependency install + full test pass.
+   - The live go-pass should still install deps and run the targeted post-reconcile tests called out below.
+
 ## Current recommendation
 
 This branch is now in a good prep state for a controlled live upgrade:

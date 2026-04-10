@@ -44,3 +44,7 @@ Prior local carry artifacts:
 - `clean/` is the only bucket intended for blind replay.
 - `manual/` is for family-by-family reconciliation on top of `v2026.4.9`.
 - `local/` includes both low-risk local carries and 4.2-era conditional compatibility patches.
+- Validation check on 2026-04-10:
+  - `git am clean/*.patch` works from a fresh `v2026.4.9` worktree.
+  - `git am local/local-telegram-longpoll-headroom.patch` also works after the clean batch.
+  - `local/local-memory-lancedb-strip-media-annotations.patch` does **not** apply cleanly as a raw sequential `git am` after the clean batch, even though the underlying commit cherry-picks cleanly. For the live run, replay that carry via `scripts/carry-upgrade-v2026.4.9.sh replay-safe` unless a rebased patch artifact is generated.
