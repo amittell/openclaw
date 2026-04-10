@@ -1,0 +1,1721 @@
+diff --git a/extensions/memory-lancedb/index.test.ts b/extensions/memory-lancedb/index.test.ts
+index 1bc82b63dd0d7..2730db79a0523 100644
+--- a/extensions/memory-lancedb/index.test.ts
++++ b/extensions/memory-lancedb/index.test.ts
+@@ -12,6 +12,35 @@ import fs from "node:fs/promises";
+ import os from "node:os";
+ import path from "node:path";
+ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
++
++// ---------------------------------------------------------------------------
++// Hoisted mocks – vi.mock is hoisted above imports, so the factory runs
++// before any module that transitively imports these targets.
++// ---------------------------------------------------------------------------
++
++// Shared mutable ref that individual tests can set before importing index.js.
++// When set, the hoisted mock returns this instead of the real loadLanceDbModule.
++let __lanceDbModuleImpl: (() => Promise<unknown>) | null = null;
++
++vi.mock("./lancedb-runtime.js", async (importOriginal) => {
++  const original = await importOriginal<typeof import("./lancedb-runtime.js")>();
++  return {
++    ...original, // preserves createLanceDbRuntimeLoader for the runtime loader tests
++    loadLanceDbModule: vi.fn(async (...args: unknown[]) => {
++      if (__lanceDbModuleImpl) {
++        return __lanceDbModuleImpl();
++      }
++      // Fall through to real implementation for tests that don't set an override
++      return original.loadLanceDbModule(...(args as Parameters<typeof original.loadLanceDbModule>));
++    }),
++  };
++});
++
++vi.mock("openclaw/plugin-sdk/infra-runtime", () => ({
++  ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
++}));
++
++import type { OpenClawPluginApi } from "./api.js";
+ import memoryPlugin, {
+   detectCategory,
+   formatRelevantMemoriesContext,
+@@ -43,6 +72,19 @@ const TEST_RUNTIME_MANIFEST = {
+ };
+ 
+ type LanceDbModule = typeof import("@lancedb/lancedb");
++
++/** Minimal interface for a registered plugin tool, scoped to what test code needs. */
++type RegisteredTool = {
++  tool: { execute: (toolCallId: string, params: Record<string, unknown>) => Promise<ToolResult> };
++  opts: Parameters<OpenClawPluginApi["registerTool"]>[1];
++};
++
++/** Typed result from a plugin tool execute call. */
++type ToolResult = {
++  content: Array<{ type: string; text: string }>;
++  details: Record<string, unknown>;
++};
++
+ type RuntimeManifest = {
+   name: string;
+   private: true;
+@@ -63,6 +105,10 @@ function installTmpDirHarness(params: { prefix: string }) {
+     if (tmpDir) {
+       await fs.rm(tmpDir, { recursive: true, force: true });
+     }
++    // Reset the shared mock override so tests don't leak into each other.
++    __lanceDbModuleImpl = null;
++    // Clear all mock call histories to prevent state leakage.
++    vi.clearAllMocks();
+   });
+ 
+   return {
+@@ -113,7 +159,7 @@ function createRuntimeLoader(
+ }
+ 
+ describe("memory plugin e2e", () => {
+-  const { getDbPath } = installTmpDirHarness({ prefix: "openclaw-memory-test-" });
++  const { getDbPath, getTmpDir } = installTmpDirHarness({ prefix: "openclaw-memory-test-" });
+ 
+   function parseConfig(overrides: Record<string, unknown> = {}) {
+     return memoryPlugin.configSchema?.parse?.({
+@@ -191,7 +237,11 @@ describe("memory plugin e2e", () => {
+     const embeddingsCreate = vi.fn(async () => ({
+       data: [{ embedding: [0.1, 0.2, 0.3] }],
+     }));
+-    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
++    // Use the hoisted mock by importing it after it's been set up
++    const { ensureGlobalUndiciEnvProxyDispatcher } =
++      await import("openclaw/plugin-sdk/infra-runtime");
++    // TS sees the import as the real type, but it's actually our hoisted vi.fn() mock
++    const mockFn = ensureGlobalUndiciEnvProxyDispatcher as unknown as ReturnType<typeof vi.fn>;
+     const toArray = vi.fn(async () => []);
+     const limit = vi.fn(() => ({ toArray }));
+     const vectorSearch = vi.fn(() => ({ limit }));
+@@ -207,23 +257,18 @@ describe("memory plugin e2e", () => {
+       })),
+     }));
+ 
++    __lanceDbModuleImpl = loadLanceDbModule;
++
+     vi.resetModules();
+-    vi.doMock("openclaw/plugin-sdk/runtime-env", () => ({
+-      ensureGlobalUndiciEnvProxyDispatcher,
+-    }));
+     vi.doMock("openai", () => ({
+       default: class MockOpenAI {
+         embeddings = { create: embeddingsCreate };
+       },
+     }));
+-    vi.doMock("./lancedb-runtime.js", () => ({
+-      loadLanceDbModule,
+-    }));
+ 
+     try {
+       const { default: memoryPlugin } = await import("./index.js");
+-      // oxlint-disable-next-line typescript/no-explicit-any
+-      const registeredTools: any[] = [];
++      const registeredTools: RegisteredTool[] = [];
+       const mockApi = {
+         id: "memory-lancedb",
+         name: "Memory (LanceDB)",
+@@ -246,21 +291,19 @@ describe("memory plugin e2e", () => {
+           error: vi.fn(),
+           debug: vi.fn(),
+         },
+-        // oxlint-disable-next-line typescript/no-explicit-any
+-        registerTool: (tool: any, opts: any) => {
+-          registeredTools.push({ tool, opts });
++        registerTool: (
++          tool: Parameters<OpenClawPluginApi["registerTool"]>[0],
++          opts: Parameters<OpenClawPluginApi["registerTool"]>[1],
++        ) => {
++          registeredTools.push({ tool: tool as RegisteredTool["tool"], opts });
+         },
+-        // oxlint-disable-next-line typescript/no-explicit-any
+         registerCli: vi.fn(),
+-        // oxlint-disable-next-line typescript/no-explicit-any
+         registerService: vi.fn(),
+-        // oxlint-disable-next-line typescript/no-explicit-any
+         on: vi.fn(),
+         resolvePath: (p: string) => p,
+       };
+ 
+-      // oxlint-disable-next-line typescript/no-explicit-any
+-      memoryPlugin.register(mockApi as any);
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
+       const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+       if (!recallTool) {
+         throw new Error("memory_recall tool was not registered");
+@@ -268,8 +311,8 @@ describe("memory plugin e2e", () => {
+       await recallTool.execute("test-call-dims", { query: "hello dimensions" });
+ 
+       expect(loadLanceDbModule).toHaveBeenCalledTimes(1);
+-      expect(ensureGlobalUndiciEnvProxyDispatcher).toHaveBeenCalledOnce();
+-      expect(ensureGlobalUndiciEnvProxyDispatcher.mock.invocationCallOrder[0]).toBeLessThan(
++      expect(mockFn).toHaveBeenCalledOnce();
++      expect(mockFn.mock.invocationCallOrder[0]).toBeLessThan(
+         embeddingsCreate.mock.invocationCallOrder[0],
+       );
+       expect(embeddingsCreate).toHaveBeenCalledWith({
+@@ -278,9 +321,8 @@ describe("memory plugin e2e", () => {
+         dimensions: 1024,
+       });
+     } finally {
+-      vi.doUnmock("openclaw/plugin-sdk/runtime-env");
+       vi.doUnmock("openai");
+-      vi.doUnmock("./lancedb-runtime.js");
++      __lanceDbModuleImpl = null;
+       vi.resetModules();
+     }
+   });
+@@ -334,6 +376,714 @@ describe("memory plugin e2e", () => {
+     expect(detectCategory("The server is running on port 3000")).toBe("fact");
+     expect(detectCategory("Random note")).toBe("other");
+   });
++
++  // ============================================================================
++  // memory_refresh tests
++  // ============================================================================
++
++  function buildMockApi(overrides: {
++    dbPath: string;
++    embeddingsCreate: ReturnType<typeof vi.fn>;
++    vectorSearch: ReturnType<typeof vi.fn>;
++    queryWhere: ReturnType<typeof vi.fn>;
++    tableAdd: ReturnType<typeof vi.fn>;
++    tableDelete: ReturnType<typeof vi.fn>;
++    registeredTools: RegisteredTool[];
++  }) {
++    return {
++      id: "memory-lancedb",
++      name: "Memory (LanceDB)",
++      source: "test",
++      config: {},
++      pluginConfig: {
++        embedding: {
++          apiKey: OPENAI_API_KEY,
++          model: "text-embedding-3-small",
++        },
++        dbPath: overrides.dbPath,
++        autoCapture: false,
++        autoRecall: false,
++      },
++      runtime: {},
++      logger: {
++        info: vi.fn(),
++        warn: vi.fn(),
++        error: vi.fn(),
++        debug: vi.fn(),
++      },
++      registerTool: (
++        tool: Parameters<OpenClawPluginApi["registerTool"]>[0],
++        opts: Parameters<OpenClawPluginApi["registerTool"]>[1],
++      ) => {
++        overrides.registeredTools.push({ tool: tool as RegisteredTool["tool"], opts });
++      },
++      registerCli: vi.fn(),
++      registerService: vi.fn(),
++      on: vi.fn(),
++      resolvePath: (p: string) => p,
++    };
++  }
++
++  test("memory_refresh search-only mode returns matches without writing to DB", async () => {
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.1, 0.2, 0.3] }],
++    }));
++    const tableAdd = vi.fn(async () => undefined);
++    const tableDelete = vi.fn(async () => undefined);
++
++    const mockSearchResults = [
++      {
++        id: "aaaaaaaa-0000-0000-0000-000000000001",
++        text: "Match one",
++        vector: [0.1, 0.2, 0.3],
++        importance: 0.8,
++        category: "fact",
++        createdAt: 1000,
++        _distance: 0.05,
++      },
++      {
++        id: "aaaaaaaa-0000-0000-0000-000000000002",
++        text: "Match two",
++        vector: [0.1, 0.2, 0.3],
++        importance: 0.7,
++        category: "preference",
++        createdAt: 1001,
++        _distance: 0.1,
++      },
++      {
++        id: "aaaaaaaa-0000-0000-0000-000000000003",
++        text: "Match three",
++        vector: [0.1, 0.2, 0.3],
++        importance: 0.6,
++        category: "other",
++        createdAt: 1002,
++        _distance: 0.2,
++      },
++    ];
++
++    const toArray = vi.fn(async () => mockSearchResults);
++    const limit = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({ limit }));
++    const queryWhere = vi.fn();
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 3),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      // Call without memoryId → search-only mode
++      const result = await refreshTool.execute("test-refresh-search", {
++        text: "user prefers dark theme",
++      });
++
++      expect(result.details.operation).toBe("search_only");
++      expect(result.details.matches).toHaveLength(3);
++      const matches = result.details.matches as Array<Record<string, unknown>>;
++      expect(matches[0]).toHaveProperty("similarity");
++      expect(matches[0].similarity).toBeGreaterThan(0);
++
++      // Verify nothing was written to the DB
++      expect(tableAdd).not.toHaveBeenCalled();
++      expect(tableDelete).not.toHaveBeenCalled();
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh atomic replace: old entry gone, new entry present, audit log written", async () => {
++    const existingId = "bbbbbbbb-0000-0000-0000-000000000001";
++    const existingEntry = {
++      id: existingId,
++      text: "Old memory text that will be replaced",
++      vector: [0.1, 0.2, 0.3],
++      importance: 0.7,
++      category: "fact",
++      createdAt: 1000,
++    };
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.15, 0.25, 0.35] }],
++    }));
++    const tableAdd = vi.fn(async () => undefined);
++    const tableDelete = vi.fn(async () => undefined);
++    const toArray = vi.fn(async () => [existingEntry]);
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const searchToArray = vi.fn(async () => []);
++    const searchLimit = vi.fn(() => ({ toArray: searchToArray }));
++    const vectorSearch = vi.fn(() => ({ limit: searchLimit }));
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 1),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    let auditLogPath: string | null = null;
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++
++      // Use tmpDir for audit log by temporarily pointing homedir there
++      const originalHome = process.env.HOME;
++      process.env.HOME = getTmpDir();
++
++      let result: ToolResult | undefined;
++      try {
++        const mockApi = buildMockApi({
++          dbPath: getDbPath(),
++          embeddingsCreate,
++          vectorSearch,
++          queryWhere,
++          tableAdd,
++          tableDelete,
++          registeredTools,
++        });
++        memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++        const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++        expect(refreshTool).toBeDefined();
++
++        result = await refreshTool.execute("test-refresh-replace", {
++          text: "Updated memory text with new information",
++          category: "fact",
++          importance: 0.9,
++          memoryId: existingId,
++        });
++      } finally {
++        // Restore HOME in finally so it is always cleaned up even if execute()
++        // or an expect() inside the block throws (Fix 5).
++        if (originalHome !== undefined) {
++          process.env.HOME = originalHome;
++        } else {
++          delete process.env.HOME;
++        }
++      }
++
++      // result is guaranteed to be set after the try block (execute() throws on failure).
++      expect(result).toBeDefined();
++      const r = result!;
++      expect(r.details.operation).toBe("replaced");
++      expect(r.details.old_id).toBe(existingId);
++      expect(r.details.new_id).toBeDefined();
++      expect(r.details.old_text_preview).toContain("Old memory");
++
++      // Verify delete was called for old entry
++      expect(tableDelete).toHaveBeenCalledWith(`id = '${existingId}'`);
++
++      // Verify add was called for new entry
++      expect(tableAdd).toHaveBeenCalledTimes(1);
++      const addCall = (tableAdd.mock.calls as unknown[][][])[0]?.[0]?.[0] as Record<
++        string,
++        unknown
++      >;
++      expect(addCall.text).toBe("Updated memory text with new information");
++      expect(addCall.importance).toBe(0.9);
++
++      // Check audit log was written
++      auditLogPath = `${getTmpDir()}/.openclaw/memory/refresh-audit.jsonl`;
++      const auditContent = await import("node:fs/promises").then((fs) =>
++        fs.readFile(auditLogPath!, "utf8").catch(() => null),
++      );
++      expect(auditContent).not.toBeNull();
++      const auditLine = JSON.parse(auditContent!.trim());
++      expect(auditLine.operation).toBe("replaced");
++      expect(auditLine.old_id).toBe(existingId);
++      expect(auditLine.new_id).toBeDefined();
++      // Memory text (old_text, new_text) is intentionally NOT written to audit logs
++      // to protect user privacy — only metadata is logged (review comment #2985311917).
++      expect(auditLine.old_text).toBeUndefined();
++      expect(auditLine.new_text).toBeUndefined();
++      expect(auditLine.ts).toBeGreaterThan(0);
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh replace with non-existent ID returns error without creating entry", async () => {
++    const nonExistentId = "cccccccc-0000-0000-0000-000000000001";
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.1, 0.2, 0.3] }],
++    }));
++    const tableAdd = vi.fn(async () => undefined);
++    const tableDelete = vi.fn(async () => undefined);
++    const toArray = vi.fn(async () => []); // empty → not found
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({
++      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
++    }));
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 0),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      const result = await refreshTool.execute("test-refresh-notfound", {
++        text: "This text won't be stored",
++        memoryId: nonExistentId,
++      });
++
++      expect(result.details.operation).toBe("error");
++      expect(result.details.error).toBe("not_found");
++      expect(result.details.memoryId).toBe(nonExistentId);
++
++      // Verify nothing was written or deleted
++      expect(tableAdd).not.toHaveBeenCalled();
++      expect(tableDelete).not.toHaveBeenCalled();
++
++      // Verify the embedding API was not called — a stale/invalid memoryId
++      // should short-circuit before incurring an embedding round-trip (Fix 3).
++      expect(embeddingsCreate).not.toHaveBeenCalled();
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh best-effort rollback: restores original when insert fails", async () => {
++    const existingId = "dddddddd-0000-0000-0000-000000000001";
++    const existingEntry = {
++      id: existingId,
++      text: "Original memory that must be restored",
++      vector: [0.1, 0.2, 0.3],
++      importance: 0.8,
++      category: "fact",
++      createdAt: 1000,
++    };
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.15, 0.25, 0.35] }],
++    }));
++    const tableDelete = vi.fn(async () => undefined);
++    const toArray = vi.fn(async () => [existingEntry]);
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({
++      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
++    }));
++
++    // First call to add throws (new entry); second call succeeds (rollback restore)
++    let addCallCount = 0;
++    const tableAdd = vi.fn(async () => {
++      addCallCount++;
++      if (addCallCount === 1) {
++        throw new Error("Simulated insert failure");
++      }
++      // second call (rollback) succeeds
++    });
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 1),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      const result = await refreshTool.execute("test-refresh-rollback", {
++        text: "New text that will fail to insert",
++        memoryId: existingId,
++      });
++
++      expect(result.details.operation).toBe("error");
++      expect(result.details.error).toBe("insert_failed");
++      expect(result.details.rollbackWarning).toContain("restored");
++
++      // Verify delete was called (old entry was removed before the attempted insert)
++      expect(tableDelete).toHaveBeenCalledWith(`id = '${existingId}'`);
++
++      // Verify add was called twice: once for new entry (failed), once for rollback (succeeded)
++      expect(tableAdd).toHaveBeenCalledTimes(2);
++
++      // Second add call should restore original content with original ID (Fix 1)
++      const rollbackAddCall = (tableAdd.mock.calls as unknown[][][])[1]?.[0]?.[0] as Record<
++        string,
++        unknown
++      >;
++      expect(rollbackAddCall.text).toBe(existingEntry.text);
++      expect(rollbackAddCall.importance).toBe(existingEntry.importance);
++      expect(rollbackAddCall.category).toBe(existingEntry.category);
++      // The rollback must preserve the original ID so callers are never left
++      // with a stale reference to a non-existent row.
++      expect(rollbackAddCall.id).toBe(existingEntry.id);
++
++      // The return value must expose the restored ID for the caller (Fix 1).
++      expect(result.details.restored_id).toBe(existingEntry.id);
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh rollback failure: restored_id is null when both insert and rollback fail", async () => {
++    const existingId = "dddddddd-0000-0000-0000-000000000002";
++    const existingEntry = {
++      id: existingId,
++      text: "Memory that cannot be recovered",
++      vector: [0.1, 0.2, 0.3],
++      importance: 0.8,
++      category: "fact",
++      createdAt: 1000,
++    };
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.15, 0.25, 0.35] }],
++    }));
++    const tableDelete = vi.fn(async () => undefined);
++    const toArray = vi.fn(async () => [existingEntry]);
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({
++      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
++    }));
++
++    // Both insert and rollback fail
++    const tableAdd = vi.fn(async () => {
++      throw new Error("Simulated storage failure");
++    });
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 1),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      const result = await refreshTool.execute("test-double-fail", {
++        text: "New text that will fail to insert",
++        memoryId: existingId,
++      });
++
++      expect(result.details.operation).toBe("error");
++      expect(result.details.error).toBe("insert_failed");
++      expect(result.details.success).toBe(false);
++      expect(result.details.rollbackWarning).toContain("DATA LOSS POSSIBLE");
++      // When rollback also failed, restored_id must be null — not the original ID.
++      // Callers must not be misled into thinking the row was restored.
++      expect(result.details.restored_id).toBeNull();
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh replace inherits category and importance from existing when not provided", async () => {
++    const existingId = "eeeeeeee-0000-0000-0000-000000000001";
++    const existingEntry = {
++      id: existingId,
++      text: "Old memory text",
++      vector: [0.1, 0.2, 0.3],
++      importance: 0.9, // non-default, to verify it is inherited
++      category: "decision" as const, // non-default, to verify it is inherited
++      createdAt: 1000,
++    };
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.15, 0.25, 0.35] }],
++    }));
++    const tableAdd = vi.fn(async () => undefined);
++    const tableDelete = vi.fn(async () => undefined);
++    const toArray = vi.fn(async () => [existingEntry]);
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({
++      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
++    }));
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 1),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      // Call with only text — omit category and importance entirely (Fix 2).
++      const result = await refreshTool.execute("test-refresh-inherit", {
++        text: "Updated text only — no category or importance supplied",
++        memoryId: existingId,
++      });
++
++      expect(result.details.operation).toBe("replaced");
++
++      // The new entry must carry over the original category and importance.
++      const addCall = (tableAdd.mock.calls as unknown[][][])[0]?.[0]?.[0] as Record<
++        string,
++        unknown
++      >;
++      expect(addCall.text).toBe("Updated text only — no category or importance supplied");
++      expect(addCall.category).toBe("decision"); // inherited from existingEntry
++      expect(addCall.importance).toBe(0.9); // inherited from existingEntry
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
++
++  test("memory_refresh concurrent replace calls on same ID serialize: operations do not interleave", async () => {
++    const existingId = "ffffffff-0000-0000-0000-000000000001";
++    const existingEntry = {
++      id: existingId,
++      text: "Original text",
++      vector: [0.1, 0.2, 0.3],
++      importance: 0.7,
++      category: "fact",
++      createdAt: 1000,
++    };
++
++    // Track the order of DB operations across both concurrent calls.
++    const callLog: string[] = [];
++
++    const embeddingsCreate = vi.fn(async () => ({
++      data: [{ embedding: [0.1, 0.2, 0.3] }],
++    }));
++
++    // Static mock: getById always returns the same entry regardless of prior
++    // deletes — this lets both calls succeed so we can assert the op order.
++    const toArray = vi.fn(async () => [existingEntry]);
++    const queryWhere = vi.fn(() => ({ toArray }));
++    const vectorSearch = vi.fn(() => ({
++      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
++    }));
++
++    // tableDelete introduces a small async gap so that without the mutex the
++    // two calls' delete operations would both complete before either add fires,
++    // producing the interleaved log ["delete","delete","add","add"].
++    // With the mutex the expected log is ["delete","add","delete","add"].
++    const tableDelete = vi.fn(async () => {
++      callLog.push("delete");
++      await new Promise<void>((r) => setTimeout(r, 5));
++    });
++    const tableAdd = vi.fn(async () => {
++      callLog.push("add");
++    });
++
++    vi.resetModules();
++    vi.doMock("openai", () => ({
++      default: class MockOpenAI {
++        embeddings = { create: embeddingsCreate };
++      },
++    }));
++    __lanceDbModuleImpl = async () => ({
++      connect: vi.fn(async () => ({
++        tableNames: vi.fn(async () => ["memories"]),
++        openTable: vi.fn(async () => ({
++          vectorSearch,
++          query: vi.fn(() => ({ where: queryWhere })),
++          countRows: vi.fn(async () => 1),
++          add: tableAdd,
++          delete: tableDelete,
++        })),
++      })),
++    });
++
++    try {
++      const { default: memoryPlugin } = await import("./index.js");
++      const registeredTools: RegisteredTool[] = [];
++      const mockApi = buildMockApi({
++        dbPath: getDbPath(),
++        embeddingsCreate,
++        vectorSearch,
++        queryWhere,
++        tableAdd,
++        tableDelete,
++        registeredTools,
++      });
++      memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")!.tool;
++      expect(refreshTool).toBeDefined();
++
++      // Fire two replace calls simultaneously on the same memoryId.
++      const [result1, result2] = await Promise.all([
++        refreshTool.execute("concurrent-call-1", { text: "Update A", memoryId: existingId }),
++        refreshTool.execute("concurrent-call-2", { text: "Update B", memoryId: existingId }),
++      ]);
++
++      // Both calls must complete without throwing (promises resolve, not reject).
++      expect(result1).toBeDefined();
++      expect(result2).toBeDefined();
++
++      // Both succeed because the static mock always returns the entry.
++      expect(result1.details.operation).toBe("replaced");
++      expect(result2.details.operation).toBe("replaced");
++
++      // Serialized pattern: delete, add, delete, add.
++      // Interleaved (racy) pattern would be: delete, delete, add, add.
++      // The mutex guarantees the former.
++      expect(callLog).toEqual(["delete", "add", "delete", "add"]);
++    } finally {
++      vi.doUnmock("openai");
++      __lanceDbModuleImpl = null;
++      vi.resetModules();
++    }
++  });
+ });
+ 
+ describe("lancedb runtime loader", () => {
+@@ -451,3 +1201,128 @@ describe("lancedb runtime loader", () => {
+     expect(installRuntime).toHaveBeenCalledTimes(2);
+   });
+ });
++
++// Live tests that require OpenAI API key and actually use LanceDB
++describeLive("memory plugin live tests", () => {
++  const { getDbPath } = installTmpDirHarness({ prefix: "openclaw-memory-live-" });
++
++  test("memory tools work end-to-end", async () => {
++    const { default: memoryPlugin } = await import("./index.js");
++    const liveApiKey = process.env.OPENAI_API_KEY ?? "";
++
++    // Mock plugin API
++    const registeredTools: RegisteredTool[] = [];
++    // registerCli and registerService types reference deeply internal plugin SDK types;
++    // use opaque unknown[] arrays since the live test only checks .length on these.
++    const registeredClis: unknown[][] = [];
++    const registeredServices: Parameters<OpenClawPluginApi["registerService"]>[0][] = [];
++    const registeredHooks: Record<string, ((event: unknown) => unknown)[]> = {};
++    const logs: string[] = [];
++
++    const mockApi = {
++      id: "memory-lancedb",
++      name: "Memory (LanceDB)",
++      source: "test",
++      config: {},
++      pluginConfig: {
++        embedding: {
++          apiKey: liveApiKey,
++          model: "text-embedding-3-small",
++        },
++        dbPath: getDbPath(),
++        autoCapture: false,
++        autoRecall: false,
++      },
++      runtime: {},
++      logger: {
++        info: (msg: string) => logs.push(`[info] ${msg}`),
++        warn: (msg: string) => logs.push(`[warn] ${msg}`),
++        error: (msg: string) => logs.push(`[error] ${msg}`),
++        debug: (msg: string) => logs.push(`[debug] ${msg}`),
++      },
++      registerTool: (
++        tool: Parameters<OpenClawPluginApi["registerTool"]>[0],
++        opts: Parameters<OpenClawPluginApi["registerTool"]>[1],
++      ) => {
++        registeredTools.push({ tool: tool as RegisteredTool["tool"], opts });
++      },
++      registerCli: (...args: Parameters<OpenClawPluginApi["registerCli"]>) => {
++        registeredClis.push([...args]);
++      },
++      registerService: (service: Parameters<OpenClawPluginApi["registerService"]>[0]) => {
++        registeredServices.push(service);
++      },
++      on: (hookName: string, handler: (event: unknown) => unknown) => {
++        if (!registeredHooks[hookName]) {
++          registeredHooks[hookName] = [];
++        }
++        registeredHooks[hookName].push(handler);
++      },
++      resolvePath: (p: string) => p,
++    };
++
++    // Register plugin
++    memoryPlugin.register(mockApi as unknown as OpenClawPluginApi);
++
++    // Check registration
++    expect(registeredTools.length).toBe(4);
++    expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_recall");
++    expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_store");
++    expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_forget");
++    expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_refresh");
++    expect(registeredClis.length).toBe(1);
++    expect(registeredServices.length).toBe(1);
++
++    // Get tool functions — non-null assertion is safe since we just asserted the tool count
++    // and the registrations above confirmed all tool names are present.
++    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
++    const storeTool = registeredTools.find((t) => t.opts?.name === "memory_store")!.tool;
++    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
++    const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")!.tool;
++    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
++    const forgetTool = registeredTools.find((t) => t.opts?.name === "memory_forget")!.tool;
++
++    // Test store
++    const storeResult = await storeTool.execute("test-call-1", {
++      text: "The user prefers dark mode for all applications",
++      importance: 0.8,
++      category: "preference",
++    });
++
++    expect(storeResult.details.action).toBe("created");
++    const storedId = storeResult.details.id as string;
++    expect(storedId).toMatch(/.+/);
++
++    // Test recall
++    const recallResult = await recallTool.execute("test-call-2", {
++      query: "dark mode preference",
++      limit: 5,
++    });
++
++    expect(recallResult.details.count).toBeGreaterThan(0);
++    const memories = recallResult.details.memories as Array<{ text: string }>;
++    expect(memories[0]?.text).toContain("dark mode");
++
++    // Test duplicate detection
++    const duplicateResult = await storeTool.execute("test-call-3", {
++      text: "The user prefers dark mode for all applications",
++    });
++
++    expect(duplicateResult.details.action).toBe("duplicate");
++
++    // Test forget
++    const forgetResult = await forgetTool.execute("test-call-4", {
++      memoryId: storedId,
++    });
++
++    expect(forgetResult.details.action).toBe("deleted");
++
++    // Verify it's gone
++    const recallAfterForget = await recallTool.execute("test-call-5", {
++      query: "dark mode preference",
++      limit: 5,
++    });
++
++    expect(recallAfterForget.details.count).toBe(0);
++  }, 60000); // 60s timeout for live API calls
++});
+diff --git a/extensions/memory-lancedb/index.ts b/extensions/memory-lancedb/index.ts
+index fc2c668dff3fa..9df6dffbbb807 100644
+--- a/extensions/memory-lancedb/index.ts
++++ b/extensions/memory-lancedb/index.ts
+@@ -7,10 +7,13 @@
+  */
+ 
+ import { randomUUID } from "node:crypto";
++import { appendFile, mkdir } from "node:fs/promises";
++import { homedir } from "node:os";
++import path from "node:path";
+ import type * as LanceDB from "@lancedb/lancedb";
+ import { Type } from "@sinclair/typebox";
+ import OpenAI from "openai";
+-import { ensureGlobalUndiciEnvProxyDispatcher } from "openclaw/plugin-sdk/runtime-env";
++import { ensureGlobalUndiciEnvProxyDispatcher } from "openclaw/plugin-sdk/infra-runtime";
+ import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
+ import {
+   DEFAULT_CAPTURE_MAX_CHARS,
+@@ -39,6 +42,29 @@ type MemorySearchResult = {
+   score: number;
+ };
+ 
++// ============================================================================
++// Per-memoryId mutex
++// Serializes concurrent replace calls on the same ID so that a
++// delete/insert from one caller never races with another.
++// ============================================================================
++
++const _memoryLocks = new Map<string, Promise<void>>();
++
++function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
++  const prev = _memoryLocks.get(id) ?? Promise.resolve();
++  let resolveLock!: () => void;
++  const next = new Promise<void>((r) => {
++    resolveLock = r;
++  });
++  _memoryLocks.set(id, next);
++  return prev
++    .then(() => fn())
++    .finally(() => {
++      resolveLock();
++      if (_memoryLocks.get(id) === next) _memoryLocks.delete(id);
++    });
++}
++
+ // ============================================================================
+ // LanceDB Provider
+ // ============================================================================
+@@ -139,6 +165,34 @@ class MemoryDB {
+     return true;
+   }
+ 
++  async getById(id: string): Promise<MemoryEntry | null> {
++    await this.ensureInitialized();
++    // Validate UUID format to prevent injection
++    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++    if (!uuidRegex.test(id)) {
++      throw new Error(`Invalid memory ID format: ${id}`);
++    }
++    const rows = await this.table!.query().where(`id = '${id}'`).toArray();
++    if (rows.length === 0) {
++      return null;
++    }
++    const row = rows[0];
++    return {
++      id: row.id as string,
++      text: row.text as string,
++      vector: row.vector as number[],
++      importance: row.importance as number,
++      category: row.category as MemoryEntry["category"],
++      createdAt: row.createdAt as number,
++    };
++  }
++
++  async storeRaw(entry: MemoryEntry): Promise<MemoryEntry> {
++    await this.ensureInitialized();
++    await this.table!.add([entry]);
++    return entry;
++  }
++
+   async count(): Promise<number> {
+     await this.ensureInitialized();
+     return this.table!.countRows();
+@@ -425,11 +479,15 @@ export default definePluginEntry({
+           const { query, memoryId } = params as { query?: string; memoryId?: string };
+ 
+           if (memoryId) {
+-            await db.delete(memoryId);
+-            return {
+-              content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
+-              details: { action: "deleted", id: memoryId },
+-            };
++            // Acquire per-ID lock so that a concurrent memory_refresh replace
++            // on the same ID cannot race with this delete (review comment #2998636743).
++            return withMemoryLock(memoryId, async () => {
++              await db.delete(memoryId);
++              return {
++                content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
++                details: { action: "deleted", id: memoryId },
++              };
++            });
+           }
+ 
+           if (query) {
+@@ -444,11 +502,17 @@ export default definePluginEntry({
+             }
+ 
+             if (results.length === 1 && results[0].score > 0.9) {
+-              await db.delete(results[0].entry.id);
+-              return {
+-                content: [{ type: "text", text: `Forgotten: "${results[0].entry.text}"` }],
+-                details: { action: "deleted", id: results[0].entry.id },
+-              };
++              const targetId = results[0].entry.id;
++              // Acquire per-ID lock before the auto-delete so that a concurrent
++              // memory_refresh replace cannot interleave its delete/insert between
++              // our search result selection and delete (review comment #2998636743).
++              return withMemoryLock(targetId, async () => {
++                await db.delete(targetId);
++                return {
++                  content: [{ type: "text", text: `Forgotten: "${results[0].entry.text}"` }],
++                  details: { action: "deleted", id: targetId },
++                };
++              });
+             }
+ 
+             const list = results
+@@ -483,6 +547,185 @@ export default definePluginEntry({
+       { name: "memory_forget" },
+     );
+ 
++    api.registerTool(
++      {
++        name: "memory_refresh",
++        label: "Memory Refresh",
++        description:
++          "Search for existing memories similar to new content, or atomically replace a specific memory by ID. Use for updating facts without data loss: call without memoryId to preview similar memories, then call with memoryId to atomically replace.",
++        parameters: Type.Object({
++          text: Type.String({ description: "New memory content (required in execute mode)" }),
++          category: Type.Optional(
++            Type.Unsafe<MemoryCategory>({
++              type: "string",
++              enum: [...MEMORY_CATEGORIES],
++            }),
++          ),
++          importance: Type.Optional(
++            Type.Number({ description: "Importance 0.0–1.0 (default: 0.7)" }),
++          ),
++          memoryId: Type.Optional(
++            Type.String({
++              description:
++                "If provided: atomically replace this memory. If omitted: search-only mode.",
++            }),
++          ),
++        }),
++        async execute(_toolCallId, params) {
++          const { text, category, importance, memoryId } = params as {
++            text: string;
++            category?: MemoryEntry["category"];
++            importance?: number;
++            memoryId?: string;
++          };
++
++          // ------------------------------------------------------------------
++          // MODE 1: Search-only (no memoryId)
++          // Embed first, then search — no existence check needed here.
++          // ------------------------------------------------------------------
++          if (!memoryId) {
++            const vector = await embeddings.embed(text);
++            const results = await db.search(vector, 3, 0.1);
++            const matches = results.map((r) => ({
++              id: r.entry.id,
++              text: r.entry.text,
++              category: r.entry.category,
++              importance: r.entry.importance,
++              similarity: r.score,
++            }));
++
++            const summaryText =
++              matches.length === 0
++                ? "No similar memories found."
++                : `Found ${matches.length} similar memories:\n\n${matches
++                    .map(
++                      (m, i) =>
++                        `${i + 1}. [${m.id.slice(0, 8)}] (${(m.similarity * 100).toFixed(0)}%) ${m.text}`,
++                    )
++                    .join("\n")}`;
++
++            return {
++              content: [{ type: "text", text: summaryText }],
++              details: { operation: "search_only", matches },
++            };
++          }
++
++          // ------------------------------------------------------------------
++          // MODE 2: Atomic replace (memoryId provided)
++          // Check existence BEFORE calling embeddings.embed() so that a typo
++          // or stale ID returns immediately without a wasted API call (Fix 3).
++          // Wrapped in withMemoryLock so concurrent calls on the same ID
++          // serialize correctly (no interleaved delete/insert races).
++          // ------------------------------------------------------------------
++          return withMemoryLock(memoryId, async () => {
++            const existing = await db.getById(memoryId);
++            if (!existing) {
++              return {
++                content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
++                details: { operation: "error", error: "not_found", memoryId },
++              };
++            }
++
++            // Inherit category and importance from the existing entry when the
++            // caller does not supply them, so a text-only update never silently
++            // resets metadata to defaults (Fix 2).
++            const resolvedCategory = category ?? existing.category;
++            const resolvedImportance = importance ?? existing.importance;
++
++            const vector = await embeddings.embed(text);
++            const oldTextPreview = existing.text.slice(0, 80);
++
++            // Delete the old entry
++            await db.delete(memoryId);
++
++            // Insert new entry — with best-effort rollback on failure
++            let newEntry: MemoryEntry;
++            let rollbackWarning: string | undefined;
++
++            try {
++              newEntry = await db.store({
++                text,
++                vector,
++                importance: resolvedImportance,
++                category: resolvedCategory,
++              });
++            } catch (insertErr) {
++              // Best-effort rollback: restore the original entry with its
++              // original ID so callers are never left with a stale reference
++              // to a non-existent ID (Fix 1).
++              let rollbackSucceeded = false;
++              try {
++                await db.storeRaw(existing);
++                rollbackSucceeded = true;
++                rollbackWarning = `Insert failed; original restored with original ID ${existing.id}. Insert error: ${String(insertErr)}`;
++              } catch (rollbackErr) {
++                rollbackWarning = `Insert failed AND rollback failed (DATA LOSS POSSIBLE). Insert: ${String(insertErr)}. Rollback: ${String(rollbackErr)}`;
++              }
++              return {
++                content: [{ type: "text", text: `Replace failed: ${rollbackWarning}` }],
++                details: {
++                  operation: "error",
++                  error: "insert_failed",
++                  success: false,
++                  rollbackWarning,
++                  // Only populate restored_id when the rollback actually succeeded.
++                  // If rollback also failed, the row is gone — omit restored_id so
++                  // callers are not misled into treating a failed recovery as
++                  // successful.
++                  ...(rollbackSucceeded ? { restored_id: existing.id } : { restored_id: null }),
++                },
++              };
++            }
++
++            // Compute similarity using 1/(1+L2) — the same metric used by
++            // memory_recall and db.search — so search results and audit log
++            // are directly comparable (Fix 4).
++            let similarity: number | null = null;
++            if (existing.vector.length === vector.length) {
++              const l2sq = existing.vector.reduce((sum, v, i) => {
++                const diff = v - (vector[i] ?? 0);
++                return sum + diff * diff;
++              }, 0);
++              similarity = 1 / (1 + Math.sqrt(l2sq));
++            }
++
++            // Append to audit log (metadata only — memory text is private user data
++            // and must never be written to audit logs, per review comment #2985311917).
++            const auditLogPath = path.join(homedir(), ".openclaw", "memory", "refresh-audit.jsonl");
++            try {
++              await mkdir(path.dirname(auditLogPath), { recursive: true });
++              const auditEntry = {
++                ts: Date.now(),
++                operation: "replaced",
++                old_id: memoryId,
++                new_id: newEntry.id,
++                similarity,
++              };
++              await appendFile(auditLogPath, JSON.stringify(auditEntry) + "\n", "utf8");
++            } catch (auditErr) {
++              api.logger.warn(`memory-lancedb: audit log write failed: ${String(auditErr)}`);
++            }
++
++            return {
++              content: [
++                {
++                  type: "text",
++                  text: `Replaced memory ${memoryId.slice(0, 8)}… → ${newEntry.id.slice(0, 8)}…\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
++                },
++              ],
++              details: {
++                operation: "replaced",
++                old_id: memoryId,
++                new_id: newEntry.id,
++                old_text_preview: oldTextPreview,
++              },
++            };
++          });
++        },
++      },
++      { name: "memory_refresh" },
++    );
++
+     // ========================================================================
+     // CLI Commands
+     // ========================================================================
+diff --git a/packages/memory-host-sdk/src/host/session-files.test.ts b/packages/memory-host-sdk/src/host/session-files.test.ts
+index 476aa35644b5a..ef19b48ed49fe 100644
+--- a/packages/memory-host-sdk/src/host/session-files.test.ts
++++ b/packages/memory-host-sdk/src/host/session-files.test.ts
+@@ -50,6 +50,20 @@ describe("listSessionFilesForAgent", () => {
+   });
+ });
+ 
++// Helpers for constructing inbound metadata blocks (mirrors format in inbound-meta.ts)
++function makeConvBlock(extra: Record<string, string> = {}): string {
++  return [
++    "Conversation info (untrusted metadata):",
++    "```json",
++    JSON.stringify({ message_id: "msg-1", sender: "TestUser", ...extra }, null, 2),
++    "```",
++  ].join("\n");
++}
++
++function makeUserMessageLine(content: string): string {
++  return JSON.stringify({ type: "message", message: { role: "user", content } });
++}
++
+ describe("buildSessionEntry", () => {
+   it("returns lineMap tracking original JSONL line numbers", async () => {
+     // Simulate a real session JSONL file with metadata records interspersed
+@@ -120,4 +134,246 @@ describe("buildSessionEntry", () => {
+     expect(entry).not.toBeNull();
+     expect(entry!.lineMap).toEqual([3, 5]);
+   });
++
++  it("strips 'Conversation info (untrusted metadata):' block from indexed text", async () => {
++    // User message with prepended OpenClaw inbound metadata block
++    const userContent = [makeConvBlock(), "", "What is the weather today?"].join("\n");
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "meta-conv.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    const contentLines = entry!.content.split("\n");
++    expect(contentLines).toHaveLength(1);
++    // Metadata JSON should not appear in the indexed text
++    expect(entry!.content).not.toContain("Conversation info");
++    expect(entry!.content).not.toContain("untrusted metadata");
++    expect(entry!.content).not.toContain("message_id");
++    // The actual user message should be preserved
++    expect(entry!.content).toContain("What is the weather today?");
++  });
++
++  it("strips [[reply_to_current]] inline directive tags from indexed text", async () => {
++    // User message containing an inline reply directive tag
++    const userContent = "[[reply_to_current]] Can you explain that again?";
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "reply-tag.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The [[reply_to_current]] tag should be stripped
++    expect(entry!.content).not.toContain("[[reply_to_current]]");
++    // The actual message text should be preserved
++    expect(entry!.content).toContain("Can you explain that again?");
++  });
++
++  it("strips metadata from array-of-parts content (structured message form)", async () => {
++    // User message where content is an array of text parts (e.g. multi-modal messages)
++    const metaBlock = makeConvBlock();
++    const arrayContent = [
++      { type: "text", text: `${metaBlock}\n\nWhat time is the meeting?` },
++      { type: "text", text: "[[reply_to_current]] Also, who is attending?" },
++    ];
++    const jsonlLines = [
++      JSON.stringify({ type: "message", message: { role: "user", content: arrayContent } }),
++    ];
++    const filePath = path.join(tmpDir, "array-content.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // Metadata JSON block should not appear in the indexed text
++    expect(entry!.content).not.toContain("Conversation info");
++    expect(entry!.content).not.toContain("untrusted metadata");
++    expect(entry!.content).not.toContain("message_id");
++    // Inline directive tags should be stripped
++    expect(entry!.content).not.toContain("[[reply_to_current]]");
++    // The actual user messages should be preserved
++    expect(entry!.content).toContain("What time is the meeting?");
++    expect(entry!.content).toContain("Also, who is attending?");
++  });
++
++  it("preserves inline mentions of directive tags mid-text (not leading)", async () => {
++    // When a user discusses directive tags inline (e.g. troubleshooting docs),
++    // those mentions should NOT be stripped — only leading control-tag positions are removed.
++    const userContent =
++      "The [[reply_to_current]] tag is used for replies. You can also use [[reply_to:msg-123]].";
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "inline-tags.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // Mid-text mentions should be preserved for searchability
++    expect(entry!.content).toContain("[[reply_to_current]]");
++    expect(entry!.content).toContain("[[reply_to:msg-123]]");
++    expect(entry!.content).toContain("The [[reply_to_current]] tag is used for replies");
++  });
++
++  it("strips leading directive tags but preserves inline ones in same text", async () => {
++    // Leading tag should be stripped, but inline mention later in text should remain
++    const userContent =
++      "[[reply_to_current]] Regarding the [[reply_to_current]] directive, how does it work?";
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "mixed-tags.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The leading tag is stripped, but the inline one remains
++    expect(entry!.content).toContain("[[reply_to_current]]");
++    expect(entry!.content).toContain("Regarding the [[reply_to_current]] directive");
++    // Should not start with the tag
++    const userLine = entry!.content.split("\n")[0];
++    expect(userLine).toMatch(/^User: Regarding/);
++  });
++
++  it("preserves normal message content without modification", async () => {
++    // Plain user and assistant messages with no injected metadata
++    const jsonlLines = [
++      JSON.stringify({
++        type: "message",
++        message: { role: "user", content: "Tell me about TypeScript generics." },
++      }),
++      JSON.stringify({
++        type: "message",
++        message: {
++          role: "assistant",
++          content: "TypeScript generics allow you to write reusable typed code.",
++        },
++      }),
++    ];
++    const filePath = path.join(tmpDir, "normal.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    const contentLines = entry!.content.split("\n");
++    expect(contentLines).toHaveLength(2);
++    expect(contentLines[0]).toContain("User: Tell me about TypeScript generics.");
++    expect(contentLines[1]).toContain(
++      "Assistant: TypeScript generics allow you to write reusable typed code.",
++    );
++  });
++
++  it("strips DOW-prefixed timestamp envelope from indexed user text", async () => {
++    // `injectTimestamp` produces "[Wed 2026-03-27 14:47 EDT] …"
++    // The DOW abbreviation comes BEFORE the year, so the former "[20" sentinel
++    // never matched this format.  The fast-path must use the regex instead.
++    const userContent = "[Wed 2026-03-27 14:47 EDT] What is the status of the deployment?";
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "dow-timestamp.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The timestamp envelope should be stripped from the index
++    expect(entry!.content).not.toContain("[Wed 2026-03-27 14:47 EDT]");
++    // The actual user message should be preserved
++    expect(entry!.content).toContain("What is the status of the deployment?");
++    const userLine = entry!.content.split("\n")[0];
++    expect(userLine).toMatch(/^User: What is the status/);
++  });
++
++  it("preserves assistant messages that begin with [[reply_to_current]] verbatim", async () => {
++    // Assistant messages may legitimately begin with [[reply_to_current]] or
++    // [[reply_to:...]] (e.g. structured reply formatting or quoting the directive
++    // protocol in a response). Stripping them would corrupt the searchable index.
++    const assistantContent = "[[reply_to_current]] Here is the information you requested.";
++    const jsonlLines = [
++      JSON.stringify({
++        type: "message",
++        message: { role: "assistant", content: assistantContent },
++      }),
++    ];
++    const filePath = path.join(tmpDir, "assistant-reply-to-current.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The leading directive tag must NOT be stripped from assistant content
++    expect(entry!.content).toContain("[[reply_to_current]]");
++    expect(entry!.content).toContain("Here is the information you requested.");
++    const assistantLine = entry!.content.split("\n")[0];
++    expect(assistantLine).toMatch(/^Assistant: \[\[reply_to_current\]\]/);
++  });
++
++  it("preserves assistant messages that begin with [[reply_to:...]] verbatim", async () => {
++    // Same gating check for the reply_to:<id> variant.
++    const assistantContent = "[[reply_to:msg-456]] I am responding to that specific message.";
++    const jsonlLines = [
++      JSON.stringify({
++        type: "message",
++        message: { role: "assistant", content: assistantContent },
++      }),
++    ];
++    const filePath = path.join(tmpDir, "assistant-reply-to-id.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The leading directive tag must NOT be stripped from assistant content
++    expect(entry!.content).toContain("[[reply_to:msg-456]]");
++    expect(entry!.content).toContain("I am responding to that specific message.");
++    const assistantLine = entry!.content.split("\n")[0];
++    expect(assistantLine).toMatch(/^Assistant: \[\[reply_to:msg-456\]\]/);
++  });
++
++  it("preserves assistant messages that begin with a timestamp-like prefix verbatim", async () => {
++    // Assistant responses may legitimately start with timestamp-formatted content,
++    // e.g. quoting log lines, schedule entries, or cron expressions. The timestamp
++    // envelope stripping must be gated to user messages only; assistant content
++    // must be indexed verbatim.
++    const assistantContent =
++      "[Wed 2026-03-27 14:47 EDT] The deployment started at this time and completed successfully.";
++    const jsonlLines = [
++      JSON.stringify({
++        type: "message",
++        message: { role: "assistant", content: assistantContent },
++      }),
++    ];
++    const filePath = path.join(tmpDir, "assistant-timestamp-prefix.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // The timestamp-like prefix must NOT be stripped from assistant content
++    expect(entry!.content).toContain("[Wed 2026-03-27 14:47 EDT]");
++    expect(entry!.content).toContain("The deployment started at this time");
++    const assistantLine = entry!.content.split("\n")[0];
++    expect(assistantLine).toMatch(/^Assistant: \[Wed 2026-03-27 14:47 EDT\]/);
++  });
++
++  it("strips both DOW timestamp and leading directive tag when both are present", async () => {
++    // Channel messages can carry "[DOW YYYY-MM-DD HH:MM TZ] [[reply_to_current]] text".
++    // The timestamp must be removed first so the directive-tag regex sees [[…]] at
++    // position 0 of the remaining string.
++    const userContent = "[Wed 2026-03-27 14:47 EDT] [[reply_to_current]] Please clarify that.";
++    const jsonlLines = [makeUserMessageLine(userContent)];
++    const filePath = path.join(tmpDir, "dow-timestamp-and-directive.jsonl");
++    await fs.writeFile(filePath, jsonlLines.join("\n"));
++
++    const entry = await buildSessionEntry(filePath);
++    expect(entry).not.toBeNull();
++
++    // Both the timestamp envelope and the leading directive tag must be stripped
++    expect(entry!.content).not.toContain("[Wed 2026-03-27 14:47 EDT]");
++    expect(entry!.content).not.toContain("[[reply_to_current]]");
++    // The actual message body should be preserved
++    expect(entry!.content).toContain("Please clarify that.");
++    const userLine = entry!.content.split("\n")[0];
++    expect(userLine).toMatch(/^User: Please clarify that\./);
++  });
+ });
+diff --git a/packages/memory-host-sdk/src/host/session-files.ts b/packages/memory-host-sdk/src/host/session-files.ts
+index 561a21f9e5d7a..e68f8a4732e0e 100644
+--- a/packages/memory-host-sdk/src/host/session-files.ts
++++ b/packages/memory-host-sdk/src/host/session-files.ts
+@@ -1,11 +1,20 @@
+ import fs from "node:fs/promises";
+ import path from "node:path";
++import { stripLeadingInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.js";
+ import { isUsageCountedSessionTranscriptFileName } from "../../../../src/config/sessions/artifacts.js";
+ import { resolveSessionTranscriptsDirForAgent } from "../../../../src/config/sessions/paths.js";
+ import { redactSensitiveText } from "../../../../src/logging/redact.js";
+ import { createSubsystemLogger } from "../../../../src/logging/subsystem.js";
+ import { hashText } from "./internal.js";
+ 
++/**
++ * Matches one or more leading directive tags (audio/reply) at the very start of text,
++ * optionally preceded by whitespace.  Inline mentions pass through unchanged so they
++ * remain searchable in the memory index.
++ */
++const LEADING_DIRECTIVE_TAGS_RE =
++  /^(\s*\[\[\s*(?:audio_as_voice|reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*)+/i;
++
+ const log = createSubsystemLogger("memory");
+ 
+ export type SessionFileEntry = {
+@@ -44,6 +53,39 @@ function normalizeSessionText(value: string): string {
+     .trim();
+ }
+ 
++/**
++ * Strips OpenClaw-injected metadata from a raw content string before
++ * normalization. Must be called on the original multi-line text so that
++ * the line-based sentinel detection in `stripLeadingInboundMetadata` works correctly.
++ */
++function stripRawContentMeta(raw: string, role: "user" | "assistant"): string {
++  // Only strip inbound metadata for user messages — assistant responses may
++  // legitimately quote or discuss metadata headers (e.g. troubleshooting output).
++  // Fast-path: skip stripping entirely when the text clearly contains no injected
++  // metadata. We check for '<' (XML-style tag blocks) and both cases of "untrusted"
++  // to cover all sentinel variants (review comments #2998605546, #3000971886):
++  //   INBOUND_META_SENTINELS  → all contain "untrusted" (lowercase)
++  //   UNTRUSTED_CONTEXT_HEADER → starts with "Untrusted" (capital U)
++  const mightHaveMeta =
++    role === "user" &&
++    (raw.includes("<") || raw.includes("untrusted") || raw.includes("Untrusted"));
++  const afterMeta = mightHaveMeta ? stripLeadingInboundMetadata(raw) : raw;
++  if (!afterMeta.includes("[[")) {
++    return afterMeta;
++  }
++  // Only strip directive tags at leading control-tag positions (start of text),
++  // and only for user messages. Assistant responses may legitimately begin with
++  // [[reply_to_current]] or [[reply_to:...]] (e.g. structured reply formatting,
++  // tool output quoting, or discussion of the directive protocol) — silently
++  // rewriting them would corrupt the searchable transcript index.
++  if (role !== "user") {
++    return afterMeta;
++  }
++  // Inline mid-text mentions (e.g. discussing [[reply_to_current]] in docs)
++  // are left intact so they remain searchable in the memory index.
++  return afterMeta.replace(LEADING_DIRECTIVE_TAGS_RE, "");
++}
++
+ export function extractSessionText(content: unknown): string | null {
+   if (typeof content === "string") {
+     const normalized = normalizeSessionText(content);
+@@ -72,6 +114,46 @@ export function extractSessionText(content: unknown): string | null {
+   return parts.join(" ");
+ }
+ 
++/**
++ * Like `extractSessionText` but strips OpenClaw-injected inbound metadata
++ * blocks and inline directive tags from raw content *before* normalization.
++ * Stripping must happen pre-normalization so that line-based sentinel
++ * detection in `stripLeadingInboundMetadata` can identify the fenced JSON blocks.
++ *
++ * The `role` parameter controls whether `stripLeadingInboundMetadata` is applied:
++ * only `user` messages have their metadata blocks removed. Assistant messages
++ * may legitimately reference metadata headers, so they are kept intact.
++ */
++function extractAndStripSessionText(content: unknown, role: "user" | "assistant"): string | null {
++  if (typeof content === "string") {
++    const clean = stripRawContentMeta(content, role);
++    const normalized = normalizeSessionText(clean);
++    return normalized ? normalized : null;
++  }
++  if (!Array.isArray(content)) {
++    return null;
++  }
++  const parts: string[] = [];
++  for (const block of content) {
++    if (!block || typeof block !== "object") {
++      continue;
++    }
++    const record = block as { type?: unknown; text?: unknown };
++    if (record.type !== "text" || typeof record.text !== "string") {
++      continue;
++    }
++    const clean = stripRawContentMeta(record.text, role);
++    const normalized = normalizeSessionText(clean);
++    if (normalized) {
++      parts.push(normalized);
++    }
++  }
++  if (parts.length === 0) {
++    return null;
++  }
++  return parts.join(" ");
++}
++
+ export async function buildSessionEntry(absPath: string): Promise<SessionFileEntry | null> {
+   try {
+     const stat = await fs.stat(absPath);
+@@ -106,7 +188,7 @@ export async function buildSessionEntry(absPath: string): Promise<SessionFileEnt
+       if (message.role !== "user" && message.role !== "assistant") {
+         continue;
+       }
+-      const text = extractSessionText(message.content);
++      const text = extractAndStripSessionText(message.content, message.role);
+       if (!text) {
+         continue;
+       }

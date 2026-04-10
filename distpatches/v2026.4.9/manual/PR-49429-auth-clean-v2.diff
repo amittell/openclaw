@@ -1,0 +1,1906 @@
+diff --git a/src/agents/auth-profiles.readonly-sync.test.ts b/src/agents/auth-profiles.readonly-sync.test.ts
+index 098ad07c99004..7ab056bb8e7af 100644
+--- a/src/agents/auth-profiles.readonly-sync.test.ts
++++ b/src/agents/auth-profiles.readonly-sync.test.ts
+@@ -57,10 +57,7 @@ describe("auth profiles read-only external CLI sync", () => {
+ 
+       const loaded = loadAuthProfileStoreForRuntime(agentDir, { readOnly: true });
+ 
+-      expect(mocks.syncExternalCliCredentials).toHaveBeenCalledWith(
+-        expect.any(Object),
+-        expect.objectContaining({ log: false }),
+-      );
++      expect(mocks.syncExternalCliCredentials).toHaveBeenCalled();
+       expect(loaded.profiles["minimax-portal:default"]).toMatchObject({
+         type: "oauth",
+         provider: "minimax-portal",
+diff --git a/src/agents/auth-profiles/doctor.ts b/src/agents/auth-profiles/doctor.ts
+index 451fbe1de6227..175ef9a94a5ae 100644
+--- a/src/agents/auth-profiles/doctor.ts
++++ b/src/agents/auth-profiles/doctor.ts
+@@ -1,8 +1,31 @@
++import { formatCliCommand } from "../../cli/command-format.js";
+ import type { OpenClawConfig } from "../../config/config.js";
+ import { buildProviderAuthDoctorHintWithPlugin } from "../../plugins/provider-runtime.runtime.js";
+ import { normalizeProviderId } from "../model-selection.js";
++import { listProfilesForProvider } from "./profiles.js";
++import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
+ import type { AuthProfileStore } from "./types.js";
+ 
++/**
++ * Sanitize a profile ID before embedding it in error messages or log output.
++ * Strips ANSI escape sequences and control characters to prevent terminal/log
++ * injection via crafted profile IDs.
++ *
++ * Handles CSI, OSC, DCS/SOS/PM/APC, and bare ESC sequences.
++ */
++function sanitizeProfileIdForDisplay(id: string): string {
++  return (
++    id
++      .replace(
++        // eslint-disable-next-line no-control-regex
++        /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[\s\S]?)/g,
++        "",
++      )
++      // eslint-disable-next-line no-control-regex
++      .replace(/[\u0000-\u001f\u007f]/g, "")
++  );
++}
++
+ /**
+  * Migration hints for deprecated/removed OAuth providers.
+  * Users with stale credentials should be guided to migrate.
+@@ -38,5 +61,39 @@ export async function formatAuthDoctorHint(params: {
+   if (typeof pluginHint === "string" && pluginHint.trim()) {
+     return pluginHint;
+   }
+-  return "";
++
++  const legacyProfileId = params.profileId ?? "anthropic:default";
++  const suggested = suggestOAuthProfileIdForLegacyDefault({
++    cfg: params.cfg,
++    store: params.store,
++    provider: normalizedProvider,
++    legacyProfileId,
++  });
++  if (!suggested || suggested === legacyProfileId) {
++    return "";
++  }
++
++  const storeOauthProfiles = listProfilesForProvider(params.store, normalizedProvider)
++    .filter((id) => params.store.profiles[id]?.type === "oauth")
++    .map(sanitizeProfileIdForDisplay)
++    .join(", ");
++
++  const cfgMode = params.cfg?.auth?.profiles?.[legacyProfileId]?.mode;
++  const cfgProvider = params.cfg?.auth?.profiles?.[legacyProfileId]?.provider;
++
++  // Sanitize profile IDs before embedding in error/log output to prevent
++  // terminal injection via crafted profile names.
++  const safeProfileId = sanitizeProfileIdForDisplay(legacyProfileId);
++  const safeSuggested = sanitizeProfileIdForDisplay(suggested);
++
++  return [
++    "Doctor hint (for GitHub issue):",
++    `- provider: ${normalizedProvider}`,
++    `- config: ${safeProfileId}${
++      cfgProvider || cfgMode ? ` (provider=${cfgProvider ?? "?"}, mode=${cfgMode ?? "?"})` : ""
++    }`,
++    `- auth store oauth profiles: ${storeOauthProfiles || "(none)"}`,
++    `- suggested profile: ${safeSuggested}`,
++    `Fix: run "${formatCliCommand("openclaw doctor --yes")}"`,
++  ].join("\n");
+ }
+diff --git a/src/agents/auth-profiles/order.ts b/src/agents/auth-profiles/order.ts
+index fba2e9ed35c37..d653b7198cb09 100644
+--- a/src/agents/auth-profiles/order.ts
++++ b/src/agents/auth-profiles/order.ts
+@@ -104,7 +104,7 @@ export function resolveAuthProfileOrder(params: {
+     }).eligible;
+   let filtered = baseOrder.filter(isValidProfile);
+ 
+-  // Repair config/store profile-id drift from older setup flows:
++  // Repair config/store profile-id drift from older onboarding flows:
+   // if configured profile ids no longer exist in auth-profiles.json, scan the
+   // provider's stored credentials and use any valid entries.
+   const allBaseProfilesMissing = baseOrder.every((profileId) => !store.profiles[profileId]);
+diff --git a/src/agents/auth-profiles/profiles.ts b/src/agents/auth-profiles/profiles.ts
+index 92f44302e409d..f05808429a6b7 100644
+--- a/src/agents/auth-profiles/profiles.ts
++++ b/src/agents/auth-profiles/profiles.ts
+@@ -1,6 +1,6 @@
+ import { normalizeStringEntries } from "../../shared/string-normalization.js";
+ import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
+-import { normalizeProviderId, normalizeProviderIdForAuth } from "../provider-id.js";
++import { normalizeProviderId, normalizeProviderIdForAuth } from "../model-selection.js";
+ import {
+   ensureAuthProfileStore,
+   saveAuthProfileStore,
+diff --git a/src/agents/auth-profiles/store.legacy-migration.test.ts b/src/agents/auth-profiles/store.legacy-migration.test.ts
+new file mode 100644
+index 0000000000000..793dc611dc494
+--- /dev/null
++++ b/src/agents/auth-profiles/store.legacy-migration.test.ts
+@@ -0,0 +1,151 @@
++/**
++ * Tests for legacy auth.json → auth-profiles.json migration behaviour in
++ * loadAuthProfileStoreForAgent (via loadAgentLocalAuthProfileStore).
++ *
++ * These tests use a real temporary filesystem directory so the migration code
++ * path is exercised end-to-end without mocking file I/O.
++ *
++ * Focus: fix for #2914491523 — legacy migration (auth.json → auth-profiles.json)
++ * is suppressed when readOnly:true.  The probe call that precedes
++ * updateAuthProfileStoreWithLock uses readOnly:false so migration still runs
++ * before ensureAuthStoreFile can create an empty placeholder.
++ */
++
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { loadAgentLocalAuthProfileStore } from "./store.js";
++
++// ---------------------------------------------------------------------------
++// helpers
++// ---------------------------------------------------------------------------
++
++function writeLegacyAuthJson(dir: string, data: Record<string, unknown>): void {
++  fs.writeFileSync(path.join(dir, "auth.json"), JSON.stringify(data));
++}
++
++function readAuthProfilesJson(dir: string): Record<string, unknown> | null {
++  const p = path.join(dir, "auth-profiles.json");
++  if (!fs.existsSync(p)) {
++    return null;
++  }
++  return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
++}
++
++// ---------------------------------------------------------------------------
++// tests
++// ---------------------------------------------------------------------------
++
++describe("loadAgentLocalAuthProfileStore – legacy migration with readOnly:true (#2914491523)", () => {
++  let tmpDir: string;
++
++  beforeEach(() => {
++    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "auth-store-migration-test-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(tmpDir, { recursive: true, force: true });
++  });
++
++  it("does not write auth-profiles.json or delete auth.json when readOnly:true", () => {
++    writeLegacyAuthJson(tmpDir, {
++      anthropic: { type: "api_key", provider: "anthropic", key: "sk-test" },
++    });
++
++    const store = loadAgentLocalAuthProfileStore(tmpDir, { readOnly: true });
++
++    // Profiles should be present in the returned in-memory store
++    expect(store.profiles["anthropic:default"]).toBeDefined();
++    expect(store.profiles["anthropic:default"]?.type).toBe("api_key");
++
++    // auth-profiles.json must NOT have been written (migration suppressed when readOnly:true)
++    const migrated = readAuthProfilesJson(tmpDir);
++    expect(migrated).toBeNull();
++
++    // legacy auth.json must NOT have been deleted (readOnly suppresses all file writes)
++    expect(fs.existsSync(path.join(tmpDir, "auth.json"))).toBe(true);
++  });
++
++  it("returns in-memory profiles matching what was in auth.json (readOnly:true)", () => {
++    writeLegacyAuthJson(tmpDir, {
++      openai: { type: "api_key", provider: "openai", key: "sk-openai" },
++      anthropic: { type: "token", provider: "anthropic", token: "tk-anth", expires: 9999999999 },
++    });
++
++    const store = loadAgentLocalAuthProfileStore(tmpDir, { readOnly: true });
++
++    // Both legacy profiles should be migrated and visible
++    expect(store.profiles["openai:default"]?.type).toBe("api_key");
++    expect(store.profiles["anthropic:default"]?.type).toBe("token");
++  });
++
++  it("does not create auth-profiles.json when legacy auth.json is absent (readOnly:true)", () => {
++    // No files in tmpDir — nothing to migrate
++    loadAgentLocalAuthProfileStore(tmpDir, { readOnly: true });
++
++    expect(readAuthProfilesJson(tmpDir)).toBeNull();
++    expect(fs.existsSync(path.join(tmpDir, "auth.json"))).toBe(false);
++  });
++
++  it("does not overwrite existing auth-profiles.json body when readOnly:true and no legacy", () => {
++    // Write an existing auth-profiles.json (no auth.json)
++    const existing = {
++      version: 1,
++      profiles: { "anthropic:existing": { type: "api_key", provider: "anthropic", key: "sk-ex" } },
++    };
++    fs.writeFileSync(path.join(tmpDir, "auth-profiles.json"), JSON.stringify(existing));
++
++    // Load with readOnly:true — no legacy present, so no migration; existing file unchanged
++    const store = loadAgentLocalAuthProfileStore(tmpDir, { readOnly: true });
++
++    // In-memory store should have the existing profile
++    expect(store.profiles["anthropic:existing"]).toBeDefined();
++
++    // File content should be unchanged (readOnly suppresses external-CLI / OAuth sync)
++    const after = readAuthProfilesJson(tmpDir);
++    expect(after).toEqual(existing);
++  });
++
++  it("migration semantics are preserved when readOnly:false (existing behaviour)", () => {
++    writeLegacyAuthJson(tmpDir, {
++      anthropic: { type: "api_key", provider: "anthropic", key: "sk-test" },
++    });
++
++    const store = loadAgentLocalAuthProfileStore(tmpDir, { readOnly: false });
++
++    expect(store.profiles["anthropic:default"]).toBeDefined();
++    expect(readAuthProfilesJson(tmpDir)).not.toBeNull();
++    // legacy auth.json should be deleted after migration
++    expect(fs.existsSync(path.join(tmpDir, "auth.json"))).toBe(false);
++  });
++
++  it("ensures updateAuthProfileStoreWithLock sees migrated profiles, not empty store", () => {
++    // Regression test for #2914491523.
++    // The correct fix is to probe with readOnly:false so migration runs before
++    // updateAuthProfileStoreWithLock's ensureAuthStoreFile can create an empty placeholder.
++    //
++    // This test validates the readOnly:true probe behaviour (no writes) and confirms
++    // that a subsequent readOnly:false load still migrates correctly from the
++    // untouched auth.json.
++    writeLegacyAuthJson(tmpDir, {
++      anthropic: { type: "api_key", provider: "anthropic", key: "sk-legacy" },
++    });
++
++    // Simulate a readOnly:true probe — must NOT create auth-profiles.json
++    loadAgentLocalAuthProfileStore(tmpDir, { readOnly: true });
++
++    const authProfilesPath = path.join(tmpDir, "auth-profiles.json");
++    // readOnly probe leaves the filesystem untouched
++    expect(fs.existsSync(authProfilesPath)).toBe(false);
++    // auth.json still present — not deleted by readOnly probe
++    expect(fs.existsSync(path.join(tmpDir, "auth.json"))).toBe(true);
++
++    // Simulate the write-enabled load inside the lock (readOnly:false default)
++    // — it still sees auth.json and performs the migration
++    const freshStore = loadAgentLocalAuthProfileStore(tmpDir, { readOnly: false });
++
++    // The write-enabled load must see the migrated profiles, not an empty store
++    expect(Object.keys(freshStore.profiles)).toContain("anthropic:default");
++  });
++});
+diff --git a/src/agents/auth-profiles/store.ts b/src/agents/auth-profiles/store.ts
+index 202b78a5a59bd..3dc2aeecc17cd 100644
+--- a/src/agents/auth-profiles/store.ts
++++ b/src/agents/auth-profiles/store.ts
+@@ -24,6 +24,7 @@ type RejectedCredentialEntry = { key: string; reason: CredentialRejectReason };
+ type LoadAuthProfileStoreOptions = {
+   allowKeychainPrompt?: boolean;
+   readOnly?: boolean;
++  skipInheritance?: boolean;
+ };
+ 
+ const AUTH_PROFILE_TYPES = new Set<AuthProfileCredential["type"]>(["api_key", "oauth", "token"]);
+@@ -144,6 +145,7 @@ function normalizeSecretBackedField(params: {
+ 
+ export async function updateAuthProfileStoreWithLock(params: {
+   agentDir?: string;
++  agentLocalOnly?: boolean;
+   updater: (store: AuthProfileStore) => boolean;
+ }): Promise<AuthProfileStore | null> {
+   const authPath = resolveAuthStorePath(params.agentDir);
+@@ -151,10 +153,15 @@ export async function updateAuthProfileStoreWithLock(params: {
+ 
+   try {
+     return await withFileLock(authPath, AUTH_STORE_LOCK_OPTIONS, async () => {
+-      // Locked writers must reload from disk, not from any runtime snapshot.
+-      // Otherwise a live gateway can overwrite fresher CLI/config-auth writes
+-      // with stale in-memory auth state during usage/cooldown updates.
+-      const store = loadAuthProfileStoreForAgent(params.agentDir);
++      // Always load agent-local-only view before saving to prevent credential scope bleed
++      // from the merged main+agent store. When agentDir is set (subagent path), we must
++      // never load the merged view (ensureAuthProfileStore merges main+agent) because
++      // writing that merged view back to agent-local auth-profiles.json would leak main
++      // credentials into subagent scope. agentLocalOnly also forces this path explicitly.
++      const useLocalOnly = params.agentLocalOnly || params.agentDir !== undefined;
++      const store = useLocalOnly
++        ? loadAgentLocalAuthProfileStore(params.agentDir)
++        : ensureAuthProfileStore(params.agentDir);
+       const shouldSave = params.updater(store);
+       if (shouldSave) {
+         saveAuthProfileStore(store, params.agentDir);
+@@ -453,15 +460,12 @@ function shouldLogAuthStoreTiming(): boolean {
+   return process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
+ }
+ 
+-function syncExternalCliCredentialsTimed(
+-  store: AuthProfileStore,
+-  options?: Parameters<typeof syncExternalCliCredentials>[1],
+-): boolean {
++function syncExternalCliCredentialsTimed(store: AuthProfileStore): boolean {
+   if (!shouldLogAuthStoreTiming()) {
+-    return syncExternalCliCredentials(store, options);
++    return syncExternalCliCredentials(store);
+   }
+   const startMs = Date.now();
+-  const mutated = syncExternalCliCredentials(store, options);
++  const mutated = syncExternalCliCredentials(store);
+   log.info(
+     `auth-store stage=external-cli-sync elapsedMs=${Date.now() - startMs} mutated=${mutated}`,
+   );
+@@ -509,15 +513,21 @@ function loadAuthProfileStoreForAgent(
+   if (asStore) {
+     // Runtime secret activation must remain read-only:
+     // sync external CLI credentials in-memory, but never persist while readOnly.
+-    syncExternalCliCredentialsTimed(asStore, { log: !readOnly });
++    const synced = syncExternalCliCredentialsTimed(asStore);
++    if (synced && !readOnly) {
++      saveJsonFile(authPath, asStore);
++    }
+     if (!readOnly) {
+       writeCachedAuthProfileStore(authPath, readAuthStoreMtimeMs(authPath), asStore);
+     }
+     return asStore;
+   }
+ 
+-  // Fallback: inherit auth-profiles from main agent if subagent has none
+-  if (agentDir && !readOnly) {
++  // Fallback: inherit auth-profiles from main agent if subagent has none.
++  // Skipped when skipInheritance:true (e.g. auth-clean pre-lock migration trigger)
++  // to prevent materialising main credentials in the subagent file before cleanup
++  // runs — that would cause scope bleed and a misleading no-op clean. (#2915653312)
++  if (agentDir && !readOnly && !options?.skipInheritance) {
+     const mainAuthPath = resolveAuthStorePath(); // without agentDir = main
+     const mainRaw = loadJsonFile(mainAuthPath);
+     const mainStore = coerceAuthStore(mainRaw);
+@@ -542,7 +552,7 @@ function loadAuthProfileStoreForAgent(
+ 
+   const mergedOAuth = mergeOAuthFileIntoStore(store);
+   // Keep external CLI credentials visible in runtime even during read-only loads.
+-  syncExternalCliCredentialsTimed(store, { log: !readOnly });
++  const syncedCli = syncExternalCliCredentialsTimed(store);
+   const forceReadOnly = process.env.OPENCLAW_AUTH_STORE_READONLY === "1";
+   const shouldWrite = !readOnly && !forceReadOnly && (legacy !== null || mergedOAuth);
+   if (shouldWrite) {
+@@ -587,13 +597,25 @@ export function loadAuthProfileStoreForRuntime(
+   return mergeAuthProfileStores(mainStore, store);
+ }
+ 
++/**
++ * Load auth-profile store for a specific agent directory without inheriting
++ * from the main agent. Used by `models auth clean` to inspect per-agent
++ * credentials independently.
++ */
++export function loadAgentLocalAuthProfileStore(
++  agentDir?: string,
++  options?: LoadAuthProfileStoreOptions,
++): AuthProfileStore {
++  return loadAuthProfileStoreForAgent(agentDir, { ...options, skipInheritance: true });
++}
++
+ export function loadAuthProfileStoreForSecretsRuntime(agentDir?: string): AuthProfileStore {
+   return loadAuthProfileStoreForRuntime(agentDir, { readOnly: true, allowKeychainPrompt: false });
+ }
+ 
+ export function ensureAuthProfileStore(
+   agentDir?: string,
+-  options?: { allowKeychainPrompt?: boolean },
++  options?: { allowKeychainPrompt?: boolean; readOnly?: boolean },
+ ): AuthProfileStore {
+   const runtimeStore = resolveRuntimeAuthProfileStore(agentDir);
+   if (runtimeStore) {
+diff --git a/src/cli/models-cli.test.ts b/src/cli/models-cli.test.ts
+index 3d3b5d4bf952f..e3b5ed3c276ba 100644
+--- a/src/cli/models-cli.test.ts
++++ b/src/cli/models-cli.test.ts
+@@ -3,43 +3,43 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
+ import { runRegisteredCli } from "../test-utils/command-runner.js";
+ import { registerModelsCli } from "./models-cli.js";
+ 
+-const mocks = vi.hoisted(() => ({
+-  modelsStatusCommand: vi.fn().mockResolvedValue(undefined),
+-  noopAsync: vi.fn(async () => undefined),
+-  modelsAuthLoginCommand: vi.fn().mockResolvedValue(undefined),
+-}));
+-
+-const { modelsStatusCommand, modelsAuthLoginCommand } = mocks;
++const modelsStatusCommand = vi.fn().mockResolvedValue(undefined);
++const noopAsync = vi.fn(async () => undefined);
++const modelsAuthLoginCommand = vi.fn().mockResolvedValue(undefined);
++const githubCopilotLoginCommand = vi.fn().mockResolvedValue(undefined);
+ 
+ vi.mock("../commands/models.js", () => ({
+-  modelsStatusCommand: mocks.modelsStatusCommand,
+-  modelsAliasesAddCommand: mocks.noopAsync,
+-  modelsAliasesListCommand: mocks.noopAsync,
+-  modelsAliasesRemoveCommand: mocks.noopAsync,
+-  modelsAuthAddCommand: mocks.noopAsync,
+-  modelsAuthLoginCommand: mocks.modelsAuthLoginCommand,
+-  modelsAuthOrderClearCommand: mocks.noopAsync,
+-  modelsAuthOrderGetCommand: mocks.noopAsync,
+-  modelsAuthOrderSetCommand: mocks.noopAsync,
+-  modelsAuthPasteTokenCommand: mocks.noopAsync,
+-  modelsAuthSetupTokenCommand: mocks.noopAsync,
+-  modelsFallbacksAddCommand: mocks.noopAsync,
+-  modelsFallbacksClearCommand: mocks.noopAsync,
+-  modelsFallbacksListCommand: mocks.noopAsync,
+-  modelsFallbacksRemoveCommand: mocks.noopAsync,
+-  modelsImageFallbacksAddCommand: mocks.noopAsync,
+-  modelsImageFallbacksClearCommand: mocks.noopAsync,
+-  modelsImageFallbacksListCommand: mocks.noopAsync,
+-  modelsImageFallbacksRemoveCommand: mocks.noopAsync,
+-  modelsListCommand: mocks.noopAsync,
+-  modelsScanCommand: mocks.noopAsync,
+-  modelsSetCommand: mocks.noopAsync,
+-  modelsSetImageCommand: mocks.noopAsync,
++  githubCopilotLoginCommand,
++  modelsStatusCommand,
++  modelsAliasesAddCommand: noopAsync,
++  modelsAliasesListCommand: noopAsync,
++  modelsAliasesRemoveCommand: noopAsync,
++  modelsAuthAddCommand: noopAsync,
++  modelsAuthCleanCommand: noopAsync,
++  modelsAuthLoginCommand,
++  modelsAuthOrderClearCommand: noopAsync,
++  modelsAuthOrderGetCommand: noopAsync,
++  modelsAuthOrderSetCommand: noopAsync,
++  modelsAuthPasteTokenCommand: noopAsync,
++  modelsAuthSetupTokenCommand: noopAsync,
++  modelsFallbacksAddCommand: noopAsync,
++  modelsFallbacksClearCommand: noopAsync,
++  modelsFallbacksListCommand: noopAsync,
++  modelsFallbacksRemoveCommand: noopAsync,
++  modelsImageFallbacksAddCommand: noopAsync,
++  modelsImageFallbacksClearCommand: noopAsync,
++  modelsImageFallbacksListCommand: noopAsync,
++  modelsImageFallbacksRemoveCommand: noopAsync,
++  modelsListCommand: noopAsync,
++  modelsScanCommand: noopAsync,
++  modelsSetCommand: noopAsync,
++  modelsSetImageCommand: noopAsync,
+ }));
+ 
+ describe("models cli", () => {
+   beforeEach(() => {
+     modelsAuthLoginCommand.mockClear();
++    githubCopilotLoginCommand.mockClear();
+     modelsStatusCommand.mockClear();
+   });
+ 
+@@ -71,11 +71,12 @@ describe("models cli", () => {
+       from: "user",
+     });
+ 
+-    expect(modelsAuthLoginCommand).toHaveBeenCalledTimes(1);
+-    expect(modelsAuthLoginCommand).toHaveBeenCalledWith(
++    // login-github-copilot now delegates to githubCopilotLoginCommand directly
++    // (not modelsAuthLoginCommand) — verify the correct command was invoked
++    // with the expected params.
++    expect(githubCopilotLoginCommand).toHaveBeenCalledTimes(1);
++    expect(githubCopilotLoginCommand).toHaveBeenCalledWith(
+       expect.objectContaining({
+-        provider: "github-copilot",
+-        method: "device",
+         yes: true,
+       }),
+       expect.any(Object),
+diff --git a/src/cli/models-cli.ts b/src/cli/models-cli.ts
+index 4337fa75d68ad..d42ad8f54ee7c 100644
+--- a/src/cli/models-cli.ts
++++ b/src/cli/models-cli.ts
+@@ -1,9 +1,11 @@
+ import type { Command } from "commander";
+ import {
++  githubCopilotLoginCommand,
+   modelsAliasesAddCommand,
+   modelsAliasesListCommand,
+   modelsAliasesRemoveCommand,
+   modelsAuthAddCommand,
++  modelsAuthCleanCommand,
+   modelsAuthLoginCommand,
+   modelsAuthOrderClearCommand,
+   modelsAuthOrderGetCommand,
+@@ -363,13 +365,13 @@ export function registerModelsCli(program: Command) {
+   auth
+     .command("login-github-copilot")
+     .description("Login to GitHub Copilot via GitHub device flow (TTY required)")
++    .option("--profile-id <id>", "Auth profile id (default: github-copilot:github)")
+     .option("--yes", "Overwrite existing profile without prompting", false)
+     .action(async (opts) => {
+       await runModelsCommand(async () => {
+-        await modelsAuthLoginCommand(
++        await githubCopilotLoginCommand(
+           {
+-            provider: "github-copilot",
+-            method: "device",
++            profileId: opts.profileId as string | undefined,
+             yes: Boolean(opts.yes),
+           },
+           defaultRuntime,
+@@ -377,6 +379,29 @@ export function registerModelsCli(program: Command) {
+       });
+     });
+ 
++  auth
++    .command("clean")
++    .description(
++      "Remove stale profiles from auth-profiles.json that are not configured in openclaw.json",
++    )
++    .option("--agent <id>", "Agent id (default: configured default agent)")
++    .option("--dry-run", "Preview removals without writing changes")
++    .option("--json", "Output as JSON")
++    .action(async (opts, command) => {
++      const agent =
++        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
++      await runModelsCommand(async () => {
++        await modelsAuthCleanCommand(
++          {
++            agent,
++            dryRun: Boolean(opts.dryRun),
++            json: Boolean(opts.json),
++          },
++          defaultRuntime,
++        );
++      });
++    });
++
+   const order = auth.command("order").description("Manage per-agent auth profile order overrides");
+ 
+   order
+diff --git a/src/commands/models.ts b/src/commands/models.ts
+index 7be3e6b2268fc..3868e84b6564c 100644
+--- a/src/commands/models.ts
++++ b/src/commands/models.ts
+@@ -10,6 +10,7 @@ export {
+   modelsAuthPasteTokenCommand,
+   modelsAuthSetupTokenCommand,
+ } from "./models/auth.js";
++export { modelsAuthCleanCommand } from "./models/auth-clean.js";
+ export {
+   modelsAuthOrderClearCommand,
+   modelsAuthOrderGetCommand,
+diff --git a/src/commands/models/auth-clean.test.ts b/src/commands/models/auth-clean.test.ts
+new file mode 100644
+index 0000000000000..2f88f3d33dfdc
+--- /dev/null
++++ b/src/commands/models/auth-clean.test.ts
+@@ -0,0 +1,862 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
++import type { OpenClawConfig } from "../../config/config.js";
++import type { RuntimeEnv } from "../../runtime.js";
++
++// ---- hoisted mocks ---------------------------------------------------------
++
++const mocks = vi.hoisted(() => ({
++  resolveDefaultAgentId: vi.fn(() => "main"),
++  resolveAgentDir: vi.fn((_cfg: unknown, _id: unknown) => "/home/user/.openclaw/agents/main/agent"),
++  ensureAuthProfileStore: vi.fn(),
++  updateAuthProfileStoreWithLock: vi.fn(),
++  loadAgentLocalAuthProfileStore: vi.fn(),
++  loadModelsConfig: vi.fn(),
++  resolveKnownAgentId: vi.fn<() => string | null>(() => null),
++}));
++
++vi.mock("../../agents/agent-scope.js", () => ({
++  resolveDefaultAgentId: mocks.resolveDefaultAgentId,
++  resolveAgentDir: mocks.resolveAgentDir,
++}));
++
++vi.mock("../../agents/auth-profiles.js", () => ({
++  ensureAuthProfileStore: mocks.ensureAuthProfileStore,
++}));
++
++vi.mock("../../agents/auth-profiles/store.js", () => ({
++  updateAuthProfileStoreWithLock: mocks.updateAuthProfileStoreWithLock,
++  loadAgentLocalAuthProfileStore: mocks.loadAgentLocalAuthProfileStore,
++}));
++
++vi.mock("./load-config.js", () => ({
++  loadModelsConfig: mocks.loadModelsConfig,
++}));
++
++vi.mock("./shared.js", () => ({
++  resolveKnownAgentId: mocks.resolveKnownAgentId,
++}));
++
++// ---- helpers ----------------------------------------------------------------
++
++const { modelsAuthCleanCommand } = await import("./auth-clean.js");
++
++function makeRuntime(): RuntimeEnv & { logs: string[] } {
++  const logs: string[] = [];
++  const runtime = {
++    logs,
++    log: (msg: string) => {
++      logs.push(msg);
++    },
++    error: vi.fn(),
++    exit: vi.fn(),
++  };
++  return runtime as unknown as RuntimeEnv & { logs: string[] };
++}
++
++function makeCfg(
++  profileIds: string[] = ["anthropic:me.com", "anthropic:gmail"],
++  orderIds: string[] = [],
++): OpenClawConfig {
++  const profiles: Record<string, { provider: string; mode: string }> = {};
++  for (const id of profileIds) {
++    const provider = id.split(":")[0] ?? "anthropic";
++    profiles[id] = { provider, mode: "token" };
++  }
++  const order: Record<string, string[]> = {};
++  if (orderIds.length > 0) {
++    order["anthropic"] = orderIds;
++  }
++  return { auth: { profiles, ...(orderIds.length > 0 ? { order } : {}) } } as OpenClawConfig;
++}
++
++function makeStore(profileIds: string[], extras: Partial<AuthProfileStore> = {}): AuthProfileStore {
++  const profiles: AuthProfileStore["profiles"] = {};
++  for (const id of profileIds) {
++    const provider = id.split(":")[0] ?? "anthropic";
++    profiles[id] = { type: "token", provider, token: `sk-${id}` };
++  }
++  return { version: 1, profiles, ...extras };
++}
++
++/**
++ * Capture what the updater closure does when called with a given store.
++ * updateAuthProfileStoreWithLock calls params.updater(freshStore) internally;
++ * this helper simulates that so we can inspect mutations.
++ */
++function captureUpdater(storeSeed: AuthProfileStore): {
++  result: AuthProfileStore;
++  returned: boolean;
++} {
++  let captured: AuthProfileStore | undefined;
++  let returned = false;
++
++  mocks.updateAuthProfileStoreWithLock.mockImplementationOnce(
++    async (params: { updater: (s: AuthProfileStore) => boolean }) => {
++      const clone = structuredClone(storeSeed);
++      returned = params.updater(clone);
++      captured = clone;
++      return returned ? clone : null;
++    },
++  );
++
++  return {
++    get result() {
++      return captured!;
++    },
++    get returned() {
++      return returned;
++    },
++  };
++}
++
++// ---- tests ------------------------------------------------------------------
++
++describe("modelsAuthCleanCommand", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it("removes stale profiles from profiles, usageStats, and lastGood", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:gmail", "anthropic:manual"], {
++      usageStats: {
++        "anthropic:manual": { lastUsed: 1000, errorCount: 1 },
++        "anthropic:me.com": { lastUsed: 2000, errorCount: 0 },
++      },
++      lastGood: { anthropic: "anthropic:manual" },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com", "anthropic:gmail"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    const capture = captureUpdater(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    expect(capture.result.profiles).not.toHaveProperty("anthropic:manual");
++    expect(capture.result.profiles).toHaveProperty("anthropic:me.com");
++    expect(capture.result.profiles).toHaveProperty("anthropic:gmail");
++    expect(capture.result.usageStats).not.toHaveProperty("anthropic:manual");
++    expect(capture.result.usageStats).toHaveProperty("anthropic:me.com");
++    expect(capture.result.lastGood).not.toHaveProperty("anthropic");
++  });
++
++  it("keeps profile referenced only in store.order even when not in cfg", async () => {
++    // anthropic:manual is in store.profiles and store.order, but NOT in cfg.
++    // The fix ensures store.order-referenced profiles are treated as configured (kept).
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"], {
++      order: { anthropic: ["anthropic:manual"] },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    // manual is kept because it's in store.order — no write needed
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toContain("Nothing to clean");
++  });
++
++  it("keeps all store.order-referenced profiles alongside cfg-configured ones", async () => {
++    // anthropic:manual is in store.order (set via 'models auth order set') but not in cfg.
++    // It must be protected, so nothing is stale and the lock is never acquired.
++    const store = makeStore(["anthropic:me.com", "anthropic:gmail", "anthropic:manual"], {
++      order: { anthropic: ["anthropic:me.com", "anthropic:manual"] },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com", "anthropic:gmail"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    // All three profiles are kept (me.com/gmail via cfg, manual via store.order)
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toContain("Nothing to clean");
++  });
++
++  it("--dry-run does not call updateAuthProfileStoreWithLock", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    await modelsAuthCleanCommand({ dryRun: true }, makeRuntime());
++
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("--dry-run passes readOnly:true to ensureAuthProfileStore (default agent)", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    await modelsAuthCleanCommand({ dryRun: true }, makeRuntime());
++
++    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith(
++      expect.any(String),
++      expect.objectContaining({ readOnly: true }),
++    );
++  });
++
++  it("--dry-run passes readOnly:true to loadAgentLocalAuthProfileStore (non-default agent)", async () => {
++    const store = makeStore(["anthropic:me.com"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
++    mocks.resolveAgentDir.mockReturnValueOnce("/home/user/.openclaw/agents/worker/agent");
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(store);
++
++    await modelsAuthCleanCommand({ agent: "worker", dryRun: true }, makeRuntime());
++
++    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalledWith(
++      expect.any(String),
++      expect.objectContaining({ readOnly: true }),
++    );
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("probe uses readOnly:true; migration trigger uses readOnly:false after guards pass (default agent)", async () => {
++    // #2915530629: probe must always use readOnly:true — never open a write-capable
++    // store before guards pass. After guards pass, a separate write-enabled call
++    // (readOnly:false) triggers legacy auth.json migration before
++    // updateAuthProfileStoreWithLock's ensureAuthStoreFile can create an empty
++    // placeholder. (#2914491523, #2914711181)
++    const store = makeStore(["anthropic:me.com", "anthropic:stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    captureUpdater(store);
++
++    await modelsAuthCleanCommand({}, makeRuntime()); // no dryRun
++
++    // Probe call: readOnly:true (always, even for non-dryRun)
++    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith(
++      expect.any(String),
++      expect.objectContaining({ readOnly: true }),
++    );
++    // Migration trigger call: readOnly:false (after guards pass, before lock)
++    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith(
++      expect.any(String),
++      expect.objectContaining({ readOnly: false }),
++    );
++  });
++
++  it("probe uses readOnly:true; migration trigger uses readOnly:false after guards pass (non-default agent)", async () => {
++    // #2915530629: same as default agent path — probe is always readOnly:true;
++    // migration trigger uses readOnly:false after guards pass. (#2914491523, #2914711181)
++    // #2915653312: migration trigger must also pass skipInheritance:true so that
++    // the main-agent fallback inside loadAuthProfileStoreForAgent is suppressed —
++    // without it, a subagent with no local store would clone main credentials
++    // before cleanup, causing scope bleed and a misleading no-op.
++    const store = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
++    const workerAgentDir = "/home/user/.openclaw/agents/worker/agent";
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:agent-profile"]));
++    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
++    mocks.resolveAgentDir.mockReturnValueOnce(workerAgentDir);
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(store);
++    captureUpdater(store);
++
++    await modelsAuthCleanCommand({ agent: "worker" }, makeRuntime()); // no dryRun
++
++    // Probe call: readOnly:true (always, even for non-dryRun); agentDir is the
++    // worker-specific path, not the main agent path.
++    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalledWith(
++      workerAgentDir,
++      expect.objectContaining({ readOnly: true }),
++    );
++    // Migration trigger call: readOnly:false (after guards pass, before lock).
++    // Must pass skipInheritance:true to prevent the main-agent fallback from
++    // cloning main profiles into the worker file before cleanup. (#2915653312)
++    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalledWith(
++      workerAgentDir,
++      expect.objectContaining({ readOnly: false, skipInheritance: true }),
++    );
++  });
++
++  it("keeps profiles referenced only in store.order (not in cfg.auth.profiles or cfg.auth.order)", async () => {
++    // anthropic:store-override is in store.order (set via 'models auth order set')
++    // but NOT in openclaw.json auth.profiles or auth.order — must be treated as kept
++    const store = makeStore(["anthropic:me.com", "anthropic:store-override"], {
++      order: { anthropic: ["anthropic:me.com", "anthropic:store-override"] },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    // Both profiles are kept — no stale entries — lock not acquired
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("removes profiles not in cfg or store.order even when store.order exists", async () => {
++    // anthropic:manual is in neither cfg nor store.order — should be removed
++    // anthropic:store-override is in store.order — should be kept
++    const store = makeStore(["anthropic:me.com", "anthropic:store-override", "anthropic:manual"], {
++      order: { anthropic: ["anthropic:me.com", "anthropic:store-override"] },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    const capture = captureUpdater(store);
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    expect(capture.result.profiles).not.toHaveProperty("anthropic:manual");
++    expect(capture.result.profiles).toHaveProperty("anthropic:me.com");
++    expect(capture.result.profiles).toHaveProperty("anthropic:store-override");
++  });
++
++  it("--dry-run logs the plan without writing", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    const combined = runtime.logs.join("\n");
++    expect(combined).toContain("anthropic:manual");
++    expect(combined).toContain("dry run");
++  });
++
++  it("does nothing when all store profiles are configured", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:gmail"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com", "anthropic:gmail"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toContain("Nothing to clean");
++  });
++
++  it("treats profiles referenced in auth.order as configured (not stale)", async () => {
++    // anthropic:legacy is in auth.order but not in auth.profiles — should be preserved
++    const store = makeStore(["anthropic:me.com", "anthropic:legacy"]);
++
++    const cfg = makeCfg(["anthropic:me.com"], ["anthropic:me.com", "anthropic:legacy"]);
++    mocks.loadModelsConfig.mockResolvedValue(cfg);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    // Nothing stale — updateAuthProfileStoreWithLock should not be called
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("throws when openclaw.json has no configured auth and store has profiles", async () => {
++    const store = makeStore(["anthropic:me.com"]);
++
++    mocks.loadModelsConfig.mockResolvedValue({ auth: {} } as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    await expect(modelsAuthCleanCommand({}, makeRuntime())).rejects.toThrow(
++      /no configured auth profiles/i,
++    );
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("--dry-run with no configured auth logs warning instead of throwing", async () => {
++    const store = makeStore(["anthropic:me.com"]);
++
++    mocks.loadModelsConfig.mockResolvedValue({ auth: {} } as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toMatch(/warning/i);
++  });
++
++  it("--json emits plan object then {ok, removed} result after write", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    captureUpdater(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ json: true }, runtime);
++
++    expect(runtime.logs.length).toBe(2);
++    const plan = JSON.parse(runtime.logs[0]);
++    const result = JSON.parse(runtime.logs[1]);
++
++    expect(plan).toMatchObject({ toRemove: ["anthropic:manual"], dryRun: false });
++    expect(result).toMatchObject({ ok: true, removed: 1 });
++  });
++
++  it("--json --dry-run emits only the plan object", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ json: true, dryRun: true }, runtime);
++
++    expect(runtime.logs.length).toBe(1);
++    const plan = JSON.parse(runtime.logs[0]);
++    expect(plan).toMatchObject({ toRemove: ["anthropic:manual"], dryRun: true });
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("reports actualRemoved from inside the lock, not the pre-lock estimate", async () => {
++    // Simulate gateway concurrently removing anthropic:manual before lock acquired
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++    const storeAtLockTime = makeStore(["anthropic:me.com"]); // manual already gone
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    // updater receives the already-cleaned store
++    mocks.updateAuthProfileStoreWithLock.mockImplementationOnce(
++      async (params: { updater: (s: AuthProfileStore) => boolean }) => {
++        const clone = structuredClone(storeAtLockTime);
++        params.updater(clone);
++        return clone; // something returned = success
++      },
++    );
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    // actualRemoved should be 0 (nothing was there to delete under the lock)
++    expect(runtime.logs.join("\n")).toContain("Removed 0 stale profile(s)");
++  });
++
++  it("throws when updateAuthProfileStoreWithLock returns null (lock busy)", async () => {
++    const store = makeStore(["anthropic:me.com", "anthropic:manual"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    mocks.updateAuthProfileStoreWithLock.mockResolvedValueOnce(null);
++
++    await expect(modelsAuthCleanCommand({}, makeRuntime())).rejects.toThrow(
++      /lock contention|lock busy|write failed/i,
++    );
++  });
++
++  it("non-default agent: excludes main-only profiles from toRemove", async () => {
++    // The agent-local store has agent-profile (configured) and agent-stale (not configured).
++    // The merged view returned by ensureAuthProfileStore also includes main-only-profile,
++    // which exists only in the main store and is NOT configured.
++    // toRemove must contain only agent-stale (from the agent-local store),
++    // NOT main-only-profile (which lives in the main store and must not be touched).
++    const agentLocalStore = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
++    const mergedStore = makeStore([
++      "anthropic:agent-profile",
++      "anthropic:agent-stale",
++      "anthropic:main-only-profile", // exists in main store only, not agent-local
++    ]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:agent-profile"]));
++    // Non-default agent: resolveKnownAgentId returns "worker", default is "main"
++    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
++    mocks.resolveAgentDir.mockReturnValueOnce("/home/user/.openclaw/agents/worker/agent");
++    // ensureAuthProfileStore is NOT called for non-default agents (loadAgentLocalAuthProfileStore is)
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(agentLocalStore);
++    // The updater receives the merged store (simulating what updateAuthProfileStoreWithLock
++    // would pass in production after calling ensureAuthProfileStore internally).
++    const capture = captureUpdater(mergedStore);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ agent: "worker" }, runtime);
++
++    // toRemove was computed from agentLocalStore only: ["anthropic:agent-stale"]
++    expect(capture.result.profiles).not.toHaveProperty("anthropic:agent-stale");
++    expect(capture.result.profiles).toHaveProperty("anthropic:agent-profile");
++    // main-only-profile was never in toRemove, so the updater left it intact
++    expect(capture.result.profiles).toHaveProperty("anthropic:main-only-profile");
++    // ensureAuthProfileStore should not have been called for profile-set computation
++    expect(mocks.ensureAuthProfileStore).not.toHaveBeenCalled();
++  });
++
++  // ---- Fix: agent media profiles without top-level tools.media (P1 #2912273297) ----
++
++  it("collects agent-level media profiles even when cfg.tools.media is absent", async () => {
++    // Arrange: no top-level tools.media, but one agent override references a profile.
++    // Without the fix, collectMediaProfileIds() returned early on !media and the
++    // agent-level profile was treated as stale and added to toRemove.
++    const store = makeStore(["anthropic:me.com", "anthropic:media-agent"]);
++
++    mocks.loadModelsConfig.mockResolvedValue({
++      ...makeCfg(["anthropic:me.com"]),
++      // Deliberately omit tools.media at the top level
++      agents: {
++        list: [
++          {
++            id: "worker",
++            tools: {
++              media: {
++                models: [{ model: "gpt-4o", profile: "anthropic:media-agent" }],
++              },
++            },
++          },
++        ],
++      },
++    } as unknown as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    // anthropic:media-agent is in an agent's tools.media override — must be kept
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toContain("Nothing to clean");
++  });
++
++  it("collects agent preferredProfile references without top-level tools.media", async () => {
++    // preferredProfile (not just profile) must also be picked up from agent overrides
++    const store = makeStore(["anthropic:me.com", "anthropic:preferred-agent"]);
++
++    mocks.loadModelsConfig.mockResolvedValue({
++      ...makeCfg(["anthropic:me.com"]),
++      agents: {
++        list: [
++          {
++            id: "worker",
++            tools: {
++              media: {
++                image: {
++                  models: [{ model: "gpt-4o", preferredProfile: "anthropic:preferred-agent" }],
++                },
++              },
++            },
++          },
++        ],
++      },
++    } as unknown as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({}, runtime);
++
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toContain("Nothing to clean");
++  });
++
++  // ---- Fix: agentLocalOnly prevents credential scope bleed (Aisle High) ----
++
++  it("non-default agent: passes agentLocalOnly:true to updateAuthProfileStoreWithLock", async () => {
++    // Ensures the write path uses agent-local-only loading, preventing main-store
++    // profiles from being persisted into the agent-local auth-profiles.json file.
++    const agentLocalStore = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:agent-profile"]));
++    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
++    mocks.resolveAgentDir.mockReturnValueOnce("/home/user/.openclaw/agents/worker/agent");
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(agentLocalStore);
++    captureUpdater(agentLocalStore);
++
++    await modelsAuthCleanCommand({ agent: "worker" }, makeRuntime());
++
++    expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledWith(
++      expect.objectContaining({ agentLocalOnly: true }),
++    );
++  });
++
++  it("non-main agent: pre-lock readOnly:false migration trigger passes agent-specific agentDir, not main path (#2915653312)", async () => {
++    // Guard: the pre-lock readOnly:false migration trigger must explicitly pass the
++    // agent-specific agentDir to loadAgentLocalAuthProfileStore — not the default
++    // (main) path and not undefined.  Without the explicit agentDir, the call
++    // resolves to the main agent's auth-profiles.json and cleanup silently operates
++    // on the wrong store (scope bleed, misleading no-op). (#2915653312)
++    const workerAgentDir = "/home/user/.openclaw/agents/worker/agent";
++    const mainAgentDir = "/home/user/.openclaw/agents/main/agent"; // default mock value
++    const store = makeStore(["anthropic:worker-profile", "anthropic:worker-stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:worker-profile"]));
++    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
++    mocks.resolveAgentDir.mockReturnValueOnce(workerAgentDir);
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(store);
++    captureUpdater(store);
++
++    await modelsAuthCleanCommand({ agent: "worker" }, makeRuntime());
++
++    // Every call to loadAgentLocalAuthProfileStore must use the worker-specific
++    // agentDir — never the main agent dir and never undefined (which would also
++    // resolve to the main dir).
++    const calls = mocks.loadAgentLocalAuthProfileStore.mock.calls;
++    expect(calls.length).toBeGreaterThan(0);
++    for (const [dir] of calls) {
++      expect(dir).toBe(workerAgentDir);
++      expect(dir).not.toBe(mainAgentDir);
++      expect(dir).not.toBeUndefined();
++    }
++  });
++
++  it("default agent: does not set agentLocalOnly on updateAuthProfileStoreWithLock", async () => {
++    // Default agent uses the merged store (ensureAuthProfileStore path) — no agentLocalOnly.
++    const store = makeStore(["anthropic:me.com", "anthropic:stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++    captureUpdater(store);
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    const call = mocks.updateAuthProfileStoreWithLock.mock.calls[0]?.[0] as Record<string, unknown>;
++    expect(call?.agentLocalOnly).toBeFalsy();
++  });
++
++  it("non-main agent as configured default: agentLocalOnly:true even when agentId === defaultAgentId", async () => {
++    // Regression: when a config sets a non-main agent as default (e.g. agents.list[0].default=true
++    // with id "custom-agent"), the old code used (agentId === defaultAgentId) which was true,
++    // disabling agentLocalOnly and causing main-store profiles to be written into the agent-local
++    // file (scope bleed). The fix compares resolved agentDir paths against the main agent
++    // directory instead of comparing agentId strings.
++    const agentLocalStore = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:agent-profile"]));
++    // "custom-agent" is the configured default (not the main agent)
++    mocks.resolveDefaultAgentId.mockReturnValueOnce("custom-agent");
++    // No --agent flag: resolveKnownAgentId returns null (default mock) → agentId = "custom-agent"
++    // First resolveAgentDir call: agentDir for "custom-agent"
++    mocks.resolveAgentDir.mockReturnValueOnce("/home/user/.openclaw/agents/custom-agent/agent");
++    // Second resolveAgentDir call: mainAgentDir for DEFAULT_AGENT_ID ("main")
++    // falls through to default mock → "/home/user/.openclaw/agents/main/agent"
++    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(agentLocalStore);
++    captureUpdater(agentLocalStore);
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    // agentLocalOnly must be true: custom-agent's dir != main agent dir
++    expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledWith(
++      expect.objectContaining({ agentLocalOnly: true }),
++    );
++    // loadAgentLocalAuthProfileStore must be used, NOT ensureAuthProfileStore
++    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalled();
++    expect(mocks.ensureAuthProfileStore).not.toHaveBeenCalled();
++  });
++
++  // ---- Fix: sanitize ANSI escape codes in profile ID output (Aisle Low) ----
++
++  it("strips ANSI escape sequences from profile IDs in --dry-run output", async () => {
++    // A profile ID containing an ANSI color sequence must not reach the terminal raw.
++    const maliciousId = "anthropic:\x1b[31mred\x1b[0m";
++    const store = makeStore([maliciousId]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:safe"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    const combined = runtime.logs.join("\n");
++    // ANSI escape sequences must be stripped
++    expect(combined).not.toContain("\x1b[31m");
++    expect(combined).not.toContain("\x1b[0m");
++    // The non-malicious text should still appear
++    expect(combined).toContain("anthropic:");
++    expect(combined).toContain("red");
++  });
++
++  it("strips newlines from profile IDs in --dry-run output to prevent log forging", async () => {
++    // A profile ID "anthropic:legit\nINJECTED LINE" must not produce a separate
++    // log entry that starts with "INJECTED LINE" (i.e., must not forge a new line).
++    // After sanitization the \n is removed and the injected text is concatenated
++    // to the profile ID rather than appearing as a standalone forged log entry.
++    const maliciousId = "anthropic:legit\nINJECTED LINE";
++    const store = makeStore([maliciousId]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:safe"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    // No log call should start with the injected text (that would mean log forging)
++    for (const line of runtime.logs) {
++      expect(line).not.toMatch(/^\s*INJECTED LINE/);
++    }
++    // The sanitized prefix (before the stripped \n) should still appear
++    expect(runtime.logs.some((line) => line.includes("anthropic:legit"))).toBe(true);
++  });
++
++  it("strips private CSI escape sequences (e.g. cursor hide) from profile IDs", async () => {
++    // Private CSI sequences like \x1b[?25l (cursor hide) contain a '?' parameter
++    // prefix not matched by the old [0-9;]* pattern — they must be stripped.
++    const maliciousId = "anthropic:\x1b[?25lhidden\x1b[?25h";
++    const store = makeStore([maliciousId]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:safe"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    const combined = runtime.logs.join("\n");
++    // Private CSI sequences must be stripped
++    expect(combined).not.toContain("\x1b[?25l");
++    expect(combined).not.toContain("\x1b[?25h");
++    // The non-escape text should still appear
++    expect(combined).toContain("anthropic:");
++    expect(combined).toContain("hidden");
++  });
++
++  it("strips OSC escape sequences (e.g. window title) from profile IDs", async () => {
++    // OSC sequences like \x1b]0;title\x07 set terminal window titles; they are
++    // not matched by CSI-only patterns and must be stripped to prevent injection.
++    const maliciousId = "anthropic:\x1b]0;injected-title\x07name";
++    const store = makeStore([maliciousId]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:safe"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    const combined = runtime.logs.join("\n");
++    // OSC sequence must be stripped
++    expect(combined).not.toContain("\x1b]0;");
++    expect(combined).not.toContain("\x07");
++    // The non-escape text should still appear
++    expect(combined).toContain("anthropic:");
++    expect(combined).toContain("name");
++  });
++
++  // ---- Fix: empty-config guard must use cfg-derived IDs only, not store.order (#2921223519) ----
++
++  it("empty-config guard fires even when store.order has IDs (guard is cfg-derived only)", async () => {
++    // Regression: store.order IDs were previously included in configuredProfiles before
++    // the guard check. When openclaw.json has no auth config but store.order has entries,
++    // configuredProfiles.size > 0 and the guard silently passes — allowing every profile
++    // not in store.order to be deleted in a store-only setup.
++    // Fix: guard uses configDerivedProfileIds (cfg-only), so store.order IDs cannot
++    // defeat it. (#2921223519)
++    const store = makeStore(["anthropic:me.com", "anthropic:gmail"], {
++      order: { anthropic: ["anthropic:me.com"] }, // store.order with IDs
++    });
++
++    // openclaw.json has NO auth config (empty auth object — no profiles, no order)
++    mocks.loadModelsConfig.mockResolvedValue({ auth: {} } as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    // Must throw (not silently proceed) because cfg has no auth config
++    await expect(modelsAuthCleanCommand({}, makeRuntime())).rejects.toThrow(
++      /no configured auth profiles/i,
++    );
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++  });
++
++  it("empty-config guard: --dry-run warns even when store.order has IDs", async () => {
++    // Same scenario as above but with --dry-run: must warn rather than throw,
++    // even when store.order IDs are present. (#2921223519)
++    const store = makeStore(["anthropic:me.com"], {
++      order: { anthropic: ["anthropic:me.com"] },
++    });
++
++    mocks.loadModelsConfig.mockResolvedValue({ auth: {} } as OpenClawConfig);
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
++    expect(runtime.logs.join("\n")).toMatch(/warning/i);
++  });
++
++  // ---- Fix: store.order empty-array pruning ----
++
++  it("updater: removes stale id from store.order[provider] and deletes the key when empty", async () => {
++    // When a profile is stale (not in configuredProfiles at probe time), but happens
++    // to appear in store.order at lock time (e.g. added concurrently), the updater
++    // must remove it from the order array. When that removal leaves the array empty,
++    // the provider key must be deleted (not left as []).
++    //
++    // Scenario: probe store has no order → stale is in toRemove.
++    // Lock-time store has order: { anthropic: ["anthropic:stale"] }.
++    // After updater runs: anthropic key deleted, order object deleted.
++    const probeStore = makeStore(["anthropic:me.com", "anthropic:stale"]);
++    // No store.order at probe → stale not added to configuredProfiles → in toRemove
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(probeStore);
++
++    let capturedStore: AuthProfileStore | undefined;
++    mocks.updateAuthProfileStoreWithLock.mockImplementationOnce(
++      async (params: { updater: (s: AuthProfileStore) => boolean }) => {
++        // Simulate lock-time store with order added concurrently
++        const lockStore: AuthProfileStore = {
++          version: 1,
++          profiles: structuredClone(probeStore.profiles),
++          order: { anthropic: ["anthropic:stale"] },
++        };
++        params.updater(lockStore);
++        capturedStore = lockStore;
++        return lockStore;
++      },
++    );
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    expect(capturedStore?.profiles).not.toHaveProperty("anthropic:stale");
++    // anthropic key deleted (filtered to []) → order object deleted (no remaining keys)
++    expect(capturedStore).not.toHaveProperty("order");
++  });
++
++  it("updater: deletes store.order entirely when all provider entries are emptied", async () => {
++    // When every provider key in store.order is emptied after pruning stale ids,
++    // the order object itself must be deleted (not left as an empty {}).
++    // Scenario: two providers' order arrays each contain only stale.
++    const probeStore = makeStore(["anthropic:me.com", "anthropic:stale"]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(probeStore);
++
++    let capturedStore: AuthProfileStore | undefined;
++    mocks.updateAuthProfileStoreWithLock.mockImplementationOnce(
++      async (params: { updater: (s: AuthProfileStore) => boolean }) => {
++        const lockStore: AuthProfileStore = {
++          version: 1,
++          profiles: structuredClone(probeStore.profiles),
++          order: {
++            anthropic: ["anthropic:stale"],
++            openai: ["anthropic:stale"], // both entries contain only the stale id
++          },
++        };
++        params.updater(lockStore);
++        capturedStore = lockStore;
++        return lockStore;
++      },
++    );
++
++    await modelsAuthCleanCommand({}, makeRuntime());
++
++    // Both provider keys emptied → order object itself must be deleted
++    expect(capturedStore).not.toHaveProperty("order");
++  });
++
++  it("strips a bare trailing ESC byte (\\x1b with nothing after it) from profile IDs", async () => {
++    // A lone \x1b at the end of a string has no sequence character following it,
++    // so the previous regex (requiring [\s\S] — at least one char after ESC)
++    // would leave it unsanitized. The fix uses [\s\S]? (0 or 1 chars) so a
++    // trailing bare ESC is also consumed and removed.
++    const maliciousId = "anthropic:myprofile\x1b";
++    const store = makeStore([maliciousId]);
++
++    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:safe"]));
++    mocks.ensureAuthProfileStore.mockReturnValue(store);
++
++    const runtime = makeRuntime();
++    await modelsAuthCleanCommand({ dryRun: true }, runtime);
++
++    const combined = runtime.logs.join("\n");
++    // The bare trailing ESC byte must be stripped
++    expect(combined).not.toContain("\x1b");
++    // The non-escape text should still appear
++    expect(combined).toContain("anthropic:");
++    expect(combined).toContain("myprofile");
++  });
++});
+diff --git a/src/commands/models/auth-clean.ts b/src/commands/models/auth-clean.ts
+new file mode 100644
+index 0000000000000..1d9d53eaeb24a
+--- /dev/null
++++ b/src/commands/models/auth-clean.ts
+@@ -0,0 +1,389 @@
++import path from "node:path";
++import { resolveAgentDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
++import { ensureAuthProfileStore } from "../../agents/auth-profiles.js";
++import {
++  loadAgentLocalAuthProfileStore,
++  updateAuthProfileStoreWithLock,
++} from "../../agents/auth-profiles/store.js";
++import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
++import type { MediaToolsConfig, MediaUnderstandingModelConfig } from "../../config/types.tools.js";
++import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";
++import type { RuntimeEnv } from "../../runtime.js";
++import { shortenHomePath } from "../../utils.js";
++import { loadModelsConfig } from "./load-config.js";
++import { resolveKnownAgentId } from "./shared.js";
++
++/**
++ * Collect all auth profile ids referenced in tools.media config
++ * (top-level models array + per-media-type image/audio/video models).
++ * These are consumed by resolveProviderExecutionAuth and must not be pruned.
++ */
++function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>>): Set<string> {
++  const ids = new Set<string>();
++
++  function addFromModels(models: MediaUnderstandingModelConfig[] | undefined): void {
++    for (const m of models ?? []) {
++      if (m.profile) {
++        ids.add(m.profile);
++      }
++      if (m.preferredProfile) {
++        ids.add(m.preferredProfile);
++      }
++    }
++  }
++
++  // Scan top-level tools.media if present.
++  const media = cfg.tools?.media;
++  if (media) {
++    addFromModels(media.models);
++    addFromModels(media.image?.models);
++    addFromModels(media.audio?.models);
++    addFromModels(media.video?.models);
++  }
++
++  // Always scan per-agent tool overrides, even when cfg.tools.media is absent.
++  // Agent-level overrides may reference profiles not present at the top level;
++  // skipping them would cause those profiles to be treated as stale and wrongly pruned.
++  for (const agent of cfg.agents?.list ?? []) {
++    const agentMedia = (agent as { tools?: { media?: MediaToolsConfig } }).tools?.media;
++    if (!agentMedia) {
++      continue;
++    }
++    addFromModels(agentMedia.models);
++    addFromModels(agentMedia.image?.models);
++    addFromModels(agentMedia.audio?.models);
++    addFromModels(agentMedia.video?.models);
++  }
++
++  return ids;
++}
++
++/**
++ * Sanitize a profile ID string for safe output in terminal/log messages.
++ * Strips ALL terminal escape sequences and newlines to prevent terminal injection
++ * (log forging) via maliciously crafted profile IDs.
++ *
++ * Handles:
++ *   - Standard CSI:  ESC [ ... final        e.g. \x1b[31m, \x1b[1;32m
++ *   - Private CSI:   ESC [ ? ... final       e.g. \x1b[?25l (cursor hide)
++ *   - OSC:           ESC ] ... BEL/ST        e.g. \x1b]0;title\x07
++ *   - DCS/SOS/PM/APC: ESC P/X/^/_ ... ST   e.g. \x1bPdata\x1b\\
++ *   - Other Fe:      ESC <single char>       e.g. \x1bc (RIS reset)
++ *   - Bare ESC:      ESC at end of string    e.g. "myprofile\x1b"
++ */
++function sanitizeProfileId(id: string): string {
++  return (
++    id
++      .replace(
++        // Strip 7-bit ESC-prefixed ANSI/VT control sequences (CSI, OSC, DCS, APC, PM, SOS,
++        // private-use, and bare ESC + any char) to prevent terminal injection via profile IDs.
++        // eslint-disable-next-line no-control-regex
++        /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[\s\S]?)/g,
++        "",
++      )
++      // Strip C1 8-bit control codes (U+0080–U+009F), including \x9b (C1 CSI), which can
++      // construct terminal colour/cursor sequences on xterm-compatible terminals without
++      // a leading ESC byte, bypassing the 7-bit escape strip above (Greptile concern).
++      // eslint-disable-next-line no-control-regex
++      .replace(/[\x80-\x9f]/g, "")
++      .replace(/[\r\n]/g, "")
++  );
++}
++
++/**
++ * Remove stale profiles from auth-profiles.json that are no longer present in
++ * openclaw.json auth.profiles, auth.order, or tools.media model entries.
++ * Prevents ghost profiles (e.g. anthropic:manual, anthropic:user-me.com) from
++ * accumulating and silently corrupting auth order.
++ *
++ * Fixes: https://github.com/openclaw/openclaw/issues/41634
++ */
++export async function modelsAuthCleanCommand(
++  opts: { agent?: string; dryRun?: boolean; json?: boolean },
++  runtime: RuntimeEnv,
++): Promise<void> {
++  const cfg = await loadModelsConfig({ commandName: "models auth clean", runtime });
++  const defaultAgentId = resolveDefaultAgentId(cfg);
++  const agentId = resolveKnownAgentId({ cfg, rawAgentId: opts.agent }) ?? defaultAgentId;
++  const agentDir = resolveAgentDir(cfg, agentId);
++  const authStorePath = shortenHomePath(`${agentDir}/auth-profiles.json`);
++
++  // Determine whether agentDir resolves to the main agent directory.
++  // We compare resolved paths rather than checking (agentId === defaultAgentId) because
++  // a config may designate a non-main agent as the configured default.  In that case
++  // agentId === defaultAgentId would be true even though the write target is not the
++  // main agent file — incorrectly disabling agentLocalOnly and causing main-store
++  // profiles to be persisted into the agent-local auth-profiles.json (scope bleed).
++  // Comparing resolved paths against the main agent directory handles this correctly.
++  const mainAgentDir = resolveAgentDir(cfg, DEFAULT_AGENT_ID);
++  const isMainAgentDir = path.resolve(agentDir) === path.resolve(mainAgentDir);
++
++  // Collect profile ids that are explicitly configured in openclaw.json: union of
++  // auth.profiles keys, ids referenced in auth.order, and ids pinned in tools.media
++  // model entries. All three sets represent actively-used credentials that must not
++  // be pruned.
++  //
++  // IMPORTANT: store.order IDs must NOT be added here. This set is used for the
++  // empty-config safety guard (configDerivedProfileIds.size === 0) — including
++  // store.order IDs would defeat the guard whenever auth-profiles.json has an order
++  // override while openclaw.json has no auth config, allowing the command to silently
++  // delete every profile in a store-only setup. (#2921223519)
++  const configDerivedProfileIds = new Set<string>(
++    Object.keys(cfg.auth?.profiles ?? {})
++      .map((id) => id.trim())
++      .filter(Boolean),
++  );
++  for (const ids of Object.values(cfg.auth?.order ?? {})) {
++    if (Array.isArray(ids)) {
++      for (const id of ids) {
++        if (typeof id === "string" && id.trim()) {
++          configDerivedProfileIds.add(id.trim());
++        }
++      }
++    }
++  }
++  for (const id of collectMediaProfileIds(cfg)) {
++    configDerivedProfileIds.add(id);
++  }
++
++  // configuredProfiles extends configDerivedProfileIds with store.order overrides.
++  // store.order can still inform keep/prune decisions (profiles set via
++  // 'models auth order set' must not be removed), but must not count toward the
++  // empty-config safety threshold. (#2921223519)
++  const configuredProfiles = new Set<string>(configDerivedProfileIds);
++
++  // Load the store for inspection (collect storeProfileIds and storeOrder).
++  // Probe phase is always readOnly:true — a write-capable store must never be opened
++  // before guards pass and cleanup is confirmed to proceed. A separate write-enabled
++  // load is deferred to after all guards pass (see below) to trigger legacy migration.
++  // (#2914491523, #2914711181, #2915530629)
++  const storeLoadOpts = { allowKeychainPrompt: false, readOnly: true };
++  const store = isMainAgentDir
++    ? ensureAuthProfileStore(agentDir, storeLoadOpts)
++    : loadAgentLocalAuthProfileStore(agentDir, storeLoadOpts);
++
++  // Also keep profiles referenced in store.order (per-agent overrides set via
++  // 'models auth order set'). These are not reflected in cfg.auth.order or
++  // cfg.auth.profiles, so they would be incorrectly treated as stale without
++  // this step. Note: these IDs are added to configuredProfiles (keep/prune), NOT
++  // to configDerivedProfileIds (guard threshold). (#2921223519)
++  const storeOrder = store.order;
++  if (storeOrder) {
++    for (const ids of Object.values(storeOrder)) {
++      if (Array.isArray(ids)) {
++        for (const id of ids) {
++          if (typeof id === "string" && id.trim()) {
++            configuredProfiles.add(id.trim());
++          }
++        }
++      }
++    }
++  }
++
++  const storeProfileIds = Object.keys(store.profiles);
++
++  const toRemove = storeProfileIds.filter((id) => !configuredProfiles.has(id));
++  const toKeep = storeProfileIds.filter((id) => configuredProfiles.has(id));
++
++  // Safety guard: refuse to wipe everything when openclaw.json has no auth
++  // config at all (e.g. profiles and order both absent/empty). This avoids
++  // accidentally nuking a store-only setup. Require --dry-run to inspect.
++  //
++  // Evaluated against configDerivedProfileIds (cfg-only), NOT configuredProfiles.
++  // configuredProfiles may include store.order IDs, which would silently defeat
++  // this guard in a store-only setup. (#2921223519)
++  if (configDerivedProfileIds.size === 0 && storeProfileIds.length > 0) {
++    if (opts.dryRun) {
++      if (opts.json) {
++        runtime.log(
++          JSON.stringify(
++            {
++              warning:
++                "No profiles configured in openclaw.json auth.profiles or auth.order. All store profiles would be removed. Pass --force to proceed.",
++              storeProfiles: storeProfileIds,
++              dryRun: true,
++            },
++            null,
++            2,
++          ),
++        );
++      } else {
++        runtime.log(
++          "Warning: openclaw.json has no configured profiles. All store profiles would be removed.",
++        );
++        runtime.log(`In store: ${storeProfileIds.map(sanitizeProfileId).join(", ")}`);
++        runtime.log("(dry run -- no changes written)");
++      }
++      return;
++    }
++    throw new Error(
++      "openclaw.json has no configured auth profiles (auth.profiles and auth.order are both empty). " +
++        "Run with --dry-run to inspect, or add profiles to openclaw.json before cleaning.",
++    );
++  }
++
++  if (opts.json) {
++    runtime.log(
++      JSON.stringify(
++        {
++          agentId,
++          agentDir,
++          authStorePath,
++          configuredProfiles: [...configuredProfiles],
++          storeProfiles: storeProfileIds,
++          toRemove,
++          toKeep,
++          dryRun: opts.dryRun ?? false,
++        },
++        null,
++        2,
++      ),
++    );
++    if (opts.dryRun || toRemove.length === 0) {
++      return;
++    }
++  } else {
++    runtime.log(`Agent:      ${agentId}`);
++    runtime.log(`Auth file:  ${authStorePath}`);
++    runtime.log(
++      `Configured: ${[...configuredProfiles].map(sanitizeProfileId).join(", ") || "(none)"}`,
++    );
++    runtime.log(`In store:   ${storeProfileIds.map(sanitizeProfileId).join(", ") || "(none)"}`);
++  }
++
++  if (toRemove.length === 0) {
++    if (!opts.json) {
++      runtime.log("Nothing to clean up.");
++    }
++    return;
++  }
++
++  if (!opts.json) {
++    runtime.log(`\nProfiles to remove (${toRemove.length}):`);
++    for (const id of toRemove) {
++      runtime.log(`  - ${sanitizeProfileId(id)}`);
++    }
++    runtime.log(`Profiles to keep (${toKeep.length}):`);
++    for (const id of toKeep) {
++      runtime.log(`  + ${sanitizeProfileId(id)}`);
++    }
++  }
++
++  if (opts.dryRun) {
++    if (!opts.json) {
++      runtime.log("\n(dry run -- no changes written)");
++    }
++    return;
++  }
++
++  // Trigger legacy auth.json → auth-profiles.json migration with a write-enabled
++  // load now that all guards have passed and cleanup is confirmed to proceed.
++  // The probe above used readOnly:true (suppressing migration writes); running a
++  // readOnly:false load here ensures the legacy store is persisted before
++  // updateAuthProfileStoreWithLock's ensureAuthStoreFile can create an empty
++  // placeholder (which would cause the lock-internal load to see an empty store
++  // and skip all profile removals). (#2914491523, #2914711181)
++  //
++  // For non-main agents, skipInheritance:true prevents the main-agent fallback
++  // inside loadAuthProfileStoreForAgent from cloning main profiles into the
++  // subagent file when auth-profiles.json is absent.  Without it, a subagent
++  // with no local store would materialise main credentials before cleanup and
++  // skip the intended legacy migration, causing scope bleed. (#2915653312)
++  if (isMainAgentDir) {
++    ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false, readOnly: false });
++  } else {
++    loadAgentLocalAuthProfileStore(agentDir, {
++      allowKeychainPrompt: false,
++      readOnly: false,
++      skipInheritance: true,
++    });
++  }
++
++  // Track actual removals inside the lock (concurrent gateway writes may have
++  // already cleaned some ids between our initial read and lock acquisition).
++  let actualRemoved = 0;
++
++  const updated = await updateAuthProfileStoreWithLock({
++    agentDir,
++    // For non-main agent directories the write target is the agent-local file only.
++    // Setting agentLocalOnly ensures the store loaded inside the lock is the
++    // agent-local view (not the merged main+agent view returned by
++    // ensureAuthProfileStore), which prevents main-store profiles from being
++    // written into the agent-local file (credential scope bleed).
++    agentLocalOnly: !isMainAgentDir,
++    updater: (freshStore: AuthProfileStore) => {
++      let mutated = false;
++
++      // Remove stale profiles
++      for (const id of toRemove) {
++        if (id in freshStore.profiles) {
++          delete freshStore.profiles[id];
++          actualRemoved++;
++          mutated = true;
++        }
++      }
++
++      // Prune removed ids from the order map; delete the key entirely when
++      // the filtered list becomes empty (an empty array overrides config with
++      // no candidates, which breaks provider auth resolution).
++      const order = freshStore.order;
++      if (order) {
++        for (const provider of Object.keys(order)) {
++          const existing = order[provider];
++          if (Array.isArray(existing)) {
++            const filtered = existing.filter((id) => !toRemove.includes(id));
++            if (filtered.length !== existing.length) {
++              mutated = true;
++              if (filtered.length > 0) {
++                order[provider] = filtered;
++              } else {
++                delete order[provider];
++              }
++            }
++          }
++        }
++        if (Object.keys(order).length === 0) {
++          delete freshStore.order;
++        }
++      }
++
++      // Prune removed ids from usageStats
++      if (freshStore.usageStats) {
++        for (const id of toRemove) {
++          if (id in freshStore.usageStats) {
++            delete freshStore.usageStats[id];
++            mutated = true;
++          }
++        }
++      }
++
++      // Prune removed ids from lastGood (provider -> profileId map)
++      if (freshStore.lastGood) {
++        for (const [provider, profileId] of Object.entries(freshStore.lastGood)) {
++          if (toRemove.includes(profileId)) {
++            delete freshStore.lastGood[provider];
++            mutated = true;
++          }
++        }
++      }
++
++      return mutated;
++    },
++  });
++
++  if (!updated) {
++    // updateAuthProfileStoreWithLock returns null for any internal failure (lock
++    // contention, I/O error, permission denied, disk full, etc.) — not just
++    // lock contention. The original message was misleading; use a generic message
++    // so the error accurately reflects that any write failure is possible.
++    throw new Error(
++      "Failed to update auth-profiles.json (write failed — check for lock contention, I/O errors, or permission issues).",
++    );
++  }
++
++  if (opts.json) {
++    runtime.log(JSON.stringify({ ok: true, removed: actualRemoved }, null, 2));
++  } else {
++    runtime.log(`\nRemoved ${actualRemoved} stale profile(s). Restart the gateway to apply.`);
++  }
++}
+diff --git a/src/infra/json-file.ts b/src/infra/json-file.ts
+index 01602efb4300b..78d5896da7970 100644
+--- a/src/infra/json-file.ts
++++ b/src/infra/json-file.ts
+@@ -126,4 +126,5 @@ export function saveJsonFile(pathname: string, data: unknown) {
+       // best-effort cleanup when rename does not happen
+     }
+   }
++
+ }
+diff --git a/src/providers/qwen-portal-oauth.ts b/src/providers/qwen-portal-oauth.ts
+new file mode 100644
+index 0000000000000..159942ef2a92d
+--- /dev/null
++++ b/src/providers/qwen-portal-oauth.ts
+@@ -0,0 +1,62 @@
++import type { OAuthCredentials } from "@mariozechner/pi-ai";
++import { formatCliCommand } from "../cli/command-format.js";
++
++const QWEN_OAUTH_BASE_URL = "https://chat.qwen.ai";
++const QWEN_OAUTH_TOKEN_ENDPOINT = `${QWEN_OAUTH_BASE_URL}/api/v1/oauth2/token`;
++const QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56";
++
++export async function refreshQwenPortalCredentials(
++  credentials: OAuthCredentials,
++): Promise<OAuthCredentials> {
++  const refreshToken = credentials.refresh?.trim();
++  if (!refreshToken) {
++    throw new Error("Qwen OAuth refresh token missing; re-authenticate.");
++  }
++
++  const response = await fetch(QWEN_OAUTH_TOKEN_ENDPOINT, {
++    method: "POST",
++    headers: {
++      "Content-Type": "application/x-www-form-urlencoded",
++      Accept: "application/json",
++    },
++    body: new URLSearchParams({
++      grant_type: "refresh_token",
++      refresh_token: refreshToken,
++      client_id: QWEN_OAUTH_CLIENT_ID,
++    }),
++  });
++
++  if (!response.ok) {
++    const text = await response.text();
++    if (response.status === 400) {
++      throw new Error(
++        `Qwen OAuth refresh token expired or invalid. Re-authenticate with \`${formatCliCommand("openclaw models auth login --provider qwen-portal")}\`.`,
++      );
++    }
++    throw new Error(`Qwen OAuth refresh failed: ${text || response.statusText}`);
++  }
++
++  const payload = (await response.json()) as {
++    access_token?: string;
++    refresh_token?: string;
++    expires_in?: number;
++  };
++  const accessToken = payload.access_token?.trim();
++  const newRefreshToken = payload.refresh_token?.trim();
++  const expiresIn = payload.expires_in;
++
++  if (!accessToken) {
++    throw new Error("Qwen OAuth refresh response missing access token.");
++  }
++  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
++    throw new Error("Qwen OAuth refresh response missing or invalid expires_in.");
++  }
++
++  return {
++    ...credentials,
++    access: accessToken,
++    // RFC 6749 section 6: new refresh token is optional; if present, replace old.
++    refresh: newRefreshToken || refreshToken,
++    expires: Date.now() + expiresIn * 1000,
++  };
++}

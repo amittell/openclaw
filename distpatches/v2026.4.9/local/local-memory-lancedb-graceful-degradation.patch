@@ -1,0 +1,90 @@
+From 29a6e46a827d63dc0692b4240590810fa7f7605e Mon Sep 17 00:00:00 2001
+From: Alex Mittell <mittell@me.com>
+Date: Sat, 4 Apr 2026 16:26:11 -0400
+Subject: [PATCH] feat(memory-lancedb): add graceful degradation for
+ config/native module errors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wrap memoryConfigSchema.parse() in register() with try/catch so that
+config validation failures (e.g. unknown keys due to schema drift after
+an upgrade) no longer crash the entire openclaw binary. On error, the
+plugin logs a clear warning to stderr and returns early WITHOUT
+registering any memory tools, allowing the rest of openclaw to continue
+working normally.
+
+Also wrap loadLanceDbModule() in doInitialize() with a .catch() that
+logs a clear [memory-lancedb] prefixed message before re-throwing, so
+native module load failures (e.g. after hot-reload breaks native addon
+resolution — requires full gateway restart) are clearly identified in
+logs.
+
+Both error paths use the format:
+  [memory-lancedb] <type>: <message> — memory tools disabled
+
+Fixes the root cause of scheduler job failures like:
+  Config invalid: plugins.entries.memory-lancedb.config.embedding:
+  invalid config: must NOT have additional properties
+---
+ extensions/memory-lancedb/index.ts | 30 +++++++++++++++++++++++++++---
+ 1 file changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/extensions/memory-lancedb/index.ts b/extensions/memory-lancedb/index.ts
+index 8646a07fa9..e0bb07b0a8 100644
+--- a/extensions/memory-lancedb/index.ts
++++ b/extensions/memory-lancedb/index.ts
+@@ -94,7 +94,15 @@ class MemoryDB {
+   }
+ 
+   private async doInitialize(): Promise<void> {
+-    const lancedb = await loadLanceDbModule();
++    // Graceful degradation: catch native module load failures (e.g. after a
++    // hot-reload where the native addon resolver is broken — requires full
++    // gateway restart to recover). Re-throw with a clear prefix so callers
++    // can distinguish LanceDB issues from other DB errors.
++    const lancedb = await loadLanceDbModule().catch((err: unknown) => {
++      const msg = `[memory-lancedb] LanceDB native module failed to load: ${err instanceof Error ? err.message : String(err)} — memory tools disabled`;
++      console.error(msg);
++      throw new Error(msg, { cause: err });
++    });
+     this.db = await lancedb.connect(this.dbPath);
+     const tables = await this.db.tableNames();
+ 
+@@ -295,7 +303,10 @@ const MEDIA_ATTACHED_PATTERN = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
+ export function escapeMemoryForPrompt(text: string): string {
+   // Strip [media attached: ...] annotations before HTML-escaping so that
+   // detectImageReferences() cannot re-parse them as live media references.
+-  const stripped = text.replace(MEDIA_ATTACHED_PATTERN, "").replace(/\s{2,}/g, " ").trim();
++  const stripped = text
++    .replace(MEDIA_ATTACHED_PATTERN, "")
++    .replace(/\s{2,}/g, " ")
++    .trim();
+   return stripped.replace(/[&<>"']/g, (char) => PROMPT_ESCAPE_MAP[char] ?? char);
+ }
+ 
+@@ -366,7 +377,20 @@ export default definePluginEntry({
+   configSchema: memoryConfigSchema,
+ 
+   register(api: OpenClawPluginApi) {
+-    const cfg = memoryConfigSchema.parse(api.pluginConfig);
++    // Graceful degradation: catch config parse errors (e.g. schema drift after
++    // an upgrade adds/removes config keys) and LanceDB native module load
++    // failures (e.g. after a hot-reload that breaks native addon resolution).
++    // On any init error we log a clear warning and return early WITHOUT
++    // registering any tools — so the rest of openclaw continues to work.
++    let cfg: ReturnType<typeof memoryConfigSchema.parse>;
++    try {
++      cfg = memoryConfigSchema.parse(api.pluginConfig);
++    } catch (err) {
++      console.error(
++        `[memory-lancedb] config error: ${err instanceof Error ? err.message : String(err)} — memory tools disabled`,
++      );
++      return;
++    }
+     const resolvedDbPath = api.resolvePath(cfg.dbPath!);
+     const { model, dimensions, apiKey, baseUrl } = cfg.embedding;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

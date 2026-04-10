@@ -1,0 +1,29 @@
+From b172f7987c547d509ab88987ba3ab1294875ca84 Mon Sep 17 00:00:00 2001
+From: amittell <mittell@me.com>
+Date: Sun, 5 Apr 2026 17:19:51 -0400
+Subject: [PATCH] fix(telegram): give getUpdates long-poll headroom
+
+---
+ extensions/telegram/src/monitor.ts | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/extensions/telegram/src/monitor.ts b/extensions/telegram/src/monitor.ts
+index 140405b99e..773522a813 100644
+--- a/extensions/telegram/src/monitor.ts
++++ b/extensions/telegram/src/monitor.ts
+@@ -39,8 +39,10 @@ export function createTelegramRunnerOptions(cfg: OpenClawConfig): RunOptions<unk
+     },
+     runner: {
+       fetch: {
+-        // Match grammY defaults
+-        timeout: 30,
++        // Leave headroom below the 30s long-poll edge. In production, quiet bots
++        // were repeatedly failing at ~30.0s with "Network request for 'getUpdates'
++        // failed!" before Telegram returned the empty long-poll response.
++        timeout: 25,
+         // Request reactions without dropping default update types.
+         allowed_updates: resolveTelegramAllowedUpdates(),
+       },
+-- 
+2.50.1 (Apple Git-155)
+

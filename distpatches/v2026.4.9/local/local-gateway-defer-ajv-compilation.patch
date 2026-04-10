@@ -1,0 +1,779 @@
+From 8db3877d5f1cd60bd8c2ea8a0e123320745c1677 Mon Sep 17 00:00:00 2001
+From: openperf <16864032@qq.com>
+Date: Sun, 5 Apr 2026 19:43:28 +0800
+Subject: [PATCH] fix(gateway): defer ajv schema compilation to prevent stack
+ overflow during channel plugin loading
+
+Cherry-pick of #61323. Resolves Telegram/channel init failures on 4.2 (issue #61273).
+Conflict resolved: HEAD still had ajv.compile on cron/skills/devicePair validators not yet
+converted; took PR's full lazyCompile conversion + new SkillsSearch/Detail/ExecApprovalGet
+validators.
+---
+ ...enerate-bundled-channel-config-metadata.ts |  14 +-
+ .../plugins/bundled.shape-guard.test.ts       |  34 +++
+ src/channels/plugins/bundled.ts               |   5 +
+ ...ndled-channel-config-metadata.generated.ts |  22 --
+ src/gateway/protocol/index.test.ts            |  21 ++
+ src/gateway/protocol/index.ts                 | 240 ++++++++++--------
+ src/plugins/bundled-plugin-metadata.test.ts   |  32 +++
+ src/plugins/bundled-plugin-metadata.ts        |  16 +-
+ src/plugins/schema-validator.test.ts          |  20 ++
+ src/plugins/schema-validator.ts               |   1 +
+ 10 files changed, 279 insertions(+), 126 deletions(-)
+
+diff --git a/scripts/generate-bundled-channel-config-metadata.ts b/scripts/generate-bundled-channel-config-metadata.ts
+index 2d009748df..9d9c6bf501 100644
+--- a/scripts/generate-bundled-channel-config-metadata.ts
++++ b/scripts/generate-bundled-channel-config-metadata.ts
+@@ -65,6 +65,18 @@ type BundledChannelConfigMetadata = {
+   uiHints?: Record<string, unknown>;
+ };
+ 
++/**
++ * Strip the `$schema` meta-schema URI so the generated output does not carry
++ * it into runtime ajv compilation, avoiding unnecessary recursive stack depth.
++ */
++function stripSchemaProperty(schema: Record<string, unknown>): Record<string, unknown> {
++  if (!("$schema" in schema)) {
++    return schema;
++  }
++  const { $schema: _, ...rest } = schema;
++  return rest;
++}
++
+ function resolveChannelConfigSchemaModulePath(rootDir: string): string | null {
+   const candidates = [
+     path.join(rootDir, "src", "config-schema.ts"),
+@@ -161,7 +173,7 @@ export async function collectBundledChannelConfigMetadata(params?: { repoRoot?:
+         channelId,
+         ...(label ? { label } : {}),
+         ...(description ? { description } : {}),
+-        schema: surface.schema,
++        schema: stripSchemaProperty(surface.schema),
+         ...(Object.keys(surface.uiHints ?? {}).length > 0 ? { uiHints: surface.uiHints } : {}),
+       });
+     }
+diff --git a/src/channels/plugins/bundled.shape-guard.test.ts b/src/channels/plugins/bundled.shape-guard.test.ts
+index 90bc4bcbd8..1301d6baa3 100644
+--- a/src/channels/plugins/bundled.shape-guard.test.ts
++++ b/src/channels/plugins/bundled.shape-guard.test.ts
+@@ -28,3 +28,37 @@ describe("bundled channel entry shape guards", () => {
+     expect(bundled.listBundledChannelSetupPlugins()).toEqual([]);
+   });
+ });
++
++describe("OPENCLAW_SKIP_CHANNEL_PLUGINS bypass", () => {
++  it("returns empty arrays when OPENCLAW_SKIP_CHANNEL_PLUGINS=1", async () => {
++    const original = process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS;
++    process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS = "1";
++    try {
++      // Mock discovery so the test does not depend on real plugin layout.
++      vi.doMock("../../plugins/discovery.js", () => ({
++        discoverOpenClawPlugins: () => ({
++          candidates: [],
++          diagnostics: [],
++        }),
++      }));
++      vi.doMock("../../plugins/manifest-registry.js", () => ({
++        loadPluginManifestRegistry: () => ({
++          plugins: [],
++          diagnostics: [],
++        }),
++      }));
++      const bundled = await importFreshModule<typeof import("./bundled.js")>(
++        import.meta.url,
++        "./bundled.js?scope=skip-channel-plugins",
++      );
++      expect(bundled.listBundledChannelPlugins()).toEqual([]);
++      expect(bundled.listBundledChannelSetupPlugins()).toEqual([]);
++    } finally {
++      if (original === undefined) {
++        delete process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS;
++      } else {
++        process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS = original;
++      }
++    }
++  });
++});
+diff --git a/src/channels/plugins/bundled.ts b/src/channels/plugins/bundled.ts
+index f7a8e97b17..2a565867ff 100644
+--- a/src/channels/plugins/bundled.ts
++++ b/src/channels/plugins/bundled.ts
+@@ -117,6 +117,11 @@ function loadBundledModule(modulePath: string, rootDir: string): unknown {
+ }
+ 
+ function loadGeneratedBundledChannelEntries(): readonly GeneratedBundledChannelEntry[] {
++  // TODO(#61259): remove once jiti loading depth is addressed upstream.
++  if (process.env.OPENCLAW_SKIP_CHANNEL_PLUGINS === "1") {
++    log.info("[channels] OPENCLAW_SKIP_CHANNEL_PLUGINS=1; skipping bundled channel plugin loading");
++    return [];
++  }
+   const discovery = discoverOpenClawPlugins({ cache: false });
+   const manifestRegistry = loadPluginManifestRegistry({
+     cache: false,
+diff --git a/src/config/bundled-channel-config-metadata.generated.ts b/src/config/bundled-channel-config-metadata.generated.ts
+index a04ee4d914..b192364f0e 100644
+--- a/src/config/bundled-channel-config-metadata.generated.ts
++++ b/src/config/bundled-channel-config-metadata.generated.ts
+@@ -7,7 +7,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "BlueBubbles",
+     description: "iMessage via the BlueBubbles mac app + REST API.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -512,7 +511,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Discord",
+     description: "very well supported right now.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -3025,7 +3023,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Feishu",
+     description: "飞书/Lark enterprise messaging with doc/wiki/drive tools.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         enabled: {
+@@ -4138,7 +4135,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Google Chat",
+     description: "Google Workspace Chat app with HTTP webhook.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -4916,7 +4912,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "iMessage",
+     description: "this is still a work in progress.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -5500,7 +5495,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "IRC",
+     description: "classic IRC networks with DM/channel routing and pairing controls.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -6124,7 +6118,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "LINE",
+     description: "LINE Messaging API webhook bot.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         enabled: {
+@@ -6402,7 +6395,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Matrix",
+     description: "open protocol; install the plugin to enable.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -6950,7 +6942,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Mattermost",
+     description: "self-hosted Slack-style chat; install the plugin to enable.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -7526,7 +7517,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Microsoft Teams",
+     description: "Teams SDK; enterprise support.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         enabled: {
+@@ -7968,7 +7958,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Nextcloud Talk",
+     description: "Self-hosted chat via Nextcloud Talk webhook bots.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -8644,7 +8633,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Nostr",
+     description: "Decentralized protocol; encrypted DMs via NIP-04.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -8802,7 +8790,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     description:
+       "connect to QQ via official QQ Bot API with group chat and direct message support.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         enabled: {
+@@ -9157,7 +9144,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Signal",
+     description: 'signal-cli linked device; more setup (David Reagans: "Hop on Discord.").',
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -9813,7 +9799,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Slack",
+     description: "supported (Socket Mode).",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -11620,7 +11605,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Synology Chat",
+     description: "Connect your Synology NAS Chat to OpenClaw with full agent capabilities.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         dangerouslyAllowNameMatching: {
+@@ -11639,7 +11623,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Telegram",
+     description: "simplest way to get started — register a bot with @BotFather and get going.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -13771,7 +13754,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Tlon",
+     description: "decentralized messaging on Urbit; install the plugin to enable.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -13936,7 +13918,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Twitch",
+     description: "Twitch chat integration",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       anyOf: [
+         {
+           allOf: [
+@@ -14134,7 +14115,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "WhatsApp",
+     description: "works with your own number; recommend a separate phone + eSIM.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         enabled: {
+@@ -14700,7 +14680,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Zalo",
+     description: "Vietnam-focused messaging platform with Bot API.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+@@ -15126,7 +15105,6 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
+     label: "Zalo Personal",
+     description: "Zalo personal account via QR code login.",
+     schema: {
+-      $schema: "http://json-schema.org/draft-07/schema#",
+       type: "object",
+       properties: {
+         name: {
+diff --git a/src/gateway/protocol/index.test.ts b/src/gateway/protocol/index.test.ts
+index ad452effd1..755a1a6e55 100644
+--- a/src/gateway/protocol/index.test.ts
++++ b/src/gateway/protocol/index.test.ts
+@@ -63,6 +63,27 @@ describe("formatValidationErrors", () => {
+   });
+ });
+ 
++describe("lazy protocol validators", () => {
++  it("validators are callable before first use (lazy compile)", () => {
++    // Validators must be functions even though compilation is deferred.
++    expect(typeof validateTalkConfigResult).toBe("function");
++  });
++
++  it("validators expose errors property", () => {
++    // The proxy must expose an `errors` property so callers that read
++    // `validator.errors` after a failed validation still work.
++    expect(validateTalkConfigResult).toHaveProperty("errors");
++  });
++
++  it("validators compile on first call and cache the result", () => {
++    // Calling the same validator twice must not throw and must return
++    // consistent results, proving the lazy cache works.
++    const first = validateTalkConfigResult({ config: {} });
++    const second = validateTalkConfigResult({ config: {} });
++    expect(first).toBe(second);
++  });
++});
++
+ describe("validateTalkConfigResult", () => {
+   it("accepts Talk SecretRef payloads", () => {
+     expect(
+diff --git a/src/gateway/protocol/index.ts b/src/gateway/protocol/index.ts
+index 71df829357..733b507cec 100644
+--- a/src/gateway/protocol/index.ts
++++ b/src/gateway/protocol/index.ts
+@@ -275,194 +275,230 @@ const ajv = new (AjvPkg as unknown as new (opts?: object) => import("ajv").defau
+   allErrors: true,
+   strict: false,
+   removeAdditional: false,
++  validateSchema: false,
+ });
+ 
+-export const validateConnectParams = ajv.compile<ConnectParams>(ConnectParamsSchema);
+-export const validateRequestFrame = ajv.compile<RequestFrame>(RequestFrameSchema);
+-export const validateResponseFrame = ajv.compile<ResponseFrame>(ResponseFrameSchema);
+-export const validateEventFrame = ajv.compile<EventFrame>(EventFrameSchema);
+-export const validateSendParams = ajv.compile(SendParamsSchema);
+-export const validatePollParams = ajv.compile<PollParams>(PollParamsSchema);
+-export const validateAgentParams = ajv.compile(AgentParamsSchema);
++/**
++ * Defer `ajv.compile()` to first invocation so that module loading does not
++ * synchronously compile all ~100 schemas.  This is the primary fix for the
++ * stack overflow reported in #61259: when bundled channel plugins are loaded
++ * through jiti's recursive CJS↔ESM bridge the call stack is already deep,
++ * and eager compilation of every protocol schema exhausts it.
++ */
++function lazyCompile<T = unknown>(schema: object): import("ajv").ValidateFunction<T> {
++  let cached: import("ajv").ValidateFunction<T> | undefined;
++  let compileError: unknown;
++  const proxy = function validate(data: unknown) {
++    if (!cached) {
++      if (compileError !== undefined) {
++        throw compileError;
++      }
++      try {
++        cached = ajv.compile<T>(schema);
++      } catch (err) {
++        compileError = err;
++        throw err;
++      }
++    }
++    const valid = cached(data);
++    proxy.errors = cached.errors;
++    return valid;
++  } as import("ajv").ValidateFunction<T>;
++  proxy.errors = null;
++  return proxy;
++}
++
++export const validateConnectParams = lazyCompile<ConnectParams>(ConnectParamsSchema);
++export const validateRequestFrame = lazyCompile<RequestFrame>(RequestFrameSchema);
++export const validateResponseFrame = lazyCompile<ResponseFrame>(ResponseFrameSchema);
++export const validateEventFrame = lazyCompile<EventFrame>(EventFrameSchema);
++export const validateSendParams = lazyCompile(SendParamsSchema);
++export const validatePollParams = lazyCompile<PollParams>(PollParamsSchema);
++export const validateAgentParams = lazyCompile(AgentParamsSchema);
+ export const validateAgentIdentityParams =
+-  ajv.compile<AgentIdentityParams>(AgentIdentityParamsSchema);
+-export const validateAgentWaitParams = ajv.compile<AgentWaitParams>(AgentWaitParamsSchema);
+-export const validateWakeParams = ajv.compile<WakeParams>(WakeParamsSchema);
+-export const validateAgentsListParams = ajv.compile<AgentsListParams>(AgentsListParamsSchema);
+-export const validateAgentsCreateParams = ajv.compile<AgentsCreateParams>(AgentsCreateParamsSchema);
+-export const validateAgentsUpdateParams = ajv.compile<AgentsUpdateParams>(AgentsUpdateParamsSchema);
+-export const validateAgentsDeleteParams = ajv.compile<AgentsDeleteParams>(AgentsDeleteParamsSchema);
+-export const validateAgentsFilesListParams = ajv.compile<AgentsFilesListParams>(
++  lazyCompile<AgentIdentityParams>(AgentIdentityParamsSchema);
++export const validateAgentWaitParams = lazyCompile<AgentWaitParams>(AgentWaitParamsSchema);
++export const validateWakeParams = lazyCompile<WakeParams>(WakeParamsSchema);
++export const validateAgentsListParams = lazyCompile<AgentsListParams>(AgentsListParamsSchema);
++export const validateAgentsCreateParams = lazyCompile<AgentsCreateParams>(AgentsCreateParamsSchema);
++export const validateAgentsUpdateParams = lazyCompile<AgentsUpdateParams>(AgentsUpdateParamsSchema);
++export const validateAgentsDeleteParams = lazyCompile<AgentsDeleteParams>(AgentsDeleteParamsSchema);
++export const validateAgentsFilesListParams = lazyCompile<AgentsFilesListParams>(
+   AgentsFilesListParamsSchema,
+ );
+-export const validateAgentsFilesGetParams = ajv.compile<AgentsFilesGetParams>(
++export const validateAgentsFilesGetParams = lazyCompile<AgentsFilesGetParams>(
+   AgentsFilesGetParamsSchema,
+ );
+-export const validateAgentsFilesSetParams = ajv.compile<AgentsFilesSetParams>(
++export const validateAgentsFilesSetParams = lazyCompile<AgentsFilesSetParams>(
+   AgentsFilesSetParamsSchema,
+ );
+-export const validateNodePairRequestParams = ajv.compile<NodePairRequestParams>(
++export const validateNodePairRequestParams = lazyCompile<NodePairRequestParams>(
+   NodePairRequestParamsSchema,
+ );
+-export const validateNodePairListParams = ajv.compile<NodePairListParams>(NodePairListParamsSchema);
+-export const validateNodePairApproveParams = ajv.compile<NodePairApproveParams>(
++export const validateNodePairListParams = lazyCompile<NodePairListParams>(NodePairListParamsSchema);
++export const validateNodePairApproveParams = lazyCompile<NodePairApproveParams>(
+   NodePairApproveParamsSchema,
+ );
+-export const validateNodePairRejectParams = ajv.compile<NodePairRejectParams>(
++export const validateNodePairRejectParams = lazyCompile<NodePairRejectParams>(
+   NodePairRejectParamsSchema,
+ );
+-export const validateNodePairVerifyParams = ajv.compile<NodePairVerifyParams>(
++export const validateNodePairVerifyParams = lazyCompile<NodePairVerifyParams>(
+   NodePairVerifyParamsSchema,
+ );
+-export const validateNodeRenameParams = ajv.compile<NodeRenameParams>(NodeRenameParamsSchema);
+-export const validateNodeListParams = ajv.compile<NodeListParams>(NodeListParamsSchema);
+-export const validateNodePendingAckParams = ajv.compile<NodePendingAckParams>(
++export const validateNodeRenameParams = lazyCompile<NodeRenameParams>(NodeRenameParamsSchema);
++export const validateNodeListParams = lazyCompile<NodeListParams>(NodeListParamsSchema);
++export const validateNodePendingAckParams = lazyCompile<NodePendingAckParams>(
+   NodePendingAckParamsSchema,
+ );
+-export const validateNodeDescribeParams = ajv.compile<NodeDescribeParams>(NodeDescribeParamsSchema);
+-export const validateNodeInvokeParams = ajv.compile<NodeInvokeParams>(NodeInvokeParamsSchema);
+-export const validateNodeInvokeResultParams = ajv.compile<NodeInvokeResultParams>(
++export const validateNodeDescribeParams = lazyCompile<NodeDescribeParams>(NodeDescribeParamsSchema);
++export const validateNodeInvokeParams = lazyCompile<NodeInvokeParams>(NodeInvokeParamsSchema);
++export const validateNodeInvokeResultParams = lazyCompile<NodeInvokeResultParams>(
+   NodeInvokeResultParamsSchema,
+ );
+-export const validateNodeEventParams = ajv.compile<NodeEventParams>(NodeEventParamsSchema);
+-export const validateNodePendingDrainParams = ajv.compile<NodePendingDrainParams>(
++export const validateNodeEventParams = lazyCompile<NodeEventParams>(NodeEventParamsSchema);
++export const validateNodePendingDrainParams = lazyCompile<NodePendingDrainParams>(
+   NodePendingDrainParamsSchema,
+ );
+-export const validateNodePendingEnqueueParams = ajv.compile<NodePendingEnqueueParams>(
++export const validateNodePendingEnqueueParams = lazyCompile<NodePendingEnqueueParams>(
+   NodePendingEnqueueParamsSchema,
+ );
+-export const validatePushTestParams = ajv.compile<PushTestParams>(PushTestParamsSchema);
+-export const validateSecretsResolveParams = ajv.compile<SecretsResolveParams>(
++export const validatePushTestParams = lazyCompile<PushTestParams>(PushTestParamsSchema);
++export const validateSecretsResolveParams = lazyCompile<SecretsResolveParams>(
+   SecretsResolveParamsSchema,
+ );
+-export const validateSecretsResolveResult = ajv.compile<SecretsResolveResult>(
++export const validateSecretsResolveResult = lazyCompile<SecretsResolveResult>(
+   SecretsResolveResultSchema,
+ );
+-export const validateSessionsListParams = ajv.compile<SessionsListParams>(SessionsListParamsSchema);
+-export const validateSessionsPreviewParams = ajv.compile<SessionsPreviewParams>(
++export const validateSessionsListParams = lazyCompile<SessionsListParams>(SessionsListParamsSchema);
++export const validateSessionsPreviewParams = lazyCompile<SessionsPreviewParams>(
+   SessionsPreviewParamsSchema,
+ );
+-export const validateSessionsResolveParams = ajv.compile<SessionsResolveParams>(
++export const validateSessionsResolveParams = lazyCompile<SessionsResolveParams>(
+   SessionsResolveParamsSchema,
+ );
+-export const validateSessionsCreateParams = ajv.compile<SessionsCreateParams>(
++export const validateSessionsCreateParams = lazyCompile<SessionsCreateParams>(
+   SessionsCreateParamsSchema,
+ );
+-export const validateSessionsSendParams = ajv.compile<SessionsSendParams>(SessionsSendParamsSchema);
+-export const validateSessionsMessagesSubscribeParams = ajv.compile<SessionsMessagesSubscribeParams>(
++export const validateSessionsSendParams = lazyCompile<SessionsSendParams>(SessionsSendParamsSchema);
++export const validateSessionsMessagesSubscribeParams = lazyCompile<SessionsMessagesSubscribeParams>(
+   SessionsMessagesSubscribeParamsSchema,
+ );
+ export const validateSessionsMessagesUnsubscribeParams =
+-  ajv.compile<SessionsMessagesUnsubscribeParams>(SessionsMessagesUnsubscribeParamsSchema);
++  lazyCompile<SessionsMessagesUnsubscribeParams>(SessionsMessagesUnsubscribeParamsSchema);
+ export const validateSessionsAbortParams =
+-  ajv.compile<SessionsAbortParams>(SessionsAbortParamsSchema);
++  lazyCompile<SessionsAbortParams>(SessionsAbortParamsSchema);
+ export const validateSessionsPatchParams =
+-  ajv.compile<SessionsPatchParams>(SessionsPatchParamsSchema);
++  lazyCompile<SessionsPatchParams>(SessionsPatchParamsSchema);
+ export const validateSessionsResetParams =
+-  ajv.compile<SessionsResetParams>(SessionsResetParamsSchema);
+-export const validateSessionsDeleteParams = ajv.compile<SessionsDeleteParams>(
++  lazyCompile<SessionsResetParams>(SessionsResetParamsSchema);
++export const validateSessionsDeleteParams = lazyCompile<SessionsDeleteParams>(
+   SessionsDeleteParamsSchema,
+ );
+-export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
++export const validateSessionsCompactParams = lazyCompile<SessionsCompactParams>(
+   SessionsCompactParamsSchema,
+ );
+ export const validateSessionsUsageParams =
+-  ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
+-export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
+-export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
+-export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);
+-export const validateConfigPatchParams = ajv.compile<ConfigPatchParams>(ConfigPatchParamsSchema);
+-export const validateConfigSchemaParams = ajv.compile<ConfigSchemaParams>(ConfigSchemaParamsSchema);
+-export const validateConfigSchemaLookupParams = ajv.compile<ConfigSchemaLookupParams>(
++  lazyCompile<SessionsUsageParams>(SessionsUsageParamsSchema);
++export const validateConfigGetParams = lazyCompile<ConfigGetParams>(ConfigGetParamsSchema);
++export const validateConfigSetParams = lazyCompile<ConfigSetParams>(ConfigSetParamsSchema);
++export const validateConfigApplyParams = lazyCompile<ConfigApplyParams>(ConfigApplyParamsSchema);
++export const validateConfigPatchParams = lazyCompile<ConfigPatchParams>(ConfigPatchParamsSchema);
++export const validateConfigSchemaParams = lazyCompile<ConfigSchemaParams>(ConfigSchemaParamsSchema);
++export const validateConfigSchemaLookupParams = lazyCompile<ConfigSchemaLookupParams>(
+   ConfigSchemaLookupParamsSchema,
+ );
+-export const validateConfigSchemaLookupResult = ajv.compile<ConfigSchemaLookupResult>(
++export const validateConfigSchemaLookupResult = lazyCompile<ConfigSchemaLookupResult>(
+   ConfigSchemaLookupResultSchema,
+ );
+-export const validateWizardStartParams = ajv.compile<WizardStartParams>(WizardStartParamsSchema);
+-export const validateWizardNextParams = ajv.compile<WizardNextParams>(WizardNextParamsSchema);
+-export const validateWizardCancelParams = ajv.compile<WizardCancelParams>(WizardCancelParamsSchema);
+-export const validateWizardStatusParams = ajv.compile<WizardStatusParams>(WizardStatusParamsSchema);
+-export const validateTalkModeParams = ajv.compile<TalkModeParams>(TalkModeParamsSchema);
+-export const validateTalkConfigParams = ajv.compile<TalkConfigParams>(TalkConfigParamsSchema);
+-export const validateTalkConfigResult = ajv.compile<TalkConfigResult>(TalkConfigResultSchema);
+-export const validateTalkSpeakParams = ajv.compile<TalkSpeakParams>(TalkSpeakParamsSchema);
+-export const validateTalkSpeakResult = ajv.compile<TalkSpeakResult>(TalkSpeakResultSchema);
+-export const validateChannelsStatusParams = ajv.compile<ChannelsStatusParams>(
++export const validateWizardStartParams = lazyCompile<WizardStartParams>(WizardStartParamsSchema);
++export const validateWizardNextParams = lazyCompile<WizardNextParams>(WizardNextParamsSchema);
++export const validateWizardCancelParams = lazyCompile<WizardCancelParams>(WizardCancelParamsSchema);
++export const validateWizardStatusParams = lazyCompile<WizardStatusParams>(WizardStatusParamsSchema);
++export const validateTalkModeParams = lazyCompile<TalkModeParams>(TalkModeParamsSchema);
++export const validateTalkConfigParams = lazyCompile<TalkConfigParams>(TalkConfigParamsSchema);
++export const validateTalkConfigResult = lazyCompile<TalkConfigResult>(TalkConfigResultSchema);
++export const validateTalkSpeakParams = lazyCompile<TalkSpeakParams>(TalkSpeakParamsSchema);
++export const validateTalkSpeakResult = lazyCompile<TalkSpeakResult>(TalkSpeakResultSchema);
++export const validateChannelsStatusParams = lazyCompile<ChannelsStatusParams>(
+   ChannelsStatusParamsSchema,
+ );
+-export const validateChannelsLogoutParams = ajv.compile<ChannelsLogoutParams>(
++export const validateChannelsLogoutParams = lazyCompile<ChannelsLogoutParams>(
+   ChannelsLogoutParamsSchema,
+ );
+-export const validateModelsListParams = ajv.compile<ModelsListParams>(ModelsListParamsSchema);
+-export const validateSkillsStatusParams = ajv.compile<SkillsStatusParams>(SkillsStatusParamsSchema);
+-export const validateToolsCatalogParams = ajv.compile<ToolsCatalogParams>(ToolsCatalogParamsSchema);
+-export const validateToolsEffectiveParams = ajv.compile<ToolsEffectiveParams>(
++export const validateModelsListParams = lazyCompile<ModelsListParams>(ModelsListParamsSchema);
++export const validateSkillsStatusParams = lazyCompile<SkillsStatusParams>(SkillsStatusParamsSchema);
++export const validateToolsCatalogParams = lazyCompile<ToolsCatalogParams>(ToolsCatalogParamsSchema);
++export const validateToolsEffectiveParams = lazyCompile<ToolsEffectiveParams>(
+   ToolsEffectiveParamsSchema,
+ );
+-export const validateSkillsBinsParams = ajv.compile<SkillsBinsParams>(SkillsBinsParamsSchema);
++export const validateSkillsBinsParams = lazyCompile<SkillsBinsParams>(SkillsBinsParamsSchema);
+ export const validateSkillsInstallParams =
+-  ajv.compile<SkillsInstallParams>(SkillsInstallParamsSchema);
+-export const validateSkillsUpdateParams = ajv.compile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
+-export const validateCronListParams = ajv.compile<CronListParams>(CronListParamsSchema);
+-export const validateCronStatusParams = ajv.compile<CronStatusParams>(CronStatusParamsSchema);
+-export const validateCronAddParams = ajv.compile<CronAddParams>(CronAddParamsSchema);
+-export const validateCronUpdateParams = ajv.compile<CronUpdateParams>(CronUpdateParamsSchema);
+-export const validateCronRemoveParams = ajv.compile<CronRemoveParams>(CronRemoveParamsSchema);
+-export const validateCronRunParams = ajv.compile<CronRunParams>(CronRunParamsSchema);
+-export const validateCronRunsParams = ajv.compile<CronRunsParams>(CronRunsParamsSchema);
+-export const validateDevicePairListParams = ajv.compile<DevicePairListParams>(
++  lazyCompile<SkillsInstallParams>(SkillsInstallParamsSchema);
++export const validateSkillsUpdateParams = lazyCompile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
++export const validateSkillsSearchParams = lazyCompile<SkillsSearchParams>(SkillsSearchParamsSchema);
++export const validateSkillsDetailParams = lazyCompile<SkillsDetailParams>(SkillsDetailParamsSchema);
++export const validateCronListParams = lazyCompile<CronListParams>(CronListParamsSchema);
++export const validateCronStatusParams = lazyCompile<CronStatusParams>(CronStatusParamsSchema);
++export const validateCronAddParams = lazyCompile<CronAddParams>(CronAddParamsSchema);
++export const validateCronUpdateParams = lazyCompile<CronUpdateParams>(CronUpdateParamsSchema);
++export const validateCronRemoveParams = lazyCompile<CronRemoveParams>(CronRemoveParamsSchema);
++export const validateCronRunParams = lazyCompile<CronRunParams>(CronRunParamsSchema);
++export const validateCronRunsParams = lazyCompile<CronRunsParams>(CronRunsParamsSchema);
++export const validateDevicePairListParams = lazyCompile<DevicePairListParams>(
+   DevicePairListParamsSchema,
+ );
+-export const validateDevicePairApproveParams = ajv.compile<DevicePairApproveParams>(
++export const validateDevicePairApproveParams = lazyCompile<DevicePairApproveParams>(
+   DevicePairApproveParamsSchema,
+ );
+-export const validateDevicePairRejectParams = ajv.compile<DevicePairRejectParams>(
++export const validateDevicePairRejectParams = lazyCompile<DevicePairRejectParams>(
+   DevicePairRejectParamsSchema,
+ );
+-export const validateDevicePairRemoveParams = ajv.compile<DevicePairRemoveParams>(
++export const validateDevicePairRemoveParams = lazyCompile<DevicePairRemoveParams>(
+   DevicePairRemoveParamsSchema,
+ );
+-export const validateDeviceTokenRotateParams = ajv.compile<DeviceTokenRotateParams>(
++export const validateDeviceTokenRotateParams = lazyCompile<DeviceTokenRotateParams>(
+   DeviceTokenRotateParamsSchema,
+ );
+-export const validateDeviceTokenRevokeParams = ajv.compile<DeviceTokenRevokeParams>(
++export const validateDeviceTokenRevokeParams = lazyCompile<DeviceTokenRevokeParams>(
+   DeviceTokenRevokeParamsSchema,
+ );
+-export const validateExecApprovalsGetParams = ajv.compile<ExecApprovalsGetParams>(
++export const validateExecApprovalsGetParams = lazyCompile<ExecApprovalsGetParams>(
+   ExecApprovalsGetParamsSchema,
+ );
+-export const validateExecApprovalsSetParams = ajv.compile<ExecApprovalsSetParams>(
++export const validateExecApprovalsSetParams = lazyCompile<ExecApprovalsSetParams>(
+   ExecApprovalsSetParamsSchema,
+ );
+-export const validateExecApprovalRequestParams = ajv.compile<ExecApprovalRequestParams>(
++export const validateExecApprovalGetParams = lazyCompile<ExecApprovalGetParams>(
++  ExecApprovalGetParamsSchema,
++);
++export const validateExecApprovalRequestParams = lazyCompile<ExecApprovalRequestParams>(
+   ExecApprovalRequestParamsSchema,
+ );
+-export const validateExecApprovalResolveParams = ajv.compile<ExecApprovalResolveParams>(
++export const validateExecApprovalResolveParams = lazyCompile<ExecApprovalResolveParams>(
+   ExecApprovalResolveParamsSchema,
+ );
+-export const validatePluginApprovalRequestParams = ajv.compile<PluginApprovalRequestParams>(
++export const validatePluginApprovalRequestParams = lazyCompile<PluginApprovalRequestParams>(
+   PluginApprovalRequestParamsSchema,
+ );
+-export const validatePluginApprovalResolveParams = ajv.compile<PluginApprovalResolveParams>(
++export const validatePluginApprovalResolveParams = lazyCompile<PluginApprovalResolveParams>(
+   PluginApprovalResolveParamsSchema,
+ );
+-export const validateExecApprovalsNodeGetParams = ajv.compile<ExecApprovalsNodeGetParams>(
++export const validateExecApprovalsNodeGetParams = lazyCompile<ExecApprovalsNodeGetParams>(
+   ExecApprovalsNodeGetParamsSchema,
+ );
+-export const validateExecApprovalsNodeSetParams = ajv.compile<ExecApprovalsNodeSetParams>(
++export const validateExecApprovalsNodeSetParams = lazyCompile<ExecApprovalsNodeSetParams>(
+   ExecApprovalsNodeSetParamsSchema,
+ );
+-export const validateLogsTailParams = ajv.compile<LogsTailParams>(LogsTailParamsSchema);
+-export const validateChatHistoryParams = ajv.compile(ChatHistoryParamsSchema);
+-export const validateChatSendParams = ajv.compile(ChatSendParamsSchema);
+-export const validateChatAbortParams = ajv.compile<ChatAbortParams>(ChatAbortParamsSchema);
+-export const validateChatInjectParams = ajv.compile<ChatInjectParams>(ChatInjectParamsSchema);
+-export const validateChatEvent = ajv.compile(ChatEventSchema);
+-export const validateUpdateRunParams = ajv.compile<UpdateRunParams>(UpdateRunParamsSchema);
++export const validateLogsTailParams = lazyCompile<LogsTailParams>(LogsTailParamsSchema);
++export const validateChatHistoryParams = lazyCompile(ChatHistoryParamsSchema);
++export const validateChatSendParams = lazyCompile(ChatSendParamsSchema);
++export const validateChatAbortParams = lazyCompile<ChatAbortParams>(ChatAbortParamsSchema);
++export const validateChatInjectParams = lazyCompile<ChatInjectParams>(ChatInjectParamsSchema);
++export const validateChatEvent = lazyCompile(ChatEventSchema);
++export const validateUpdateRunParams = lazyCompile<UpdateRunParams>(UpdateRunParamsSchema);
+ export const validateWebLoginStartParams =
+-  ajv.compile<WebLoginStartParams>(WebLoginStartParamsSchema);
+-export const validateWebLoginWaitParams = ajv.compile<WebLoginWaitParams>(WebLoginWaitParamsSchema);
++  lazyCompile<WebLoginStartParams>(WebLoginStartParamsSchema);
++export const validateWebLoginWaitParams = lazyCompile<WebLoginWaitParams>(WebLoginWaitParamsSchema);
+ 
+ export function formatValidationErrors(errors: ErrorObject[] | null | undefined) {
+   if (!errors?.length) {
+diff --git a/src/plugins/bundled-plugin-metadata.test.ts b/src/plugins/bundled-plugin-metadata.test.ts
+index b041020c57..6d65e0efaa 100644
+--- a/src/plugins/bundled-plugin-metadata.test.ts
++++ b/src/plugins/bundled-plugin-metadata.test.ts
+@@ -302,3 +302,35 @@ describe("bundled plugin metadata", () => {
+     });
+   });
+ });
++
++describe("stripSchemaProperty in channel config collection", () => {
++  it(
++    "strips $schema from collected channel config schemas",
++    { timeout: BUNDLED_PLUGIN_METADATA_TEST_TIMEOUT_MS },
++    () => {
++      // Verify that none of the bundled plugin metadata entries carry
++      // a $schema property, which would cause ajv to attempt compiling
++      // the self-referential JSON Schema meta-schema (#61259).
++      const entries = listBundledPluginMetadata({
++        rootDir: repoRoot,
++        includeChannelConfigs: true,
++        includeSyntheticChannelConfigs: true,
++      });
++      for (const entry of entries) {
++        const channelConfigs = entry.manifest.channelConfigs;
++        if (!channelConfigs) {
++          continue;
++        }
++        for (const [channelId, config] of Object.entries(channelConfigs)) {
++          const schema = (config as { schema?: Record<string, unknown> }).schema;
++          if (schema) {
++            expect(
++              schema,
++              `channel ${channelId} in plugin ${entry.manifest.id} should not have $schema`,
++            ).not.toHaveProperty("$schema");
++          }
++        }
++      }
++    },
++  );
++});
+diff --git a/src/plugins/bundled-plugin-metadata.ts b/src/plugins/bundled-plugin-metadata.ts
+index 07894aeced..a907f40e88 100644
+--- a/src/plugins/bundled-plugin-metadata.ts
++++ b/src/plugins/bundled-plugin-metadata.ts
+@@ -209,6 +209,20 @@ function resolveBundledPluginScanDir(packageRoot: string): string | undefined {
+   return undefined;
+ }
+ 
++/**
++ * Remove the `$schema` meta-schema URI from a JSON Schema object so that ajv
++ * does not attempt to compile the self-referential JSON Schema meta-schema
++ * during `ajv.compile()`.  This avoids unnecessary recursive stack depth that
++ * contributes to the stack overflow described in #61259.
++ */
++function stripSchemaProperty(schema: Record<string, unknown>): Record<string, unknown> {
++  if (!("$schema" in schema)) {
++    return schema;
++  }
++  const { $schema: _, ...rest } = schema;
++  return rest;
++}
++
+ function isBuiltChannelConfigSchema(value: unknown): value is ChannelConfigSurface {
+   if (!value || typeof value !== "object") {
+     return false;
+@@ -336,7 +350,7 @@ function collectBundledChannelConfigs(params: {
+     }
+ 
+     existingChannelConfigs[channelId] = {
+-      schema: surface?.schema ?? existing?.schema ?? {},
++      schema: stripSchemaProperty(surface?.schema ?? existing?.schema ?? {}),
+       ...(uiHints && Object.keys(uiHints).length > 0 ? { uiHints } : {}),
+       ...((trimString(existing?.label) ?? trimString(channelMeta?.label))
+         ? { label: trimString(existing?.label) ?? trimString(channelMeta?.label)! }
+diff --git a/src/plugins/schema-validator.test.ts b/src/plugins/schema-validator.test.ts
+index 25b3c060d2..1192337681 100644
+--- a/src/plugins/schema-validator.test.ts
++++ b/src/plugins/schema-validator.test.ts
+@@ -314,3 +314,23 @@ describe("schema validator", () => {
+     },
+   );
+ });
++
++describe("validateSchema: false prevents meta-schema compilation", () => {
++  it("accepts schemas containing $schema without throwing", () => {
++    // With validateSchema: false, ajv must not attempt to compile the
++    // meta-schema referenced by $schema, which previously contributed to
++    // stack overflow during bundled channel plugin loading (#61259).
++    const result = validateJsonSchemaValue({
++      schema: {
++        $schema: "http://json-schema.org/draft-07/schema#",
++        type: "object",
++        properties: {
++          name: { type: "string" },
++        },
++      },
++      cacheKey: "test-meta-schema-bypass",
++      value: { name: "test" },
++    });
++    expect(result.ok).toBe(true);
++  });
++});
+diff --git a/src/plugins/schema-validator.ts b/src/plugins/schema-validator.ts
+index 4f84ad6a57..070cd8217a 100644
+--- a/src/plugins/schema-validator.ts
++++ b/src/plugins/schema-validator.ts
+@@ -32,6 +32,7 @@ function getAjv(mode: "default" | "defaults"): AjvLike {
+     allErrors: true,
+     strict: false,
+     removeAdditional: false,
++    validateSchema: false,
+     ...(mode === "defaults" ? { useDefaults: true } : {}),
+   });
+   instance.addFormat("uri", {
+-- 
+2.50.1 (Apple Git-155)
+

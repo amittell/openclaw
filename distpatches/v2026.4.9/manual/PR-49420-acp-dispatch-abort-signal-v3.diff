@@ -1,0 +1,211 @@
+diff --git a/src/acp/control-plane/manager.core.ts b/src/acp/control-plane/manager.core.ts
+index c03ff37e40520..b95c7f697ee1e 100644
+--- a/src/acp/control-plane/manager.core.ts
++++ b/src/acp/control-plane/manager.core.ts
+@@ -696,6 +696,10 @@ export class AcpSessionManager {
+       throw new AcpRuntimeError("ACP_SESSION_INIT_FAILED", "ACP session key is required.");
+     }
+     await this.evictIdleRuntimeHandles({ cfg: input.cfg });
++    // Pass input.signal so throwIfAborted() fires before any work starts when
++    // the queue drains for a turn whose caller already timed out (ghost turn
++    // prevention). Without this, the queued runTurn executes fully even after
++    // withTimeout() has already rejected the caller. refs #17258
+     await this.withSessionActor(
+       sessionKey,
+       async () => {
+@@ -755,7 +759,11 @@ export class AcpSessionManager {
+ 
+             internalAbortController = new AbortController();
+             onCallerAbort = () => {
+-              internalAbortController?.abort();
++              try {
++                internalAbortController?.abort();
++              } catch (err) {
++                logVerbose(`acp-manager: onCallerAbort threw for ${sessionKey}: ${String(err)}`);
++              }
+             };
+             if (input.signal?.aborted) {
+               internalAbortController.abort();
+@@ -928,6 +936,7 @@ export class AcpSessionManager {
+                 handle,
+                 meta,
+                 failOnStatusError: false,
++                signal: input.signal,
+               }));
+             }
+             if (
+@@ -1738,6 +1747,7 @@ export class AcpSessionManager {
+     meta: SessionAcpMeta;
+     runtimeStatus?: AcpRuntimeStatus;
+     failOnStatusError: boolean;
++    signal?: AbortSignal;
+   }): Promise<{
+     handle: AcpRuntimeHandle;
+     meta: SessionAcpMeta;
+diff --git a/src/acp/control-plane/manager.identity-reconcile.ts b/src/acp/control-plane/manager.identity-reconcile.ts
+index 45c9817967b02..228a1505f28da 100644
+--- a/src/acp/control-plane/manager.identity-reconcile.ts
++++ b/src/acp/control-plane/manager.identity-reconcile.ts
+@@ -21,6 +21,7 @@ export async function reconcileManagerRuntimeSessionIdentifiers(params: {
+   meta: SessionAcpMeta;
+   runtimeStatus?: AcpRuntimeStatus;
+   failOnStatusError: boolean;
++  signal?: AbortSignal;
+   setCachedHandle: (sessionKey: string, handle: AcpRuntimeHandle) => void;
+   writeSessionMeta: (params: {
+     cfg: OpenClawConfig;
+@@ -43,6 +44,7 @@ export async function reconcileManagerRuntimeSessionIdentifiers(params: {
+         run: async () =>
+           await params.runtime.getStatus!({
+             handle: params.handle,
++            ...(params.signal ? { signal: params.signal } : {}),
+           }),
+         fallbackCode: "ACP_TURN_FAILED",
+         fallbackMessage: "Could not read ACP runtime status.",
+@@ -98,7 +100,7 @@ export async function reconcileManagerRuntimeSessionIdentifiers(params: {
+           : {}),
+       }
+     : params.handle;
+-  if (handleChanged) {
++  if (handleChanged && !params.signal?.aborted) {
+     params.setCachedHandle(params.sessionKey, nextHandle);
+   }
+ 
+@@ -111,6 +113,13 @@ export async function reconcileManagerRuntimeSessionIdentifiers(params: {
+       runtimeStatus,
+     };
+   }
++  if (params.signal?.aborted) {
++    return {
++      handle: nextHandle,
++      meta: params.meta,
++      runtimeStatus,
++    };
++  }
+   const nextMeta: SessionAcpMeta = {
+     backend: params.meta.backend,
+     agent: params.meta.agent,
+@@ -144,6 +153,14 @@ export async function reconcileManagerRuntimeSessionIdentifiers(params: {
+       if (!entry) {
+         return null;
+       }
++      // Re-check abort *inside* the mutator so that if the signal fires while
++      // waiting on the updateSessionStore lock, we still no-op instead of
++      // overwriting newer session state with stale reconcile data.
++      // Return undefined (not null) so upsertAcpSessionMeta treats this as a
++      // no-op rather than a delete operation.
++      if (params.signal?.aborted) {
++        return undefined;
++      }
+       const base = current ?? entry.acp;
+       if (!base) {
+         return null;
+diff --git a/src/auto-reply/reply/dispatch-acp.ts b/src/auto-reply/reply/dispatch-acp.ts
+index 1a31c6a4b866d..10be718ab0d4d 100644
+--- a/src/auto-reply/reply/dispatch-acp.ts
++++ b/src/auto-reply/reply/dispatch-acp.ts
+@@ -1,4 +1,5 @@
+ import type { AcpTurnAttachment } from "../../acp/control-plane/manager.types.js";
++import { resolveRuntimeOptionsFromMeta } from "../../acp/control-plane/runtime-options.js";
+ import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../../acp/policy.js";
+ import { formatAcpRuntimeErrorText } from "../../acp/runtime/error-text.js";
+ import { toAcpRuntimeError } from "../../acp/runtime/errors.js";
+@@ -7,12 +8,15 @@ import {
+   isSessionIdentityPending,
+   resolveSessionIdentityFromMeta,
+ } from "../../acp/runtime/session-identity.js";
++import { readAcpSessionEntry } from "../../acp/runtime/session-meta.js";
++import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
+ import type { OpenClawConfig } from "../../config/config.js";
+ import type { TtsAutoMode } from "../../config/types.tts.js";
+ import { logVerbose } from "../../globals.js";
+ import { emitAgentEvent } from "../../infra/agent-events.js";
+ import { generateSecureUuid } from "../../infra/secure-random.js";
+ import { prefixSystemMessage } from "../../infra/system-message.js";
++import { withTimeout } from "../../node-host/with-timeout.js";
+ import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+ import { resolveStatusTtsSnapshot } from "../../tts/status-config.js";
+ import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
+@@ -506,15 +510,73 @@ export async function tryDispatchAcpReply(params: {
+       );
+     }
+ 
+-    await acpManager.runTurn({
+-      cfg: params.cfg,
+-      sessionKey: canonicalSessionKey,
+-      text: promptText,
+-      attachments: attachments.length > 0 ? attachments : undefined,
+-      mode: "prompt",
+-      requestId: resolveAcpRequestId(params.ctx),
+-      ...(params.abortSignal ? { signal: params.abortSignal } : {}),
+-      onEvent: async (event) => await projector.onEvent(event),
++    // Guard against stalled upstream streams: abort the turn after the configured
++    // agent timeout (agents.defaults.timeoutSeconds, default 600s). Without this,
++    // a silently hung SSE connection blocks the session queue forever. refs #17258
++    //
++    // P2 (rev): Re-resolve session state immediately before runTurn so the wrapper
++    // timeout reflects the most current runtimeOptions — not the stale snapshot
++    // captured at the top of tryDispatchAcpReply (before media work and before
++    // runTurn acquires the session actor). If the session was updated in that window,
++    // this ensures dispatch and AcpSessionManager.runTurn share the same budget.
++    const liveAcpMeta = readAcpSessionEntry({ cfg: params.cfg, sessionKey })?.acp ?? undefined;
++    const liveTimeoutSeconds = liveAcpMeta
++      ? resolveRuntimeOptionsFromMeta(liveAcpMeta).timeoutSeconds
++      : undefined;
++    const turnTimeoutMs =
++      typeof liveTimeoutSeconds === "number" &&
++      Number.isFinite(liveTimeoutSeconds) &&
++      liveTimeoutSeconds > 0
++        ? Math.max(30_000, Math.round(liveTimeoutSeconds * 1_000))
++        : resolveAgentTimeoutMs({ cfg: params.cfg, minMs: 30_000 });
++
++    // P1b: Track the runTurn promise so that when the dispatch-level timeout fires
++    // we can wait for runTurn to settle before surfacing the error. Without this,
++    // withTimeout() returns while runTurn drains in the background, causing late
++    // events and keeping the session actor queue locked.
++    const DRAIN_GRACE_MS = 5_000;
++    let runTurnSettlePromise: Promise<void> | undefined;
++    await withTimeout(
++      (timeoutSignal) => {
++        // P1a: Combine the caller's upstream abort signal with the timeout signal
++        // so that either cancellation path (caller abort OR dispatch timeout)
++        // reaches runTurn. Previously only the timeout signal was forwarded,
++        // dropping params.abortSignal entirely.
++        const signal =
++          params.abortSignal != null && typeof AbortSignal.any === "function"
++            ? AbortSignal.any([timeoutSignal!, params.abortSignal])
++            : timeoutSignal;
++        runTurnSettlePromise = acpManager.runTurn({
++          cfg: params.cfg,
++          sessionKey: canonicalSessionKey,
++          text: promptText,
++          attachments: attachments.length > 0 ? attachments : undefined,
++          mode: "prompt",
++          requestId: resolveAcpRequestId(params.ctx),
++          onEvent: (event) => projector.onEvent(event),
++          signal,
++        });
++        return runTurnSettlePromise;
++      },
++      turnTimeoutMs,
++      "ACP turn",
++    ).catch(async (err: unknown) => {
++      // P1b: On timeout (or upstream abort), wait for runTurn to drain before
++      // re-throwing. runTurn's own internal cleanup (cleanupTimedOutTurn) will
++      // abort and close the runtime, but we need to wait for that to finish
++      // so the session actor queue is fully released before we hand back control.
++      if (runTurnSettlePromise !== undefined) {
++        await Promise.race([
++          runTurnSettlePromise.catch(() => {
++            /* runTurn's own error is irrelevant here — we already have err */
++          }),
++          new Promise<void>((resolve) => {
++            const t = setTimeout(resolve, DRAIN_GRACE_MS);
++            t.unref?.();
++          }),
++        ]);
++      }
++      throw err;
+     });
+ 
+     await projector.flush(true);

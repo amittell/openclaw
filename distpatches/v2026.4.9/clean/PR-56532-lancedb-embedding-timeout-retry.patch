@@ -1,0 +1,165 @@
+From 871a86eed71779dca2e3837fde8b37084174cfb3 Mon Sep 17 00:00:00 2001
+From: Alex Mittell <mittell@me.com>
+Date: Sat, 28 Mar 2026 12:51:36 -0400
+Subject: [PATCH] memory-lancedb: add configurable timeout and retry limits for
+ embedding calls
+
+---
+ extensions/memory-lancedb/config.ts     | 22 +++++++++++++++++++++-
+ extensions/memory-lancedb/index.test.ts |  8 ++++++++
+ extensions/memory-lancedb/index.ts      | 25 ++++++++++++++++++++++---
+ src/daemon/launchd-plist.ts             |  6 +++---
+ 4 files changed, 54 insertions(+), 7 deletions(-)
+
+diff --git a/extensions/memory-lancedb/config.ts b/extensions/memory-lancedb/config.ts
+index 9b71e3992d..57d1d8cef9 100644
+--- a/extensions/memory-lancedb/config.ts
++++ b/extensions/memory-lancedb/config.ts
+@@ -9,6 +9,8 @@ export type MemoryConfig = {
+     apiKey: string;
+     baseUrl?: string;
+     dimensions?: number;
++    timeoutMs?: number;
++    maxRetries?: number;
+   };
+   dbPath?: string;
+   autoCapture?: boolean;
+@@ -105,7 +107,11 @@ export const memoryConfigSchema = {
+     if (!embedding || typeof embedding.apiKey !== "string") {
+       throw new Error("embedding.apiKey is required");
+     }
+-    assertAllowedKeys(embedding, ["apiKey", "model", "baseUrl", "dimensions"], "embedding config");
++    assertAllowedKeys(
++      embedding,
++      ["apiKey", "model", "baseUrl", "dimensions", "timeoutMs", "maxRetries"],
++      "embedding config",
++    );
+ 
+     const model = resolveEmbeddingModel(embedding);
+ 
+@@ -126,6 +132,8 @@ export const memoryConfigSchema = {
+         baseUrl:
+           typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined,
+         dimensions: typeof embedding.dimensions === "number" ? embedding.dimensions : undefined,
++        timeoutMs: typeof embedding.timeoutMs === "number" ? embedding.timeoutMs : undefined,
++        maxRetries: typeof embedding.maxRetries === "number" ? embedding.maxRetries : undefined,
+       },
+       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
+       autoCapture: cfg.autoCapture === true,
+@@ -157,6 +165,18 @@ export const memoryConfigSchema = {
+       placeholder: DEFAULT_MODEL,
+       help: "OpenAI embedding model to use",
+     },
++    "embedding.timeoutMs": {
++      label: "Timeout (ms)",
++      placeholder: "10000",
++      help: "Timeout for embedding API requests in milliseconds",
++      advanced: true,
++    },
++    "embedding.maxRetries": {
++      label: "Max Retries",
++      placeholder: "1",
++      help: "Maximum number of retries for failed embedding requests",
++      advanced: true,
++    },
+     dbPath: {
+       label: "Database Path",
+       placeholder: "~/.openclaw/memory/lancedb",
+diff --git a/extensions/memory-lancedb/index.test.ts b/extensions/memory-lancedb/index.test.ts
+index 1bc82b63dd..69c2008e75 100644
+--- a/extensions/memory-lancedb/index.test.ts
++++ b/extensions/memory-lancedb/index.test.ts
+@@ -277,6 +277,14 @@ describe("memory plugin e2e", () => {
+         input: "hello dimensions",
+         dimensions: 1024,
+       });
++      expect(embeddingsCreate).toHaveBeenCalledWith(
++        {
++          model: "text-embedding-3-small",
++          input: "hello dimensions",
++          dimensions: 1024,
++        },
++        { timeout: 10_000 },
++      );
+     } finally {
+       vi.doUnmock("openclaw/plugin-sdk/runtime-env");
+       vi.doUnmock("openai");
+diff --git a/extensions/memory-lancedb/index.ts b/extensions/memory-lancedb/index.ts
+index fc2c668dff..244b8b74d9 100644
+--- a/extensions/memory-lancedb/index.ts
++++ b/extensions/memory-lancedb/index.ts
+@@ -149,16 +149,28 @@ class MemoryDB {
+ // OpenAI Embeddings
+ // ============================================================================
+ 
++const DEFAULT_EMBEDDING_TIMEOUT_MS = 10_000;
++const DEFAULT_EMBEDDING_MAX_RETRIES = 1;
++
+ class Embeddings {
+   private client: OpenAI;
++  private timeoutMs: number;
+ 
+   constructor(
+     apiKey: string,
+     private model: string,
+     baseUrl?: string,
+     private dimensions?: number,
++    timeoutMs?: number,
++    maxRetries?: number,
+   ) {
+-    this.client = new OpenAI({ apiKey, baseURL: baseUrl });
++    this.timeoutMs = timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS;
++    this.client = new OpenAI({
++      apiKey,
++      baseURL: baseUrl,
++      timeout: this.timeoutMs,
++      maxRetries: maxRetries ?? DEFAULT_EMBEDDING_MAX_RETRIES,
++    });
+   }
+ 
+   async embed(text: string): Promise<number[]> {
+@@ -170,7 +182,7 @@ class Embeddings {
+       params.dimensions = this.dimensions;
+     }
+     ensureGlobalUndiciEnvProxyDispatcher();
+-    const response = await this.client.embeddings.create(params);
++    const response = await this.client.embeddings.create(params, { timeout: this.timeoutMs });
+     return response.data[0].embedding;
+   }
+ }
+@@ -293,7 +305,14 @@ export default definePluginEntry({
+ 
+     const vectorDim = dimensions ?? vectorDimsForModel(model);
+     const db = new MemoryDB(resolvedDbPath, vectorDim);
+-    const embeddings = new Embeddings(apiKey, model, baseUrl, dimensions);
++    const embeddings = new Embeddings(
++      apiKey,
++      model,
++      baseUrl,
++      dimensions,
++      cfg.embedding.timeoutMs,
++      cfg.embedding.maxRetries,
++    );
+ 
+     api.logger.info(`memory-lancedb: plugin registered (db: ${resolvedDbPath}, lazy init)`);
+ 
+diff --git a/src/daemon/launchd-plist.ts b/src/daemon/launchd-plist.ts
+index fa2a780a5c..ecdda3acb0 100644
+--- a/src/daemon/launchd-plist.ts
++++ b/src/daemon/launchd-plist.ts
+@@ -1,9 +1,9 @@
+ import fs from "node:fs/promises";
+ 
+ // launchd applies ThrottleInterval to any rapid relaunch, including
+-// intentional gateway restarts. Keep it low so CLI restarts and forced
+-// reinstalls do not stall for a full minute.
+-export const LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS = 1;
++// intentional gateway restarts. 10s balances fast CLI restarts against
++// avoiding a respawn storm when the gateway crashes repeatedly.
++export const LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS = 10;
+ // launchd stores plist integer values in decimal; 0o077 renders as 63 (owner-only files).
+ export const LAUNCH_AGENT_UMASK_DECIMAL = 0o077;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

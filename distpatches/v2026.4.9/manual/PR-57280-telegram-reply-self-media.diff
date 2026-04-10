@@ -1,0 +1,30 @@
+diff --git a/extensions/telegram/src/bot-handlers.buffers.ts b/extensions/telegram/src/bot-handlers.buffers.ts
+index 532fef78928bc..0bad9081400ae 100644
+--- a/extensions/telegram/src/bot-handlers.buffers.ts
++++ b/extensions/telegram/src/bot-handlers.buffers.ts
+@@ -142,6 +142,10 @@ export function createTelegramInboundBufferRuntime(params: {
+     if (!replyMessage || !hasInboundMedia(replyMessage)) {
+       return [];
+     }
++    // Do not re-ingest media from messages sent by this bot
++    if (ctx.me != null && replyMessage.from?.id === ctx.me.id) {
++      return [];
++    }
+     const replyFileId = resolveInboundMediaFileId(replyMessage);
+     if (!replyFileId) {
+       return [];
+diff --git a/extensions/telegram/src/bot-handlers.runtime.ts b/extensions/telegram/src/bot-handlers.runtime.ts
+index d51e05ed8e74d..088347db8f31a 100644
+--- a/extensions/telegram/src/bot-handlers.runtime.ts
++++ b/extensions/telegram/src/bot-handlers.runtime.ts
+@@ -484,6 +484,10 @@ export const registerTelegramHandlers = ({
+     if (!replyMessage || !hasInboundMedia(replyMessage)) {
+       return [];
+     }
++    // Do not re-ingest media from messages sent by this bot
++    if (isSelfAuthoredTelegramMessage(ctx, replyMessage)) {
++      return [];
++    }
+     const replyFileId = resolveInboundMediaFileId(replyMessage);
+     if (!replyFileId) {
+       return [];

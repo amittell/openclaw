@@ -1,0 +1,314 @@
+diff --git a/extensions/telegram/src/bot/delivery.replies.ts b/extensions/telegram/src/bot/delivery.replies.ts
+index 89e8d626fa0a9..1aba12ec10cb9 100644
+--- a/extensions/telegram/src/bot/delivery.replies.ts
++++ b/extensions/telegram/src/bot/delivery.replies.ts
+@@ -123,6 +123,7 @@ async function deliverTextReply(params: {
+     replyMarkup: params.replyMarkup,
+     replyQuoteText: params.replyQuoteText,
+     markDelivered,
++    shouldSkipChunk: (chunk) => !chunk.html?.trim() && !chunk.text?.trim(),
+     sendChunk: async ({ chunk, replyToMessageId, replyMarkup, replyQuoteText }) => {
+       const messageId = await sendTelegramText(
+         params.bot,
+@@ -140,6 +141,12 @@ async function deliverTextReply(params: {
+           replyMarkup,
+         },
+       );
++      // sendTelegramText returns undefined when the send was silently skipped
++      // (empty text after fallback). Signal to sendChunkedTelegramReplyText
++      // that delivered state should not be marked for this chunk.
++      if (messageId == null) {
++        return false;
++      }
+       if (firstDeliveredMessageId == null) {
+         firstDeliveredMessageId = messageId;
+       }
+@@ -170,16 +177,27 @@ async function sendPendingFollowUpText(params: {
+     replyToMode: params.replyToMode,
+     replyMarkup: params.replyMarkup,
+     markDelivered,
++    shouldSkipChunk: (chunk) => !chunk.html?.trim() && !chunk.text?.trim(),
+     sendChunk: async ({ chunk, replyToMessageId, replyMarkup }) => {
+-      await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
+-        replyToMessageId,
+-        thread: params.thread,
+-        textMode: "html",
+-        plainText: chunk.text,
+-        linkPreview: params.linkPreview,
+-        silent: params.silent,
+-        replyMarkup,
+-      });
++      const messageId = await sendTelegramText(
++        params.bot,
++        params.chatId,
++        chunk.html,
++        params.runtime,
++        {
++          replyToMessageId,
++          thread: params.thread,
++          textMode: "html",
++          plainText: chunk.text,
++          linkPreview: params.linkPreview,
++          silent: params.silent,
++          replyMarkup,
++        },
++      );
++      // Return false when silently skipped to suppress delivered marking.
++      if (messageId == null) {
++        return false;
++      }
+     },
+   });
+ }
+@@ -212,27 +230,37 @@ async function sendTelegramVoiceFallbackText(opts: {
+   replyQuoteText?: string;
+ }): Promise<number | undefined> {
+   let firstDeliveredMessageId: number | undefined;
++<<<<<<< HEAD
+   const chunks = filterEmptyTelegramTextChunks(opts.chunkText(opts.text));
+   let appliedReplyTo = false;
++=======
++  const chunks = opts.chunkText(opts.text);
++  let sentAnyChunk = false;
++>>>>>>> 02dccfd5bb (fix(telegram): silently skip empty-text chunks to prevent 400 delivery failures)
+   for (let i = 0; i < chunks.length; i += 1) {
+     const chunk = chunks[i];
+-    // Only apply reply reference, quote text, and buttons to the first chunk.
+-    const replyToForChunk = !appliedReplyTo ? opts.replyToId : undefined;
++    if (!chunk || (!chunk.html?.trim() && !chunk.text?.trim())) {
++      continue;
++    }
++    // Only apply reply reference, quote text, and buttons to the first sent chunk.
++    const replyToForChunk = !sentAnyChunk ? opts.replyToId : undefined;
+     const messageId = await sendTelegramText(opts.bot, opts.chatId, chunk.html, opts.runtime, {
+       replyToMessageId: replyToForChunk,
+-      replyQuoteText: !appliedReplyTo ? opts.replyQuoteText : undefined,
++      replyQuoteText: !sentAnyChunk ? opts.replyQuoteText : undefined,
+       thread: opts.thread,
+       textMode: "html",
+       plainText: chunk.text,
+       linkPreview: opts.linkPreview,
+       silent: opts.silent,
+-      replyMarkup: !appliedReplyTo ? opts.replyMarkup : undefined,
++      replyMarkup: !sentAnyChunk ? opts.replyMarkup : undefined,
+     });
+-    if (firstDeliveredMessageId == null) {
+-      firstDeliveredMessageId = messageId;
+-    }
+-    if (replyToForChunk) {
+-      appliedReplyTo = true;
++    // sendTelegramText returns undefined when silently skipped — only count
++    // the chunk as sent when a real messageId was returned.
++    if (messageId != null) {
++      if (firstDeliveredMessageId == null) {
++        firstDeliveredMessageId = messageId;
++      }
++      sentAnyChunk = true;
+     }
+   }
+   return firstDeliveredMessageId;
+diff --git a/extensions/telegram/src/bot/delivery.send.ts b/extensions/telegram/src/bot/delivery.send.ts
+index 1e9aae4ff4e11..571a3fa8f8871 100644
+--- a/extensions/telegram/src/bot/delivery.send.ts
++++ b/extensions/telegram/src/bot/delivery.send.ts
+@@ -8,7 +8,7 @@ import { buildInlineKeyboard } from "../send.js";
+ import { buildTelegramThreadParams, type TelegramThreadSpec } from "./helpers.js";
+ 
+ const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
+-const EMPTY_TEXT_ERR_RE = /message text is empty/i;
++const EMPTY_TEXT_ERR_RE = /message text is empty|text must be non-empty/i;
+ const THREAD_NOT_FOUND_RE = /message thread not found/i;
+ const GrammyErrorCtor: typeof GrammyError | undefined =
+   typeof GrammyError === "function" ? GrammyError : undefined;
+@@ -112,7 +112,7 @@ export async function sendTelegramText(
+     silent?: boolean;
+     replyMarkup?: ReturnType<typeof buildInlineKeyboard>;
+   },
+-): Promise<number> {
++): Promise<number | undefined> {
+   const baseParams = buildTelegramSendParams({
+     replyToMessageId: opts?.replyToMessageId,
+     thread: opts?.thread,
+@@ -138,14 +138,21 @@ export async function sendTelegramText(
+           ...effectiveParams,
+         }),
+     });
+-    runtime.log?.(`telegram sendMessage ok chat=${chatId} message=${res.message_id} (plain)`);
++    runtime.log?.(`telegram sendMessage ok message=${res.message_id} (plain)`);
+     return res.message_id;
+   };
+ 
+-  // Markdown can render to empty HTML for syntax-only chunks; recover with plain text.
++  // Mask chat ID for logging — Telegram chat IDs are stable user/group identifiers (PII).
++  const chatRef = `[chatId]`;
++
++  // Markdown can render to empty HTML for syntax-only chunks; if plain fallback is also
++  // empty (e.g. a whitespace-only trailing chunk), silently skip rather than 400-erroring.
+   if (!htmlText.trim()) {
+     if (!hasFallbackText) {
+-      throw new Error("telegram sendMessage failed: empty formatted text and empty plain fallback");
++      runtime.log?.(
++        `telegram sendMessage skipped: empty formatted text and empty plain fallback (chat=${chatRef})`,
++      );
++      return undefined;
+     }
+     return await sendPlainFallback();
+   }
+@@ -157,7 +164,9 @@ export async function sendTelegramText(
+       requestParams: baseParams,
+       shouldLog: (err) => {
+         const errText = formatErrorMessage(err);
+-        return !PARSE_ERR_RE.test(errText) && !EMPTY_TEXT_ERR_RE.test(errText);
++        // Suppress log noise for empty-text errors only; parse errors should still be logged
++        // so callers can observe the failure (only empty-text gets silent-skip treatment).
++        return !EMPTY_TEXT_ERR_RE.test(errText);
+       },
+       send: (effectiveParams) =>
+         bot.api.sendMessage(chatId, htmlText, {
+@@ -167,12 +176,28 @@ export async function sendTelegramText(
+           ...effectiveParams,
+         }),
+     });
+-    runtime.log?.(`telegram sendMessage ok chat=${chatId} message=${res.message_id}`);
++    runtime.log?.(`telegram sendMessage ok chat=${chatRef} message=${res.message_id}`);
+     return res.message_id;
+   } catch (err) {
+     const errText = formatErrorMessage(err);
+-    if (PARSE_ERR_RE.test(errText) || EMPTY_TEXT_ERR_RE.test(errText)) {
++    if (EMPTY_TEXT_ERR_RE.test(errText)) {
++      if (!hasFallbackText) {
++        // Telegram rejected the text as empty — silently skip this chunk.
++        runtime.log?.(
++          `telegram sendMessage skipped: Telegram rejected empty text (chat=${chatRef})`,
++        );
++        return undefined;
++      }
++      runtime.log?.(`telegram formatted send failed (empty text); retrying without formatting`);
++      return await sendPlainFallback();
++    }
++    if (PARSE_ERR_RE.test(errText)) {
++      // Parse error: fall back to plain text if available; otherwise re-throw so callers
++      // can observe the failure (parse errors are not silently swallowed).
+       if (!hasFallbackText) {
++        runtime.log?.(
++          `telegram sendMessage parse error, no plain fallback — propagating: ${errText}`,
++        );
+         throw err;
+       }
+       runtime.log?.(`telegram formatted send failed; retrying without formatting: ${errText}`);
+diff --git a/extensions/telegram/src/bot/delivery.test.ts b/extensions/telegram/src/bot/delivery.test.ts
+index c0f5a8e427077..4672ab930563e 100644
+--- a/extensions/telegram/src/bot/delivery.test.ts
++++ b/extensions/telegram/src/bot/delivery.test.ts
+@@ -619,6 +619,47 @@ describe("deliverReplies", () => {
+     expect(sendMessage).not.toHaveBeenCalled();
+   });
+ 
++  it("skips empty last chunk when long response splits into multiple chunks", async () => {
++    // Scenario: large response split into 2 chunks where the last chunk is empty/whitespace.
++    // Before the fix: Telegram 400 "text must be non-empty" → "No response generated."
++    // After the fix: empty chunk is skipped silently; first chunk delivers successfully.
++    const { runtime, sendMessage, bot } = createSendMessageHarness(99);
++    // 3500 As (exactly at limit) + trailing whitespace: produces chunk1="A"*3500 (sent)
++    // and chunk2="   " (whitespace only, skipped by empty-text guard).
++    const longText = "A".repeat(3500) + "\n\n   ";
++    await deliverWith({
++      replies: [{ text: longText }],
++      runtime,
++      bot,
++      replyToMode: "off",
++      textLimit: 3500,
++    });
++    // sendMessage should only be called once — for the first non-empty chunk (not the trailing whitespace).
++    expect(sendMessage).toHaveBeenCalledTimes(1);
++  });
++
++  it("handles Telegram 400 text-must-be-non-empty error by silently skipping the chunk", async () => {
++    const runtime = createRuntime();
++    const sendMessage = vi
++      .fn()
++      .mockRejectedValueOnce(
++        new Error("Call to 'sendMessage' failed! (400: Bad Request: text must be non-empty)"),
++      );
++    const bot = createBot({ sendMessage });
++
++    // Should not throw — empty-text 400s are silently skipped.
++    const result = await deliverReplies({
++      replies: [{ text: "   " }],
++      chatId: "123",
++      token: "tok",
++      runtime,
++      bot,
++      replyToMode: "off",
++      textLimit: 4000,
++    });
++    expect(result.delivered).toBe(false);
++  });
++
+   it("uses reply_to_message_id when quote text is provided", async () => {
+     const runtime = createRuntime();
+     const sendMessage = vi.fn().mockResolvedValue({
+diff --git a/extensions/telegram/src/bot/reply-threading.ts b/extensions/telegram/src/bot/reply-threading.ts
+index 11f4f09968898..5d0d158d1360d 100644
+--- a/extensions/telegram/src/bot/reply-threading.ts
++++ b/extensions/telegram/src/bot/reply-threading.ts
+@@ -45,21 +45,35 @@ export async function sendChunkedTelegramReplyText<
+   replyQuoteText?: string;
+   quoteOnlyOnFirstChunk?: boolean;
+   markDelivered?: (progress: TProgress) => void;
++  /** Optional predicate — return true to silently skip a chunk without marking delivered. */
++  shouldSkipChunk?: (chunk: TChunk) => boolean;
++  /**
++   * Called for each non-skipped chunk. Return `false` to indicate the chunk
++   * was silently skipped at the send layer (e.g. `sendTelegramText` returned
++   * `undefined`) — in that case `markDelivered` is not called and the chunk
++   * does not count toward `sentChunkCount`. Returning `void` or `true` (or
++   * any other truthy value) marks the chunk as delivered.
++   */
+   sendChunk: (opts: {
+     chunk: TChunk;
++    /** True for the first chunk that is actually sent (skipped chunks are not counted). */
+     isFirstChunk: boolean;
+     replyToMessageId?: number;
+     replyMarkup?: TReplyMarkup;
+     replyQuoteText?: string;
+-  }) => Promise<void>;
++  }) => Promise<boolean | void>;
+ }): Promise<void> {
+   const applyDelivered = params.markDelivered ?? markDelivered;
++  let sentChunkCount = 0;
+   for (let i = 0; i < params.chunks.length; i += 1) {
+     const chunk = params.chunks[i];
+     if (!chunk) {
+       continue;
+     }
+-    const isFirstChunk = i === 0;
++    if (params.shouldSkipChunk?.(chunk)) {
++      continue;
++    }
++    const isFirstChunk = sentChunkCount === 0;
+     const replyToMessageId = resolveReplyToForSend({
+       replyToId: params.replyToId,
+       replyToMode: params.replyToMode,
+@@ -69,14 +83,18 @@ export async function sendChunkedTelegramReplyText<
+       Boolean(replyToMessageId) &&
+       Boolean(params.replyQuoteText) &&
+       (params.quoteOnlyOnFirstChunk !== true || isFirstChunk);
+-    await params.sendChunk({
++    const sent = await params.sendChunk({
+       chunk,
+       isFirstChunk,
+       replyToMessageId,
+       replyMarkup: isFirstChunk ? params.replyMarkup : undefined,
+       replyQuoteText: shouldAttachQuote ? params.replyQuoteText : undefined,
+     });
+-    markReplyApplied(params.progress, replyToMessageId);
+-    applyDelivered(params.progress);
++    // Only mark delivered when sendChunk did not signal a silent skip (false).
++    if (sent !== false) {
++      markReplyApplied(params.progress, replyToMessageId);
++      applyDelivered(params.progress);
++      sentChunkCount += 1;
++    }
+   }
+ }

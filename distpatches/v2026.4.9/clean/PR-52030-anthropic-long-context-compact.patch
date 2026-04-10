@@ -1,0 +1,144 @@
+From 59d2d5aa6818303dc1e984c716e60f3b08065e8e Mon Sep 17 00:00:00 2001
+From: amittell <mittell@me.com>
+Date: Sat, 21 Mar 2026 22:53:06 -0400
+Subject: [PATCH] fix(agent): treat Anthropic long-context usage errors as
+ context overflow for compact+retry
+
+Anthropic returns HTTP 429 with the message 'Extra usage is required
+for long context requests.' when the session context is too large for
+the standard usage tier.  OpenClaw was classifying this as a transient
+rate-limit error and cascading through all model fallbacks (which all
+fail for the same reason), leaving the user with a hard failure across
+every model.
+
+The correct fix is to treat this specific 429 as a context overflow so
+it routes to the existing compact+retry path.
+
+Changes:
+- Add isAnthropicLongContextUsageError() helper (case-insensitive
+  substring match on 'extra usage is required for long context')
+- In isLikelyContextOverflowError(), check the new helper *before* the
+  isRateLimitErrorMessage() exclusion so the Anthropic long-context
+  429 returns true instead of being excluded
+- Export the new function from the pi-embedded-helpers barrel
+- Add test cases in the existing errors test file
+---
+ ...dded-helpers.isbillingerrormessage.test.ts | 37 +++++++++++++++++++
+ src/agents/pi-embedded-helpers.ts             |  1 +
+ src/agents/pi-embedded-helpers/errors.ts      | 19 ++++++++++
+ 3 files changed, 57 insertions(+)
+
+diff --git a/src/agents/pi-embedded-helpers.isbillingerrormessage.test.ts b/src/agents/pi-embedded-helpers.isbillingerrormessage.test.ts
+index 8c0a0b1994..b6b234fa6d 100644
+--- a/src/agents/pi-embedded-helpers.isbillingerrormessage.test.ts
++++ b/src/agents/pi-embedded-helpers.isbillingerrormessage.test.ts
+@@ -3,6 +3,7 @@ import {
+   classifyFailoverReason,
+   classifyFailoverReasonFromHttpStatus,
+   extractObservedOverflowTokenCount,
++  isAnthropicLongContextUsageError,
+   isAuthErrorMessage,
+   isAuthPermanentErrorMessage,
+   isBillingErrorMessage,
+@@ -418,6 +419,28 @@ describe("error classifiers", () => {
+   });
+ });
+ 
++describe("isAnthropicLongContextUsageError", () => {
++  it("detects Anthropic long-context usage errors", () => {
++    expect(
++      isAnthropicLongContextUsageError("Extra usage is required for long context requests."),
++    ).toBe(true);
++    expect(
++      isAnthropicLongContextUsageError("extra usage is required for long context requests"),
++    ).toBe(true);
++    expect(
++      isAnthropicLongContextUsageError(
++        "429 Extra usage is required for long context requests. Please contact support.",
++      ),
++    ).toBe(true);
++  });
++
++  it("does not match unrelated rate limit messages", () => {
++    expect(isAnthropicLongContextUsageError("Rate limit exceeded")).toBe(false);
++    expect(isAnthropicLongContextUsageError("429 Too Many Requests")).toBe(false);
++    expect(isAnthropicLongContextUsageError("context length exceeded")).toBe(false);
++  });
++});
++
+ describe("isLikelyContextOverflowError", () => {
+   it("matches context overflow hints", () => {
+     const samples = [
+@@ -484,6 +507,20 @@ describe("isLikelyContextOverflowError", () => {
+       expect(isLikelyContextOverflowError(sample)).toBe(false);
+     }
+   });
++
++  it("treats Anthropic long-context 429 as context overflow (not rate limit)", () => {
++    // Anthropic returns HTTP 429 for this message, but it is semantically a context
++    // overflow — the session is too large. It should route to compact+retry, not
++    // model fallback.
++    expect(isLikelyContextOverflowError("Extra usage is required for long context requests.")).toBe(
++      true,
++    );
++    expect(isLikelyContextOverflowError("extra usage is required for long context requests")).toBe(
++      true,
++    );
++    // Standard rate limit messages must still be excluded
++    expect(isLikelyContextOverflowError("Rate limit exceeded")).toBe(false);
++  });
+ });
+ 
+ describe("extractObservedOverflowTokenCount", () => {
+diff --git a/src/agents/pi-embedded-helpers.ts b/src/agents/pi-embedded-helpers.ts
+index 77ae492bc3..29d2c2cb22 100644
+--- a/src/agents/pi-embedded-helpers.ts
++++ b/src/agents/pi-embedded-helpers.ts
+@@ -29,6 +29,7 @@ export {
+   isCloudflareOrHtmlErrorPage,
+   isCloudCodeAssistFormatError,
+   isCompactionFailureError,
++  isAnthropicLongContextUsageError,
+   isContextOverflowError,
+   isLikelyContextOverflowError,
+   isFailoverAssistantError,
+diff --git a/src/agents/pi-embedded-helpers/errors.ts b/src/agents/pi-embedded-helpers/errors.ts
+index 9f68bcac44..d8cbd8e673 100644
+--- a/src/agents/pi-embedded-helpers/errors.ts
++++ b/src/agents/pi-embedded-helpers/errors.ts
+@@ -188,6 +188,17 @@ const CONTEXT_OVERFLOW_HINT_RE =
+ const RATE_LIMIT_HINT_RE =
+   /rate limit|too many requests|requests per (?:minute|hour|day)|quota|throttl|429\b|tokens per day/i;
+ 
++/**
++ * Detects Anthropic's 429 "Extra usage is required for long context requests." error.
++ *
++ * Anthropic returns HTTP 429 for this case, but it is semantically a context overflow
++ * (the session is too large for the standard usage tier), not a transient rate limit.
++ * It should be routed to the compact+retry path instead of the model fallback chain.
++ */
++export function isAnthropicLongContextUsageError(errorMessage: string): boolean {
++  return errorMessage.toLowerCase().includes("extra usage is required for long context");
++}
++
+ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
+   if (!errorMessage) {
+     return false;
+@@ -212,6 +223,14 @@ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
+   if (CONTEXT_WINDOW_TOO_SMALL_RE.test(errorMessage)) {
+     return false;
+   }
++
++  // Anthropic returns HTTP 429 for "Extra usage is required for long context requests."
++  // This is semantically a context overflow (session too large), not a transient rate limit.
++  // Detect it before the isRateLimitErrorMessage exclusion so it routes to compact+retry.
++  if (isAnthropicLongContextUsageError(errorMessage)) {
++    return true;
++  }
++
+   // Rate limit errors can match the broad CONTEXT_OVERFLOW_HINT_RE pattern
+   // (e.g., "request reached organization TPD rate limit" matches request.*limit).
+   // Exclude them before checking context overflow heuristics.
+-- 
+2.50.1 (Apple Git-155)
+

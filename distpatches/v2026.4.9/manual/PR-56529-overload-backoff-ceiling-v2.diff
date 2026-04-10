@@ -1,0 +1,187 @@
+diff --git a/src/agents/pi-embedded-runner/run.overload-backoff.test.ts b/src/agents/pi-embedded-runner/run.overload-backoff.test.ts
+new file mode 100644
+index 0000000000000..ffa79b238b6a7
+--- /dev/null
++++ b/src/agents/pi-embedded-runner/run.overload-backoff.test.ts
+@@ -0,0 +1,62 @@
++import { describe, expect, it } from "vitest";
++import { computeBackoff, type BackoffPolicy } from "../../infra/backoff.js";
++
++/**
++ * Tests for the OVERLOAD_FAILOVER_BACKOFF_POLICY ceiling and config-driven override.
++ *
++ * The policy is built inside `runEmbeddedPiAgent` from
++ * `params.config?.agents?.defaults?.embeddedPi?.overloadBackoffMaxMs ?? 30_000`.
++ * These tests verify the policy shape and that `computeBackoff` respects `maxMs`.
++ */
++describe("overload failover backoff policy", () => {
++  it("default ceiling is 30s (not 1.5s)", () => {
++    const defaultMaxMs = 30_000;
++    const policy: BackoffPolicy = {
++      initialMs: 250,
++      maxMs: defaultMaxMs,
++      factor: 2,
++      jitter: 0,
++    };
++
++    // After many attempts the backoff should be capped at maxMs, never exceeding 30s.
++    for (let attempt = 1; attempt <= 10; attempt++) {
++      const delay = computeBackoff(policy, attempt);
++      expect(delay).toBeLessThanOrEqual(defaultMaxMs);
++    }
++
++    // After enough doublings (250 * 2^n) the cap must kick in before 30 000 ms.
++    // At attempt 8: 250 * 2^7 = 32 000 — already above 30 000, so it should clamp.
++    const cappedDelay = computeBackoff(policy, 8);
++    expect(cappedDelay).toBe(defaultMaxMs);
++  });
++
++  it("config override overloadBackoffMaxMs: 500 is respected", () => {
++    const configMaxMs = 500;
++    const policy: BackoffPolicy = {
++      initialMs: 250,
++      maxMs: configMaxMs,
++      factor: 2,
++      jitter: 0,
++    };
++
++    // After 2 doublings (250 * 2^1 = 500) the cap should kick in.
++    const cappedDelay = computeBackoff(policy, 2);
++    expect(cappedDelay).toBe(configMaxMs);
++
++    // Higher attempts must not exceed the override ceiling.
++    for (let attempt = 2; attempt <= 10; attempt++) {
++      expect(computeBackoff(policy, attempt)).toBeLessThanOrEqual(configMaxMs);
++    }
++  });
++
++  it("first attempt uses initialMs before hitting the ceiling", () => {
++    const policy: BackoffPolicy = {
++      initialMs: 250,
++      maxMs: 30_000,
++      factor: 2,
++      jitter: 0,
++    };
++    // attempt=1 → base = 250 * 2^0 = 250, no jitter → 250
++    expect(computeBackoff(policy, 1)).toBe(250);
++  });
++});
+diff --git a/src/agents/pi-embedded-runner/run.ts b/src/agents/pi-embedded-runner/run.ts
+index 8c21469d03d74..e14123ef5a709 100644
+--- a/src/agents/pi-embedded-runner/run.ts
++++ b/src/agents/pi-embedded-runner/run.ts
+@@ -6,7 +6,7 @@ import {
+   resolveContextEngine,
+ } from "../../context-engine/index.js";
+ import { emitAgentPlanEvent } from "../../infra/agent-events.js";
+-import { sleepWithAbort } from "../../infra/backoff.js";
++import { computeBackoff, sleepWithAbort, type BackoffPolicy } from "../../infra/backoff.js";
+ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+ import { enqueueCommandInLane } from "../../process/command-queue.js";
+ import { sanitizeForLog } from "../../terminal/ansi.js";
+@@ -75,7 +75,6 @@ import {
+   createCompactionDiagId,
+   resolveActiveErrorContext,
+   resolveMaxRunRetryIterations,
+-  resolveOverloadFailoverBackoffMs,
+   resolveOverloadProfileRotationLimit,
+   resolveRateLimitProfileRotationLimit,
+   type RuntimeAuthState,
+@@ -319,7 +318,18 @@ export async function runEmbeddedPiAgent(
+       });
+       let rateLimitProfileRotations = 0;
+       let timeoutCompactionAttempts = 0;
+-      const overloadFailoverBackoffMs = resolveOverloadFailoverBackoffMs(params.config);
++      // Read config override if available — default 30s ceiling.
++      // A higher ceiling preserves the retry budget under sustained overload;
++      // operators with many auth profiles can lower this for faster rotation.
++      const overloadBackoffMaxMs =
++        params.config?.agents?.defaults?.embeddedPi?.overloadBackoffMaxMs ?? 30_000;
++      const OVERLOAD_FAILOVER_BACKOFF_POLICY: BackoffPolicy = {
++        initialMs: 250,
++        maxMs: overloadBackoffMaxMs,
++        factor: 2,
++        jitter: 0.2,
++      };
++      let overloadFailoverAttempts = 0;
+       const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit(params.config);
+       const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit(params.config);
+       const maybeEscalateRateLimitProfileFallback = (params: {
+@@ -379,14 +389,16 @@ export async function runEmbeddedPiAgent(
+         return failoverReason;
+       };
+       const maybeBackoffBeforeOverloadFailover = async (reason: FailoverReason | null) => {
+-        if (reason !== "overloaded" || overloadFailoverBackoffMs <= 0) {
++        if (reason !== "overloaded") {
+           return;
+         }
++        overloadFailoverAttempts += 1;
++        const delayMs = computeBackoff(OVERLOAD_FAILOVER_BACKOFF_POLICY, overloadFailoverAttempts);
+         log.warn(
+-          `overload backoff before failover for ${provider}/${modelId}: delayMs=${overloadFailoverBackoffMs}`,
++          `overload backoff before failover for ${provider}/${modelId}: attempt=${overloadFailoverAttempts} delayMs=${delayMs}`,
+         );
+         try {
+-          await sleepWithAbort(overloadFailoverBackoffMs, params.abortSignal);
++          await sleepWithAbort(delayMs, params.abortSignal);
+         } catch (err) {
+           if (params.abortSignal?.aborted) {
+             const abortErr = new Error("Operation aborted", { cause: err });
+diff --git a/src/config/schema.base.generated.ts b/src/config/schema.base.generated.ts
+index 256aba18c8900..5b00b45594b8a 100644
+--- a/src/config/schema.base.generated.ts
++++ b/src/config/schema.base.generated.ts
+@@ -25103,6 +25103,10 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
+       help: "Embedded Pi runner hardening controls for how workspace-local Pi settings are trusted and applied in OpenClaw sessions.",
+       tags: ["advanced"],
+     },
++    "agents.defaults.embeddedPi.overloadBackoffMaxMs": {
++      help: "Maximum backoff delay in milliseconds before retrying after an API overloaded_error during auth profile failover (default: 30000). Lower values retry faster but risk exhausting the retry budget under sustained load.",
++      tags: ["reliability", "performance", "storage"],
++    },
+     "agents.defaults.embeddedPi.projectSettingsPolicy": {
+       label: "Embedded Pi Project Settings Policy",
+       help: 'How embedded Pi handles workspace-local `.pi/config/settings.json`: "sanitize" (default) strips shellPath/shellCommandPrefix, "ignore" disables project settings entirely, and "trusted" applies project settings as-is.',
+diff --git a/src/config/schema.help.ts b/src/config/schema.help.ts
+index 86a399c01de5a..a086200197c87 100644
+--- a/src/config/schema.help.ts
++++ b/src/config/schema.help.ts
+@@ -1149,6 +1149,8 @@ export const FIELD_HELP: Record<string, string> = {
+     "System-prompt override for the pre-compaction memory flush turn to control extraction style and safety constraints. Use carefully so custom instructions do not reduce memory quality or leak sensitive context.",
+   "agents.defaults.embeddedPi":
+     "Embedded Pi runner hardening controls for how workspace-local Pi settings are trusted and applied in OpenClaw sessions.",
++  "agents.defaults.embeddedPi.overloadBackoffMaxMs":
++    "Maximum backoff delay in milliseconds before retrying after an API overloaded_error during auth profile failover (default: 30000). Lower values retry faster but risk exhausting the retry budget under sustained load.",
+   "agents.defaults.embeddedPi.projectSettingsPolicy":
+     'How embedded Pi handles workspace-local `.pi/config/settings.json`: "sanitize" (default) strips shellPath/shellCommandPrefix, "ignore" disables project settings entirely, and "trusted" applies project settings as-is.',
+   "agents.defaults.humanDelay.mode": 'Delay style for block replies ("off", "natural", "custom").',
+diff --git a/src/config/schema.labels.ts b/src/config/schema.labels.ts
+index e63becba62fe1..651b4668c416c 100644
+--- a/src/config/schema.labels.ts
++++ b/src/config/schema.labels.ts
+@@ -532,6 +532,7 @@ export const FIELD_LABELS: Record<string, string> = {
+   "agents.defaults.compaction.memoryFlush.prompt": "Compaction Memory Flush Prompt",
+   "agents.defaults.compaction.memoryFlush.systemPrompt": "Compaction Memory Flush System Prompt",
+   "agents.defaults.embeddedPi": "Embedded Pi",
++  "agents.defaults.embeddedPi.overloadBackoffMaxMs": "Embedded Pi Overload Backoff Max Ms",
+   "agents.defaults.embeddedPi.projectSettingsPolicy": "Embedded Pi Project Settings Policy",
+   "agents.defaults.heartbeat.directPolicy": "Heartbeat Direct Policy",
+   "agents.list.*.heartbeat.directPolicy": "Heartbeat Direct Policy",
+diff --git a/src/config/types.agent-defaults.ts b/src/config/types.agent-defaults.ts
+index 2c907324978a1..448012712b71b 100644
+--- a/src/config/types.agent-defaults.ts
++++ b/src/config/types.agent-defaults.ts
+@@ -190,6 +190,13 @@ export type AgentDefaultsConfig = {
+      * - trusted: trust project settings as-is
+      */
+     projectSettingsPolicy?: "trusted" | "sanitize" | "ignore";
++    /**
++     * Maximum backoff delay in milliseconds before rotating to the next auth profile
++     * after an API overloaded_error. Defaults to 30000 (30 seconds).
++     * Higher values preserve the retry budget under sustained load;
++     * lower values rotate faster but risk exhausting retries sooner.
++     */
++    overloadBackoffMaxMs?: number;
+   };
+   /** Vector memory search configuration (per-agent overrides supported). */
+   memorySearch?: MemorySearchConfig;

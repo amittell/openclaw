@@ -1,0 +1,493 @@
+From 9846d8588ce22cb8a82a8c3e325e09fe772aaefd Mon Sep 17 00:00:00 2001
+From: amittell <mittell@me.com>
+Date: Thu, 2 Apr 2026 11:09:56 -0400
+Subject: [PATCH] fix(telegram): reconcile empty-text delivery on 2026.3.31
+
+---
+ .../telegram/src/bot/delivery.replies.ts      | 69 ++++++++++++++-----
+ extensions/telegram/src/bot/delivery.send.ts  | 14 ++--
+ extensions/telegram/src/bot/delivery.test.ts  | 66 ++++++++++++++++++
+ .../telegram/src/bot/reply-threading.test.ts  | 59 ++++++++++++++++
+ .../telegram/src/bot/reply-threading.ts       | 12 +++-
+ extensions/telegram/src/network-errors.ts     |  3 +
+ extensions/telegram/src/send.test.ts          | 30 ++++++++
+ extensions/telegram/src/send.ts               |  3 +-
+ 8 files changed, 230 insertions(+), 26 deletions(-)
+ create mode 100644 extensions/telegram/src/bot/reply-threading.test.ts
+
+diff --git a/extensions/telegram/src/bot/delivery.replies.ts b/extensions/telegram/src/bot/delivery.replies.ts
+index 60fb1dbc72..787f208574 100644
+--- a/extensions/telegram/src/bot/delivery.replies.ts
++++ b/extensions/telegram/src/bot/delivery.replies.ts
+@@ -43,6 +43,7 @@ import {
+ 
+ const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
+ const CAPTION_TOO_LONG_RE = /caption is too long/i;
++const HTML_WHITESPACE_TAGS_RE = /<br\s*\/?>|<\/?(?:p|div)>/gi;
+ const GrammyErrorCtor: typeof GrammyError | undefined =
+   typeof GrammyError === "function" ? GrammyError : undefined;
+ 
+@@ -92,10 +93,17 @@ function markDelivered(progress: DeliveryProgress): void {
+   progress.deliveredCount += 1;
+ }
+ 
++function isHtmlWhitespaceOnly(value: string | null | undefined): boolean {
++  if (!value) {
++    return true;
++  }
++  return value.replace(HTML_WHITESPACE_TAGS_RE, "").trim() === "";
++}
++
+ function filterEmptyTelegramTextChunks<T extends { text: string }>(chunks: readonly T[]): T[] {
+   // Telegram rejects whitespace-only text payloads; drop them before sendMessage so
+   // hook-mutated or model-emitted empty replies become a no-op instead of a 400.
+-  return chunks.filter((chunk) => chunk.text.trim().length > 0);
++  return chunks.filter((chunk) => !isHtmlWhitespaceOnly(chunk.text));
+ }
+ 
+ async function deliverTextReply(params: {
+@@ -124,6 +132,10 @@ async function deliverTextReply(params: {
+     replyQuoteText: params.replyQuoteText,
+     markDelivered,
+     sendChunk: async ({ chunk, replyToMessageId, replyMarkup, replyQuoteText }) => {
++      if (isHtmlWhitespaceOnly(chunk.text)) {
++        logVerbose("telegram: skipping empty chunk in deliverTextReply");
++        return false;
++      }
+       const messageId = await sendTelegramText(
+         params.bot,
+         params.chatId,
+@@ -140,9 +152,13 @@ async function deliverTextReply(params: {
+           replyMarkup,
+         },
+       );
++      if (messageId == null) {
++        return false;
++      }
+       if (firstDeliveredMessageId == null) {
+         firstDeliveredMessageId = messageId;
+       }
++      return true;
+     },
+   });
+   return firstDeliveredMessageId;
+@@ -171,7 +187,11 @@ async function sendPendingFollowUpText(params: {
+     replyMarkup: params.replyMarkup,
+     markDelivered,
+     sendChunk: async ({ chunk, replyToMessageId, replyMarkup }) => {
+-      await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
++      if (isHtmlWhitespaceOnly(chunk.text)) {
++        logVerbose("telegram: skipping empty chunk in sendPendingFollowUpText");
++        return false;
++      }
++      const messageId = await sendTelegramText(params.bot, params.chatId, chunk.html, params.runtime, {
+         replyToMessageId,
+         thread: params.thread,
+         textMode: "html",
+@@ -180,6 +200,7 @@ async function sendPendingFollowUpText(params: {
+         silent: params.silent,
+         replyMarkup,
+       });
++      return messageId != null;
+     },
+   });
+ }
+@@ -212,27 +233,31 @@ async function sendTelegramVoiceFallbackText(opts: {
+   replyQuoteText?: string;
+ }): Promise<number | undefined> {
+   let firstDeliveredMessageId: number | undefined;
+-  const chunks = filterEmptyTelegramTextChunks(opts.chunkText(opts.text));
+-  let appliedReplyTo = false;
++  const chunks = opts.chunkText(opts.text);
++  let sentAnyChunk = false;
+   for (let i = 0; i < chunks.length; i += 1) {
+     const chunk = chunks[i];
+-    // Only apply reply reference, quote text, and buttons to the first chunk.
+-    const replyToForChunk = !appliedReplyTo ? opts.replyToId : undefined;
++    if (!chunk || isHtmlWhitespaceOnly(chunk.text)) {
++      logVerbose("telegram: skipping empty chunk in sendTelegramVoiceFallbackText");
++      continue;
++    }
++    // Only apply reply reference, quote text, and buttons to the first sent chunk.
++    const replyToForChunk = !sentAnyChunk ? opts.replyToId : undefined;
+     const messageId = await sendTelegramText(opts.bot, opts.chatId, chunk.html, opts.runtime, {
+       replyToMessageId: replyToForChunk,
+-      replyQuoteText: !appliedReplyTo ? opts.replyQuoteText : undefined,
++      replyQuoteText: !sentAnyChunk ? opts.replyQuoteText : undefined,
+       thread: opts.thread,
+       textMode: "html",
+       plainText: chunk.text,
+       linkPreview: opts.linkPreview,
+       silent: opts.silent,
+-      replyMarkup: !appliedReplyTo ? opts.replyMarkup : undefined,
++      replyMarkup: !sentAnyChunk ? opts.replyMarkup : undefined,
+     });
+-    if (firstDeliveredMessageId == null) {
+-      firstDeliveredMessageId = messageId;
+-    }
+-    if (replyToForChunk) {
+-      appliedReplyTo = true;
++    if (messageId != null) {
++      if (firstDeliveredMessageId == null) {
++        firstDeliveredMessageId = messageId;
++      }
++      sentAnyChunk = true;
+     }
+   }
+   return firstDeliveredMessageId;
+@@ -395,11 +420,17 @@ async function deliverMediaReply(params: {
+               replyMarkup: params.replyMarkup,
+               replyQuoteText: params.replyQuoteText,
+             });
+-            if (firstDeliveredMessageId == null) {
+-              firstDeliveredMessageId = fallbackMessageId;
++            if (fallbackMessageId != null) {
++              if (firstDeliveredMessageId == null) {
++                firstDeliveredMessageId = fallbackMessageId;
++              }
++              markReplyApplied(params.progress, voiceFallbackReplyTo);
++              markDelivered(params.progress);
++            } else {
++              logVerbose(
++                "telegram voice fallback text produced no sendable chunks; skipping delivery mark",
++              );
+             }
+-            markReplyApplied(params.progress, voiceFallbackReplyTo);
+-            markDelivered(params.progress);
+             continue;
+           }
+           if (isCaptionTooLong(voiceErr)) {
+@@ -627,6 +658,10 @@ export async function deliverReplies(params: {
+       params.runtime.error?.(danger("reply missing text/media"));
+       continue;
+     }
++    if (reply?.text && !hasMedia && isHtmlWhitespaceOnly(reply.text)) {
++      logVerbose("telegram reply text is HTML-only whitespace; skipping");
++      continue;
++    }
+ 
+     const rawContent = reply.text || "";
+     if (hasMessageSendingHooks) {
+diff --git a/extensions/telegram/src/bot/delivery.send.ts b/extensions/telegram/src/bot/delivery.send.ts
+index 1e9aae4ff4..5c7d519426 100644
+--- a/extensions/telegram/src/bot/delivery.send.ts
++++ b/extensions/telegram/src/bot/delivery.send.ts
+@@ -1,14 +1,14 @@
+ import { type Bot, GrammyError } from "grammy";
+-import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
++import { logVerbose, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+ import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
+ import { withTelegramApiErrorLogging } from "../api-logging.js";
+ import { markdownToTelegramHtml } from "../format.js";
++import { EMPTY_TEXT_ERR_RE } from "../network-errors.js";
+ import { normalizeTelegramReplyToMessageId } from "../outbound-params.js";
+ import { buildInlineKeyboard } from "../send.js";
+ import { buildTelegramThreadParams, type TelegramThreadSpec } from "./helpers.js";
+ 
+ const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
+-const EMPTY_TEXT_ERR_RE = /message text is empty/i;
+ const THREAD_NOT_FOUND_RE = /message thread not found/i;
+ const GrammyErrorCtor: typeof GrammyError | undefined =
+   typeof GrammyError === "function" ? GrammyError : undefined;
+@@ -112,7 +112,7 @@ export async function sendTelegramText(
+     silent?: boolean;
+     replyMarkup?: ReturnType<typeof buildInlineKeyboard>;
+   },
+-): Promise<number> {
++): Promise<number | undefined> {
+   const baseParams = buildTelegramSendParams({
+     replyToMessageId: opts?.replyToMessageId,
+     thread: opts?.thread,
+@@ -145,7 +145,8 @@ export async function sendTelegramText(
+   // Markdown can render to empty HTML for syntax-only chunks; recover with plain text.
+   if (!htmlText.trim()) {
+     if (!hasFallbackText) {
+-      throw new Error("telegram sendMessage failed: empty formatted text and empty plain fallback");
++      logVerbose("telegram sendMessage skipped: empty formatted text and empty plain fallback");
++      return undefined;
+     }
+     return await sendPlainFallback();
+   }
+@@ -173,7 +174,10 @@ export async function sendTelegramText(
+     const errText = formatErrorMessage(err);
+     if (PARSE_ERR_RE.test(errText) || EMPTY_TEXT_ERR_RE.test(errText)) {
+       if (!hasFallbackText) {
+-        throw err;
++        logVerbose(
++          "telegram sendMessage skipped: Telegram rejected text as empty and no plain fallback available",
++        );
++        return undefined;
+       }
+       runtime.log?.(`telegram formatted send failed; retrying without formatting: ${errText}`);
+       return await sendPlainFallback();
+diff --git a/extensions/telegram/src/bot/delivery.test.ts b/extensions/telegram/src/bot/delivery.test.ts
+index c0f5a8e427..49d632be35 100644
+--- a/extensions/telegram/src/bot/delivery.test.ts
++++ b/extensions/telegram/src/bot/delivery.test.ts
+@@ -619,6 +619,49 @@ describe("deliverReplies", () => {
+     expect(sendMessage).not.toHaveBeenCalled();
+   });
+ 
++  it("skips HTML-only whitespace replies without calling Telegram", async () => {
++    const runtime = createRuntime();
++    const sendMessage = vi.fn();
++    const bot = { api: { sendMessage } } as unknown as Bot;
++
++    for (const htmlOnlyText of ["<br>", "<br/>", "<br />\n<br>", "<p></p>", "<div></div>"]) {
++      sendMessage.mockClear();
++      const result = await deliverReplies({
++        replies: [{ text: htmlOnlyText }],
++        chatId: "123",
++        token: "tok",
++        runtime,
++        bot,
++        replyToMode: "off",
++        textLimit: 4000,
++      });
++      expect(sendMessage, `expected no send for text=${JSON.stringify(htmlOnlyText)}`).not.toHaveBeenCalled();
++      expect(result.delivered, `expected delivered=false for text=${JSON.stringify(htmlOnlyText)}`).toBe(false);
++    }
++  });
++
++  it("does not skip replies with real text content alongside HTML tags", async () => {
++    const runtime = createRuntime();
++    const sendMessage = vi.fn().mockResolvedValue({
++      message_id: 10,
++      chat: { id: "123" },
++    });
++    const bot = createBot({ sendMessage });
++
++    await expect(
++      deliverReplies({
++        replies: [{ text: "Hello<br>World" }],
++        chatId: "123",
++        token: "tok",
++        runtime,
++        bot,
++        replyToMode: "off",
++        textLimit: 4000,
++      }),
++    ).resolves.toEqual({ delivered: true });
++    expect(sendMessage).toHaveBeenCalled();
++  });
++
+   it("uses reply_to_message_id when quote text is provided", async () => {
+     const runtime = createRuntime();
+     const sendMessage = vi.fn().mockResolvedValue({
+@@ -682,6 +725,29 @@ describe("deliverReplies", () => {
+     );
+   });
+ 
++  it("does not mark delivery when voice fallback text has no sendable content", async () => {
++    const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
++      voiceError: createVoiceMessagesForbiddenError(),
++    });
++
++    mockMediaLoad("note.ogg", "audio/ogg", "voice");
++
++    await expect(
++      deliverReplies({
++        replies: [{ mediaUrl: "https://example.com/note.ogg", text: "<br>", audioAsVoice: true }],
++        chatId: "123",
++        token: "tok",
++        runtime,
++        bot,
++        replyToMode: "off",
++        textLimit: 4000,
++      }),
++    ).resolves.toEqual({ delivered: false });
++
++    expect(sendVoice).toHaveBeenCalledTimes(1);
++    expect(sendMessage).not.toHaveBeenCalled();
++  });
++
+   it("keeps disable_notification on voice fallback text when silent is true", async () => {
+     const runtime = createRuntime();
+     const sendVoice = vi.fn().mockRejectedValue(createVoiceMessagesForbiddenError());
+diff --git a/extensions/telegram/src/bot/reply-threading.test.ts b/extensions/telegram/src/bot/reply-threading.test.ts
+new file mode 100644
+index 0000000000..4c76a9ae5f
+--- /dev/null
++++ b/extensions/telegram/src/bot/reply-threading.test.ts
+@@ -0,0 +1,59 @@
++import { describe, expect, it, vi } from "vitest";
++import { createDeliveryProgress, sendChunkedTelegramReplyText } from "./reply-threading.js";
++
++describe("sendChunkedTelegramReplyText", () => {
++  it("preserves reply target and buttons until a chunk is actually sent", async () => {
++    const progress = { ...createDeliveryProgress(), deliveredCount: 0 };
++    const sendChunk = vi
++      .fn<
++        (opts: {
++          chunk: string;
++          isFirstChunk: boolean;
++          replyToMessageId?: number;
++          replyMarkup?: { inline_keyboard: unknown[] };
++          replyQuoteText?: string;
++        }) => Promise<boolean>
++      >()
++      .mockImplementation(async ({ chunk }) => chunk !== "skip");
++
++    await sendChunkedTelegramReplyText({
++      chunks: ["skip", "sent", "after"],
++      progress,
++      replyToId: 77,
++      replyToMode: "first",
++      replyMarkup: { inline_keyboard: [] },
++      markDelivered: (state) => {
++        state.hasDelivered = true;
++        state.deliveredCount += 1;
++      },
++      sendChunk,
++    });
++
++    expect(sendChunk).toHaveBeenCalledTimes(3);
++    expect(sendChunk.mock.calls[0]?.[0]).toEqual(
++      expect.objectContaining({
++        replyToMessageId: 77,
++        replyMarkup: { inline_keyboard: [] },
++      }),
++    );
++    expect(sendChunk.mock.calls[1]?.[0]).toEqual(
++      expect.objectContaining({
++        replyToMessageId: 77,
++        replyMarkup: { inline_keyboard: [] },
++      }),
++    );
++    expect(sendChunk.mock.calls[2]?.[0]).toEqual(
++      expect.not.objectContaining({
++        replyToMessageId: 77,
++      }),
++    );
++    expect(sendChunk.mock.calls[2]?.[0]).toEqual(
++      expect.not.objectContaining({
++        replyMarkup: { inline_keyboard: [] },
++      }),
++    );
++    expect(progress.hasReplied).toBe(true);
++    expect(progress.hasDelivered).toBe(true);
++    expect(progress.deliveredCount).toBe(2);
++  });
++});
+diff --git a/extensions/telegram/src/bot/reply-threading.ts b/extensions/telegram/src/bot/reply-threading.ts
+index 11f4f09968..a8ef31855d 100644
+--- a/extensions/telegram/src/bot/reply-threading.ts
++++ b/extensions/telegram/src/bot/reply-threading.ts
+@@ -51,15 +51,17 @@ export async function sendChunkedTelegramReplyText<
+     replyToMessageId?: number;
+     replyMarkup?: TReplyMarkup;
+     replyQuoteText?: string;
+-  }) => Promise<void>;
++  }) => Promise<boolean | void>;
+ }): Promise<void> {
+   const applyDelivered = params.markDelivered ?? markDelivered;
++  let firstSentChunk = false;
+   for (let i = 0; i < params.chunks.length; i += 1) {
+     const chunk = params.chunks[i];
+     if (!chunk) {
+       continue;
+     }
+     const isFirstChunk = i === 0;
++    const isFirstSentChunk = !firstSentChunk;
+     const replyToMessageId = resolveReplyToForSend({
+       replyToId: params.replyToId,
+       replyToMode: params.replyToMode,
+@@ -69,13 +71,17 @@ export async function sendChunkedTelegramReplyText<
+       Boolean(replyToMessageId) &&
+       Boolean(params.replyQuoteText) &&
+       (params.quoteOnlyOnFirstChunk !== true || isFirstChunk);
+-    await params.sendChunk({
++    const sent = await params.sendChunk({
+       chunk,
+       isFirstChunk,
+       replyToMessageId,
+-      replyMarkup: isFirstChunk ? params.replyMarkup : undefined,
++      replyMarkup: isFirstSentChunk ? params.replyMarkup : undefined,
+       replyQuoteText: shouldAttachQuote ? params.replyQuoteText : undefined,
+     });
++    if (sent === false) {
++      continue;
++    }
++    firstSentChunk = true;
+     markReplyApplied(params.progress, replyToMessageId);
+     applyDelivered(params.progress);
+   }
+diff --git a/extensions/telegram/src/network-errors.ts b/extensions/telegram/src/network-errors.ts
+index 0e45a463b4..90ce7235b5 100644
+--- a/extensions/telegram/src/network-errors.ts
++++ b/extensions/telegram/src/network-errors.ts
+@@ -5,6 +5,9 @@ import {
+   readErrorName,
+ } from "openclaw/plugin-sdk/error-runtime";
+ 
++// Telegram currently uses at least two empty-text variants across endpoints.
++export const EMPTY_TEXT_ERR_RE = /message text is empty|text must be non-empty/i;
++
+ const TELEGRAM_NETWORK_ORIGIN = Symbol("openclaw.telegram.network-origin");
+ 
+ const RECOVERABLE_ERROR_CODES = new Set([
+diff --git a/extensions/telegram/src/send.test.ts b/extensions/telegram/src/send.test.ts
+index 9a3c8c364c..cde5955cf6 100644
+--- a/extensions/telegram/src/send.test.ts
++++ b/extensions/telegram/src/send.test.ts
+@@ -503,6 +503,36 @@ describe("sendMessageTelegram", () => {
+     }
+   });
+ 
++  it("retries with plain text on 'text must be non-empty' error", async () => {
++    loadConfig.mockReturnValue({
++      channels: { telegram: { linkPreview: false } },
++    });
++    const sendMessage = vi
++      .fn()
++      .mockRejectedValueOnce(new Error("400: Bad Request: text must be non-empty"))
++      .mockResolvedValueOnce({ message_id: 99, chat: { id: "123" } });
++    const api = { sendMessage } as unknown as { sendMessage: typeof sendMessage };
++
++    await sendMessageTelegram("123", "**hello**", { token: "tok", api, plainText: "hello" });
++
++    expect(sendMessage).toHaveBeenCalledTimes(2);
++  });
++
++  it("retries with plain text on 'message text is empty' error", async () => {
++    loadConfig.mockReturnValue({
++      channels: { telegram: { linkPreview: false } },
++    });
++    const sendMessage = vi
++      .fn()
++      .mockRejectedValueOnce(new Error("400: Bad Request: message text is empty"))
++      .mockResolvedValueOnce({ message_id: 99, chat: { id: "123" } });
++    const api = { sendMessage } as unknown as { sendMessage: typeof sendMessage };
++
++    await sendMessageTelegram("123", "**hello**", { token: "tok", api, plainText: "hello" });
++
++    expect(sendMessage).toHaveBeenCalledTimes(2);
++  });
++
+   it("fails when Telegram text send returns no message_id", async () => {
+     const sendMessage = vi.fn().mockResolvedValue({
+       chat: { id: "123" },
+diff --git a/extensions/telegram/src/send.ts b/extensions/telegram/src/send.ts
+index d6ae16efcb..6841b0bfb8 100644
+--- a/extensions/telegram/src/send.ts
++++ b/extensions/telegram/src/send.ts
+@@ -30,6 +30,7 @@ import { splitTelegramCaption } from "./caption.js";
+ import { resolveTelegramApiBase, resolveTelegramFetch } from "./fetch.js";
+ import { renderTelegramHtmlText, splitTelegramHtmlChunks } from "./format.js";
+ import {
++  EMPTY_TEXT_ERR_RE,
+   isRecoverableTelegramNetworkError,
+   isSafeToRetrySendError,
+   isTelegramServerError,
+@@ -397,7 +398,7 @@ function removeMessageThreadIdParam<TParams extends TelegramThreadScopedParams |
+ }
+ 
+ function isTelegramHtmlParseError(err: unknown): boolean {
+-  return PARSE_ERR_RE.test(formatErrorMessage(err));
++  return PARSE_ERR_RE.test(formatErrorMessage(err)) || EMPTY_TEXT_ERR_RE.test(formatErrorMessage(err));
+ }
+ 
+ function buildTelegramThreadReplyParams(params: {
+-- 
+2.50.1 (Apple Git-155)
+

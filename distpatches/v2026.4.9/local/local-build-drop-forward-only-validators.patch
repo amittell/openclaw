@@ -1,0 +1,36 @@
+From 6d7af32ceedf84cab85f1f4f8ea98448570db4ef Mon Sep 17 00:00:00 2001
+From: amittell <mittell@me.com>
+Date: Sun, 5 Apr 2026 13:13:28 -0400
+Subject: [PATCH] fix(build): drop forward-only validators
+ (SkillsSearch/Detail/ExecApprovalGet) not in 4.2 types
+
+---
+ src/gateway/protocol/index.ts | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/src/gateway/protocol/index.ts b/src/gateway/protocol/index.ts
+index 733b507cec..bfad3fc24f 100644
+--- a/src/gateway/protocol/index.ts
++++ b/src/gateway/protocol/index.ts
+@@ -435,8 +435,6 @@ export const validateSkillsBinsParams = lazyCompile<SkillsBinsParams>(SkillsBins
+ export const validateSkillsInstallParams =
+   lazyCompile<SkillsInstallParams>(SkillsInstallParamsSchema);
+ export const validateSkillsUpdateParams = lazyCompile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
+-export const validateSkillsSearchParams = lazyCompile<SkillsSearchParams>(SkillsSearchParamsSchema);
+-export const validateSkillsDetailParams = lazyCompile<SkillsDetailParams>(SkillsDetailParamsSchema);
+ export const validateCronListParams = lazyCompile<CronListParams>(CronListParamsSchema);
+ export const validateCronStatusParams = lazyCompile<CronStatusParams>(CronStatusParamsSchema);
+ export const validateCronAddParams = lazyCompile<CronAddParams>(CronAddParamsSchema);
+@@ -468,9 +466,6 @@ export const validateExecApprovalsGetParams = lazyCompile<ExecApprovalsGetParams
+ export const validateExecApprovalsSetParams = lazyCompile<ExecApprovalsSetParams>(
+   ExecApprovalsSetParamsSchema,
+ );
+-export const validateExecApprovalGetParams = lazyCompile<ExecApprovalGetParams>(
+-  ExecApprovalGetParamsSchema,
+-);
+ export const validateExecApprovalRequestParams = lazyCompile<ExecApprovalRequestParams>(
+   ExecApprovalRequestParamsSchema,
+ );
+-- 
+2.50.1 (Apple Git-155)
+

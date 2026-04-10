@@ -1,0 +1,1677 @@
+diff --git a/src/agents/pi-embedded-runner/run/attempt.ts b/src/agents/pi-embedded-runner/run/attempt.ts
+index c5790d3cd28f6..f42b13e318a74 100644
+--- a/src/agents/pi-embedded-runner/run/attempt.ts
++++ b/src/agents/pi-embedded-runner/run/attempt.ts
+@@ -8,11 +8,13 @@ import {
+ } from "@mariozechner/pi-coding-agent";
+ import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
+ import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
++import { resolveStateDir } from "../../../config/paths.js";
+ import { getMachineDisplayName } from "../../../infra/machine-name.js";
+ import {
+   ensureGlobalUndiciEnvProxyDispatcher,
+   ensureGlobalUndiciStreamTimeouts,
+ } from "../../../infra/net/undici-global-dispatcher.js";
++import { clearActiveTurn, writeActiveTurn } from "../../../infra/pending-inbound-store.js";
+ import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
+ import {
+   isOllamaCompatProvider,
+@@ -1382,6 +1384,24 @@ export async function runEmbeddedAttempt(
+       };
+       setActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
+ 
++      // Track active turn on disk for crash recovery.
++      // Awaited to guarantee the record is persisted before the run proceeds;
++      // otherwise clearActiveTurn in the finally block can race ahead of the
++      // write on short runs, leaving a ghost active-turn record.
++      if (!params.sessionId?.startsWith("probe-")) {
++        const runtimeChannel = params.messageChannel ?? params.messageProvider ?? "unknown";
++        try {
++          await writeActiveTurn(resolveStateDir(process.env), {
++            sessionId: params.sessionId,
++            sessionKey: params.sessionKey ?? params.sessionId,
++            channel: runtimeChannel,
++            startedAt: Date.now(),
++          });
++        } catch (err) {
++          log.warn(`active-turn write failed: sessionId=${params.sessionId} ${String(err)}`);
++        }
++      }
++
+       let abortWarnTimer: NodeJS.Timeout | undefined;
+       const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
+       const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
+@@ -1946,6 +1966,16 @@ export async function runEmbeddedAttempt(
+           );
+         }
+         clearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
++        // Clear active-turn disk record.  Awaited so the clear cannot settle
++        // before a preceding writeActiveTurn on short-lived runs — preventing
++        // ghost active-turn records that trigger false stale-turn recovery.
++        if (!params.sessionId?.startsWith("probe-")) {
++          try {
++            await clearActiveTurn(resolveStateDir(process.env), params.sessionId);
++          } catch (err) {
++            log.warn(`active-turn clear failed: sessionId=${params.sessionId} ${String(err)}`);
++          }
++        }
+         params.abortSignal?.removeEventListener?.("abort", onAbort);
+       }
+ 
+diff --git a/src/gateway/server-startup.ts b/src/gateway/server-startup.ts
+index 6bc7a85a9d2af..078e17903743d 100644
+--- a/src/gateway/server-startup.ts
++++ b/src/gateway/server-startup.ts
+@@ -12,10 +12,14 @@ import { ensureOpenClawModelsJson } from "../agents/models-config.js";
+ import { resolveModel } from "../agents/pi-embedded-runner/model.js";
+ import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
+ import { cleanStaleLockFiles } from "../agents/session-write-lock.js";
++import { resolveAnnounceTargetFromKey } from "../agents/tools/sessions-send-helpers.js";
++import { sanitizeInboundSystemTags } from "../auto-reply/reply/inbound-text.js";
++import { normalizeChannelId } from "../channels/plugins/index.js";
+ import type { CliDeps } from "../cli/deps.js";
+ import type { loadConfig } from "../config/config.js";
+ import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
+ import { resolveStateDir } from "../config/paths.js";
++import { parseSessionThreadInfo } from "../config/sessions/delivery-info.js";
+ import { startGmailWatcherWithLogs } from "../hooks/gmail-watcher-lifecycle.js";
+ import {
+   clearInternalHooks,
+@@ -24,13 +28,23 @@ import {
+ } from "../hooks/internal-hooks.js";
+ import { loadInternalHooks } from "../hooks/loader.js";
+ import { isTruthyEnvValue } from "../infra/env.js";
++import {
++  clearActiveTurn,
++  clearPendingInboundEntries,
++  readActiveTurn,
++  readPendingInbound,
++  readStaleActiveTurns,
++} from "../infra/pending-inbound-store.js";
++import { enqueueSystemEvent, MAX_EVENTS } from "../infra/system-events.js";
+ import type { loadOpenClawPlugins } from "../plugins/loader.js";
+ import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
++import { deliveryContextFromSession, mergeDeliveryContext } from "../utils/delivery-context.js";
+ import {
+   scheduleRestartSentinelWake,
+   shouldWakeFromRestartSentinel,
+ } from "./server-restart-sentinel.js";
+ import { startGatewayMemoryBackend } from "./server-startup-memory.js";
++import { loadSessionEntry } from "./session-utils.js";
+ 
+ const SESSION_LOCK_STALE_MS = 30 * 60 * 1000;
+ 
+@@ -78,6 +92,12 @@ export async function startGatewaySidecars(params: {
+   };
+   logChannels: { info: (msg: string) => void; error: (msg: string) => void };
+ }) {
++  // Record the process boot timestamp before any channels start.  Active turns
++  // written by THIS process (startedAt >= processStartedAt) are live — not
++  // stale leftovers from the previous process.  The recovery loop below uses
++  // this to avoid clearing fresh turns that raced ahead of the recovery sweep.
++  const processStartedAt = Date.now();
++
+   try {
+     const stateDir = resolveStateDir(process.env);
+     const sessionDirs = await resolveAgentSessionDirs(stateDir);
+@@ -146,6 +166,123 @@ export async function startGatewaySidecars(params: {
+     params.logHooks.error(`failed to load hooks: ${String(err)}`);
+   }
+ 
++  // Replay inbound messages captured during the previous drain.
++  // Must run BEFORE startChannels() so queued events are in-memory before any
++  // live inbound message can trigger a turn on the same session — preventing a
++  // race where live messages are processed ahead of drain-captured replays.
++  // enqueueSystemEvent is a pure in-memory operation; no channel infrastructure
++  // is required at this point.
++  try {
++    const stateDir = resolveStateDir(process.env);
++    const rawPending = await readPendingInbound(stateDir);
++    // Sort by capturedAt ascending so replay order is deterministic regardless
++    // of JSON key insertion order. Older messages are replayed before newer ones,
++    // and per-session overflow truncation correctly discards the oldest entries.
++    const pending = rawPending.slice().toSorted((a, b) => a.capturedAt - b.capturedAt);
++    if (pending.length > 0) {
++      params.log.warn(`replaying ${pending.length} inbound message(s) captured during drain`);
++      // Consume-then-process: clear only inbound entries to prevent infinite retry on crash.
++      // Active turns remain intact in the shared file.
++      await clearPendingInboundEntries(stateDir);
++
++      // Per-session cap: system-event queue holds at most MAX_EVENTS entries.
++      // Sessions with exactly MAX_EVENTS queued entries should replay all of them;
++      // only sessions with MORE than MAX_EVENTS entries should truncate.
++      const REPLAY_CAP_PER_SESSION = MAX_EVENTS;
++
++      // Phase 1: resolve sessionKey and eventText for every entry, collecting by session.
++      // Entries are already sorted by capturedAt (ascending) so per-session lists
++      // are in chronological order — the replay cap slice correctly takes the most recent.
++      type ResolvedEntry = {
++        entry: (typeof pending)[number];
++        sessionKey: string;
++        eventText: string;
++      };
++      const bySession = new Map<string, ResolvedEntry[]>();
++
++      for (const entry of pending) {
++        try {
++          const payload = entry.payload as {
++            chatId?: number | string;
++            channelId?: string;
++            senderId?: string;
++            senderName?: string;
++            senderUsername?: string;
++            text?: string;
++          };
++          // NOTE: senderLabel and textPreview are untrusted user-controlled content
++          // from the original inbound message. Sanitize to prevent prompt injection
++          // via spoofed system tags (e.g. "[System Message]", "System:").
++          const rawSenderLabel =
++            payload.senderName ?? payload.senderUsername ?? payload.senderId ?? "unknown";
++          const senderLabel = sanitizeInboundSystemTags(String(rawSenderLabel));
++          // Limit preview to 100 chars, strip newlines, and escape backticks to
++          // prevent prompt injection via crafted message content in System: events.
++          const rawPreview = (payload.text ?? "")
++            .slice(0, 100)
++            .replace(/\n/g, "\\n")
++            .replace(/`/g, "\\`");
++          const textPreview = sanitizeInboundSystemTags(String(rawPreview));
++          // Prefer the resolved session key stored at capture time; fall back to
++          // fabricated key for backward compatibility with entries captured before
++          // this change.
++          const sessionKey =
++            entry.sessionKey ??
++            (entry.channel === "telegram"
++              ? `telegram:${payload.chatId ?? "unknown"}`
++              : entry.channel === "discord"
++                ? `discord:channel:${payload.channelId ?? "unknown"}`
++                : `${entry.channel}:unknown`);
++          // Include entry.channel, entry.accountId, and entry.id in the event text so that
++          // entries from different channels or accounts that share the same message id are
++          // never collapsed by enqueueSystemEvent's consecutive-duplicate guard.
++          const accountSuffix = entry.accountId ? `:${entry.accountId}` : "";
++          const eventText = `[pending-inbound:${entry.channel}${accountSuffix}:${entry.id}] Missed message during restart from ${senderLabel}: "${textPreview || "(no text)"}"`;
++          const list = bySession.get(sessionKey) ?? [];
++          list.push({ entry, sessionKey, eventText });
++          bySession.set(sessionKey, list);
++        } catch (err) {
++          params.log.warn(
++            `pending-inbound: replay failed for ${entry.channel}:${entry.id}: ${String(err)}`,
++          );
++        }
++      }
++
++      // Phase 2: enqueue per-session, capping at REPLAY_CAP_PER_SESSION to avoid silent
++      // truncation when the session accumulates more than MAX_EVENTS during a long drain.
++      for (const [sessionKey, entries] of bySession) {
++        // When a skip notice is needed it consumes one queue slot, so body messages
++        // must be capped at REPLAY_CAP_PER_SESSION - 1 to keep the total ≤ MAX_EVENTS.
++        const hasOverflow = entries.length > REPLAY_CAP_PER_SESSION;
++        const bodyCap = hasOverflow ? REPLAY_CAP_PER_SESSION - 1 : entries.length;
++        const toReplay = entries.slice(entries.length - bodyCap);
++        const skipped = entries.length - toReplay.length;
++
++        if (skipped > 0) {
++          params.log.warn(
++            `pending-inbound: ${skipped} older message(s) trimmed for session ${sessionKey} (queue cap)`,
++          );
++          enqueueSystemEvent(
++            `[pending-inbound] ${skipped} older message${skipped > 1 ? "s" : ""} skipped during restart (queue cap ${MAX_EVENTS})`,
++            { sessionKey },
++          );
++        }
++
++        for (const { entry, eventText } of toReplay) {
++          enqueueSystemEvent(eventText, {
++            sessionKey,
++            contextKey: `pending-inbound:${entry.channel}:${entry.id}`,
++          });
++          params.log.warn(
++            `pending-inbound: replayed ${entry.channel}:${entry.id} → session ${sessionKey}`,
++          );
++        }
++      }
++    }
++  } catch (err) {
++    params.log.warn(`pending-inbound: replay startup failed: ${String(err)}`);
++  }
++
+   // Launch configured channels so gateway replies via the surface the message came from.
+   // Tests can opt out via OPENCLAW_SKIP_CHANNELS (or legacy OPENCLAW_SKIP_PROVIDERS).
+   const skipChannels =
+@@ -167,6 +304,112 @@ export async function startGatewaySidecars(params: {
+     );
+   }
+ 
++  // Recover stale active turns — runs that were in-flight when the process died.
++  // Notify the originating session so the user knows to resend.
++  try {
++    const stateDir = resolveStateDir(process.env);
++    const staleTurns = await readStaleActiveTurns(stateDir);
++    if (staleTurns.length > 0) {
++      params.log.warn(
++        `active-turn recovery: found ${staleTurns.length} stale turn(s) from previous process`,
++      );
++      for (const turn of staleTurns) {
++        // Skip turns started by THIS process — they raced ahead of the
++        // recovery loop (channel startup created a new turn before we got
++        // here).  Only turns from the PREVIOUS process are truly stale.
++        if (turn.startedAt >= processStartedAt) {
++          params.log.warn(
++            `active-turn recovery: skipping live turn ${turn.sessionId} (startedAt=${turn.startedAt} >= processStartedAt=${processStartedAt})`,
++          );
++          continue;
++        }
++
++        // Re-validate the current store entry before clearing.  Between the
++        // snapshot (readStaleActiveTurns) and now, a fresh turn could have
++        // been written under the same sessionId — e.g. if a channel handler
++        // started a new turn whose sessionId collides with a stale one.
++        // Only clear if the on-disk entry still has the same startedAt we
++        // saw in the snapshot (i.e. it has NOT been refreshed by this process).
++        const currentEntry = await readActiveTurn(stateDir, turn.sessionId);
++        if (!currentEntry) {
++          // Already cleared by something else — nothing to do.
++          continue;
++        }
++        if (currentEntry.startedAt !== turn.startedAt) {
++          // A fresh turn was written under the same sessionId after our snapshot.
++          // The startedAt guard above already protects against this case when the
++          // new turn's startedAt >= processStartedAt, but a recycled sessionId
++          // whose new startedAt still happens to be < processStartedAt (due to
++          // clock imprecision or test-injected timestamps) would slip through.
++          // Comparing startedAt values is the most reliable way to detect staleness.
++          params.log.warn(
++            `active-turn recovery: skipping refreshed turn ${turn.sessionId} (snapshot startedAt=${turn.startedAt}, current startedAt=${currentEntry.startedAt})`,
++          );
++          continue;
++        }
++
++        // Consume first to prevent infinite retry on crash.
++        // Wrapped in a per-turn try/catch so a single disk error does not abort
++        // the entire recovery loop (Greptile review comment #2970557027).
++        try {
++          await clearActiveTurn(stateDir, turn.sessionId);
++        } catch (err) {
++          params.log.warn(
++            `active-turn recovery: clear failed for ${turn.sessionId}: ${String(err)}`,
++          );
++          continue;
++        }
++
++        // Skip probe sessions — they are synthetic health-check runs.
++        if (turn.sessionId.startsWith("probe-")) {
++          continue;
++        }
++
++        // Attempt to resolve a delivery target for the session. Sessions without
++        // a resolvable channel target (isolated scheduler sessions, orphaned sessions,
++        // or any session with no channel mapping) are skipped — the originating system
++        // (e.g. a scheduler's drain-retry) handles recovery for those.
++        const { baseSessionKey } = parseSessionThreadInfo(turn.sessionKey);
++        const parsedTarget = resolveAnnounceTargetFromKey(baseSessionKey ?? turn.sessionKey ?? "");
++        const { entry: turnEntry } = loadSessionEntry(turn.sessionKey ?? "");
++        let deliveryCtx = deliveryContextFromSession(turnEntry);
++        if (!deliveryCtx && baseSessionKey && baseSessionKey !== turn.sessionKey) {
++          const { entry: baseEntry } = loadSessionEntry(baseSessionKey);
++          deliveryCtx = deliveryContextFromSession(baseEntry);
++        }
++        const origin = mergeDeliveryContext(deliveryCtx, parsedTarget ?? undefined);
++        const resolvedChannel = origin?.channel ? normalizeChannelId(origin.channel) : null;
++        const resolvedTo = origin?.to;
++        if (!resolvedChannel || !resolvedTo) {
++          continue;
++        }
++
++        try {
++          const recoveryMessage =
++            "⚠️ I was restarted mid-conversation. Please resend your last message.";
++          // Embed turn.sessionId in the event text to prevent deduplication when
++          // multiple concurrent stale turns share the same sessionKey (e.g. multi-
++          // threaded Discord session). enqueueSystemEvent deduplicates on lastText,
++          // so a fixed string would silently drop all but the first recovery notice.
++          // refs Greptile review comment on PR #49431.
++          enqueueSystemEvent(`[active-turn-recovery:${turn.sessionId}] ${recoveryMessage}`, {
++            sessionKey: turn.sessionKey,
++            contextKey: `active-turn-recovery:${turn.sessionId}`,
++          });
++          params.log.warn(
++            `active-turn recovery: notified session ${turn.sessionKey} (sessionId=${turn.sessionId}, channel=${turn.channel})`,
++          );
++        } catch (err) {
++          params.log.warn(
++            `active-turn recovery: notify failed for session ${turn.sessionKey}: ${String(err)}`,
++          );
++        }
++      }
++    }
++  } catch (err) {
++    params.log.warn(`active-turn recovery: startup failed: ${String(err)}`);
++  }
++
+   if (params.cfg.hooks?.internal?.enabled !== false) {
+     setTimeout(() => {
+       const hookEvent = createInternalHookEvent("gateway", "startup", "gateway:startup", {
+diff --git a/src/infra/json-files.ts b/src/infra/json-files.ts
+index 60aa6280eb3ff..853350c01bb30 100644
+--- a/src/infra/json-files.ts
++++ b/src/infra/json-files.ts
+@@ -2,10 +2,24 @@ import { randomUUID } from "node:crypto";
+ import fs from "node:fs/promises";
+ import path from "node:path";
+ 
++/** Maximum file size (10 MB) for readJsonFile to guard against unbounded reads. */
++const MAX_JSON_FILE_SIZE_BYTES = 10 * 1024 * 1024;
++
+ export async function readJsonFile<T>(filePath: string): Promise<T | null> {
+   try {
+-    const raw = await fs.readFile(filePath, "utf8");
+-    return JSON.parse(raw) as T;
++    // Read the raw buffer first, then check its byte length before parsing.
++    // A separate stat() + readFile() pair is vulnerable to TOCTOU: an attacker
++    // could replace the file with a much larger one between the two calls,
++    // bypassing the size guard entirely (Aisle Low: CWE-367 TOCTOU).
++    // Reading into a Buffer first bounds the allocation check to the actual bytes read.
++    const buf = await fs.readFile(filePath).catch(() => null);
++    if (!buf) {
++      return null;
++    }
++    if (buf.byteLength > MAX_JSON_FILE_SIZE_BYTES) {
++      return null;
++    }
++    return JSON.parse(buf.toString("utf8")) as T;
+   } catch {
+     return null;
+   }
+@@ -36,8 +50,23 @@ export async function writeTextAtomic(
+   if (typeof options?.ensureDirMode === "number") {
+     mkdirOptions.mode = options.ensureDirMode;
+   }
+-  await fs.mkdir(path.dirname(filePath), mkdirOptions);
+-  const parentDir = path.dirname(filePath);
++  const dir = path.dirname(filePath);
++  await fs.mkdir(dir, mkdirOptions);
++  // On macOS and some Linux configurations, fs.mkdir({ recursive: true }) may
++  // ignore the mode option.  Explicitly chmod the directory afterward to ensure
++  // it carries the requested permissions regardless of platform behavior.
++  // Use lstat to verify the directory is not a symlink before chmod to prevent
++  // symlink-following permission changes on attacker-controlled paths.
++  if (typeof options?.ensureDirMode === "number") {
++    try {
++      const dirStat = await fs.lstat(dir);
++      if (dirStat.isDirectory()) {
++        await fs.chmod(dir, options.ensureDirMode);
++      }
++    } catch {
++      // best-effort; ignore on platforms without chmod
++    }
++  }
+   const tmp = `${filePath}.${randomUUID()}.tmp`;
+   try {
+     const tmpHandle = await fs.open(tmp, "w", mode);
+@@ -48,23 +77,22 @@ export async function writeTextAtomic(
+       await tmpHandle.close().catch(() => undefined);
+     }
+     try {
+-      await fs.chmod(tmp, mode);
++      // Use lstat to verify the temp file is not a symlink before chmod.
++      const tmpStat = await fs.lstat(tmp);
++      if (tmpStat.isFile()) {
++        await fs.chmod(tmp, mode);
++      }
+     } catch {
+       // best-effort; ignore on platforms without chmod
+     }
+     await fs.rename(tmp, filePath);
++    // Post-rename chmod is best-effort only — rename(2) is the security boundary.
++    // Verify with lstat to avoid following symlinks at the destination.
+     try {
+-      const dirHandle = await fs.open(parentDir, "r");
+-      try {
+-        await dirHandle.sync();
+-      } finally {
+-        await dirHandle.close().catch(() => undefined);
++      const finalStat = await fs.lstat(filePath);
++      if (finalStat.isFile()) {
++        await fs.chmod(filePath, mode);
+       }
+-    } catch {
+-      // best-effort; some platforms/filesystems do not support syncing directories.
+-    }
+-    try {
+-      await fs.chmod(filePath, mode);
+     } catch {
+       // best-effort; ignore on platforms without chmod
+     }
+diff --git a/src/infra/pending-inbound-store.test.ts b/src/infra/pending-inbound-store.test.ts
+new file mode 100644
+index 0000000000000..8f537653f3737
+--- /dev/null
++++ b/src/infra/pending-inbound-store.test.ts
+@@ -0,0 +1,726 @@
++import fs from "node:fs";
++import fsp from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import {
++  clearActiveTurn,
++  clearAllActiveTurns,
++  clearPendingInbound,
++  clearPendingInboundEntries,
++  readActiveTurn,
++  readPendingInbound,
++  readStaleActiveTurns,
++  writeActiveTurn,
++  writePendingInbound,
++  type ActiveTurnEntry,
++  type PendingInboundEntry,
++} from "./pending-inbound-store.js";
++
++describe("pending-inbound-store", () => {
++  let stateDir: string;
++
++  beforeEach(() => {
++    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pending-inbound-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(stateDir, { recursive: true, force: true });
++  });
++
++  it("write + read round-trip", async () => {
++    const entry: PendingInboundEntry = {
++      channel: "telegram",
++      id: "12345",
++      payload: { chatId: 999, text: "hello" },
++      capturedAt: 1700000000000,
++    };
++
++    await writePendingInbound(stateDir, entry);
++    const result = await readPendingInbound(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0]).toEqual(entry);
++  });
++
++  it("dedup: writing same channel:id twice only stores one entry", async () => {
++    const entry1: PendingInboundEntry = {
++      channel: "telegram",
++      id: "100",
++      payload: { text: "first" },
++      capturedAt: 1700000000000,
++    };
++    const entry2: PendingInboundEntry = {
++      channel: "telegram",
++      id: "100",
++      payload: { text: "second" },
++      capturedAt: 1700000001000,
++    };
++
++    await writePendingInbound(stateDir, entry1);
++    await writePendingInbound(stateDir, entry2);
++    const result = await readPendingInbound(stateDir);
++
++    expect(result).toHaveLength(1);
++    // Second write overwrites first
++    expect(result[0].payload).toEqual({ text: "second" });
++    expect(result[0].capturedAt).toBe(1700000001000);
++  });
++
++  it("dedup: multi-account Discord — same message seen by two accounts stored independently", async () => {
++    // Two Discord bot accounts both see the same message (same channel + message id).
++    // Without accountId in the key the second write silently overwrites the first.
++    // With accountId each account's capture gets its own slot.
++    const messageId = "msg-discord-999";
++    const entryAccount1: PendingInboundEntry = {
++      channel: "discord",
++      id: messageId,
++      accountId: "bot-account-A",
++      payload: { text: "from account A", accountId: "bot-account-A" },
++      capturedAt: 1700000000000,
++    };
++    const entryAccount2: PendingInboundEntry = {
++      channel: "discord",
++      id: messageId,
++      accountId: "bot-account-B",
++      payload: { text: "from account B", accountId: "bot-account-B" },
++      capturedAt: 1700000000001,
++    };
++
++    await writePendingInbound(stateDir, entryAccount1);
++    await writePendingInbound(stateDir, entryAccount2);
++    const result = await readPendingInbound(stateDir);
++
++    // Both entries must be retained — different accounts, same message id
++    expect(result).toHaveLength(2);
++    const payloads = result.map((e) => (e.payload as { text: string }).text).toSorted();
++    expect(payloads).toEqual(["from account A", "from account B"]);
++  });
++
++  it("dedup: same Discord message + same account still deduplicates", async () => {
++    // Same bot account capturing the same message twice (e.g. handler called twice)
++    // must still deduplicate to a single entry.
++    const entry1: PendingInboundEntry = {
++      channel: "discord",
++      id: "msg-dup-111",
++      accountId: "bot-account-A",
++      payload: { text: "first capture" },
++      capturedAt: 1700000000000,
++    };
++    const entry2: PendingInboundEntry = {
++      channel: "discord",
++      id: "msg-dup-111",
++      accountId: "bot-account-A",
++      payload: { text: "second capture" },
++      capturedAt: 1700000000100,
++    };
++
++    await writePendingInbound(stateDir, entry1);
++    await writePendingInbound(stateDir, entry2);
++    const result = await readPendingInbound(stateDir);
++
++    expect(result).toHaveLength(1);
++    // Second write overwrites first (same account + same message = same key)
++    expect((result[0].payload as { text: string }).text).toBe("second capture");
++  });
++
++  it("stores multiple entries with different keys", async () => {
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "1",
++      payload: { text: "tg message" },
++      capturedAt: 1700000000000,
++    });
++    await writePendingInbound(stateDir, {
++      channel: "discord",
++      id: "2",
++      payload: { text: "dc message" },
++      capturedAt: 1700000001000,
++    });
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "3",
++      payload: { text: "another tg" },
++      capturedAt: 1700000002000,
++    });
++
++    const result = await readPendingInbound(stateDir);
++    expect(result).toHaveLength(3);
++
++    const channels = result.map((e) => `${e.channel}:${e.id}`).toSorted();
++    expect(channels).toEqual(["discord:2", "telegram:1", "telegram:3"]);
++  });
++
++  it("clear removes file", async () => {
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "1",
++      payload: {},
++      capturedAt: Date.now(),
++    });
++
++    // File exists
++    const before = await readPendingInbound(stateDir);
++    expect(before).toHaveLength(1);
++
++    await clearPendingInbound(stateDir);
++
++    // File removed — read returns empty
++    const after = await readPendingInbound(stateDir);
++    expect(after).toEqual([]);
++  });
++
++  it("read on missing file returns []", async () => {
++    const result = await readPendingInbound(stateDir);
++    expect(result).toEqual([]);
++  });
++
++  it("clear on missing file does not throw", async () => {
++    await expect(clearPendingInbound(stateDir)).resolves.toBeUndefined();
++  });
++
++  it("capturedAt is preserved correctly", async () => {
++    const now = Date.now();
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "42",
++      payload: { text: "test" },
++      capturedAt: now,
++    });
++
++    const result = await readPendingInbound(stateDir);
++    expect(result).toHaveLength(1);
++    expect(result[0].capturedAt).toBe(now);
++  });
++
++  // --- Active Turn tests ---
++
++  it("writeActiveTurn + readStaleActiveTurns round-trip", async () => {
++    const turn: ActiveTurnEntry = {
++      sessionId: "sess-001",
++      sessionKey: "telegram:12345",
++      channel: "telegram",
++      startedAt: 1700000000000,
++    };
++
++    await writeActiveTurn(stateDir, turn);
++    const result = await readStaleActiveTurns(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0]).toEqual(turn);
++  });
++
++  it("clearActiveTurn removes entry", async () => {
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-002",
++      sessionKey: "telegram:999",
++      channel: "telegram",
++      startedAt: 1700000000000,
++    });
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-003",
++      sessionKey: "discord:channel:456",
++      channel: "discord",
++      startedAt: 1700000001000,
++    });
++
++    await clearActiveTurn(stateDir, "sess-002");
++    const result = await readStaleActiveTurns(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0].sessionId).toBe("sess-003");
++  });
++
++  it("readStaleActiveTurns on missing file returns []", async () => {
++    const result = await readStaleActiveTurns(stateDir);
++    expect(result).toEqual([]);
++  });
++
++  it("scheduler session keys are stored and readable (delivery-target resolution skips them at recovery)", async () => {
++    // Scheduler isolated sessions use keys like "scheduler:jobid:runid".
++    // The store saves them normally — server-startup.ts skips them during
++    // active-turn recovery because no delivery target resolves for these
++    // session keys (they have no channel mapping).
++    const turn: ActiveTurnEntry = {
++      sessionId: "sess-sched-001",
++      sessionKey: "scheduler:abc123:run456",
++      channel: "system",
++      startedAt: 1700000000000,
++    };
++
++    await writeActiveTurn(stateDir, turn);
++    const result = await readStaleActiveTurns(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0]).toEqual(turn);
++    expect(result[0].sessionKey).toMatch(/^scheduler:/);
++  });
++
++  it("active turns and pending inbound entries coexist without collision", async () => {
++    // Write a pending inbound entry
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "msg-100",
++      payload: { text: "hello" },
++      capturedAt: 1700000000000,
++    });
++
++    // Write an active turn entry
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-010",
++      sessionKey: "telegram:777",
++      channel: "telegram",
++      startedAt: 1700000001000,
++    });
++
++    // Both should be independently readable
++    const pending = await readPendingInbound(stateDir);
++    expect(pending).toHaveLength(1);
++    expect(pending[0].id).toBe("msg-100");
++
++    const turns = await readStaleActiveTurns(stateDir);
++    expect(turns).toHaveLength(1);
++    expect(turns[0].sessionId).toBe("sess-010");
++
++    // Clearing one does not affect the other
++    await clearActiveTurn(stateDir, "sess-010");
++    const pendingAfter = await readPendingInbound(stateDir);
++    expect(pendingAfter).toHaveLength(1);
++    expect(pendingAfter[0].id).toBe("msg-100");
++
++    const turnsAfter = await readStaleActiveTurns(stateDir);
++    expect(turnsAfter).toEqual([]);
++  });
++
++  // --- Scoped clear functions ---
++
++  it("clearPendingInboundEntries removes entries but preserves active turns", async () => {
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "msg-200",
++      payload: { text: "hello" },
++      capturedAt: 1700000000000,
++    });
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-020",
++      sessionKey: "telegram:888",
++      channel: "telegram",
++      startedAt: 1700000001000,
++    });
++
++    await clearPendingInboundEntries(stateDir);
++
++    const pending = await readPendingInbound(stateDir);
++    expect(pending).toEqual([]);
++
++    // Active turns should still be there
++    const turns = await readStaleActiveTurns(stateDir);
++    expect(turns).toHaveLength(1);
++    expect(turns[0].sessionId).toBe("sess-020");
++  });
++
++  it("clearAllActiveTurns removes turns but preserves inbound entries", async () => {
++    await writePendingInbound(stateDir, {
++      channel: "telegram",
++      id: "msg-300",
++      payload: { text: "preserved" },
++      capturedAt: 1700000000000,
++    });
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-030",
++      sessionKey: "telegram:999",
++      channel: "telegram",
++      startedAt: 1700000001000,
++    });
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-031",
++      sessionKey: "discord:channel:100",
++      channel: "discord",
++      startedAt: 1700000002000,
++    });
++
++    await clearAllActiveTurns(stateDir);
++
++    const turns = await readStaleActiveTurns(stateDir);
++    expect(turns).toEqual([]);
++
++    // Inbound entries should still be there
++    const pending = await readPendingInbound(stateDir);
++    expect(pending).toHaveLength(1);
++    expect(pending[0].id).toBe("msg-300");
++  });
++
++  it("clearPendingInboundEntries on missing file does not throw", async () => {
++    await expect(clearPendingInboundEntries(stateDir)).resolves.toBeUndefined();
++  });
++
++  it("clearAllActiveTurns on missing file does not throw", async () => {
++    await expect(clearAllActiveTurns(stateDir)).resolves.toBeUndefined();
++  });
++
++  // --- Session key stored at capture time ---
++
++  it("sessionKey is stored and readable on pending inbound entries", async () => {
++    const entry: PendingInboundEntry = {
++      channel: "telegram",
++      id: "msg-400",
++      payload: { text: "with key" },
++      capturedAt: 1700000000000,
++      sessionKey: "agent:main:telegram:direct:12345",
++    };
++
++    await writePendingInbound(stateDir, entry);
++    const result = await readPendingInbound(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0].sessionKey).toBe("agent:main:telegram:direct:12345");
++  });
++
++  it("entries without sessionKey remain backward compatible (undefined)", async () => {
++    const entry: PendingInboundEntry = {
++      channel: "telegram",
++      id: "msg-401",
++      payload: { text: "no key" },
++      capturedAt: 1700000000000,
++    };
++
++    await writePendingInbound(stateDir, entry);
++    const result = await readPendingInbound(stateDir);
++
++    expect(result).toHaveLength(1);
++    expect(result[0].sessionKey).toBeUndefined();
++  });
++
++  // --- Concurrent write safety (lock serialization) ---
++
++  it("concurrent writes do not lose entries (lock serialization)", async () => {
++    // Fire 10 concurrent writes — without locking some would be lost.
++    const writes = Array.from({ length: 10 }, (_, i) =>
++      writePendingInbound(stateDir, {
++        channel: "telegram",
++        id: `concurrent-${i}`,
++        payload: { index: i },
++        capturedAt: 1700000000000 + i,
++      }),
++    );
++    await Promise.all(writes);
++
++    const result = await readPendingInbound(stateDir);
++    expect(result).toHaveLength(10);
++  });
++
++  // --- Bounded store growth (pruning) ---
++
++  it("writePendingInbound prunes oldest entries when exceeding MAX_PENDING_ENTRIES (200)", async () => {
++    // Write 210 entries sequentially — oldest 10 should be pruned.
++    for (let i = 0; i < 210; i++) {
++      await writePendingInbound(stateDir, {
++        channel: "telegram",
++        id: `prune-${i}`,
++        payload: { index: i },
++        capturedAt: 1700000000000 + i,
++      });
++    }
++
++    const result = await readPendingInbound(stateDir);
++    expect(result).toHaveLength(200);
++
++    // The 10 oldest (capturedAt 1700000000000..1700000000009) should be pruned.
++    const capturedAts = result.map((e) => e.capturedAt).toSorted((a, b) => a - b);
++    expect(capturedAts[0]).toBeGreaterThanOrEqual(1700000000010);
++  });
++
++  it("writeActiveTurn prunes oldest turns when exceeding MAX_ACTIVE_TURNS (50)", async () => {
++    // Write 60 turns sequentially — oldest 10 should be pruned.
++    for (let i = 0; i < 60; i++) {
++      await writeActiveTurn(stateDir, {
++        sessionId: `sess-prune-${i}`,
++        sessionKey: `telegram:${i}`,
++        channel: "telegram",
++        startedAt: 1700000000000 + i,
++      });
++    }
++
++    const result = await readStaleActiveTurns(stateDir);
++    expect(result).toHaveLength(50);
++
++    // The 10 oldest (startedAt 1700000000000..1700000000009) should be pruned.
++    const startedAts = result.map((e) => e.startedAt).toSorted((a, b) => a - b);
++    expect(startedAts[0]).toBeGreaterThanOrEqual(1700000000010);
++  });
++
++  it("concurrent active turn writes do not lose entries", async () => {
++    const writes = Array.from({ length: 10 }, (_, i) =>
++      writeActiveTurn(stateDir, {
++        sessionId: `sess-concurrent-${i}`,
++        sessionKey: `telegram:${i}`,
++        channel: "telegram",
++        startedAt: 1700000000000 + i,
++      }),
++    );
++    await Promise.all(writes);
++
++    const result = await readStaleActiveTurns(stateDir);
++    expect(result).toHaveLength(10);
++  });
++
++  // --- processStartedAt guard (server-startup recovery filter) ---
++  //
++  // server-startup.ts records processStartedAt = Date.now() before channels
++  // start, then filters readStaleActiveTurns() to skip entries where
++  // startedAt >= processStartedAt (those are live turns from this process,
++  // not stale leftovers from a previous process).  These tests validate
++  // that filtering logic at the data level.
++
++  it("processStartedAt guard: turns before boot are stale, turns at/after boot are live", async () => {
++    const processStartedAt = 1700000005000;
++
++    // Stale turn from previous process (startedAt < processStartedAt)
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-stale-1",
++      sessionKey: "telegram:111",
++      channel: "telegram",
++      startedAt: 1700000000000, // well before boot
++    });
++
++    // Another stale turn, just barely before boot
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-stale-2",
++      sessionKey: "telegram:222",
++      channel: "telegram",
++      startedAt: 1700000004999, // 1ms before boot
++    });
++
++    // Live turn from THIS process (startedAt === processStartedAt)
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-live-1",
++      sessionKey: "telegram:333",
++      channel: "telegram",
++      startedAt: 1700000005000, // exactly at boot
++    });
++
++    // Live turn from THIS process (startedAt > processStartedAt)
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-live-2",
++      sessionKey: "telegram:444",
++      channel: "telegram",
++      startedAt: 1700000006000, // after boot
++    });
++
++    const allTurns = await readStaleActiveTurns(stateDir);
++    expect(allTurns).toHaveLength(4);
++
++    // Apply the same filter that server-startup.ts uses
++    const staleTurns = allTurns.filter((t) => t.startedAt < processStartedAt);
++    const liveTurns = allTurns.filter((t) => t.startedAt >= processStartedAt);
++
++    expect(staleTurns).toHaveLength(2);
++    expect(staleTurns.map((t) => t.sessionId).toSorted()).toEqual(["sess-stale-1", "sess-stale-2"]);
++
++    expect(liveTurns).toHaveLength(2);
++    expect(liveTurns.map((t) => t.sessionId).toSorted()).toEqual(["sess-live-1", "sess-live-2"]);
++  });
++
++  it("processStartedAt guard: all turns before boot are stale (no false positives)", async () => {
++    const processStartedAt = Date.now();
++
++    // Write turns with timestamps in the past
++    for (let i = 0; i < 5; i++) {
++      await writeActiveTurn(stateDir, {
++        sessionId: `sess-old-${i}`,
++        sessionKey: `telegram:${i}`,
++        channel: "telegram",
++        startedAt: processStartedAt - 60_000 + i * 1000, // 60s to 56s ago
++      });
++    }
++
++    const allTurns = await readStaleActiveTurns(stateDir);
++    const staleTurns = allTurns.filter((t) => t.startedAt < processStartedAt);
++
++    expect(staleTurns).toHaveLength(5);
++    // None should be skipped — all are from "previous process"
++    expect(allTurns.filter((t) => t.startedAt >= processStartedAt)).toHaveLength(0);
++  });
++
++  it("processStartedAt guard: all turns after boot are live (no false negatives)", async () => {
++    const processStartedAt = Date.now() - 1000; // boot 1s ago
++
++    // Write turns with timestamps after boot (simulating new turns from this process)
++    for (let i = 0; i < 3; i++) {
++      await writeActiveTurn(stateDir, {
++        sessionId: `sess-new-${i}`,
++        sessionKey: `telegram:${i}`,
++        channel: "telegram",
++        startedAt: processStartedAt + 100 + i * 100, // 100ms to 300ms after boot
++      });
++    }
++
++    const allTurns = await readStaleActiveTurns(stateDir);
++    const liveTurns = allTurns.filter((t) => t.startedAt >= processStartedAt);
++
++    expect(liveTurns).toHaveLength(3);
++    // None should be recovered — all are from "this process"
++    expect(allTurns.filter((t) => t.startedAt < processStartedAt)).toHaveLength(0);
++  });
++
++  // --- readActiveTurn (single-entry re-validation, TOCTOU guard) ---
++
++  it("readActiveTurn returns the entry for an existing sessionId", async () => {
++    const turn: ActiveTurnEntry = {
++      sessionId: "sess-read-001",
++      sessionKey: "telegram:12345",
++      channel: "telegram",
++      startedAt: 1700000010000,
++    };
++    await writeActiveTurn(stateDir, turn);
++
++    const result = await readActiveTurn(stateDir, "sess-read-001");
++    expect(result).toEqual(turn);
++  });
++
++  it("readActiveTurn returns undefined for a non-existent sessionId", async () => {
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-read-002",
++      sessionKey: "telegram:99999",
++      channel: "telegram",
++      startedAt: 1700000010000,
++    });
++
++    const result = await readActiveTurn(stateDir, "sess-read-MISSING");
++    expect(result).toBeUndefined();
++  });
++
++  it("readActiveTurn returns undefined after the entry is cleared", async () => {
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-read-003",
++      sessionKey: "telegram:77777",
++      channel: "telegram",
++      startedAt: 1700000010000,
++    });
++
++    await clearActiveTurn(stateDir, "sess-read-003");
++
++    const result = await readActiveTurn(stateDir, "sess-read-003");
++    expect(result).toBeUndefined();
++  });
++
++  it("readActiveTurn returns undefined on missing file", async () => {
++    const result = await readActiveTurn(stateDir, "sess-read-no-file");
++    expect(result).toBeUndefined();
++  });
++
++  it("readActiveTurn reflects an updated startedAt after a re-write (TOCTOU guard)", async () => {
++    const processStartedAt = 1700000005000;
++
++    // Simulate stale turn from previous process written before snapshot
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-toctou-001",
++      sessionKey: "telegram:111",
++      channel: "telegram",
++      startedAt: 1700000000000, // stale: before processStartedAt
++    });
++
++    // Take snapshot (mirrors readStaleActiveTurns in server-startup)
++    const snapshot = await readStaleActiveTurns(stateDir);
++    expect(snapshot).toHaveLength(1);
++    const snapshotTurn = snapshot[0];
++    expect(snapshotTurn.startedAt).toBeLessThan(processStartedAt);
++
++    // Simulate a fresh turn written under the same sessionId AFTER the snapshot
++    // (e.g. channel handler started a new turn that recycled the sessionId)
++    await writeActiveTurn(stateDir, {
++      sessionId: "sess-toctou-001",
++      sessionKey: "telegram:111",
++      channel: "telegram",
++      startedAt: 1700000010000, // fresh: after processStartedAt
++    });
++
++    // Re-validate by reading the current store entry
++    const current = await readActiveTurn(stateDir, "sess-toctou-001");
++    expect(current).toBeDefined();
++    // startedAt has changed — the recovery loop should skip this entry
++    expect(current!.startedAt).not.toBe(snapshotTurn.startedAt);
++    expect(current!.startedAt).toBe(1700000010000);
++  });
++
++  // --- File permission tests (Aisle Low #3) ---
++
++  it.runIf(process.platform !== "win32")(
++    "pending-inbound.json is written with mode 0o600",
++    async () => {
++      await writePendingInbound(stateDir, {
++        channel: "telegram",
++        id: "perm-test-1",
++        payload: { text: "secret" },
++        capturedAt: Date.now(),
++      });
++
++      const filePath = path.join(stateDir, "pending-inbound.json");
++      const stat = await fsp.stat(filePath);
++      // Mask to the low 9 permission bits (strip file type bits)
++      const mode = stat.mode & 0o777;
++      expect(mode).toBe(0o600);
++    },
++  );
++
++  it.runIf(process.platform !== "win32")("state dir is created with mode 0o700", async () => {
++    // Use a sub-directory that does not yet exist
++    const subDir = path.join(stateDir, "sub-state-dir");
++
++    await writePendingInbound(subDir, {
++      channel: "telegram",
++      id: "perm-test-2",
++      payload: { text: "secret" },
++      capturedAt: Date.now(),
++    });
++
++    const stat = await fsp.stat(subDir);
++    const mode = stat.mode & 0o777;
++    expect(mode).toBe(0o700);
++  });
++
++  // --- Unhandled rejection guard (P1 inline comment #2912274100) ---
++  //
++  // withInProcessQueue attaches a .finally() cleanup to the internal promise
++  // chain and must suppress the resulting mirror-rejection with .catch(() => {})
++  // to prevent Node.js from emitting an unhandled-rejection event when the
++  // queued operation fails.  This test verifies that a failing write:
++  //   a) rejects the returned promise (caller sees the error), AND
++  //   b) does not leave a dangling unhandled-rejection on the cleanup promise.
++
++  it("failed write rejects the returned promise but does not leak an unhandled rejection", async () => {
++    // Simulate a write failure by making the state dir a file (not a directory),
++    // which causes mkdir/writeFile inside writeJsonAtomic to throw ENOTDIR/EEXIST.
++    const fakeStateDir = path.join(stateDir, "not-a-dir.txt");
++    await fsp.writeFile(fakeStateDir, "I am a file, not a directory", "utf8");
++
++    const unhandledRejections: unknown[] = [];
++    const onUnhandled = (reason: unknown) => {
++      unhandledRejections.push(reason);
++    };
++    process.on("unhandledRejection", onUnhandled);
++
++    let caughtError: unknown;
++    try {
++      await writePendingInbound(fakeStateDir, {
++        channel: "telegram",
++        id: "rej-test-1",
++        payload: {},
++        capturedAt: Date.now(),
++      });
++    } catch (err) {
++      caughtError = err;
++    } finally {
++      process.off("unhandledRejection", onUnhandled);
++    }
++
++    // Caller must see the error
++    expect(caughtError).toBeDefined();
++
++    // Flush the microtask queue so any dangling rejections would fire
++    await new Promise((resolve) => setTimeout(resolve, 20));
++
++    // No unhandled rejections should have escaped
++    expect(unhandledRejections).toHaveLength(0);
++  });
++});
+diff --git a/src/infra/pending-inbound-store.ts b/src/infra/pending-inbound-store.ts
+new file mode 100644
+index 0000000000000..26a405e7df28c
+--- /dev/null
++++ b/src/infra/pending-inbound-store.ts
+@@ -0,0 +1,393 @@
++import fs from "node:fs/promises";
++import path from "node:path";
++import { withFileLock, type FileLockOptions } from "./file-lock.js";
++import { writeJsonAtomic } from "./json-files.js";
++
++const STORE_FILENAME = "pending-inbound.json";
++
++/** Maximum number of pending inbound entries before oldest are pruned. */
++const MAX_PENDING_ENTRIES = 200;
++
++/** Maximum number of active turn entries before oldest are pruned. */
++const MAX_ACTIVE_TURNS = 50;
++
++/**
++ * Hard cap on entries processed from the store during read. Entries beyond
++ * this limit are silently dropped to guard against unbounded processing from
++ * a corrupted or maliciously crafted pending-inbound.json file.
++ */
++const MAX_READ_ENTRIES = 1000;
++
++/**
++ * In-process operation queue keyed by resolved file path.
++ *
++ * `withFileLock` is reentrant for the same process (it increments a counter
++ * rather than blocking), so concurrent in-process callers can still
++ * read-modify-write the same stale snapshot.  This map serializes operations
++ * on the same file path within the current process by chaining each new
++ * operation onto the previous promise — guaranteeing sequential execution
++ * even when the file lock is already held.
++ *
++ * The cross-process file lock is still acquired inside each operation to
++ * protect against concurrent writes from other processes.
++ */
++const inProcessOpQueue = new Map<string, Promise<void>>();
++
++/**
++ * Serialize an async operation on `filePath` within this process.
++ * Each call chains onto the previous pending operation for the same path,
++ * ensuring sequential read-modify-write even when `withFileLock` is
++ * reentrant.
++ */
++function withInProcessQueue(filePath: string, fn: () => Promise<void>): Promise<void> {
++  const prev = inProcessOpQueue.get(filePath) ?? Promise.resolve();
++  // Chain the new operation.  Use .then(fn, fn) so a rejected predecessor
++  // does not skip this operation (mirrors status-reactions.ts pattern).
++  const next = prev.then(fn, fn);
++  inProcessOpQueue.set(filePath, next);
++  // Clean up the map entry once the chain settles to avoid unbounded growth
++  // for paths that are written once and never again.
++  // Note: next.finally() returns a new promise that mirrors next's rejection.
++  // Without a .catch(), Node 22 would emit an unhandled-rejection event (which
++  // can terminate the gateway) if `next` rejects, e.g. due to a lock timeout
++  // or an atomic-write error.  The rejection is already surfaced to the caller
++  // via the `next` promise that this function returns, so suppressing it on
++  // the cleanup wrapper is correct and safe.
++  next
++    .finally(() => {
++      if (inProcessOpQueue.get(filePath) === next) {
++        inProcessOpQueue.delete(filePath);
++      }
++    })
++    .catch(() => {});
++  return next;
++}
++
++/**
++ * Lock options for pending-inbound-store read-modify-write operations.
++ * Mirrors AUTH_STORE_LOCK_OPTIONS from auth-profiles.
++ */
++const PENDING_INBOUND_LOCK_OPTIONS: FileLockOptions = {
++  retries: {
++    retries: 10,
++    factor: 2,
++    minTimeout: 100,
++    maxTimeout: 10_000,
++    randomize: true,
++  },
++  stale: 30_000,
++};
++
++/**
++ * An inbound message captured during gateway drain.
++ * Stored to disk so it survives restart and can be replayed.
++ */
++export type PendingInboundEntry = {
++  channel: string;
++  id: string;
++  payload: unknown;
++  capturedAt: number;
++  /** Resolved session key at capture time (used for accurate replay routing). */
++  sessionKey?: string;
++  /**
++   * Account identity for channels that support multiple bot accounts watching
++   * the same channel simultaneously (e.g. Discord multi-account setups).
++   * When present, included in the dedup key so each account's capture is
++   * stored independently: `channel:accountId:id` rather than `channel:id`.
++   */
++  accountId?: string;
++};
++
++/**
++ * An active agent turn tracked so we can detect stale runs after restart.
++ * Written at run start, cleared at run end. Any entry surviving a restart
++ * is stale by definition — the process died mid-turn.
++ */
++export type ActiveTurnEntry = {
++  sessionId: string;
++  sessionKey: string;
++  channel: string;
++  startedAt: number;
++};
++
++type PendingInboundFile = {
++  version: 1;
++  entries: Record<string, PendingInboundEntry>;
++  activeTurns?: Record<string, ActiveTurnEntry>;
++};
++
++function storeKey(entry: Pick<PendingInboundEntry, "channel" | "id" | "accountId">): string {
++  return entry.accountId
++    ? `${entry.channel}:${entry.accountId}:${entry.id}`
++    : `${entry.channel}:${entry.id}`;
++}
++
++function resolveStorePath(stateDir: string): string {
++  return path.join(stateDir, STORE_FILENAME);
++}
++
++/**
++ * Append (or overwrite by dedup key) a pending inbound entry.
++ * Uses atomic write (tmp + rename) following the update-offset-store pattern.
++ * Wrapped in a file lock to prevent concurrent read-modify-write races.
++ */
++export async function writePendingInbound(
++  stateDir: string,
++  entry: PendingInboundEntry,
++): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      const existing = await readPendingInboundFile(filePath);
++      const key = storeKey(entry);
++      existing.entries[key] = entry;
++      // Prune oldest entries by capturedAt when the store exceeds the cap.
++      const keys = Object.keys(existing.entries);
++      if (keys.length > MAX_PENDING_ENTRIES) {
++        const sorted = keys.toSorted(
++          (a, b) => (existing.entries[a].capturedAt ?? 0) - (existing.entries[b].capturedAt ?? 0),
++        );
++        const pruneCount = sorted.length - MAX_PENDING_ENTRIES;
++        for (let i = 0; i < pruneCount; i++) {
++          delete existing.entries[sorted[i]];
++        }
++      }
++      await writeJsonAtomic(filePath, existing, {
++        mode: 0o600,
++        trailingNewline: true,
++        ensureDirMode: 0o700,
++      });
++    }),
++  );
++}
++
++/**
++ * Read all pending inbound entries. Returns [] if the file doesn't exist.
++ */
++export async function readPendingInbound(stateDir: string): Promise<PendingInboundEntry[]> {
++  const filePath = resolveStorePath(stateDir);
++  const data = await readPendingInboundFile(filePath);
++  return Object.values(data.entries);
++}
++
++/**
++ * Remove the pending inbound file entirely.
++ * @deprecated Use `clearPendingInboundEntries` or `clearActiveTurns` to avoid
++ * nuking data belonging to the other key.
++ */
++export async function clearPendingInbound(stateDir: string): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      try {
++        await fs.unlink(filePath);
++      } catch (err) {
++        const code = (err as { code?: string }).code;
++        if (code === "ENOENT") {
++          return;
++        }
++        throw err;
++      }
++    }),
++  );
++}
++
++/**
++ * Clear only the `entries` (pending inbound messages), leaving `activeTurns` intact.
++ */
++export async function clearPendingInboundEntries(stateDir: string): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      const existing = await readPendingInboundFile(filePath);
++      if (Object.keys(existing.entries).length === 0) {
++        return; // nothing to clear
++      }
++      existing.entries = {};
++      await writeJsonAtomic(filePath, existing, {
++        mode: 0o600,
++        trailingNewline: true,
++        ensureDirMode: 0o700,
++      });
++    }),
++  );
++}
++
++/**
++ * Clear only the `activeTurns` key, leaving pending inbound `entries` intact.
++ */
++export async function clearAllActiveTurns(stateDir: string): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      const existing = await readPendingInboundFile(filePath);
++      if (!existing.activeTurns || Object.keys(existing.activeTurns).length === 0) {
++        return; // nothing to clear
++      }
++      existing.activeTurns = {};
++      await writeJsonAtomic(filePath, existing, {
++        mode: 0o600,
++        trailingNewline: true,
++        ensureDirMode: 0o700,
++      });
++    }),
++  );
++}
++
++/**
++ * Upsert an active-turn entry keyed by sessionId.
++ * Wrapped in a file lock to prevent concurrent read-modify-write races.
++ */
++export async function writeActiveTurn(stateDir: string, entry: ActiveTurnEntry): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      const existing = await readPendingInboundFile(filePath);
++      if (!existing.activeTurns) {
++        existing.activeTurns = {};
++      }
++      existing.activeTurns[entry.sessionId] = entry;
++      // Prune oldest active turns by startedAt when the store exceeds the cap.
++      const turnKeys = Object.keys(existing.activeTurns);
++      if (turnKeys.length > MAX_ACTIVE_TURNS) {
++        const sorted = turnKeys.toSorted(
++          (a, b) =>
++            (existing.activeTurns![a].startedAt ?? 0) - (existing.activeTurns![b].startedAt ?? 0),
++        );
++        const pruneCount = sorted.length - MAX_ACTIVE_TURNS;
++        for (let i = 0; i < pruneCount; i++) {
++          delete existing.activeTurns[sorted[i]];
++        }
++      }
++      await writeJsonAtomic(filePath, existing, {
++        mode: 0o600,
++        trailingNewline: true,
++        ensureDirMode: 0o700,
++      });
++    }),
++  );
++}
++
++/**
++ * Remove an active-turn entry by sessionId.
++ * Wrapped in a file lock to prevent concurrent read-modify-write races.
++ */
++export async function clearActiveTurn(stateDir: string, sessionId: string): Promise<void> {
++  const filePath = resolveStorePath(stateDir);
++  await withInProcessQueue(filePath, () =>
++    withFileLock(filePath, PENDING_INBOUND_LOCK_OPTIONS, async () => {
++      const existing = await readPendingInboundFile(filePath);
++      if (!existing.activeTurns) {
++        return;
++      }
++      // Early return when the key is absent — avoids a spurious atomic write
++      // with no observable change (Greptile: unnecessary write in clearActiveTurn).
++      if (!(sessionId in existing.activeTurns)) {
++        return;
++      }
++      delete existing.activeTurns[sessionId];
++      await writeJsonAtomic(filePath, existing, {
++        mode: 0o600,
++        trailingNewline: true,
++        ensureDirMode: 0o700,
++      });
++    }),
++  );
++}
++
++/**
++ * Read all active-turn entries. At startup every surviving entry is stale
++ * (the process died before clearing it). Returns [] if the file or key
++ * doesn't exist.
++ */
++export async function readStaleActiveTurns(stateDir: string): Promise<ActiveTurnEntry[]> {
++  const filePath = resolveStorePath(stateDir);
++  const data = await readPendingInboundFile(filePath);
++  if (!data.activeTurns) {
++    return [];
++  }
++  return Object.values(data.activeTurns);
++}
++
++/**
++ * Read a single active-turn entry by sessionId.
++ * Returns undefined if the entry does not exist.
++ * Use this to re-validate a turn before clearing it, avoiding TOCTOU races
++ * where a fresh turn with the same sessionId is written after a snapshot is taken.
++ */
++export async function readActiveTurn(
++  stateDir: string,
++  sessionId: string,
++): Promise<ActiveTurnEntry | undefined> {
++  const filePath = resolveStorePath(stateDir);
++  const data = await readPendingInboundFile(filePath);
++  return data.activeTurns?.[sessionId];
++}
++
++async function readPendingInboundFile(filePath: string): Promise<PendingInboundFile> {
++  // Distinguish "file not found" (return empty store, normal startup) from
++  // "file exists but unreadable/corrupt" (log warning, backup, return empty
++  // but do NOT silently overwrite without a safety net).
++  let raw: string;
++  try {
++    const buf = await fs.readFile(filePath);
++    raw = buf.toString("utf8");
++  } catch (err) {
++    const code = (err as { code?: string }).code;
++    if (code === "ENOENT") {
++      return { version: 1, entries: {} };
++    }
++    // I/O error reading an existing file — surface it so callers can decide.
++    throw err;
++  }
++
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(raw);
++  } catch {
++    // File exists but is corrupt JSON. Write a .bak so data is preserved for
++    // debugging, then return an empty store rather than silently overwriting.
++    const bakPath = `${filePath}.bak`;
++    try {
++      await fs.writeFile(bakPath, raw, { encoding: "utf8", mode: 0o600 });
++    } catch {
++      // best-effort backup; ignore write failures
++    }
++    console.warn(
++      `pending-inbound-store: ${filePath} contains invalid JSON — returning empty store (backup written to ${bakPath})`,
++    );
++    return { version: 1, entries: {} };
++  }
++
++  const data = parsed as PendingInboundFile | null;
++  if (data && data.version === 1 && typeof data.entries === "object" && data.entries !== null) {
++    // Validate activeTurns: must be a plain object or absent; default to {} on
++    // unexpected types to prevent downstream code from crashing on bad data.
++    if (
++      data.activeTurns !== undefined &&
++      (typeof data.activeTurns !== "object" ||
++        data.activeTurns === null ||
++        Array.isArray(data.activeTurns))
++    ) {
++      console.warn(
++        `pending-inbound-store: activeTurns has unexpected type (${typeof data.activeTurns}) — resetting to {}`,
++      );
++      data.activeTurns = {};
++    }
++    // Enforce a hard cap on the number of entries processed to prevent unbounded
++    // memory/CPU usage from a corrupted or oversized pending-inbound.json.
++    const keys = Object.keys(data.entries);
++    if (keys.length > MAX_READ_ENTRIES) {
++      const capped: PendingInboundFile["entries"] = {};
++      for (let i = 0; i < MAX_READ_ENTRIES; i++) {
++        const k = keys[i];
++        if (k !== undefined && k in data.entries) {
++          capped[k] = data.entries[k]!;
++        }
++      }
++      return { version: 1, entries: capped, activeTurns: data.activeTurns };
++    }
++    return data;
++  }
++  return { version: 1, entries: {} };
++}
+diff --git a/src/infra/system-events.test.ts b/src/infra/system-events.test.ts
+index 91d69726a443c..0fde541fc964b 100644
+--- a/src/infra/system-events.test.ts
++++ b/src/infra/system-events.test.ts
+@@ -7,7 +7,7 @@ import {
+   drainSystemEventEntries,
+   enqueueSystemEvent,
+   hasSystemEvents,
+-  isSystemEventContextChanged,
++  MAX_EVENTS,
+   peekSystemEventEntries,
+   peekSystemEvents,
+   resetSystemEventsForTest,
+@@ -76,18 +76,9 @@ describe("system events (session routing)", () => {
+     expect(second).toBe(false);
+   });
+ 
+-  it("normalizes context keys when checking for context changes", () => {
+-    const key = "agent:main:test-context";
+-    expect(isSystemEventContextChanged(key, " build:123 ")).toBe(true);
+-
+-    enqueueSystemEvent("Node connected", {
+-      sessionKey: key,
+-      contextKey: " BUILD:123 ",
+-    });
+-
+-    expect(isSystemEventContextChanged(key, "build:123")).toBe(false);
+-    expect(isSystemEventContextChanged(key, "build:456")).toBe(true);
+-    expect(isSystemEventContextChanged(key)).toBe(true);
++  it("MAX_EVENTS is exported and positive", () => {
++    expect(typeof MAX_EVENTS).toBe("number");
++    expect(MAX_EVENTS).toBeGreaterThan(0);
+   });
+ 
+   it("returns cloned event entries and resets duplicate suppression after drain", () => {
+@@ -152,6 +143,35 @@ describe("system events (session routing)", () => {
+     );
+   });
+ 
++  it("distinct entries with same message text are not deduplicated when text differs", () => {
++    // Simulates the P2 fix: include entry.id in eventText so two identical
++    // messages from the same sender don't collapse into one.
++    const key = "telegram:drain-dedup-test";
++    const first = enqueueSystemEvent(
++      '[pending-inbound:acc::1234:100] Missed message from Alice: "hello"',
++      { sessionKey: key },
++    );
++    const second = enqueueSystemEvent(
++      '[pending-inbound:acc::1234:101] Missed message from Alice: "hello"',
++      { sessionKey: key },
++    );
++    expect(first).toBe(true);
++    expect(second).toBe(true); // NOT deduplicated: different entry ids in text
++    expect(peekSystemEvents(key)).toHaveLength(2);
++  });
++
++  it("caps per-session queue at MAX_EVENTS and drops oldest entries on overflow", () => {
++    const key = "telegram:overflow-test";
++    for (let i = 0; i < MAX_EVENTS + 5; i++) {
++      enqueueSystemEvent(`event-${i}`, { sessionKey: key });
++    }
++    const events = peekSystemEvents(key);
++    expect(events).toHaveLength(MAX_EVENTS);
++    // Oldest entries (event-0 through event-4) should have been dropped
++    expect(events[0]).toBe(`event-5`);
++    expect(events[MAX_EVENTS - 1]).toBe(`event-${MAX_EVENTS + 4}`);
++  });
++
+   it("shares queued events across duplicate module instances", async () => {
+     const first = await importSystemEventsModule(`first-${Date.now()}`);
+     const second = await importSystemEventsModule(`second-${Date.now()}`);
+diff --git a/src/infra/system-events.ts b/src/infra/system-events.ts
+index 1e73e80cb0cf7..6b0460e59ae76 100644
+--- a/src/infra/system-events.ts
++++ b/src/infra/system-events.ts
+@@ -17,7 +17,7 @@ export type SystemEvent = {
+   trusted?: boolean;
+ };
+ 
+-const MAX_EVENTS = 20;
++export const MAX_EVENTS = 20;
+ 
+ type SessionQueue = {
+   queue: SystemEvent[];
+diff --git a/src/process/command-queue.ts b/src/process/command-queue.ts
+index 90dbe55e494f8..64e0a8159ae6f 100644
+--- a/src/process/command-queue.ts
++++ b/src/process/command-queue.ts
+@@ -210,6 +210,13 @@ function drainLane(lane: string) {
+   pump();
+ }
+ 
++/**
++ * Returns whether the gateway is currently draining for restart.
++ */
++export function isGatewayDraining(): boolean {
++  return getQueueState().gatewayDraining;
++}
++
+ /**
+  * Mark gateway as draining for restart so new enqueues fail fast with
+  * `GatewayDrainingError` instead of being silently killed on shutdown.

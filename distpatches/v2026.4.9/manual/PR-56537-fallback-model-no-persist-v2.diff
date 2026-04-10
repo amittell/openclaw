@@ -1,0 +1,289 @@
+diff --git a/src/agents/agent-command.ts b/src/agents/agent-command.ts
+index 5db40b13a2726..1e627f39077f2 100644
+--- a/src/agents/agent-command.ts
++++ b/src/agents/agent-command.ts
+@@ -1268,6 +1268,7 @@ async function agentCommandInternal(
+         defaultModel: model,
+         fallbackProvider,
+         fallbackModel,
++        isFromFallback: fallbackModel !== model || fallbackProvider !== provider,
+         result,
+       });
+     }
+diff --git a/src/agents/command/session-store.ts b/src/agents/command/session-store.ts
+index 0df9d66dc72a9..3abd8cc5a05f9 100644
+--- a/src/agents/command/session-store.ts
++++ b/src/agents/command/session-store.ts
+@@ -29,6 +29,8 @@ export async function updateSessionStoreAfterAgentRun(params: {
+   defaultModel: string;
+   fallbackProvider?: string;
+   fallbackModel?: string;
++  /** True when the run was served by a fallback model rather than the configured primary. */
++  isFromFallback?: boolean;
+   result: RunResult;
+ }) {
+   const {
+@@ -68,10 +70,20 @@ export async function updateSessionStoreAfterAgentRun(params: {
+     updatedAt: Date.now(),
+     contextTokens,
+   };
+-  setSessionRuntimeModel(next, {
+-    provider: providerUsed,
+-    model: modelUsed,
+-  });
++  // Do not persist a fallback model as the session's runtime model. If we did,
++  // resolveSessionModelRef would return the fallback on every subsequent request
++  // and the configured primary model would never be retried after it recovers.
++  // The fallback is an in-flight transient choice, not a durable session setting.
++  // When callers omit `isFromFallback`, compute it from the model/provider actually
++  // used vs. the configured defaults so we never accidentally persist a fallback.
++  const isFromFallback =
++    params.isFromFallback ?? (modelUsed !== defaultModel || providerUsed !== defaultProvider);
++  if (!isFromFallback) {
++    setSessionRuntimeModel(next, {
++      provider: providerUsed,
++      model: modelUsed,
++    });
++  }
+   if (isCliProvider(providerUsed, cfg)) {
+     const cliSessionId = result.meta.agentMeta?.sessionId?.trim();
+     if (cliSessionId) {
+diff --git a/src/commands/agent/session-store.test.ts b/src/commands/agent/session-store.test.ts
+index 89af0b29f656c..d413e65b644a3 100644
+--- a/src/commands/agent/session-store.test.ts
++++ b/src/commands/agent/session-store.test.ts
+@@ -124,4 +124,98 @@ describe("updateSessionStoreAfterAgentRun", () => {
+       "once",
+     );
+   });
++
++  it("does not persist fallback model into session store when isFromFallback is true", async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
++    const storePath = path.join(dir, "sessions.json");
++    const sessionKey = `agent:test:fallback:${randomUUID()}`;
++    const sessionId = randomUUID();
++
++    const sessionStore: Record<string, SessionEntry> = {
++      [sessionKey]: {
++        sessionId,
++        updatedAt: Date.now(),
++        model: "gpt-5.3",
++        modelProvider: "openai",
++      },
++    };
++    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
++
++    await updateSessionStoreAfterAgentRun({
++      cfg: {} as never,
++      sessionId,
++      sessionKey,
++      storePath,
++      sessionStore,
++      defaultProvider: "openai",
++      defaultModel: "gpt-5.3",
++      fallbackProvider: "anthropic",
++      fallbackModel: "claude-sonnet-4-20250514",
++      isFromFallback: true,
++      result: {
++        payloads: [],
++        meta: {
++          aborted: false,
++          agentMeta: {
++            provider: "anthropic",
++            model: "claude-sonnet-4-20250514",
++            usage: { input: 100, output: 50 },
++          },
++        },
++      } as never,
++    });
++
++    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
++    // The fallback model should NOT be persisted — session keeps the original model
++    expect(persisted?.model).not.toBe("claude-sonnet-4-20250514");
++    expect(persisted?.modelProvider).not.toBe("anthropic");
++  });
++
++  it("auto-computes isFromFallback when omitted and model differs from default", async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
++    const storePath = path.join(dir, "sessions.json");
++    const sessionKey = `agent:test:auto-fallback:${randomUUID()}`;
++    const sessionId = randomUUID();
++
++    const sessionStore: Record<string, SessionEntry> = {
++      [sessionKey]: {
++        sessionId,
++        updatedAt: Date.now(),
++        model: "gpt-5.3",
++        modelProvider: "openai",
++      },
++    };
++    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
++
++    // isFromFallback is omitted — the function should compute it as true
++    // because the model used differs from the default
++    await updateSessionStoreAfterAgentRun({
++      cfg: {} as never,
++      sessionId,
++      sessionKey,
++      storePath,
++      sessionStore,
++      defaultProvider: "openai",
++      defaultModel: "gpt-5.3",
++      fallbackProvider: "anthropic",
++      fallbackModel: "claude-sonnet-4-20250514",
++      // isFromFallback intentionally omitted
++      result: {
++        payloads: [],
++        meta: {
++          aborted: false,
++          agentMeta: {
++            provider: "anthropic",
++            model: "claude-sonnet-4-20250514",
++            usage: { input: 100, output: 50 },
++          },
++        },
++      } as never,
++    });
++
++    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
++    // The auto-computed fallback detection should prevent persisting the fallback model
++    expect(persisted?.model).not.toBe("claude-sonnet-4-20250514");
++    expect(persisted?.modelProvider).not.toBe("anthropic");
++  });
+ });
+diff --git a/src/cron/isolated-agent/run.fallback-no-persist.test.ts b/src/cron/isolated-agent/run.fallback-no-persist.test.ts
+new file mode 100644
+index 0000000000000..2519452d2513f
+--- /dev/null
++++ b/src/cron/isolated-agent/run.fallback-no-persist.test.ts
+@@ -0,0 +1,70 @@
++import { describe, expect, it } from "vitest";
++import {
++  makeIsolatedAgentTurnJob,
++  makeIsolatedAgentTurnParams,
++  setupRunCronIsolatedAgentTurnSuite,
++} from "./run.suite-helpers.js";
++import {
++  loadRunCronIsolatedAgentTurn,
++  makeCronSession,
++  resolveCronSessionMock,
++  runWithModelFallbackMock,
++  setSessionRuntimeModelMock,
++} from "./run.test-harness.js";
++
++const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
++
++describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
++  setupRunCronIsolatedAgentTurnSuite();
++
++  it("does not overwrite session model/provider when a fallback was used", async () => {
++    const cronSession = makeCronSession({
++      sessionEntry: {
++        sessionId: "test-session-id",
++        updatedAt: 0,
++        systemSent: false,
++        skillsSnapshot: undefined,
++        model: "gpt-4",
++        modelProvider: "openai",
++      },
++    });
++    resolveCronSessionMock.mockReturnValue(cronSession);
++
++    // Simulate fallback: runWithModelFallback returns a different provider/model
++    // than the configured primary (openai/gpt-4).
++    runWithModelFallbackMock.mockResolvedValue({
++      result: {
++        payloads: [{ text: "fallback response" }],
++        meta: {
++          agentMeta: {
++            provider: "anthropic",
++            model: "claude-sonnet-4-20250514",
++            usage: { input: 100, output: 50 },
++          },
++        },
++      },
++      provider: "anthropic",
++      model: "claude-sonnet-4-20250514",
++      attempts: [],
++    });
++
++    const result = await runCronIsolatedAgentTurn(
++      makeIsolatedAgentTurnParams({
++        job: makeIsolatedAgentTurnJob(),
++      }),
++    );
++
++    expect(result.status).toBe("ok");
++
++    // setSessionRuntimeModel should NOT have been called because the run
++    // was served by a fallback model, not the configured primary.
++    expect(setSessionRuntimeModelMock).not.toHaveBeenCalled();
++
++    // The session entry's model/modelProvider should still reflect the
++    // pre-run values (set before runPrompt), not the fallback values.
++    // Note: the pre-run persistence writes the configured primary.
++    // After the run, the fallback must NOT overwrite it.
++    expect(cronSession.sessionEntry.model).not.toBe("claude-sonnet-4-20250514");
++    expect(cronSession.sessionEntry.modelProvider).not.toBe("anthropic");
++  });
++});
+diff --git a/src/cron/isolated-agent/run.test-harness.ts b/src/cron/isolated-agent/run.test-harness.ts
+index 8ecfe6b046731..ceb8968529d28 100644
+--- a/src/cron/isolated-agent/run.test-harness.ts
++++ b/src/cron/isolated-agent/run.test-harness.ts
+@@ -37,6 +37,7 @@ export const runWithModelFallbackMock = createMock();
+ export const runEmbeddedPiAgentMock = createMock();
+ export const runCliAgentMock = createMock();
+ export const getCliSessionIdMock = createMock();
++export const setSessionRuntimeModelMock = createMock();
+ export const updateSessionStoreMock = createMock();
+ export const resolveCronSessionMock = createMock();
+ export const logWarnMock = createMock();
+@@ -215,7 +216,7 @@ vi.mock("../../config/sessions.js", async (importOriginal) => {
+     ...actual,
+     resolveAgentMainSessionKey: vi.fn().mockReturnValue("main:default"),
+     resolveSessionTranscriptPath: vi.fn().mockReturnValue("/tmp/transcript.jsonl"),
+-    setSessionRuntimeModel: vi.fn(),
++    setSessionRuntimeModel: setSessionRuntimeModelMock,
+     updateSessionStore: updateSessionStoreMock,
+   };
+ });
+diff --git a/src/cron/isolated-agent/run.ts b/src/cron/isolated-agent/run.ts
+index f8b8d03af9525..24e08bb6718c3 100644
+--- a/src/cron/isolated-agent/run.ts
++++ b/src/cron/isolated-agent/run.ts
+@@ -420,6 +420,11 @@ export async function runCronIsolatedAgentTurn(params: {
+   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>> | undefined;
+   let fallbackProvider = provider;
+   let fallbackModel = model;
++  // Capture original model/provider before runPrompt may reassign the outer
++  // `provider`/`model` variables via fallback. Needed for an accurate
++  // `isFromFallback` comparison after the run.
++  const originalProvider = provider;
++  const originalModel = model;
+   const runStartedAt = Date.now();
+   let runEndedAt = runStartedAt;
+   try {
+@@ -620,10 +625,18 @@ export async function runCronIsolatedAgentTurn(params: {
+       lookupContextTokens(modelUsed, { allowAsyncLoad: false }) ??
+       DEFAULT_CONTEXT_TOKENS;
+ 
+-    setSessionRuntimeModel(cronSession.sessionEntry, {
+-      provider: providerUsed,
+-      model: modelUsed,
+-    });
++    // Only persist the runtime model when the primary was used. A fallback model
++    // is a transient choice; writing it back would prevent the primary from being
++    // retried on future runs once it recovers.
++    // Compare against the *original* model/provider captured before `runPrompt`
++    // reassigned the outer variables via fallback result (#48417).
++    const isFromFallback = modelUsed !== originalModel || providerUsed !== originalProvider;
++    if (!isFromFallback) {
++      setSessionRuntimeModel(cronSession.sessionEntry, {
++        provider: providerUsed,
++        model: modelUsed,
++      });
++    }
+     cronSession.sessionEntry.contextTokens = contextTokens;
+     if (isCliProvider(providerUsed, cfgWithAgentDefaults)) {
+       const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
