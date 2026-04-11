@@ -77,6 +77,11 @@ export type RunEmbeddedPiAgentParams = {
   model?: string;
   authProfileId?: string;
   authProfileIdSource?: "auto" | "user";
+  resolvedAuth?: {
+    apiKey: string;
+    profileId?: string;
+    mode: "api-key" | "oauth" | "token" | "aws-sdk";
+  };
   thinkLevel?: ThinkLevel;
   fastMode?: boolean;
   verboseLevel?: VerboseLevel;

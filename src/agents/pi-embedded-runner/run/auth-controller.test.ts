@@ -165,6 +165,83 @@ describe("createEmbeddedRunAuthController", () => {
     });
   });
 
+  it("prefers spawn-injected resolved auth for the matching profile", async () => {
+    let runtimeModel = createTestModel();
+    let effectiveModel = createTestModel();
+    let runtimeAuthState: RuntimeAuthState | null = null;
+    let apiKeyInfo: unknown = null;
+    let lastProfileId: string | undefined;
+    const setRuntimeApiKey = vi.fn();
+
+    mocks.prepareProviderRuntimeAuth.mockResolvedValue(undefined);
+
+    const controller = createEmbeddedRunAuthController({
+      config: undefined,
+      agentDir: "/tmp/agent",
+      workspaceDir: "/tmp/workspace",
+      authStore: {
+        version: 1,
+        profiles: {},
+      } as AuthProfileStore,
+      authStorage: { setRuntimeApiKey },
+      profileCandidates: ["default"],
+      injectedResolvedAuth: {
+        apiKey: "spawn-token",
+        profileId: "default",
+        mode: "oauth",
+      },
+      initialThinkLevel: "medium",
+      attemptedThinking: new Set(),
+      fallbackConfigured: false,
+      allowTransientCooldownProbe: false,
+      getProvider: () => "custom-openai",
+      getModelId: () => "test-model",
+      getRuntimeModel: () => runtimeModel,
+      setRuntimeModel: (next) => {
+        runtimeModel = next;
+      },
+      getEffectiveModel: () => effectiveModel,
+      setEffectiveModel: (next) => {
+        effectiveModel = next;
+      },
+      getApiKeyInfo: () => apiKeyInfo as never,
+      setApiKeyInfo: (next) => {
+        apiKeyInfo = next;
+      },
+      getLastProfileId: () => lastProfileId,
+      setLastProfileId: (next) => {
+        lastProfileId = next;
+      },
+      getRuntimeAuthState: () => runtimeAuthState,
+      setRuntimeAuthState: (next) => {
+        runtimeAuthState = next;
+      },
+      getRuntimeAuthRefreshCancelled: () => false,
+      setRuntimeAuthRefreshCancelled: () => undefined,
+      getProfileIndex: () => 0,
+      setProfileIndex: () => undefined,
+      setThinkLevel: () => undefined,
+      log: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+      },
+    });
+
+    await controller.initializeAuthProfile();
+
+    expect(mocks.getApiKeyForModel).not.toHaveBeenCalled();
+    expect(setRuntimeApiKey).toHaveBeenCalledWith("custom-openai", "spawn-token");
+    expect(runtimeAuthState).toBeNull();
+    expect(apiKeyInfo).toMatchObject({
+      apiKey: "spawn-token",
+      profileId: "default",
+      mode: "oauth",
+      source: "spawn-injected",
+    });
+    expect(lastProfileId).toBe("default");
+  });
+
   it("rejects privileged runtime transport overrides on the first auth exchange", async () => {
     let runtimeModel = createTestModel();
 

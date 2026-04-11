@@ -944,8 +944,8 @@ export async function runAgentTurnWithFallback(params: {
               }
             })();
           }
-          const { embeddedContext, senderContext, runBaseParams } = buildEmbeddedRunExecutionParams(
-            {
+          const { embeddedContext, senderContext, runBaseParams } =
+            await buildEmbeddedRunExecutionParams({
               run: effectiveRun,
               sessionCtx: params.sessionCtx,
               hasRepliedRef: params.opts?.hasRepliedRef,
@@ -953,8 +953,7 @@ export async function runAgentTurnWithFallback(params: {
               runId,
               allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
               model,
-            },
-          );
+            });
           return (async () => {
             let attemptCompactionCount = 0;
             try {

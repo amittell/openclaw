@@ -1,4 +1,6 @@
 import { resolveRunModelFallbacksOverride } from "../../agents/agent-scope.js";
+import { ensureAuthProfileStore, getApiKeyForModel } from "../../agents/model-auth.js";
+import { resolveModelAsync } from "../../agents/pi-embedded-runner/model.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { ChannelId, ChannelThreadingToolContext } from "../../channels/plugins/types.js";
 import { normalizeAnyChannelId, normalizeChannelId } from "../../channels/registry.js";
@@ -144,7 +146,41 @@ export function resolveModelFallbackOptions(run: FollowupRun["run"]) {
   };
 }
 
-export function buildEmbeddedRunBaseParams(params: {
+export async function resolveSpawnTimeResolvedAuth(params: {
+  config: OpenClawConfig;
+  agentDir: string;
+  provider: string;
+  model: string;
+  authProfileId?: string;
+}) {
+  const { model } = await resolveModelAsync(
+    params.provider,
+    params.model,
+    params.agentDir,
+    params.config,
+  );
+  if (!model) {
+    return undefined;
+  }
+  const resolved = await getApiKeyForModel({
+    model,
+    cfg: params.config,
+    profileId: params.authProfileId,
+    store: ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false }),
+    agentDir: params.agentDir,
+    lockedProfile: params.authProfileId != null,
+  });
+  if (!resolved.apiKey?.trim()) {
+    return undefined;
+  }
+  return {
+    apiKey: resolved.apiKey,
+    profileId: resolved.profileId,
+    mode: resolved.mode,
+  };
+}
+
+export async function buildEmbeddedRunBaseParams(params: {
   run: FollowupRun["run"];
   provider: string;
   model: string;
@@ -153,6 +189,13 @@ export function buildEmbeddedRunBaseParams(params: {
   allowTransientCooldownProbe?: boolean;
 }) {
   const config = params.run.config;
+  const resolvedAuth = await resolveSpawnTimeResolvedAuth({
+    config,
+    agentDir: params.run.agentDir,
+    provider: params.provider,
+    model: params.model,
+    authProfileId: params.authProfile.authProfileId,
+  });
   return {
     sessionFile: params.run.sessionFile,
     workspaceDir: params.run.workspaceDir,
@@ -167,6 +210,7 @@ export function buildEmbeddedRunBaseParams(params: {
     provider: params.provider,
     model: params.model,
     ...params.authProfile,
+    ...(resolvedAuth ? { resolvedAuth } : {}),
     thinkLevel: params.run.thinkLevel,
     verboseLevel: params.run.verboseLevel,
     reasoningLevel: params.run.reasoningLevel,
@@ -233,7 +277,7 @@ export function buildEmbeddedRunContexts(params: {
   };
 }
 
-export function buildEmbeddedRunExecutionParams(params: {
+export async function buildEmbeddedRunExecutionParams(params: {
   run: FollowupRun["run"];
   sessionCtx: TemplateContext;
   hasRepliedRef: { value: boolean } | undefined;
@@ -243,7 +287,7 @@ export function buildEmbeddedRunExecutionParams(params: {
   allowTransientCooldownProbe?: boolean;
 }) {
   const { authProfile, embeddedContext, senderContext } = buildEmbeddedRunContexts(params);
-  const runBaseParams = buildEmbeddedRunBaseParams({
+  const runBaseParams = await buildEmbeddedRunBaseParams({
     run: params.run,
     provider: params.provider,
     model: params.model,

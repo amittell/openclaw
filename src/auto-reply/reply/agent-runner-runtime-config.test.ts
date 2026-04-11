@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("buildEmbeddedRunBaseParams runtime config", () => {
-  it("keeps an already-resolved run config instead of reverting to a stale runtime snapshot", () => {
+  it("keeps an already-resolved run config instead of reverting to a stale runtime snapshot", async () => {
     const staleSnapshot: OpenClawConfig = {
       models: {
         providers: {
@@ -68,7 +68,7 @@ describe("buildEmbeddedRunBaseParams runtime config", () => {
     };
     setRuntimeConfigSnapshot(staleSnapshot, staleSnapshot);
 
-    const resolved = buildEmbeddedRunBaseParams({
+    const resolved = await buildEmbeddedRunBaseParams({
       run: makeRun(resolvedRunConfig),
       provider: "openai",
       model: "gpt-4.1-mini",
