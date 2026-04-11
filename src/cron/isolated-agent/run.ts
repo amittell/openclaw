@@ -485,13 +485,33 @@ async function finalizeCronRun(params: {
     lookupContextTokens(modelUsed, { allowAsyncLoad: false }) ??
     resolvePositiveContextTokens(prepared.cronSession.sessionEntry.contextTokens) ??
     DEFAULT_CONTEXT_TOKENS;
+  const isHookOverride = finalRunResult.meta?.agentMeta?.isHookOverride === true;
+  const baselineModel =
+    typeof prepared.cronSession.sessionEntry.model === "string" &&
+    prepared.cronSession.sessionEntry.model.trim()
+      ? prepared.cronSession.sessionEntry.model.trim()
+      : execution.liveSelection.model;
+  const baselineProvider =
+    typeof prepared.cronSession.sessionEntry.modelProvider === "string" &&
+    prepared.cronSession.sessionEntry.modelProvider.trim()
+      ? prepared.cronSession.sessionEntry.modelProvider.trim()
+      : execution.liveSelection.provider;
+  const isFromFallback =
+    !isHookOverride && (modelUsed !== baselineModel || providerUsed !== baselineProvider);
+  const persistedContextTokens = isFromFallback
+    ? resolvePositiveContextTokens(prepared.agentCfg?.contextTokens) ??
+      lookupContextTokens(baselineModel, { allowAsyncLoad: false }) ??
+      DEFAULT_CONTEXT_TOKENS
+    : contextTokens;
 
-  setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
-    provider: providerUsed,
-    model: modelUsed,
-  });
-  prepared.cronSession.sessionEntry.contextTokens = contextTokens;
-  if (isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
+  if (!isFromFallback) {
+    setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
+      provider: providerUsed,
+      model: modelUsed,
+    });
+  }
+  prepared.cronSession.sessionEntry.contextTokens = persistedContextTokens;
+  if (!isFromFallback && isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
     const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
     if (cliSessionId) {
       const { setCliSessionId } = await loadCliRunnerRuntime();
@@ -504,7 +524,7 @@ async function finalizeCronRun(params: {
     const output = usage.output ?? 0;
     const totalTokens = deriveSessionTotalTokens({
       usage,
-      contextTokens,
+      contextTokens: persistedContextTokens,
       promptTokens,
     });
     const runEstimatedCostUsd = resolveNonNegativeNumber(

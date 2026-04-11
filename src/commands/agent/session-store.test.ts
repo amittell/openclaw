@@ -5,6 +5,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { updateSessionStoreAfterAgentRun } from "../../agents/command/session-store.js";
 import { resolveSession } from "../../agents/command/session.js";
+import { resolveContextTokensForModel } from "../../agents/context.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore } from "../../config/sessions.js";
 
@@ -124,6 +126,154 @@ describe("updateSessionStoreAfterAgentRun", () => {
     expect(sessionStore[sessionKey]?.systemPromptReport?.bootstrapTruncation?.warningMode).toBe(
       "once",
     );
+  });
+
+  it("does not persist fallback model into session store and keeps primary context tokens", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
+    const storePath = path.join(dir, "sessions.json");
+    const sessionKey = `agent:test:fallback:${randomUUID()}`;
+    const sessionId = randomUUID();
+
+    const sessionStore: Record<string, SessionEntry> = {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        model: "gpt-5.3",
+        modelProvider: "openai",
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+
+    await updateSessionStoreAfterAgentRun({
+      cfg: {} as never,
+      sessionId,
+      sessionKey,
+      storePath,
+      sessionStore,
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.3",
+      fallbackProvider: "anthropic",
+      fallbackModel: "claude-sonnet-4-20250514",
+      result: {
+        payloads: [],
+        meta: {
+          aborted: false,
+          agentMeta: {
+            provider: "anthropic",
+            model: "claude-sonnet-4-20250514",
+            usage: { input: 100, output: 50 },
+          },
+        },
+      } as never,
+    });
+
+    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    const expectedPrimaryContextTokens =
+      resolveContextTokensForModel({
+        cfg: {} as never,
+        provider: "openai",
+        model: "gpt-5.3",
+        fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+        allowAsyncLoad: false,
+      }) ?? DEFAULT_CONTEXT_TOKENS;
+    expect(persisted?.model).toBe("gpt-5.3");
+    expect(persisted?.modelProvider).toBe("openai");
+    expect(persisted?.contextTokens).toBe(expectedPrimaryContextTokens);
+  });
+
+  it("persists hook-overridden model even when it differs from configured defaults", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
+    const storePath = path.join(dir, "sessions.json");
+    const sessionKey = `agent:test:hook-override:${randomUUID()}`;
+    const sessionId = randomUUID();
+
+    const sessionStore: Record<string, SessionEntry> = {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+
+    await updateSessionStoreAfterAgentRun({
+      cfg: {} as never,
+      sessionId,
+      sessionKey,
+      storePath,
+      sessionStore,
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.3",
+      result: {
+        payloads: [],
+        meta: {
+          aborted: false,
+          agentMeta: {
+            provider: "anthropic",
+            model: "claude-opus-4-5",
+            isHookOverride: true,
+            usage: { input: 100, output: 50 },
+          },
+        },
+      } as never,
+    });
+
+    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(persisted?.model).toBe("claude-opus-4-5");
+    expect(persisted?.modelProvider).toBe("anthropic");
+  });
+
+  it("does not persist fallback CLI session resume handles", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
+    const storePath = path.join(dir, "sessions.json");
+    const sessionKey = `agent:test:fallback-cli:${randomUUID()}`;
+    const sessionId = randomUUID();
+
+    const sessionStore: Record<string, SessionEntry> = {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+
+    await updateSessionStoreAfterAgentRun({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": {},
+            },
+          },
+        },
+      } as never,
+      sessionId,
+      sessionKey,
+      storePath,
+      sessionStore,
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.3",
+      result: {
+        payloads: [],
+        meta: {
+          aborted: false,
+          agentMeta: {
+            provider: "claude-cli",
+            model: "claude-opus-4-5",
+            sessionId: "fallback-cli-session-id",
+            cliSessionBinding: {
+              sessionId: "fallback-cli-session-id",
+              authEpoch: "fallback-auth-epoch",
+            },
+            usage: { input: 100, output: 50 },
+          },
+        },
+      } as never,
+    });
+
+    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    const persistedStr = JSON.stringify(persisted ?? {});
+    expect(persistedStr).not.toContain("fallback-cli-session-id");
+    expect(persistedStr).not.toContain("fallback-auth-epoch");
   });
 
   it("stores and reloads the runtime model for explicit session-id-only runs", async () => {

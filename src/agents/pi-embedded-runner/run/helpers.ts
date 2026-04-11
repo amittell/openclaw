@@ -122,6 +122,7 @@ export function buildErrorAgentMeta(params: {
   lastRunPromptUsage: UsageSnapshot | undefined;
   lastAssistant?: { usage?: unknown } | null;
   lastTurnTotal?: number;
+  isHookOverride?: boolean;
 }): EmbeddedPiAgentMeta {
   const usageMeta = buildUsageAgentMetaFields({
     usageAccumulator: params.usageAccumulator,
@@ -136,6 +137,7 @@ export function buildErrorAgentMeta(params: {
     ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
     ...(usageMeta.lastCallUsage ? { lastCallUsage: usageMeta.lastCallUsage } : {}),
     ...(usageMeta.promptTokens ? { promptTokens: usageMeta.promptTokens } : {}),
+    ...(params.isHookOverride ? { isHookOverride: true } : {}),
   };
 }
 

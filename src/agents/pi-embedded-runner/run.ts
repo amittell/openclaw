@@ -267,6 +267,8 @@ export async function runEmbeddedPiAgent(
         hookRunner,
         hookContext: hookCtx,
       });
+      const isHookOverride =
+        hookSelection.provider !== provider || hookSelection.modelId !== modelId;
       provider = hookSelection.provider;
       modelId = hookSelection.modelId;
       const legacyBeforeAgentStartResult = hookSelection.legacyBeforeAgentStartResult;
@@ -597,6 +599,7 @@ export async function runEmbeddedPiAgent(
                 usageAccumulator,
                 lastRunPromptUsage,
                 lastTurnTotal,
+                isHookOverride,
               }),
               replayInvalid: accumulatedReplayState.replayInvalid ? true : undefined,
               livenessState: "blocked",
@@ -1142,6 +1145,7 @@ export async function runEmbeddedPiAgent(
                   lastRunPromptUsage,
                   lastAssistant,
                   lastTurnTotal,
+                  isHookOverride,
                 }),
                 systemPromptReport: attempt.systemPromptReport,
                 replayInvalid: resolveReplayInvalidForAttempt(),
@@ -1196,6 +1200,7 @@ export async function runEmbeddedPiAgent(
                     lastRunPromptUsage,
                     lastAssistant,
                     lastTurnTotal,
+                    isHookOverride,
                   }),
                   systemPromptReport: attempt.systemPromptReport,
                   replayInvalid: resolveReplayInvalidForAttempt(),
@@ -1234,6 +1239,7 @@ export async function runEmbeddedPiAgent(
                     lastRunPromptUsage,
                     lastAssistant,
                     lastTurnTotal,
+                    isHookOverride,
                   }),
                   systemPromptReport: attempt.systemPromptReport,
                   replayInvalid: resolveReplayInvalidForAttempt(),
@@ -1485,6 +1491,7 @@ export async function runEmbeddedPiAgent(
             lastCallUsage: usageMeta.lastCallUsage,
             promptTokens: usageMeta.promptTokens,
             compactionCount: autoCompactionCount > 0 ? autoCompactionCount : undefined,
+            ...(isHookOverride ? { isHookOverride: true } : {}),
           };
           const finalAssistantVisibleText = resolveFinalAssistantVisibleText(lastAssistant);
 

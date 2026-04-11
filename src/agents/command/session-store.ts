@@ -59,6 +59,20 @@ export async function updateSessionStoreAfterAgentRun(params: {
       allowAsyncLoad: false,
     }) ?? DEFAULT_CONTEXT_TOKENS;
 
+  const isHookOverride = result.meta.agentMeta?.isHookOverride === true;
+  const isFromFallback =
+    !isHookOverride && (modelUsed !== defaultModel || providerUsed !== defaultProvider);
+  const persistedContextTokens = isFromFallback
+    ? (resolveContextTokensForModel({
+        cfg,
+        provider: defaultProvider,
+        model: defaultModel,
+        contextTokensOverride: params.contextTokensOverride,
+        fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+        allowAsyncLoad: false,
+      }) ?? DEFAULT_CONTEXT_TOKENS)
+    : contextTokens;
+
   const entry = sessionStore[sessionKey] ?? {
     sessionId,
     updatedAt: Date.now(),
@@ -67,13 +81,15 @@ export async function updateSessionStoreAfterAgentRun(params: {
     ...entry,
     sessionId,
     updatedAt: Date.now(),
-    contextTokens,
+    contextTokens: persistedContextTokens,
   };
-  setSessionRuntimeModel(next, {
-    provider: providerUsed,
-    model: modelUsed,
-  });
-  if (isCliProvider(providerUsed, cfg)) {
+  if (!isFromFallback) {
+    setSessionRuntimeModel(next, {
+      provider: providerUsed,
+      model: modelUsed,
+    });
+  }
+  if (!isFromFallback && isCliProvider(providerUsed, cfg)) {
     const cliSessionBinding = result.meta.agentMeta?.cliSessionBinding;
     if (cliSessionBinding?.sessionId?.trim()) {
       setCliSessionBinding(next, providerUsed, cliSessionBinding);
@@ -93,7 +109,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
     const output = usage.output ?? 0;
     const totalTokens = deriveSessionTotalTokens({
       usage: promptTokens ? undefined : usage,
-      contextTokens,
+      contextTokens: persistedContextTokens,
       promptTokens,
     });
     const runEstimatedCostUsd = resolveNonNegativeNumber(
