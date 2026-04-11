@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -n "${TARGET_REPO:-}" ]]; then
+  ROOT_DIR="$(cd "$TARGET_REPO" && pwd)"
+else
+  ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+
+if [[ -z "$ROOT_DIR" ]]; then
+  echo "Error: run this from inside the target git worktree or set TARGET_REPO=/path/to/worktree" >&2
+  exit 1
+fi
+
 cd "$ROOT_DIR"
 
 BASE_TAG="v2026.4.9"
@@ -55,9 +65,10 @@ Commands:
   summary          Print a one-screen summary
 
 Notes:
-  - Run this from a fresh upgrade worktree based on ${BASE_TAG}.
+  - Run this from inside the target upgrade worktree based on ${BASE_TAG}, or set TARGET_REPO=/path/to/that/worktree.
+  - The script applies carries to the current git worktree; it does not implicitly target the checkout that contains this script.
   - replay-safe intentionally excludes the risky/manual carry families.
-  - For full patch artifacts, run scripts/export-distpatches-v2026.4.9.sh
+  - For full patch artifacts, run scripts/export-distpatches-v2026.4.9.sh from the prep branch checkout.
 EOF
 }
 

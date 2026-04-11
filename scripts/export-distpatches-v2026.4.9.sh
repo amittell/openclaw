@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+BASE_TAG="v2026.4.9"
 OUT_DIR="distpatches/v2026.4.9"
 CLEAN_DIR="${OUT_DIR}/clean"
 MANUAL_DIR="${OUT_DIR}/manual"
@@ -15,6 +16,43 @@ write_patch() {
   local sha="$1"
   local out="$2"
   git format-patch -1 --stdout "$sha" > "$out"
+}
+
+write_rebased_patch() {
+  local base_ref="$1"
+  local commit_sha="$2"
+  local out="$3"
+  shift 3
+  local prereq_patches=("$@")
+  local abs_out
+  if [[ "$out" = /* ]]; then
+    abs_out="$out"
+  else
+    abs_out="${ROOT_DIR}/${out}"
+  fi
+
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-distpatch-rebase.XXXXXX")"
+  cleanup() {
+    git worktree remove --force "$tmp" >/dev/null 2>&1 || true
+  }
+  trap cleanup RETURN
+
+  git worktree add --detach "$tmp" "$base_ref" >/dev/null
+  (
+    cd "$tmp"
+    local patch abs_patch
+    for patch in "${prereq_patches[@]}"; do
+      if [[ "$patch" = /* ]]; then
+        abs_patch="$patch"
+      else
+        abs_patch="${ROOT_DIR}/${patch}"
+      fi
+      git am "$abs_patch" >/dev/null
+    done
+    git cherry-pick -x "$commit_sha" >/dev/null
+    git format-patch --zero-commit -1 --stdout HEAD > "$abs_out"
+  )
 }
 
 write_pr_diff() {
@@ -31,7 +69,11 @@ write_patch d4882f6b42cf "${CLEAN_DIR}/PR-56536-memory-forget-full-ids.patch"
 write_patch 17a97e50d553 "${CLEAN_DIR}/PR-57137-auth-sync-env-var-backed-token-credentials.patch"
 
 # Local clean carries
-write_patch 7d0f609e0b "${LOCAL_DIR}/local-memory-lancedb-strip-media-annotations.patch"
+write_rebased_patch "$BASE_TAG" 7d0f609e0b1fc3ec3ba06977631eb5254bc75679 "${LOCAL_DIR}/local-memory-lancedb-strip-media-annotations.patch" \
+  "${CLEAN_DIR}/PR-52030-anthropic-long-context-compact.patch" \
+  "${CLEAN_DIR}/PR-56532-lancedb-embedding-timeout-retry.patch" \
+  "${CLEAN_DIR}/PR-56536-memory-forget-full-ids.patch" \
+  "${CLEAN_DIR}/PR-57137-auth-sync-env-var-backed-token-credentials.patch"
 write_patch b172f7987c "${LOCAL_DIR}/local-telegram-longpoll-headroom.patch"
 
 # Local manual / conditional carries
@@ -103,6 +145,7 @@ Prior local carry artifacts:
 - `clean/` is the only bucket intended for blind replay.
 - `manual/` is for family-by-family reconciliation on top of `v2026.4.9`.
 - `local/` includes both low-risk local carries and 4.2-era conditional compatibility patches.
+- `local/local-memory-lancedb-strip-media-annotations.patch` is exported from a rebased disposable worktree on top of the validated clean batch, so it now applies cleanly as a raw sequential `git am` after `clean/*.patch`.
 EOF
 
 echo "Exported distpatches to ${OUT_DIR}"
