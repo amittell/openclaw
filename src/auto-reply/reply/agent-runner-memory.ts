@@ -740,15 +740,16 @@ export async function runMemoryFlushIfNeeded(params: {
       ...resolveModelFallbackOptions(params.followupRun.run),
       runId: flushRunId,
       run: async (provider, model, runOptions) => {
-        const { embeddedContext, senderContext, runBaseParams } = buildEmbeddedRunExecutionParams({
-          run: params.followupRun.run,
-          sessionCtx: params.sessionCtx,
-          hasRepliedRef: params.opts?.hasRepliedRef,
-          provider,
-          model,
-          runId: flushRunId,
-          allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
-        });
+        const { embeddedContext, senderContext, runBaseParams } =
+          await buildEmbeddedRunExecutionParams({
+            run: params.followupRun.run,
+            sessionCtx: params.sessionCtx,
+            hasRepliedRef: params.opts?.hasRepliedRef,
+            provider,
+            model,
+            runId: flushRunId,
+            allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
+          });
         const result = await memoryDeps.runEmbeddedPiAgent({
           ...embeddedContext,
           ...senderContext,
