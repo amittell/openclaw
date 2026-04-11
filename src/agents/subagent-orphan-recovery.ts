@@ -21,6 +21,10 @@ import {
 import { callGateway } from "../gateway/call.js";
 import { readSessionMessages } from "../gateway/session-utils.fs.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  buildExecRewriteRequiredResumeHint,
+  isExecRewriteRequiredText,
+} from "./exec-rewrite-required.js";
 import { replaceSubagentRunAfterSteer } from "./subagent-registry-steer-runtime.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -44,7 +48,11 @@ function isRestartAbortedTimeoutRun(
 /**
  * Build the resume message for an orphaned subagent.
  */
-function buildResumeMessage(task: string, lastHumanMessage?: string): string {
+function buildResumeMessage(
+  task: string,
+  lastHumanMessage?: string,
+  rewriteRequiredHint?: string,
+): string {
   const maxTaskLen = 2000;
   const truncatedTask = task.length > maxTaskLen ? `${task.slice(0, maxTaskLen)}...` : task;
 
@@ -57,6 +65,9 @@ function buildResumeMessage(task: string, lastHumanMessage?: string): string {
   }
 
   message += `Please continue where you left off.`;
+  if (rewriteRequiredHint) {
+    message += `\n\n${rewriteRequiredHint}`;
+  }
   return message;
 }
 
@@ -88,15 +99,30 @@ function extractMessageText(msg: unknown): string | undefined {
 /**
  * Send a resume message to an orphaned subagent session via the gateway agent method.
  */
+function detectRewriteRequiredHint(messages: unknown[]): string | undefined {
+  const assistantTexts = messages
+    .filter((msg) => (msg as { role?: unknown } | null)?.role === "assistant")
+    .map((msg) => extractMessageText(msg))
+    .filter((text): text is string => typeof text === "string");
+  return assistantTexts.some((text) => isExecRewriteRequiredText(text))
+    ? buildExecRewriteRequiredResumeHint()
+    : undefined;
+}
+
 async function resumeOrphanedSession(params: {
   sessionKey: string;
   task: string;
   lastHumanMessage?: string;
   configChangeHint?: string;
+  rewriteRequiredHint?: string;
   originalRunId: string;
   originalRun: SubagentRunRecord;
 }): Promise<boolean> {
-  let resumeMessage = buildResumeMessage(params.task, params.lastHumanMessage);
+  let resumeMessage = buildResumeMessage(
+    params.task,
+    params.lastHumanMessage,
+    params.rewriteRequiredHint,
+  );
   if (params.configChangeHint) {
     resumeMessage += params.configChangeHint;
   }
@@ -217,6 +243,7 @@ export async function recoverOrphanedSubagentSessions(params: {
           const text = extractMessageText(msg);
           return typeof text === "string" && configChangePattern.test(text);
         });
+        const rewriteRequiredHint = detectRewriteRequiredHint(messages);
 
         // Resume the session with the original task context.
         // We intentionally do NOT clear abortedLastRun before attempting
@@ -229,6 +256,7 @@ export async function recoverOrphanedSubagentSessions(params: {
           configChangeHint: configChangeDetected
             ? "\n\n[config changes from your previous run were already applied — do not re-modify openclaw.json or restart the gateway]"
             : undefined,
+          rewriteRequiredHint,
           originalRunId: runId,
           originalRun: runRecord,
         });

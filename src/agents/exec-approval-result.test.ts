@@ -72,6 +72,10 @@ describe("formatExecDeniedUserMessage", () => {
       "Command did not run: approval is required.",
     ],
     [
+      "Exec denied (gateway id=req-1, approval-timeout): apply_patch <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH",
+      "Command did not run: rewrite required. Use `apply_patch`/`edit`/`write` for file changes, or a direct single build/test/git/script command instead of heredocs, temp patch files, or stdin-fed inline interpreters.",
+    ],
+    [
       "Exec denied (gateway id=req-1, approval-request-failed): uname -a",
       "Command did not run: approval request failed.",
     ],

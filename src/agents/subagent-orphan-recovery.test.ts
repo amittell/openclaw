@@ -378,6 +378,36 @@ describe("subagent-orphan-recovery", () => {
     expect(message).toContain("config changes from your previous run were already applied");
   });
 
+  it("adds rewrite-required hint when the prior run hit a blocked exec wrapper", async () => {
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:subagent:test-session-1": {
+        sessionId: "session-abc",
+        updatedAt: Date.now(),
+        abortedLastRun: true,
+      },
+    });
+
+    vi.mocked(sessionUtils.readSessionMessages).mockReturnValue([
+      { role: "user", content: "Fix the file edits" },
+      {
+        role: "assistant",
+        content:
+          "exec blocked: rewrite required (apply-patch-heredoc: shell heredoc patch application hides the actual file diff from exec approval and resume flows.)",
+      },
+    ]);
+
+    const activeRuns = new Map<string, SubagentRunRecord>();
+    activeRuns.set("run-1", createTestRunRecord());
+
+    await recoverOrphanedSubagentSessions({ getActiveRuns: () => activeRuns });
+
+    const callArgs = vi.mocked(gateway.callGateway).mock.calls[0];
+    const params = callArgs[0].params as Record<string, unknown>;
+    const message = params.message as string;
+    expect(message).toContain("blocked exec file-edit wrapper");
+    expect(message).toContain("apply_patch/edit/write");
+  });
+
   it("prevents duplicate resume when updateSessionStore fails", async () => {
     vi.mocked(gateway.callGateway).mockResolvedValue({ runId: "new-run" } as never);
     vi.mocked(sessions.updateSessionStore).mockRejectedValue(new Error("write failed"));

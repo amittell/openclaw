@@ -282,6 +282,15 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain(
       "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
     );
+    expect(prompt).toContain(
+      "For source edits, prefer `apply_patch`, `edit`, or `write` instead of shell wrappers.",
+    );
+    expect(prompt).toContain(
+      "Do not use shell heredocs, temp patch files, or stdin-fed inline interpreter scripts to write/edit code when first-class file tools are available.",
+    );
+    expect(prompt).toContain(
+      "Reserve `exec` for direct build/test/git/script commands, and keep those as single commands instead of multiline shell glue when possible.",
+    );
   });
 
   it("lists available tools when provided", () => {
@@ -854,6 +863,9 @@ describe("buildSubagentSystemPrompt", () => {
     expect(prompt).toContain("[... N more characters truncated]");
     expect(prompt).toContain("offset/limit");
     expect(prompt).toContain("instead of full-file `cat`");
+    expect(prompt).toContain(
+      "Use `apply_patch`, `edit`, or `write` for source changes; avoid shell heredocs, temp patch files, and stdin-fed inline interpreter wrappers.",
+    );
   });
 
   it("omits ACP spawning guidance when ACP is disabled", () => {

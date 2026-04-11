@@ -44,6 +44,7 @@ export function buildSubagentSystemPrompt(params: {
     "4. **Be ephemeral** - You may be terminated after task completion. That's fine.",
     "5. **Trust push-based completion** - Descendant results are auto-announced back to you; do not busy-poll for status.",
     "6. **Recover from truncated tool output** - If you see a notice like `[... N more characters truncated]`, assume prior output was reduced. Re-read only what you need using smaller chunks (`read` with offset/limit, or targeted `rg`/`head`/`tail`) instead of full-file `cat`.",
+    "7. **Prefer file tools for edits** - Use `apply_patch`, `edit`, or `write` for source changes; avoid shell heredocs, temp patch files, and stdin-fed inline interpreter wrappers.",
     "",
     "## Output Format",
     "When complete, your final response should include:",

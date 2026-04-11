@@ -66,7 +66,7 @@ Notes:
 - `tools.exec.ask` (default: `off`)
 - No-approval host exec is the default for gateway + node. If you want approvals/allowlist behavior, tighten both `tools.exec.*` and the host `~/.openclaw/exec-approvals.json`; see [Exec approvals](/tools/exec-approvals#no-approval-yolo-mode).
 - YOLO comes from the host-policy defaults (`security=full`, `ask=off`), not from `host=auto`. If you want to force gateway or node routing, set `tools.exec.host` or use `/exec host=...`.
-- In `security=full` plus `ask=off` mode, host exec follows the configured policy directly; there is no extra heuristic command-obfuscation prefilter.
+- In `security=full` plus `ask=off` mode, host exec follows the configured policy directly, except for a narrow rewrite-required guardrail that blocks obfuscation-prone coding wrappers such as `apply_patch <<'PATCH'`, `<<EOF`, `python - <<'PY'`, and `cat >/tmp/*.patch`. Rewrite those as `apply_patch`/`edit`/`write` file-tool calls or a direct single build/test/git/script command instead of waiting on exec approval.
 - `tools.exec.node` (default: unset)
 - `tools.exec.strictInlineEval` (default: false): when true, inline interpreter eval forms such as `python -c`, `node -e`, `ruby -e`, `perl -e`, `php -r`, `lua -e`, and `osascript -e` always require explicit approval. `allow-always` can still persist benign interpreter/script invocations, but inline-eval forms still prompt each time.
 - `tools.exec.pathPrepend`: list of directories to prepend to `PATH` for exec runs (gateway + sandbox only).
@@ -139,6 +139,8 @@ On channels with native approval cards/buttons, the agent should rely on that
 native UI first and only include a manual `/approve` command when the tool
 result explicitly says chat approvals are unavailable or manual approval is the
 only path.
+
+For obfuscation-prone coding wrappers, OpenClaw now prefers a rewrite-required path over approval waits. The current scope is intentionally narrow: multiline heredoc patch carriers, temp `.patch` files written through shell redirection, and stdin-fed inline interpreter heredocs. Normal direct build/test/git/script commands are unaffected.
 
 ## Allowlist + safe bins
 

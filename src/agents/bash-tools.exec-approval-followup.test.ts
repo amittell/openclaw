@@ -30,6 +30,16 @@ describe("exec approval followup", () => {
     expect(prompt).not.toContain("already approved has completed");
   });
 
+  it("treats obfuscation-prone denied commands as rewrite-required", () => {
+    const prompt = buildExecApprovalFollowupPrompt(
+      "Exec denied (gateway id=req-1, approval-timeout): python - <<'PY'\nprint(123)\nPY",
+    );
+
+    expect(prompt).toContain("rewrite-required");
+    expect(prompt).toContain("Use `apply_patch`, `edit`, or `write` for source edits");
+    expect(prompt).toContain("Do not wait for approval");
+  });
+
   it("tells the agent to continue the task before replying when the command succeeds", () => {
     const prompt = buildExecApprovalFollowupPrompt("Exec finished (gateway id=req-1, code 0)\nok");
 
@@ -194,7 +204,7 @@ describe("exec approval followup", () => {
     );
   });
 
-  it("suppresses denied followups for subagent sessions", async () => {
+  it("continues denied subagent followups internally without external delivery", async () => {
     await expect(
       sendExecApprovalFollowup({
         approvalId: "req-denied-subagent",
@@ -202,11 +212,41 @@ describe("exec approval followup", () => {
         turnSourceChannel: "telegram",
         turnSourceTo: "123",
         turnSourceAccountId: "default",
-        resultText: "Exec denied (gateway id=req-denied-subagent, approval-timeout): uname -a",
+        resultText:
+          "Exec denied (gateway id=req-denied-subagent, approval-timeout): apply_patch <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
 
-    expect(callGatewayTool).not.toHaveBeenCalled();
+    expect(callGatewayTool).toHaveBeenCalledWith(
+      "agent",
+      expect.any(Object),
+      expect.objectContaining({
+        sessionKey: "agent:main:subagent:test",
+        message: expect.stringContaining("rewrite-required"),
+        deliver: false,
+        channel: undefined,
+        to: undefined,
+      }),
+      { expectFinal: true },
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to direct external delivery for denied subagent followups", async () => {
+    vi.mocked(callGatewayTool).mockRejectedValueOnce(new Error("session missing"));
+
+    await expect(
+      sendExecApprovalFollowup({
+        approvalId: "req-denied-subagent-resume-failed",
+        sessionKey: "agent:main:subagent:test",
+        turnSourceChannel: "telegram",
+        turnSourceTo: "123",
+        turnSourceAccountId: "default",
+        resultText:
+          "Exec denied (gateway id=req-denied-subagent-resume-failed, approval-timeout): python - <<'PY'\nprint(123)\nPY",
+      }),
+    ).rejects.toThrow(/Session followup failed: session missing/);
+
     expect(sendMessage).not.toHaveBeenCalled();
   });
 

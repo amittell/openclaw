@@ -51,6 +51,10 @@ import {
   resolveWorkdir,
   truncateMiddle,
 } from "./bash-tools.shared.js";
+import {
+  buildExecRewriteRequiredMessage,
+  detectExecRewriteRequired,
+} from "./exec-rewrite-required.js";
 import { EXEC_TOOL_DISPLAY_SUMMARY } from "./tool-description-presets.js";
 import { type AgentToolWithMeta, failedTextResult, textResult } from "./tools/common.js";
 
@@ -1498,6 +1502,10 @@ export function createExecTool(
         workdir = resolveWorkdir(rawWorkdir, warnings);
       }
       rejectExecApprovalShellCommand(params.command);
+      const rewriteRequiredMatch = detectExecRewriteRequired(params.command);
+      if (rewriteRequiredMatch) {
+        throw new Error(buildExecRewriteRequiredMessage(params.command));
+      }
 
       const inheritedBaseEnv = coerceEnv(process.env);
       const hostEnvResult =

@@ -16,6 +16,34 @@ afterEach(() => {
 });
 
 describeNonWin("exec script preflight", () => {
+  it.each([
+    "apply_patch <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH",
+    "cat >/tmp/fix.patch",
+    "python - <<'PY'\nprint(123)\nPY",
+    "node - <<'JS'\nconsole.log(123)\nJS",
+  ])("blocks rewrite-required obfuscation carrier %j", async (command) => {
+    const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
+
+    await expect(tool.execute("call-rewrite-required", { command })).rejects.toThrow(
+      /exec blocked: rewrite required/i,
+    );
+  });
+
+  it("still allows direct script execution without rewrite-required blocking", async () => {
+    await withTempDir("openclaw-exec-preflight-", async (tmp) => {
+      const pyPath = path.join(tmp, "good.py");
+      await fs.writeFile(pyPath, 'print("ok")\n', "utf-8");
+
+      const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
+      const result = await tool.execute("call-direct-script", {
+        command: "python3 good.py",
+        workdir: tmp,
+      });
+      const text = result.content.find((block) => block.type === "text")?.text ?? "";
+      expect(text).toContain("ok");
+    });
+  });
+
   it("blocks shell env var injection tokens in python scripts before execution", async () => {
     await withTempDir("openclaw-exec-preflight-", async (tmp) => {
       const pyPath = path.join(tmp, "bad.py");

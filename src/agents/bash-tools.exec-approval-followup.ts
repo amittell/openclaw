@@ -11,6 +11,7 @@ import {
   isExecDeniedResultText,
   parseExecApprovalResultText,
 } from "./exec-approval-result.js";
+import { detectExecRewriteRequired } from "./exec-rewrite-required.js";
 import { sanitizeUserFacingText } from "./pi-embedded-helpers/errors.js";
 import { callGatewayTool } from "./tools/gateway.js";
 
@@ -24,20 +25,45 @@ type ExecApprovalFollowupParams = {
   resultText: string;
 };
 
+function isRewriteRequiredDeniedResultText(resultText: string): boolean {
+  const parsed = parseExecApprovalResultText(resultText);
+  if (parsed.kind !== "denied") {
+    return false;
+  }
+  const metadata = normalizeLowercaseStringOrEmpty(parsed.metadata);
+  return metadata.includes("rewrite-required") || detectExecRewriteRequired(parsed.body) !== null;
+}
+
 function buildExecDeniedFollowupPrompt(resultText: string): string {
+  const rewriteRequired = isRewriteRequiredDeniedResultText(resultText);
   return [
     "An async command did not run.",
     "Do not run the command again.",
     "There is no new command output.",
     "Do not mention, summarize, or reuse output from any earlier run in this session.",
+    rewriteRequired
+      ? "This denial is rewrite-required, not an approval wait. Rewrite the blocked step before continuing."
+      : undefined,
+    rewriteRequired
+      ? "Use `apply_patch`, `edit`, or `write` for source edits, or replace the wrapper with one direct build/test/git/script command."
+      : undefined,
+    rewriteRequired
+      ? "Do not wait for approval and do not rerun the same heredoc/temp-patch/stdin-fed interpreter command."
+      : undefined,
     "",
     "Exact completion details:",
     resultText.trim(),
     "",
-    "Reply to the user in a helpful way.",
-    "Explain that the command did not run and why.",
+    rewriteRequired
+      ? "Continue the task by rewriting the blocked step, then reply to the user in a helpful way."
+      : "Reply to the user in a helpful way.",
+    rewriteRequired
+      ? "Explain that the command did not run because it must be rewritten using file tools or a direct command."
+      : "Explain that the command did not run and why.",
     "Do not claim there is new command output.",
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function formatUnknownError(error: unknown): string {
@@ -74,8 +100,17 @@ export function buildExecApprovalFollowupPrompt(resultText: string): string {
   ].join("\n");
 }
 
-function shouldSuppressExecDeniedFollowup(sessionKey: string | undefined): boolean {
-  return isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey);
+function shouldSuppressExecDeniedFollowup(
+  sessionKey: string | undefined,
+  resultText: string,
+): boolean {
+  if (isCronSessionKey(sessionKey)) {
+    return true;
+  }
+  if (!isSubagentSessionKey(sessionKey)) {
+    return false;
+  }
+  return !isRewriteRequiredDeniedResultText(resultText);
 }
 
 function formatDirectExecApprovalFollowupText(
@@ -135,25 +170,32 @@ function buildAgentFollowupArgs(params: {
   turnSourceThreadId?: string | number;
 }) {
   const { deliveryTarget, sessionOnlyOriginChannel } = params;
+  const forceInternalOnly =
+    isSubagentSessionKey(params.sessionKey) && isRewriteRequiredDeniedResultText(params.resultText);
+  const shouldDeliverExternally = !forceInternalOnly && deliveryTarget.deliver;
   return {
     sessionKey: params.sessionKey,
     message: buildExecApprovalFollowupPrompt(params.resultText),
-    deliver: deliveryTarget.deliver,
-    ...(deliveryTarget.deliver ? { bestEffortDeliver: true as const } : {}),
-    channel: deliveryTarget.deliver ? deliveryTarget.channel : sessionOnlyOriginChannel,
-    to: deliveryTarget.deliver
+    deliver: shouldDeliverExternally,
+    ...(shouldDeliverExternally ? { bestEffortDeliver: true as const } : {}),
+    channel: shouldDeliverExternally
+      ? deliveryTarget.channel
+      : sessionOnlyOriginChannel && !forceInternalOnly
+        ? sessionOnlyOriginChannel
+        : undefined,
+    to: shouldDeliverExternally
       ? deliveryTarget.to
-      : sessionOnlyOriginChannel
+      : sessionOnlyOriginChannel && !forceInternalOnly
         ? params.turnSourceTo
         : undefined,
-    accountId: deliveryTarget.deliver
+    accountId: shouldDeliverExternally
       ? deliveryTarget.accountId
-      : sessionOnlyOriginChannel
+      : sessionOnlyOriginChannel && !forceInternalOnly
         ? params.turnSourceAccountId
         : undefined,
-    threadId: deliveryTarget.deliver
+    threadId: shouldDeliverExternally
       ? deliveryTarget.threadId
-      : sessionOnlyOriginChannel
+      : sessionOnlyOriginChannel && !forceInternalOnly
         ? params.turnSourceThreadId
         : undefined,
     idempotencyKey: `exec-approval-followup:${params.approvalId}`,
@@ -195,7 +237,7 @@ export async function sendExecApprovalFollowup(
     return false;
   }
   const isDenied = isExecDeniedResultText(resultText);
-  if (isDenied && shouldSuppressExecDeniedFollowup(sessionKey)) {
+  if (isDenied && shouldSuppressExecDeniedFollowup(sessionKey, resultText)) {
     return false;
   }
 
@@ -237,12 +279,13 @@ export async function sendExecApprovalFollowup(
   }
 
   if (
-    await sendDirectFollowupFallback({
+    !isSubagentSessionKey(sessionKey) &&
+    (await sendDirectFollowupFallback({
       approvalId: params.approvalId,
       deliveryTarget,
       resultText,
       sessionError,
-    })
+    }))
   ) {
     return true;
   }

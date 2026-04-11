@@ -1,4 +1,8 @@
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import {
+  buildExecRewriteRequiredUserMessage,
+  detectExecRewriteRequired,
+} from "./exec-rewrite-required.js";
 
 export type ExecApprovalResult =
   | {
@@ -76,6 +80,9 @@ export function formatExecDeniedUserMessage(resultText: string): string | null {
   }
 
   const metadata = normalizeLowercaseStringOrEmpty(parsed.metadata);
+  if (metadata.includes("rewrite-required") || detectExecRewriteRequired(parsed.body)) {
+    return buildExecRewriteRequiredUserMessage();
+  }
   if (metadata.includes("approval-timeout")) {
     return "Command did not run: approval timed out.";
   }

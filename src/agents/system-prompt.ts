@@ -272,7 +272,11 @@ function buildExecutionBiasSection(params: { isMinimal: boolean }) {
     "If the user asks you to do the work, start doing it in the same turn.",
     "Use a real tool call or concrete action first when the task is actionable; do not stop at a plan or promise-to-act reply.",
     "Commentary-only turns are incomplete when tools are available and the next action is clear.",
+    "For source edits, prefer `apply_patch`, `edit`, or `write` instead of shell wrappers.",
+    "Do not use shell heredocs, temp patch files, or stdin-fed inline interpreter scripts to write/edit code when first-class file tools are available.",
+    "Reserve `exec` for direct build/test/git/script commands, and keep those as single commands instead of multiline shell glue when possible.",
     "If the work will take multiple steps or a while to finish, send one short progress update before or while acting.",
+    "When you need to change files, use file tools first. Reserve exec for direct commands like build/test/git or running an existing script file.",
     "",
   ];
 }
@@ -680,6 +684,7 @@ export function buildAgentSystemPrompt(params: {
         "Keep narration brief and value-dense; avoid repeating obvious steps.",
         "Use plain human language for narration unless in a technical context.",
         "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
+        "For file/source edits, prefer read/edit/write/apply_patch. Do not use exec with shell heredocs, temp patch files, stdin-fed interpreters (for example `python - <<'PY'`), or multiline shell wrappers to create or modify files.",
         buildExecApprovalPromptGuidance({
           runtimeChannel: params.runtimeInfo?.channel,
           inlineButtonsEnabled,
