@@ -590,6 +590,242 @@ describe("task-registry", () => {
     });
   });
 
+  it("keeps group progress updates pinned to the originating group when a stale DM flow origin exists", async () => {
+    await withTaskRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskRegistryForTests();
+      resetTaskFlowRegistryForTests();
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "telegram",
+        to: "-100222",
+        via: "direct",
+      });
+
+      const flow = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-registry",
+        goal: "Stale DM flow",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "484946046",
+        },
+      });
+
+      const task = createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "-100222",
+          threadId: "77",
+        },
+        parentFlowId: flow.flowId,
+        childSessionKey: "agent:main:acp:child-group-progress",
+        runId: "run-group-progress-origin",
+        task: "Trace announce routing",
+        status: "running",
+        deliveryStatus: "pending",
+        notifyPolicy: "state_changes",
+      });
+
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+        at: 250,
+        kind: "progress",
+        summary: "Found the subagent announce path.",
+      });
+
+      expect(hoisted.sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "telegram",
+          to: "-100222",
+          threadId: "77",
+          content: "Background task update: ACP background task. Found the subagent announce path.",
+        }),
+      );
+    });
+  });
+
+  it("keeps DM completion updates pinned to the originating DM when a stale group flow origin exists", async () => {
+    await withTaskRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskRegistryForTests();
+      resetTaskFlowRegistryForTests();
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "telegram",
+        to: "484946046",
+        via: "direct",
+      });
+
+      const flow = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-registry",
+        goal: "Stale group flow",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "-100333",
+          threadId: "88",
+        },
+      });
+
+      const task = createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "484946046",
+        },
+        parentFlowId: flow.flowId,
+        childSessionKey: "agent:main:acp:child-dm-completion",
+        runId: "run-dm-completion-origin",
+        task: "Return exact files changed",
+        status: "running",
+        deliveryStatus: "pending",
+      });
+
+      markTaskTerminalById({
+        taskId: task.taskId,
+        status: "succeeded",
+        endedAt: 300,
+        terminalSummary: "Implemented the routing fix.",
+      });
+      await maybeDeliverTaskTerminalUpdate(task.taskId);
+
+      expect(hoisted.sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "telegram",
+          to: "484946046",
+          content: expect.stringContaining("Implemented the routing fix."),
+        }),
+      );
+    });
+  });
+
+  it("lets explicit requesterOrigin override an earlier inferred delivery route for reused runs", async () => {
+    await withTaskRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskRegistryForTests();
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "telegram",
+        to: "-100444",
+        via: "direct",
+      });
+
+      createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "484946046",
+        },
+        childSessionKey: "agent:main:acp:child-reused-origin",
+        runId: "run-explicit-origin-wins",
+        task: "Reuse the same background run",
+        status: "running",
+        deliveryStatus: "pending",
+        notifyPolicy: "state_changes",
+      });
+
+      const merged = createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "-100444",
+          threadId: "12",
+        },
+        childSessionKey: "agent:main:acp:child-reused-origin",
+        runId: "run-explicit-origin-wins",
+        task: "Reuse the same background run",
+        status: "running",
+        deliveryStatus: "pending",
+        notifyPolicy: "state_changes",
+      });
+
+      await maybeDeliverTaskStateChangeUpdate(merged.taskId, {
+        at: 350,
+        kind: "progress",
+        summary: "Starting step 2: running tests",
+      });
+
+      expect(hoisted.sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "telegram",
+          to: "-100444",
+          threadId: "12",
+          content: "Background task update: ACP background task. Starting step 2: running tests",
+        }),
+      );
+    });
+  });
+
+  it("keeps progress and completion notifications on the same pinned origin", async () => {
+    await withTaskRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskRegistryForTests();
+      resetTaskFlowRegistryForTests();
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "telegram",
+        to: "-100555",
+        via: "direct",
+      });
+
+      const flow = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-registry",
+        goal: "Pinned origin flow",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "484946046",
+        },
+      });
+
+      const task = createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        requesterOrigin: {
+          channel: "telegram",
+          to: "-100555",
+          threadId: "99",
+        },
+        parentFlowId: flow.flowId,
+        childSessionKey: "agent:main:acp:child-pinned-origin",
+        runId: "run-pinned-origin",
+        task: "Ship the routing fix",
+        status: "running",
+        deliveryStatus: "pending",
+        notifyPolicy: "state_changes",
+      });
+
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+        at: 400,
+        kind: "progress",
+        summary: "Starting: syncing repo to upstream/main",
+      });
+      markTaskTerminalById({
+        taskId: task.taskId,
+        status: "succeeded",
+        endedAt: 450,
+        terminalSummary: "Tests passed and the fix is ready.",
+      });
+      await maybeDeliverTaskTerminalUpdate(task.taskId);
+
+      const routedTargets = hoisted.sendMessageMock.mock.calls.map(([call]) => ({
+        channel: call.channel,
+        to: call.to,
+        threadId: call.threadId,
+      }));
+      expect(routedTargets).toEqual([
+        { channel: "telegram", to: "-100555", threadId: "99" },
+        { channel: "telegram", to: "-100555", threadId: "99" },
+      ]);
+    });
+  });
+
   it("records delivery failure and queues a session fallback when direct delivery misses", async () => {
     await withTaskRegistryTempDir(async (root) => {
       process.env.OPENCLAW_STATE_DIR = root;

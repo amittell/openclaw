@@ -8,7 +8,10 @@ import { enqueueSystemEvent } from "../infra/system-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
-import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
+import {
+  mergeDeliveryContext,
+  normalizeDeliveryContext,
+} from "../utils/delivery-context.shared.js";
 import { isDeliverableMessageChannel } from "../utils/message-channel.js";
 import {
   formatTaskBlockedFollowupMessage,
@@ -665,6 +668,20 @@ function findExistingTaskForCreate(params: {
   return pickPreferredRunIdTask(runScopeMatches);
 }
 
+function sameRequesterOrigin(
+  left?: TaskDeliveryState["requesterOrigin"],
+  right?: TaskDeliveryState["requesterOrigin"],
+): boolean {
+  const normalizedLeft = normalizeDeliveryContext(left);
+  const normalizedRight = normalizeDeliveryContext(right);
+  return (
+    normalizedLeft?.channel === normalizedRight?.channel &&
+    normalizedLeft?.to === normalizedRight?.to &&
+    normalizedLeft?.accountId === normalizedRight?.accountId &&
+    normalizedLeft?.threadId === normalizedRight?.threadId
+  );
+}
+
 function mergeExistingTaskForCreate(
   existing: TaskRecord,
   params: {
@@ -684,7 +701,10 @@ function mergeExistingTaskForCreate(
   const patch: Partial<TaskRecord> = {};
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const currentDeliveryState = taskDeliveryStates.get(existing.taskId);
-  if (requesterOrigin && !currentDeliveryState?.requesterOrigin) {
+  if (
+    requesterOrigin &&
+    !sameRequesterOrigin(requesterOrigin, currentDeliveryState?.requesterOrigin)
+  ) {
     upsertTaskDeliveryState({
       taskId: existing.taskId,
       requesterOrigin,
@@ -782,13 +802,14 @@ function getLinkedFlowForDelivery(task: TaskRecord) {
 }
 
 function resolveTaskDeliveryOwner(task: TaskRecord): TaskDeliveryOwner {
+  const taskRequesterOrigin = normalizeDeliveryContext(
+    taskDeliveryStates.get(task.taskId)?.requesterOrigin,
+  );
   const flow = getLinkedFlowForDelivery(task);
   if (flow) {
     return {
       sessionKey: flow.ownerKey.trim(),
-      requesterOrigin: normalizeDeliveryContext(
-        flow.requesterOrigin ?? taskDeliveryStates.get(task.taskId)?.requesterOrigin,
-      ),
+      requesterOrigin: mergeDeliveryContext(taskRequesterOrigin, flow.requesterOrigin),
       flowId: flow.flowId,
     };
   }
@@ -797,7 +818,7 @@ function resolveTaskDeliveryOwner(task: TaskRecord): TaskDeliveryOwner {
   }
   return {
     sessionKey: task.ownerKey.trim(),
-    requesterOrigin: normalizeDeliveryContext(taskDeliveryStates.get(task.taskId)?.requesterOrigin),
+    requesterOrigin: taskRequesterOrigin,
   };
 }
 
