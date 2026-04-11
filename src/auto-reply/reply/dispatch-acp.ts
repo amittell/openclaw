@@ -1,3 +1,4 @@
+import { resolveRuntimeOptionsFromMeta } from "../../acp/control-plane/runtime-options.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../../acp/policy.js";
 import { formatAcpRuntimeErrorText } from "../../acp/runtime/error-text.js";
 import { toAcpRuntimeError } from "../../acp/runtime/errors.js";
@@ -6,6 +7,7 @@ import {
   isSessionIdentityPending,
   resolveSessionIdentityFromMeta,
 } from "../../acp/runtime/session-identity.js";
+import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { logVerbose } from "../../globals.js";
@@ -13,6 +15,7 @@ import { emitAgentEvent } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
 import { prefixSystemMessage } from "../../infra/system-message.js";
+import { withTimeout } from "../../node-host/with-timeout.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import {
   normalizeLowercaseStringOrEmpty,
@@ -428,15 +431,56 @@ export async function tryDispatchAcpReply(params: {
       logVerbose(`dispatch-acp: start reply lifecycle failed: ${formatErrorMessage(error)}`);
     }
 
-    await acpManager.runTurn({
+    const { readAcpSessionEntry } = await loadDispatchAcpSessionRuntime();
+    const liveAcpMeta = readAcpSessionEntry({
       cfg: params.cfg,
       sessionKey: canonicalSessionKey,
-      text: promptText,
-      attachments: attachments.length > 0 ? attachments : undefined,
-      mode: "prompt",
-      requestId: resolveAcpRequestId(params.ctx),
-      ...(params.abortSignal ? { signal: params.abortSignal } : {}),
-      onEvent: async (event) => await projector.onEvent(event),
+    })?.acp;
+    const liveTimeoutSeconds = liveAcpMeta
+      ? resolveRuntimeOptionsFromMeta(liveAcpMeta).timeoutSeconds
+      : undefined;
+    const turnTimeoutMs =
+      typeof liveTimeoutSeconds === "number" &&
+      Number.isFinite(liveTimeoutSeconds) &&
+      liveTimeoutSeconds > 0
+        ? Math.max(30_000, Math.round(liveTimeoutSeconds * 1_000))
+        : resolveAgentTimeoutMs({ cfg: params.cfg, minMs: 30_000 });
+
+    const DRAIN_GRACE_MS = 5_000;
+    let runTurnSettlePromise: Promise<void> | undefined;
+    await withTimeout(
+      (timeoutSignal) => {
+        const signal =
+          params.abortSignal != null && typeof AbortSignal.any === "function"
+            ? AbortSignal.any([timeoutSignal!, params.abortSignal])
+            : timeoutSignal;
+        runTurnSettlePromise = acpManager.runTurn({
+          cfg: params.cfg,
+          sessionKey: canonicalSessionKey,
+          text: promptText,
+          attachments: attachments.length > 0 ? attachments : undefined,
+          mode: "prompt",
+          requestId: resolveAcpRequestId(params.ctx),
+          onEvent: (event) => projector.onEvent(event),
+          ...(signal ? { signal } : {}),
+        });
+        return runTurnSettlePromise;
+      },
+      turnTimeoutMs,
+      "ACP turn",
+    ).catch(async (err: unknown) => {
+      if (runTurnSettlePromise !== undefined) {
+        await Promise.race([
+          runTurnSettlePromise.catch(() => {
+            /* runTurn cleanup already owns the real failure */
+          }),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, DRAIN_GRACE_MS);
+            timer.unref?.();
+          }),
+        ]);
+      }
+      throw err;
     });
 
     await projector.flush(true);

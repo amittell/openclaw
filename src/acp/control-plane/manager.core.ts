@@ -761,7 +761,11 @@ export class AcpSessionManager {
 
             internalAbortController = new AbortController();
             onCallerAbort = () => {
-              internalAbortController?.abort();
+              try {
+                internalAbortController?.abort();
+              } catch (error) {
+                logVerbose(`acp-manager: onCallerAbort threw for ${sessionKey}: ${String(error)}`);
+              }
             };
             if (input.signal?.aborted) {
               internalAbortController.abort();
@@ -937,6 +941,7 @@ export class AcpSessionManager {
                 handle,
                 meta,
                 failOnStatusError: false,
+                signal: input.signal,
               }));
             }
             if (
@@ -1943,6 +1948,7 @@ export class AcpSessionManager {
     meta: SessionAcpMeta;
     runtimeStatus?: AcpRuntimeStatus;
     failOnStatusError: boolean;
+    signal?: AbortSignal;
   }): Promise<{
     handle: AcpRuntimeHandle;
     meta: SessionAcpMeta;
