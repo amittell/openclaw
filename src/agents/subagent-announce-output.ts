@@ -60,6 +60,86 @@ export type SubagentRunOutcome = {
   error?: string;
 };
 
+const INTERNAL_COMPLETION_BLOB_RE =
+  /OpenClaw runtime context \(internal\)|<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>|<<<END_UNTRUSTED_CHILD_RESULT>>>|\[Subagent Context\]|\bORIGIN_CHAT_ID\b|\bCHECKPOINT MESSAGING\b|\bCOMPLETION SIGNAL\b|\bDELIVERY RULE\b|\bCHECK_IN:\b|\bGW_TOKEN=\b|curl -s -X POST|\bdone --label\b|\b--checklist\b|"work_complete"\s*:|"tests_passed"\s*:|"pushed"\s*:|"message_id"\s*:|"reply_to_id"\s*:|"sender_id"\s*:|"conversation_label"\s*:/i;
+
+function decodeJsonStringFragment(value: string): string {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value;
+  }
+}
+
+function extractCompletionSummaryValue(text: string): string | undefined {
+  const flagMatch = text.match(/--summary\s+(?:"([\s\S]*?)"|'([\s\S]*?)')(?=\s+--|$)/);
+  const flagValue = flagMatch?.[1] ?? flagMatch?.[2];
+  if (flagValue?.trim()) {
+    return flagValue.trim();
+  }
+
+  const jsonMatch = text.match(/"summary"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (jsonMatch?.[1]) {
+    const decoded = decodeJsonStringFragment(jsonMatch[1]).trim();
+    if (decoded) {
+      return decoded;
+    }
+  }
+
+  const lineMatch = text.match(/(?:^|\n)summary\s*:\s*(.+?)(?:\n|$)/i);
+  const lineValue = lineMatch?.[1]?.trim();
+  if (lineValue) {
+    return lineValue;
+  }
+
+  return undefined;
+}
+
+function looksLikeInternalCompletionBlob(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (INTERNAL_COMPLETION_BLOB_RE.test(trimmed)) {
+    return true;
+  }
+
+  const lineCount = trimmed.split(/\r?\n/u).length;
+  const fencedCodeBlock = /```(?:json|bash|sh)?[\s\S]*```/i.test(trimmed);
+  const metadataKeys =
+    /"(?:tool|args|sessionKey|summary|work_complete|tests_passed|pushed|message_id|reply_to_id|sender_id|conversation_label)"\s*:/i.test(
+      trimmed,
+    );
+  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && metadataKeys) {
+    return true;
+  }
+  if (fencedCodeBlock && metadataKeys) {
+    return true;
+  }
+  if (lineCount >= 8 && metadataKeys) {
+    return true;
+  }
+  return false;
+}
+
+export function sanitizeCompletionFindingsForGroupDelivery(text: string): string | undefined {
+  const cleaned = text.trim();
+  if (!cleaned) {
+    return undefined;
+  }
+
+  const summary = extractCompletionSummaryValue(cleaned)?.trim();
+  if (summary) {
+    return summary;
+  }
+
+  if (looksLikeInternalCompletionBlob(cleaned)) {
+    return undefined;
+  }
+
+  return cleaned;
+}
+
 function extractToolResultText(content: unknown): string {
   if (typeof content === "string") {
     return sanitizeTextContent(content);

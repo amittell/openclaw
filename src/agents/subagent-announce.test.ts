@@ -407,6 +407,94 @@ describe("subagent announce seam flow", () => {
     expect(params.threadId).toBeUndefined();
   });
 
+  it("rewrites raw completion metadata blobs into a safe summary for group-chat delivery", async () => {
+    loadSessionStoreMock.mockImplementation(() => ({
+      "agent:main:main": {
+        sessionId: "session-tg-group",
+        updatedAt: Date.now(),
+        chatType: "group",
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastAccountId: "bot:123",
+      },
+    }));
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:tg",
+      childRunId: "run-tg-group-metadata-blob",
+      requesterSessionKey: "agent:main:main",
+      requesterOrigin: { channel: "telegram", to: "-1001234567890", accountId: "bot:123" },
+      requesterDisplayKey: "main",
+      task: "telegram group task",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      roundOneReply:
+        "node '/Users/alexm/.openclaw/chilisaus/index.mjs' done --label 'fix-group-leak-completion-dumps' --summary \"Patched group-chat completion filtering and added regression tests\" --checklist '{\"work_complete\":true,\"tests_passed\":true,\"pushed\":true}' --sha 'abc123'",
+      expectsCompletionMessage: true,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const agentCall = agentSpy.mock.calls[0]?.[0];
+    const message = agentCall?.params?.message;
+    expect(typeof message).toBe("string");
+    const text = message as string;
+    expect(text).toContain("Patched group-chat completion filtering and added regression tests");
+    expect(text).not.toContain("done --label");
+    expect(text).not.toContain("--checklist");
+    expect(text).not.toContain("work_complete");
+    expect(text).not.toContain("tests_passed");
+    expect(text).not.toContain("pushed");
+  });
+
+  it("falls back to a generic completion line when group-chat findings are purely internal", async () => {
+    loadSessionStoreMock.mockImplementation(() => ({
+      "agent:main:main": {
+        sessionId: "session-tg-group",
+        updatedAt: Date.now(),
+        chatType: "group",
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastAccountId: "bot:123",
+      },
+    }));
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:tg",
+      childRunId: "run-tg-group-internal-blob",
+      requesterSessionKey: "agent:main:main",
+      requesterOrigin: { channel: "telegram", to: "-1001234567890", accountId: "bot:123" },
+      requesterDisplayKey: "main",
+      task: "telegram group task",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      roundOneReply:
+        '[Subagent Context]\nORIGIN_CHAT_ID: -1001234567890\nCHECKPOINT MESSAGING:\nCOMPLETION SIGNAL\nDELIVERY RULE\n{"work_complete":true,"tests_passed":true,"pushed":true}',
+      expectsCompletionMessage: true,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const agentCall = agentSpy.mock.calls[0]?.[0];
+    const message = agentCall?.params?.message;
+    expect(typeof message).toBe("string");
+    const text = message as string;
+    expect(text).toContain("telegram group task completed successfully.");
+    expect(text).not.toContain("ORIGIN_CHAT_ID");
+    expect(text).not.toContain("CHECKPOINT MESSAGING");
+    expect(text).not.toContain("COMPLETION SIGNAL");
+    expect(text).not.toContain("DELIVERY RULE");
+    expect(text).not.toContain("work_complete");
+  });
+
   it("falls back to stored delivery target when mocked completion origins omit to", async () => {
     loadSessionStoreMock.mockImplementation(() => ({
       "agent:main:main": {
