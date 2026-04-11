@@ -1374,6 +1374,41 @@ describe("createTelegramBot", () => {
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("does not fetch reply media from self-authored replied-to messages", async () => {
+    onSpy.mockClear();
+    replySpy.mockClear();
+    getFileSpy.mockClear();
+
+    createTelegramBot({ token: "tok" });
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
+
+    await handler({
+      message: {
+        chat: { id: 7, type: "private" },
+        text: "what is in this image?",
+        date: 1736380800,
+        reply_to_message: {
+          message_id: 9001,
+          photo: [{ file_id: "reply-photo-1" }],
+          from: { id: 42, first_name: "OpenClaw", is_bot: true },
+        },
+      },
+      me: { id: 42, username: "openclaw_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(getFileSpy).not.toHaveBeenCalled();
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    const payload = replySpy.mock.calls[0][0] as {
+      MediaPath?: string;
+      MediaPaths?: string[];
+      ReplyToBody?: string;
+    };
+    expect(payload.MediaPath).toBeUndefined();
+    expect(payload.MediaPaths).toBeUndefined();
+    expect(payload.ReplyToBody).toBe("<media:image>");
+  });
+
   it("defers reply media download until debounce flush", async () => {
     const DEBOUNCE_MS = 4321;
     onSpy.mockClear();

@@ -6,6 +6,8 @@ import {
 } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 
+export const EMPTY_TEXT_ERR_RE = /message text is empty|text must be non-empty/i;
+
 const TELEGRAM_NETWORK_ORIGIN = Symbol("openclaw.telegram.network-origin");
 
 const RECOVERABLE_ERROR_CODES = new Set([
