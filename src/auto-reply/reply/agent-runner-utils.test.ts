@@ -5,7 +5,17 @@ const hoisted = vi.hoisted(() => {
   const resolveRunModelFallbacksOverrideMock = vi.fn();
   const getChannelPluginMock = vi.fn();
   const isReasoningTagProviderMock = vi.fn();
-  return { resolveRunModelFallbacksOverrideMock, getChannelPluginMock, isReasoningTagProviderMock };
+  const ensureAuthProfileStoreMock = vi.fn();
+  const getApiKeyForModelMock = vi.fn();
+  const resolveModelAsyncMock = vi.fn();
+  return {
+    resolveRunModelFallbacksOverrideMock,
+    getChannelPluginMock,
+    isReasoningTagProviderMock,
+    ensureAuthProfileStoreMock,
+    getApiKeyForModelMock,
+    resolveModelAsyncMock,
+  };
 });
 
 vi.mock("../../agents/agent-scope.js", () => ({
@@ -15,6 +25,15 @@ vi.mock("../../agents/agent-scope.js", () => ({
 
 vi.mock("../../channels/plugins/index.js", () => ({
   getChannelPlugin: (...args: unknown[]) => hoisted.getChannelPluginMock(...args),
+}));
+
+vi.mock("../../agents/model-auth.js", () => ({
+  ensureAuthProfileStore: (...args: unknown[]) => hoisted.ensureAuthProfileStoreMock(...args),
+  getApiKeyForModel: (...args: unknown[]) => hoisted.getApiKeyForModelMock(...args),
+}));
+
+vi.mock("../../agents/pi-embedded-runner/model.js", () => ({
+  resolveModelAsync: (...args: unknown[]) => hoisted.resolveModelAsyncMock(...args),
 }));
 
 vi.mock("../../utils/provider-utils.js", () => ({
@@ -59,7 +78,17 @@ describe("agent-runner-utils", () => {
     hoisted.resolveRunModelFallbacksOverrideMock.mockClear();
     hoisted.getChannelPluginMock.mockReset();
     hoisted.isReasoningTagProviderMock.mockReset();
+    hoisted.ensureAuthProfileStoreMock.mockReset();
+    hoisted.getApiKeyForModelMock.mockReset();
+    hoisted.resolveModelAsyncMock.mockReset();
     hoisted.isReasoningTagProviderMock.mockReturnValue(false);
+    hoisted.ensureAuthProfileStoreMock.mockReturnValue({});
+    hoisted.resolveModelAsyncMock.mockResolvedValue({ model: { provider: "openai" } });
+    hoisted.getApiKeyForModelMock.mockResolvedValue({
+      apiKey: "sk-test",
+      profileId: "profile-openai",
+      mode: "api-key",
+    });
   });
 
   it("resolves model fallback options from run context", () => {
