@@ -350,9 +350,10 @@ export function loadAuthProfileStoreForRuntime(
 }
 
 export function loadAuthProfileStoreForSecretsRuntime(agentDir?: string): AuthProfileStore {
-  // Secrets runtime must materialize CLI-backed OAuth profiles onto disk so
-  // other processes (for example the scheduler) read the same auth store.
-  return loadAuthProfileStoreForRuntime(agentDir, { allowKeychainPrompt: false });
+  // Secrets runtime loads read-only: the refresh lock in oauth.ts handles
+  // persistence of any freshly-minted credentials via saveAuthProfileStore.
+  // Making this writable would cause double-writes inside the file lock.
+  return loadAuthProfileStoreForRuntime(agentDir, { readOnly: true, allowKeychainPrompt: false });
 }
 
 export function ensureAuthProfileStore(
