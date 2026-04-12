@@ -113,7 +113,7 @@ function createRuntimeLoader(
 }
 
 describe("memory plugin e2e", () => {
-  const { getDbPath } = installTmpDirHarness({ prefix: "openclaw-memory-test-" });
+  const { getDbPath, getTmpDir } = installTmpDirHarness({ prefix: "openclaw-memory-test-" });
 
   function parseConfig(overrides: Record<string, unknown> = {}) {
     return memoryPlugin.configSchema?.parse?.({
@@ -266,11 +266,6 @@ describe("memory plugin e2e", () => {
       expect(ensureGlobalUndiciEnvProxyDispatcher.mock.invocationCallOrder[0]).toBeLessThan(
         embeddingsCreate.mock.invocationCallOrder[0],
       );
-      expect(embeddingsCreate).toHaveBeenCalledWith({
-        model: "text-embedding-3-small",
-        input: "hello dimensions",
-        dimensions: 1024,
-      });
       expect(embeddingsCreate).toHaveBeenCalledWith(
         {
           model: "text-embedding-3-small",
@@ -338,9 +333,7 @@ describe("memory plugin e2e", () => {
     ).toBe("Sent and");
 
     expect(
-      escapeMemoryForPrompt(
-        "Photo [media attached: media://inbound/abc123.jpg] was attached",
-      ),
+      escapeMemoryForPrompt("Photo [media attached: media://inbound/abc123.jpg] was attached"),
     ).toBe("Photo was attached");
 
     const context = formatRelevantMemoriesContext([
@@ -367,6 +360,273 @@ describe("memory plugin e2e", () => {
     expect(detectCategory("My email is test@example.com")).toBe("entity");
     expect(detectCategory("The server is running on port 3000")).toBe("fact");
     expect(detectCategory("Random note")).toBe("other");
+  });
+
+  test("memory_refresh search-only mode returns matches without writing to DB", async () => {
+    const fakeRows = [
+      {
+        id: "aaaaaaaa-0000-0000-0000-000000000001",
+        text: "Match one",
+        category: "fact",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.8,
+        createdAt: 1000,
+        _distance: 0.05,
+      },
+      {
+        id: "aaaaaaaa-0000-0000-0000-000000000002",
+        text: "Match two",
+        category: "preference",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.7,
+        createdAt: 1001,
+        _distance: 0.1,
+      },
+    ];
+    const tableAdd = vi.fn(async () => undefined);
+    const tableDelete = vi.fn(async () => undefined);
+    const embeddingsCreate = vi.fn(async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+    const toArray = vi.fn(async () => fakeRows);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    const queryWhere = vi.fn(() => ({ toArray: vi.fn(async () => []) }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          query: vi.fn(() => ({ where: queryWhere })),
+          countRows: vi.fn(async () => 2),
+          add: tableAdd,
+          delete: tableDelete,
+        })),
+      })),
+    }));
+
+    vi.resetModules();
+    vi.doMock("openai", () => ({
+      default: class MockOpenAI {
+        embeddings = { create: embeddingsCreate };
+      },
+    }));
+    vi.doMock("./lancedb-runtime.js", () => ({ loadLanceDbModule }));
+
+    try {
+      const { default: memoryPlugin } = await import("./index.js");
+      const registeredTools: any[] = [];
+      const mockApi = {
+        id: "memory-lancedb",
+        name: "Memory (LanceDB)",
+        source: "test",
+        config: {},
+        pluginConfig: {
+          embedding: { apiKey: OPENAI_API_KEY, model: "text-embedding-3-small" },
+          dbPath: getDbPath(),
+          autoCapture: false,
+          autoRecall: false,
+        },
+        runtime: {},
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        registerTool: (tool: any, opts: any) => {
+          registeredTools.push({ tool, opts });
+        },
+        registerCli: vi.fn(),
+        registerService: vi.fn(),
+        on: vi.fn(),
+        resolvePath: (p: string) => p,
+      };
+
+      memoryPlugin.register(mockApi as any);
+      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
+      expect(refreshTool).toBeDefined();
+
+      const result = await refreshTool.execute("test-call-refresh-search", {
+        text: "updated memory text",
+      });
+
+      expect(result.details.operation).toBe("search_only");
+      expect(result.details.matches).toHaveLength(2);
+      expect(tableAdd).not.toHaveBeenCalled();
+      expect(tableDelete).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("openai");
+      vi.doUnmock("./lancedb-runtime.js");
+      vi.resetModules();
+    }
+  });
+
+  test("memory_refresh replace writes an audit record and keeps existing metadata defaults", async () => {
+    const oldId = "bbbbbbbb-0000-0000-0000-000000000001";
+    const newId = "cccccccc-0000-0000-0000-000000000001";
+    const existingRow = {
+      id: oldId,
+      text: "Original memory",
+      category: "decision",
+      vector: [1, 2, 3],
+      importance: 0.9,
+      createdAt: 1000,
+    };
+    const addCalls: any[] = [];
+    const embeddingsCreate = vi.fn(async () => ({ data: [{ embedding: [0.2, 0.3, 0.4] }] }));
+    const table = {
+      vectorSearch: vi.fn(() => ({ limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })) })),
+      query: vi.fn(() => ({ where: vi.fn(() => ({ toArray: vi.fn(async () => [existingRow]) })) })),
+      countRows: vi.fn(async () => 1),
+      add: vi.fn(async (rows: any[]) => {
+        addCalls.push(rows[0]);
+      }),
+      delete: vi.fn(async () => undefined),
+    };
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => table),
+      })),
+    }));
+
+    const originalHome = process.env.HOME;
+    process.env.HOME = getTmpDir();
+
+    vi.resetModules();
+    vi.doMock("openai", () => ({
+      default: class MockOpenAI {
+        embeddings = { create: embeddingsCreate };
+      },
+    }));
+    vi.doMock("node:crypto", async (importOriginal) => {
+      const original = await importOriginal<typeof import("node:crypto")>();
+      return { ...original, randomUUID: () => newId };
+    });
+    vi.doMock("./lancedb-runtime.js", () => ({ loadLanceDbModule }));
+
+    try {
+      const { default: memoryPlugin } = await import("./index.js");
+      const registeredTools: any[] = [];
+      const mockApi = {
+        id: "memory-lancedb",
+        name: "Memory (LanceDB)",
+        source: "test",
+        config: {},
+        pluginConfig: {
+          embedding: { apiKey: OPENAI_API_KEY, model: "text-embedding-3-small" },
+          dbPath: getDbPath(),
+          autoCapture: false,
+          autoRecall: false,
+        },
+        runtime: {},
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        registerTool: (tool: any, opts: any) => {
+          registeredTools.push({ tool, opts });
+        },
+        registerCli: vi.fn(),
+        registerService: vi.fn(),
+        on: vi.fn(),
+        resolvePath: (p: string) => p,
+      };
+
+      memoryPlugin.register(mockApi as any);
+      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
+      expect(refreshTool).toBeDefined();
+
+      const result = await refreshTool.execute("test-call-refresh-replace", {
+        text: "Updated memory",
+        memoryId: oldId,
+      });
+
+      expect(result.details.operation).toBe("replaced");
+      expect(result.details.old_id).toBe(oldId);
+      expect(result.details.new_id).toBe(newId);
+      expect(table.delete).toHaveBeenCalledWith(`id = '${oldId}'`);
+      expect(addCalls).toHaveLength(1);
+      expect(addCalls[0].category).toBe("decision");
+      expect(addCalls[0].importance).toBe(0.9);
+      const auditPath = path.join(getTmpDir(), ".openclaw", "memory", "refresh-audit.jsonl");
+      const auditText = await fs.readFile(auditPath, "utf8");
+      expect(auditText).toContain(oldId);
+      expect(auditText).toContain(newId);
+    } finally {
+      vi.doUnmock("openai");
+      vi.doUnmock("node:crypto");
+      vi.doUnmock("./lancedb-runtime.js");
+      vi.resetModules();
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
+  });
+
+  test("memory_refresh returns not_found without embedding when target ID is missing", async () => {
+    const missingId = "dddddddd-0000-0000-0000-000000000001";
+    const embeddingsCreate = vi.fn(async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+    const queryWhere = vi.fn(() => ({ toArray: vi.fn(async () => []) }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch: vi.fn(() => ({ limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })) })),
+          query: vi.fn(() => ({ where: queryWhere })),
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    vi.resetModules();
+    vi.doMock("openai", () => ({
+      default: class MockOpenAI {
+        embeddings = { create: embeddingsCreate };
+      },
+    }));
+    vi.doMock("./lancedb-runtime.js", () => ({ loadLanceDbModule }));
+
+    try {
+      const { default: memoryPlugin } = await import("./index.js");
+      const registeredTools: any[] = [];
+      const mockApi = {
+        id: "memory-lancedb",
+        name: "Memory (LanceDB)",
+        source: "test",
+        config: {},
+        pluginConfig: {
+          embedding: { apiKey: OPENAI_API_KEY, model: "text-embedding-3-small" },
+          dbPath: getDbPath(),
+          autoCapture: false,
+          autoRecall: false,
+        },
+        runtime: {},
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        registerTool: (tool: any, opts: any) => {
+          registeredTools.push({ tool, opts });
+        },
+        registerCli: vi.fn(),
+        registerService: vi.fn(),
+        on: vi.fn(),
+        resolvePath: (p: string) => p,
+      };
+
+      memoryPlugin.register(mockApi as any);
+      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
+      expect(refreshTool).toBeDefined();
+
+      const result = await refreshTool.execute("test-call-refresh-missing", {
+        text: "Updated memory",
+        memoryId: missingId,
+      });
+
+      expect(result.details).toEqual({
+        operation: "error",
+        error: "not_found",
+        memoryId: missingId,
+      });
+      expect(embeddingsCreate).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("openai");
+      vi.doUnmock("./lancedb-runtime.js");
+      vi.resetModules();
+    }
   });
 
   test("memory_forget candidate list shows full UUIDs, not truncated IDs", async () => {
@@ -421,7 +681,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = {
         id: "memory-lancedb",
@@ -436,7 +695,6 @@ describe("memory plugin e2e", () => {
         },
         runtime: {},
         logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-        // oxlint-disable-next-line typescript/no-explicit-any
         registerTool: (tool: any, opts: any) => {
           registeredTools.push({ tool, opts });
         },
@@ -446,7 +704,6 @@ describe("memory plugin e2e", () => {
         resolvePath: (p: string) => p,
       };
 
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
       const forgetTool = registeredTools.find((t) => t.opts?.name === "memory_forget")?.tool;
       expect(forgetTool).toBeDefined();

@@ -304,6 +304,13 @@ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
     return false;
   }
 
+  // Anthropic returns HTTP 429 for "Extra usage is required for long context requests."
+  // This is semantically a context overflow (session too large), not a billing failure.
+  // Detect it before the billing/rate-limit exclusions so it routes to compact+retry.
+  if (isAnthropicLongContextUsageError(errorMessage)) {
+    return true;
+  }
+
   // Billing/quota errors can contain patterns like "request size exceeds" or
   // "maximum token limit exceeded" that match the context overflow heuristic.
   // Billing is a more specific error class — exclude it early.
@@ -313,13 +320,6 @@ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
 
   if (CONTEXT_WINDOW_TOO_SMALL_RE.test(errorMessage)) {
     return false;
-  }
-
-  // Anthropic returns HTTP 429 for "Extra usage is required for long context requests."
-  // This is semantically a context overflow (session too large), not a transient rate limit.
-  // Detect it before the isRateLimitErrorMessage exclusion so it routes to compact+retry.
-  if (isAnthropicLongContextUsageError(errorMessage)) {
-    return true;
   }
 
   // Rate limit errors can match the broad CONTEXT_OVERFLOW_HINT_RE pattern
@@ -721,6 +721,9 @@ function classifyFailoverClassificationFromHttpStatus(
     return toReasonClassification(message ? classify402Message(message) : "billing");
   }
   if (status === 429) {
+    if (messageClassification?.kind === "context_overflow") {
+      return messageClassification;
+    }
     return toReasonClassification("rate_limit");
   }
   if (status === 401 || status === 403) {
@@ -858,7 +861,7 @@ function classifyFailoverClassificationFromMessage(
   if (isModelNotFoundErrorMessage(raw)) {
     return toReasonClassification("model_not_found");
   }
-  if (isContextOverflowError(raw)) {
+  if (isContextOverflowError(raw) || isAnthropicLongContextUsageError(raw)) {
     return { kind: "context_overflow" };
   }
   const reasonFrom402Text = classifyFailoverReasonFrom402Text(raw);

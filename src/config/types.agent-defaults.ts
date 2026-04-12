@@ -1,3 +1,4 @@
+import type { ChannelId } from "../channels/plugins/types.js";
 import type {
   AgentEmbeddedHarnessConfig,
   AgentModelConfig,
@@ -231,6 +232,13 @@ export type AgentDefaultsConfig = {
      * - strict-agentic: on OpenAI/OpenAI Codex GPT-5-family runs, keep acting until hitting a real blocker
      */
     executionContract?: EmbeddedPiExecutionContract;
+    /**
+     * Maximum backoff delay in milliseconds before rotating to the next auth profile
+     * after an API overloaded_error. Defaults to 30000 (30 seconds).
+     * Higher values preserve the retry budget under sustained load;
+     * lower values rotate faster but risk exhausting retries sooner.
+     */
+    overloadBackoffMaxMs?: number;
   };
   /** Vector memory search configuration (per-agent overrides supported). */
   memorySearch?: MemorySearchConfig;
@@ -286,7 +294,7 @@ export type AgentDefaultsConfig = {
     /** Session key for heartbeat runs ("main" or explicit session key). */
     session?: string;
     /** Delivery target ("last", "none", or a channel id). */
-    target?: string;
+    target?: ChannelId;
     /** Direct/DM delivery policy. Default: "allow". */
     directPolicy?: "allow" | "block";
     /** Optional delivery override (E.164 for WhatsApp, chat id for Telegram). Supports :topic:NNN suffix for Telegram topics. */

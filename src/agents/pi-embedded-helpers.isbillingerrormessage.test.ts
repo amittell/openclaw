@@ -223,10 +223,8 @@ describe("isBillingErrorMessage", () => {
   it("classifies Anthropic extra-usage exhaustion variants as billing", () => {
     const samples = [
       "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
-      "Extra usage is required for long context requests.",
       "Third-party apps now draw from your extra usage, not your plan limits. We've added a $200 credit to get you started. Claim it at claude.ai/settings/usage and keep going.",
       '{"type":"error","error":{"type":"invalid_request_error","message":"You\'re out of extra usage. Add more at claude.ai/settings/usage and keep going."}}',
-      '{"type":"error","error":{"type":"invalid_request_error","message":"Extra usage is required for long context requests."}}',
     ];
 
     for (const sample of samples) {
@@ -541,6 +539,10 @@ describe("isLikelyContextOverflowError", () => {
     expect(isLikelyContextOverflowError("extra usage is required for long context requests")).toBe(
       true,
     );
+    expect(classifyFailoverReason("Extra usage is required for long context requests.")).toBeNull();
+    expect(
+      classifyFailoverReason("429 Extra usage is required for long context requests."),
+    ).toBeNull();
     // Standard rate limit messages must still be excluded
     expect(isLikelyContextOverflowError("Rate limit exceeded")).toBe(false);
   });
