@@ -65,11 +65,6 @@ export type FollowupRun = {
     model: string;
     authProfileId?: string;
     authProfileIdSource?: "auto" | "user";
-    resolvedAuth?: {
-      apiKey: string;
-      profileId?: string;
-      mode: "api-key" | "oauth" | "token" | "aws-sdk";
-    };
     thinkLevel?: ThinkLevel;
     verboseLevel?: VerboseLevel;
     reasoningLevel?: ReasoningLevel;

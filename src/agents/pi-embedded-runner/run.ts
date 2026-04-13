@@ -353,7 +353,6 @@ export async function runEmbeddedPiAgent(
         authStorage,
         profileCandidates,
         lockedProfileId,
-        injectedResolvedAuth: params.resolvedAuth,
         initialThinkLevel,
         attemptedThinking,
         fallbackConfigured,

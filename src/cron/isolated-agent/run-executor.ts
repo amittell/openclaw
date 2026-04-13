@@ -1,5 +1,4 @@
 import type { SkillSnapshot } from "../../agents/skills.js";
-import { resolveSpawnTimeResolvedAuth } from "../../auto-reply/reply/agent-runner-utils.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -127,13 +126,6 @@ export function createCronPromptExecutor(params: {
           );
           return result;
         }
-        const resolvedAuth = await resolveSpawnTimeResolvedAuth({
-          config: params.cfgWithAgentDefaults,
-          agentDir: params.agentDir,
-          provider: providerOverride,
-          model: modelOverride,
-          authProfileId: params.liveSelection.authProfileId,
-        });
         const result = await runEmbeddedPiAgent({
           sessionId: params.cronSession.sessionEntry.sessionId,
           sessionKey: params.agentSessionKey,
@@ -156,7 +148,6 @@ export function createCronPromptExecutor(params: {
           authProfileIdSource: params.liveSelection.authProfileId
             ? params.liveSelection.authProfileIdSource
             : undefined,
-          ...(resolvedAuth ? { resolvedAuth } : {}),
           thinkLevel: params.thinkLevel,
           fastMode: resolveFastModeState({
             cfg: params.cfgWithAgentDefaults,

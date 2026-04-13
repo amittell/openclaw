@@ -69,11 +69,6 @@ export function createEmbeddedRunAuthController(params: {
   getProfileIndex(): number;
   setProfileIndex(next: number): void;
   setThinkLevel(next: ThinkLevel): void;
-  injectedResolvedAuth?: {
-    apiKey: string;
-    profileId?: string;
-    mode: "api-key" | "oauth" | "token" | "aws-sdk";
-  };
   log: LogLike;
 }) {
   const applyPreparedRuntimeRequestOverrides = (paramsForApply: {
@@ -339,21 +334,6 @@ export function createEmbeddedRunAuthController(params: {
   };
 
   const resolveApiKeyForCandidate = async (candidate?: string) => {
-    const injectedResolvedAuth = params.injectedResolvedAuth;
-    const normalizedCandidate = candidate?.trim();
-    const injectedProfileId = injectedResolvedAuth?.profileId?.trim();
-    if (
-      injectedResolvedAuth?.apiKey?.trim() &&
-      ((normalizedCandidate ?? "") === (injectedProfileId ?? "") ||
-        (!normalizedCandidate && !injectedProfileId))
-    ) {
-      return {
-        apiKey: injectedResolvedAuth.apiKey,
-        profileId: injectedResolvedAuth.profileId,
-        mode: injectedResolvedAuth.mode,
-        source: "spawn-injected",
-      };
-    }
     return getApiKeyForModel({
       model: params.getRuntimeModel(),
       cfg: params.config,

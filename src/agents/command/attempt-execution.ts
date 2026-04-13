@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import readline from "node:readline";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
-import { resolveSpawnTimeResolvedAuth } from "../../auto-reply/reply/agent-runner-utils.js";
 import { normalizeReplyPayload } from "../../auto-reply/reply/normalize-reply.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
 import {
@@ -324,7 +323,7 @@ export async function persistAcpTurnTranscript(params: {
   return sessionEntry;
 }
 
-export async function runAgentAttempt(params: {
+export function runAgentAttempt(params: {
   providerOverride: string;
   modelOverride: string;
   cfg: OpenClawConfig;
@@ -460,14 +459,6 @@ export async function runAgentAttempt(params: {
     });
   }
 
-  const resolvedAuth = await resolveSpawnTimeResolvedAuth({
-    config: params.cfg,
-    agentDir: params.agentDir,
-    provider: params.providerOverride,
-    model: params.modelOverride,
-    authProfileId,
-  });
-
   return runEmbeddedPiAgent({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
@@ -498,7 +489,6 @@ export async function runAgentAttempt(params: {
     model: params.modelOverride,
     authProfileId,
     authProfileIdSource: authProfileId ? params.sessionEntry?.authProfileOverrideSource : undefined,
-    ...(resolvedAuth ? { resolvedAuth } : {}),
     thinkLevel: params.resolvedThinkLevel,
     verboseLevel: params.resolvedVerboseLevel,
     timeoutMs: params.timeoutMs,

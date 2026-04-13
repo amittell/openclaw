@@ -96,7 +96,7 @@ describe("agent-runner-utils", () => {
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
   });
 
-  it("builds embedded run base params with auth profile and run metadata", async () => {
+  it("builds embedded run base params with auth profile and run metadata", () => {
     const run = makeRun({ enforceFinalTag: true });
     const authProfile = resolveProviderScopedAuthProfile({
       provider: "openai",
@@ -105,7 +105,7 @@ describe("agent-runner-utils", () => {
       authProfileIdSource: "user",
     });
 
-    const resolved = await buildEmbeddedRunBaseParams({
+    const resolved = buildEmbeddedRunBaseParams({
       run,
       provider: "openai",
       model: "gpt-4.1-mini",
