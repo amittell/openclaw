@@ -220,6 +220,8 @@ describe("resolveAuthForTarget", () => {
         expect(auth.diagnostics).toStrictEqual([
           "gateway.auth.token SecretRef is unresolved (env:default:MISSING_GATEWAY_TOKEN).",
         ]);
+        expect(auth.failureReason).toContain("gateway.auth.token");
+        expect(auth.diagnostics?.join("\n")).not.toContain("missing or empty");
       },
     );
   });
