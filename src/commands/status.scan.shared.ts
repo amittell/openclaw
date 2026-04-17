@@ -103,23 +103,36 @@ export async function resolveGatewayProbeSnapshot(params: {
     ? await loadGatewayProbeModule().then(({ resolveGatewayProbeAuthResolution }) =>
         resolveGatewayProbeAuthResolution(params.cfg),
       )
-    : { auth: {}, warning: undefined };
+    : { auth: {}, warning: undefined, failureReason: undefined };
   let gatewayProbeAuthWarning = gatewayProbeAuthResolution.warning;
-  const gatewayProbe = shouldProbe
-    ? await loadProbeGatewayModule()
-        .then(({ probeGateway }) =>
-          probeGateway({
-            url: gatewayConnection.url,
-            auth: gatewayProbeAuthResolution.auth,
-            timeoutMs: Math.min(params.opts.all ? 5000 : 2500, params.opts.timeoutMs ?? 10_000),
-            detailLevel: params.opts.detailLevel ?? "presence",
-          }),
-        )
-        .catch(() => null)
-    : null;
+  const gatewayProbe = !shouldProbe
+    ? null
+    : gatewayProbeAuthResolution.failureReason
+      ? {
+          ok: false,
+          url: gatewayConnection.url,
+          connectLatencyMs: null,
+          error: gatewayProbeAuthResolution.failureReason,
+          close: null,
+          health: null,
+          status: null,
+          presence: null,
+          configSnapshot: null,
+        }
+      : await loadProbeGatewayModule()
+          .then(({ probeGateway }) =>
+            probeGateway({
+              url: gatewayConnection.url,
+              auth: gatewayProbeAuthResolution.auth,
+              timeoutMs: Math.min(params.opts.all ? 5000 : 2500, params.opts.timeoutMs ?? 10_000),
+              detailLevel: params.opts.detailLevel ?? "presence",
+            }),
+          )
+          .catch(() => null);
   if (
     (params.opts.mergeAuthWarningIntoProbeError ?? true) &&
     gatewayProbeAuthWarning &&
+    !gatewayProbeAuthResolution.failureReason &&
     gatewayProbe?.ok === false
   ) {
     gatewayProbe.error = gatewayProbe.error
