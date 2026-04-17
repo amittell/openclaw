@@ -398,6 +398,7 @@ export async function gatherDaemonStatus(
     : undefined;
   let daemonProbeAuth: { token?: string; password?: string } | undefined;
   let rpcAuthWarning: string | undefined;
+  let rpcFailureReason: string | undefined;
   if (opts.probe) {
     const probeMode = daemonCfg.gateway?.mode === "remote" ? "remote" : "local";
     const probeAuthResolution = await loadGatewayProbeAuthModule().then(
@@ -414,25 +415,28 @@ export async function gatherDaemonStatus(
     );
     daemonProbeAuth = probeAuthResolution.auth;
     rpcAuthWarning = probeAuthResolution.warning;
+    rpcFailureReason = probeAuthResolution.failureReason;
   }
 
-  const rpc = opts.probe
-    ? await loadDaemonProbeModule().then(({ probeGatewayStatus }) =>
-        probeGatewayStatus({
-          url: gateway.probeUrl,
-          token: daemonProbeAuth?.token,
-          password: daemonProbeAuth?.password,
-          tlsFingerprint:
-            shouldUseLocalTlsRuntime && tlsRuntime?.enabled
-              ? tlsRuntime.fingerprintSha256
-              : undefined,
-          timeoutMs,
-          json: opts.rpc.json,
-          requireRpc: opts.requireRpc,
-          configPath: daemonConfigSummary.path,
-        }),
-      )
-    : undefined;
+  const rpc = !opts.probe
+    ? undefined
+    : rpcFailureReason
+      ? { ok: false as const, error: rpcFailureReason }
+      : await loadDaemonProbeModule().then(({ probeGatewayStatus }) =>
+          probeGatewayStatus({
+            url: gateway.probeUrl,
+            token: daemonProbeAuth?.token,
+            password: daemonProbeAuth?.password,
+            tlsFingerprint:
+              shouldUseLocalTlsRuntime && tlsRuntime?.enabled
+                ? tlsRuntime.fingerprintSha256
+                : undefined,
+            timeoutMs,
+            json: opts.rpc.json,
+            requireRpc: opts.requireRpc,
+            configPath: daemonConfigSummary.path,
+          }),
+        );
   if (rpc?.ok) {
     rpcAuthWarning = undefined;
   }
