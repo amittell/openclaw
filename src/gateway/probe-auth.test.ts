@@ -17,6 +17,7 @@ function expectUnresolvedProbeTokenWarning(cfg: OpenClawConfig) {
   expect(result.auth).toStrictEqual({});
   expect(result.warning).toContain("gateway.auth.token");
   expect(result.warning).toContain("unresolved");
+  expect(result.failureReason).toMatch(/gateway auth token|gateway\.auth\.token/i);
 }
 
 describe("resolveGatewayProbeAuthSafe", () => {
@@ -246,6 +247,7 @@ describe("resolveGatewayProbeAuthSafeWithSecretInputs", () => {
     expect(result.auth).toStrictEqual({});
     expect(result.warning).toContain("gateway.auth.token");
     expect(result.warning).toContain("unresolved");
+    expect(result.failureReason).toMatch(/gateway auth token|gateway\.auth\.token/i);
   });
 });
 
