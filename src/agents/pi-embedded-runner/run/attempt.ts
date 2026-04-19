@@ -2125,6 +2125,7 @@ export async function runEmbeddedAttempt(
         getPendingToolMediaReply,
         getSuccessfulCronAdds,
         getReplayState,
+        getAuthoritativeCompletion,
         didSendViaMessagingTool,
         getLastToolError,
         setTerminalLifecycleMeta,
@@ -3222,6 +3223,7 @@ export async function runEmbeddedAttempt(
 
       return {
         replayMetadata,
+        authoritativeCompletion: getAuthoritativeCompletion(),
         itemLifecycle: getItemLifecycle(),
         setTerminalLifecycleMeta,
         aborted,
