@@ -36,6 +36,7 @@ type IncompleteTurnAttempt = Pick<
   | "replayMetadata"
   | "promptErrorSource"
   | "timedOutDuringCompaction"
+  | "authoritativeCompletion"
 >;
 
 type PlanningOnlyAttempt = Pick<
@@ -50,11 +51,16 @@ type PlanningOnlyAttempt = Pick<
   | "itemLifecycle"
   | "replayMetadata"
   | "toolMetas"
+  | "authoritativeCompletion"
 >;
 
 type RunLivenessAttempt = Pick<
   EmbeddedRunAttemptResult,
-  "lastAssistant" | "promptErrorSource" | "replayMetadata" | "timedOutDuringCompaction"
+  | "lastAssistant"
+  | "promptErrorSource"
+  | "replayMetadata"
+  | "timedOutDuringCompaction"
+  | "authoritativeCompletion"
 >;
 
 export function isIncompleteTerminalAssistantTurn(params: {
@@ -206,7 +212,8 @@ export function resolveIncompleteTurnPayloadText(params: {
     params.attempt.clientToolCall ||
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
-    params.attempt.lastToolError
+    params.attempt.lastToolError ||
+    params.attempt.authoritativeCompletion
   ) {
     return null;
   }
@@ -372,6 +379,7 @@ function shouldSkipPlanningOnlyRetry(params: {
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
+    params.attempt.authoritativeCompletion ||
     params.attempt.replayMetadata.hadPotentialSideEffects,
   );
 }
