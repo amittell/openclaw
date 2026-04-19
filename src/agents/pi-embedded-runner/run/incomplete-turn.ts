@@ -47,6 +47,7 @@ type IncompleteTurnAttempt = Pick<
   | "replayMetadata"
   | "promptErrorSource"
   | "timedOutDuringCompaction"
+  | "authoritativeCompletion"
 >;
 
 type PlanningOnlyAttempt = Pick<
@@ -64,6 +65,7 @@ type PlanningOnlyAttempt = Pick<
   | "messagingToolSentMediaUrls"
   | "messagingToolSentTargets"
   | "toolMetas"
+  | "authoritativeCompletion"
 >;
 
 type SilentToolResultAttempt = Pick<
@@ -78,7 +80,11 @@ type SilentToolResultAttempt = Pick<
 
 type RunLivenessAttempt = Pick<
   EmbeddedRunAttemptResult,
-  "lastAssistant" | "promptErrorSource" | "replayMetadata" | "timedOutDuringCompaction"
+  | "lastAssistant"
+  | "promptErrorSource"
+  | "replayMetadata"
+  | "timedOutDuringCompaction"
+  | "authoritativeCompletion"
 >;
 
 const REPLAY_UNSAFE_FALLBACK_METADATA: EmbeddedRunAttemptResult["replayMetadata"] = {
@@ -227,7 +233,8 @@ export function resolveIncompleteTurnPayloadText(params: {
     params.attempt.clientToolCall ||
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
-    params.attempt.lastToolError
+    params.attempt.lastToolError ||
+    params.attempt.authoritativeCompletion
   ) {
     return null;
   }
@@ -472,6 +479,7 @@ function shouldSkipPlanningOnlyRetry(params: {
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
+    params.attempt.authoritativeCompletion ||
     resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
   );
 }
