@@ -2003,6 +2003,53 @@ describe("runEmbeddedPiAgent incomplete-turn safety", () => {
     expect(retryInstruction).toBeNull();
   });
 
+  it("does not retry generic empty GPT turns after an authoritative dispatch completion", () => {
+    const retryInstruction = resolveEmptyResponseRetryInstruction({
+      provider: "openai",
+      modelId: "gpt-5.4",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        authoritativeCompletion: {
+          kind: "dispatch_done",
+          command: "node /tmp/dispatch/index.mjs done --label demo",
+        },
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "openai",
+          model: "gpt-5.4",
+          content: [{ type: "text", text: "" }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
+    expect(
+      resolveIncompleteTurnPayloadText({
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt: makeAttemptResult({
+          assistantTexts: [],
+          authoritativeCompletion: {
+            kind: "dispatch_done",
+            command: "node /tmp/dispatch/index.mjs done --label demo",
+          },
+          lastAssistant: {
+            role: "assistant",
+            stopReason: "stop",
+            provider: "openai",
+            model: "gpt-5.4",
+            content: [{ type: "text", text: "" }],
+          } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+        }),
+      }),
+    ).toBeNull();
+  });
+
   it("marks compaction-timeout retries as paused and replay-invalid", () => {
     const attempt = makeAttemptResult({
       promptErrorSource: "compaction",
@@ -2018,6 +2065,49 @@ describe("runEmbeddedPiAgent incomplete-turn safety", () => {
         attempt,
       }),
     ).toBe("paused");
+  });
+
+  it("treats authoritative dispatch completion plus an empty terminal assistant turn as completed", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        assistantTexts: [],
+        authoritativeCompletion: {
+          kind: "dispatch_done",
+          command:
+            "node /tmp/dispatch/index.mjs done --label demo --checklist '{\"work_complete\":true}'",
+        },
+        replayMetadata: {
+          hadPotentialSideEffects: true,
+          replaySafe: false,
+        },
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "openai",
+          model: "gpt-5.4",
+          content: [{ type: "text", text: "" }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.4",
+      runId: "run-authoritative-completion-empty-terminal",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(result.payloads).toBeUndefined();
+    expect(result.meta.stopReason).toBe("completed");
+    expect(result.meta.replayInvalid).toBe(true);
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("empty response detected"),
+    );
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("incomplete turn detected"),
+    );
   });
 
   it("does not strict-agentic retry casual Discord status chatter", async () => {

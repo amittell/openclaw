@@ -326,6 +326,19 @@ function extendExecMeta(toolName: string, args: unknown, meta?: string): string 
   return meta ? `${meta} · ${suffix}` : suffix;
 }
 
+function readExecCommandFromArgs(args: unknown): string | null {
+  if (!args || typeof args !== "object") {
+    return null;
+  }
+  const command = (args as Record<string, unknown>).command;
+  return typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
+}
+
+function isDispatchDoneCommand(command: string): boolean {
+  const normalized = command.toLowerCase().replace(/["']/g, " ").replace(/\s+/g, " ").trim();
+  return /\bdispatch\/index\.mjs\s+done\b/.test(normalized);
+}
+
 function pushUniqueMediaUrl(urls: string[], seen: Set<string>, value: unknown): void {
   if (typeof value !== "string") {
     return;
@@ -1149,6 +1162,21 @@ export async function handleToolExecutionEnd(
         stream: "command_output",
         data: outputData,
       });
+
+      const execCommand = readExecCommandFromArgs(startData?.args);
+      if (!isToolError && execCommand && isDispatchDoneCommand(execCommand)) {
+        ctx.state.authoritativeCompletion = {
+          kind: "dispatch_done",
+          command: execCommand,
+        };
+        ctx.state.replayState = mergeEmbeddedRunReplayState(ctx.state.replayState, {
+          replayInvalid: true,
+          hadPotentialSideEffects: true,
+        });
+        ctx.log.debug(
+          `recorded authoritative completion signal: runId=${ctx.params.runId} toolCallId=${toolCallId}`,
+        );
+      }
 
       if (typeof rawOutput === "string") {
         const parsedApprovalResult = parseExecApprovalResultText(rawOutput);

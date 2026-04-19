@@ -2991,7 +2991,9 @@ export async function runEmbeddedPiAgent(
             ? "tool_calls"
             : attempt.yieldDetected
               ? "end_turn"
-              : (sessionLastAssistant?.stopReason as string | undefined);
+              : attempt.authoritativeCompletion
+                ? "completed"
+                : (sessionLastAssistant?.stopReason as string | undefined);
           const terminalPayloads = emptyAssistantReplyIsSilent
             ? [{ text: SILENT_REPLY_TOKEN }]
             : payloadsForTerminalPath;

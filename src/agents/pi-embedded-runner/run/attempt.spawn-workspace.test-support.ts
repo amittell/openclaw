@@ -110,6 +110,7 @@ export function createSubscriptionMock(): SubscriptionMock {
       replayInvalid: false,
       hadPotentialSideEffects: false,
     }),
+    getAuthoritativeCompletion: () => undefined,
     didSendViaMessagingTool: () => false,
     didSendDeterministicApprovalPrompt: () => false,
     getLastToolError: () => undefined,

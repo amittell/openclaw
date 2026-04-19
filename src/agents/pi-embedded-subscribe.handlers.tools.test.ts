@@ -59,6 +59,7 @@ function createTestContext(): {
       pendingToolTrustedLocalMedia: false,
       deterministicApprovalPromptPending: false,
       replayState: { replayInvalid: false, hadPotentialSideEffects: false },
+      authoritativeCompletion: undefined,
       messagingToolSentTexts: [],
       messagingToolSentTextsNormalized: [],
       messagingToolSentMediaUrls: [],
@@ -524,6 +525,53 @@ describe("handleToolExecutionEnd timeout metadata", () => {
     expectRecordFields(ctx.state.lastToolError, "last tool error", {
       toolName: "exec",
       timedOut: true,
+    });
+  });
+});
+
+describe("handleToolExecutionEnd authoritative completion detection", () => {
+  it("records successful dispatch done exec commands as authoritative completion", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-exec-done",
+        args: {
+          command:
+            "node '/Users/alexm/.openclaw/packages/openclaw-scheduler/node_modules/openclaw-scheduler/dispatch/index.mjs' done --label 'demo' --summary 'Finished the task' --checklist '{\"work_complete\":true}'",
+        },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-exec-done",
+        isError: false,
+        result: {
+          details: {
+            status: "completed",
+            exitCode: 0,
+            durationMs: 123,
+            aggregated: '{"ok":true,"status":"done"}',
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.authoritativeCompletion).toEqual({
+      kind: "dispatch_done",
+      command:
+        "node '/Users/alexm/.openclaw/packages/openclaw-scheduler/node_modules/openclaw-scheduler/dispatch/index.mjs' done --label 'demo' --summary 'Finished the task' --checklist '{\"work_complete\":true}'",
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: true,
+      hadPotentialSideEffects: true,
     });
   });
 });
