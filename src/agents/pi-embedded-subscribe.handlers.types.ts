@@ -73,6 +73,10 @@ export type EmbeddedPiSubscribeState = {
   replayState: EmbeddedRunReplayState;
   livenessState?: EmbeddedRunLivenessState;
   hadDeterministicSideEffect?: boolean;
+  authoritativeCompletion?: {
+    kind: "dispatch_done";
+    command?: string;
+  };
 
   messagingToolSentTexts: string[];
   messagingToolSentTextsNormalized: string[];
@@ -179,6 +183,7 @@ export type ToolHandlerState = Pick<
   | "pendingToolTrustedLocalMedia"
   | "deterministicApprovalPromptPending"
   | "replayState"
+  | "authoritativeCompletion"
   | "messagingToolSentTexts"
   | "messagingToolSentTextsNormalized"
   | "messagingToolSentMediaUrls"
