@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "../../config/types.js";
-import { probeGateway } from "../../gateway/probe.js";
+import { emptyProbeAuth, probeGateway } from "../../gateway/probe.js";
 import {
   discoverGatewayBeacons,
   type GatewayBonjourBeacon,
@@ -128,6 +128,7 @@ export async function runGatewayStatusProbePass(params: {
               connectLatencyMs: null,
               error: authResolution.failureReason,
               close: null,
+              auth: emptyProbeAuth(),
               health: null,
               status: null,
               presence: null,

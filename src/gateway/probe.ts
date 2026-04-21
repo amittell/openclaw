@@ -60,7 +60,7 @@ function formatProbeCloseError(close: GatewayProbeClose): string {
   return `gateway closed (${close.code}): ${close.reason}`;
 }
 
-function emptyProbeAuth(): GatewayProbeAuthSummary {
+export function emptyProbeAuth(): GatewayProbeAuthSummary {
   return {
     role: null,
     scopes: [],
