@@ -65,6 +65,13 @@ import { loadSessionEntry } from "./session-utils.js";
 
 const SESSION_LOCK_STALE_MS = 30 * 60 * 1000;
 
+type Awaitable<T> = T | Promise<T>;
+
+type GatewayStartupTrace = {
+  mark: (name: string) => void;
+  measure: <T>(name: string, run: () => Awaitable<T>) => Promise<T>;
+};
+
 async function prewarmConfiguredPrimaryModel(params: {
   cfg: OpenClawConfig;
   log: { warn: (msg: string) => void };
@@ -535,6 +542,10 @@ export async function startGatewayPostAttachRuntime(
     };
     logChannels: { info: (msg: string) => void; error: (msg: string) => void };
     unavailableGatewayMethods: Set<string>;
+    onPluginServices?: (pluginServices: PluginServicesHandle | null) => void;
+    onSidecarsReady?: () => void;
+    startupTrace?: GatewayStartupTrace;
+    awaitSidecars?: boolean;
   },
   runtimeDeps: GatewayPostAttachRuntimeDeps = defaultGatewayPostAttachRuntimeDeps,
 ) {

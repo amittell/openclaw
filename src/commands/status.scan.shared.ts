@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "../config/types.js";
 import { buildGatewayConnectionDetailsWithResolvers } from "../gateway/connection-details.js";
 import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
 import { resolveGatewayProbeTarget } from "../gateway/probe-target.js";
-import type { probeGateway as probeGatewayFn } from "../gateway/probe.js";
+import { emptyProbeAuth, type probeGateway as probeGatewayFn } from "../gateway/probe.js";
 import type { MemoryProviderStatus } from "../memory-host-sdk/engine-storage.js";
 import {
   normalizeOptionalLowercaseString,
@@ -114,6 +114,7 @@ export async function resolveGatewayProbeSnapshot(params: {
           connectLatencyMs: null,
           error: gatewayProbeAuthResolution.failureReason,
           close: null,
+          auth: emptyProbeAuth(),
           health: null,
           status: null,
           presence: null,
