@@ -601,6 +601,7 @@ export async function startGatewayPostAttachRuntime(
     for (const method of STARTUP_UNAVAILABLE_GATEWAY_METHODS) {
       params.unavailableGatewayMethods.delete(method);
     }
+    params.onSidecarsReady?.();
   }
 
   if (!params.minimalTestGateway) {

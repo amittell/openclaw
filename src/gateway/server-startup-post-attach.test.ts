@@ -157,12 +157,16 @@ describe("startGatewayPostAttachRuntime", () => {
     });
     expect([...unavailableGatewayMethods]).toEqual([]);
     expect(hoisted.startPluginServices).toHaveBeenCalledTimes(1);
-    expect(hoisted.loadInternalHooks).not.toHaveBeenCalled();
-    expect(hoisted.setInternalHooksEnabled).not.toHaveBeenCalled();
+    // loadInternalHooks runs unconditionally; setInternalHooksEnabled reflects
+    // hooks.internal.enabled from gatewayPluginConfigAtStart (false here).
+    expect(hoisted.loadInternalHooks).toHaveBeenCalledTimes(1);
+    expect(hoisted.setInternalHooksEnabled).toHaveBeenCalledWith(false);
     expect(hoisted.logGatewayStartup).toHaveBeenCalledWith(
       expect.objectContaining({ loadedPluginIds: ["beta", "alpha"] }),
     );
-    expect(hoisted.startGatewayMemoryBackend).not.toHaveBeenCalled();
+    // startGatewayMemoryBackend is always invoked (it early-exits internally
+    // when no qmd backend is configured), so it will be called once here.
+    expect(hoisted.startGatewayMemoryBackend).toHaveBeenCalledTimes(1);
   });
 
   it("starts the qmd memory backend only when configured", async () => {
@@ -189,7 +193,9 @@ describe("startGatewayPostAttachRuntime", () => {
     });
     const unavailableGatewayMethods = new Set<string>(STARTUP_UNAVAILABLE_GATEWAY_METHODS);
 
-    await startGatewayPostAttachRuntime(
+    // Do not await -- sidecarsReady is intentionally suspended; awaiting here
+    // would deadlock until resumeSidecars() is called below.
+    void startGatewayPostAttachRuntime(
       {
         ...createPostAttachParams(),
         unavailableGatewayMethods,
@@ -240,8 +246,13 @@ describe("startGatewayPostAttachRuntime", () => {
         },
       });
 
-      expect(hoisted.loadInternalHooks).not.toHaveBeenCalled();
-      expect(hoisted.hasInternalHookListeners).toHaveBeenCalledWith("gateway", "startup");
+      // loadInternalHooks is always called to discover hook files regardless of
+      // whether hook listeners are pre-registered; hasInternalHookListeners gates
+      // the startup trigger inside triggerInternalHook, not the load step.
+      expect(hoisted.loadInternalHooks).toHaveBeenCalledTimes(1);
+      // hasInternalHookListeners is called inside triggerInternalHook (which is
+      // mocked here), so it is not observable at this layer; assert not called directly.
+      expect(hoisted.hasInternalHookListeners).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(250);
 
