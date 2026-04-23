@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   buildGatewayConnectionDetailsWithResolvers: vi.fn(),
   resolveGatewayProbeTarget: vi.fn(),
   probeGateway: vi.fn(),
+  emptyProbeAuth: vi.fn(() => ({})),
   resolveGatewayProbeAuthResolution: vi.fn(),
   pickGatewaySelfPresence: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock("../gateway/probe-target.js", () => ({
 
 vi.mock("../gateway/probe.js", () => ({
   probeGateway: mocks.probeGateway,
+  emptyProbeAuth: mocks.emptyProbeAuth,
 }));
 
 vi.mock("./status.gateway-probe.js", () => ({

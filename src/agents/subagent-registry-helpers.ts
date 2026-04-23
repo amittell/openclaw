@@ -11,10 +11,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { defaultRuntime } from "../runtime.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
-import {
-  type SubagentRunOutcome,
-  withSubagentOutcomeTiming,
-} from "./subagent-announce-output.js";
+import { withSubagentOutcomeTiming } from "./subagent-announce-output.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { shouldUpdateRunOutcome } from "./subagent-registry-completion.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";

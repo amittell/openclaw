@@ -220,6 +220,8 @@ describe("announce loop guard (#18264)", () => {
     await Promise.resolve();
     await Promise.resolve();
 
+    await vi.advanceTimersByTimeAsync(0);
+
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
@@ -253,6 +255,8 @@ describe("announce loop guard (#18264)", () => {
     registry.initSubagentRegistry();
     await Promise.resolve();
     await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(0);
 
     const runs = registry.listSubagentRunsForRequester("agent:main:main");
     const stored = runs.find((run) => run.runId === runId);
