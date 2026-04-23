@@ -17,7 +17,9 @@ function expectUnresolvedProbeTokenWarning(cfg: OpenClawConfig) {
   expect(result.auth).toEqual({});
   expect(result.warning).toContain("gateway.auth.token");
   expect(result.warning).toContain("unresolved");
-  expect(result.failureReason).toMatch(/gateway auth token|gateway\.auth\.token/i);
+  // An unresolved SecretRef degrades safely (probe with no creds); the warning
+  // is surfaced to the caller to annotate output only when the probe fails.
+  expect(result.failureReason).toBeUndefined();
 }
 
 describe("resolveGatewayProbeAuthSafe", () => {
@@ -194,7 +196,9 @@ describe("resolveGatewayProbeAuthSafeWithSecretInputs", () => {
     expect(result.auth).toEqual({});
     expect(result.warning).toContain("gateway.auth.token");
     expect(result.warning).toContain("unresolved");
-    expect(result.failureReason).toMatch(/gateway auth token|gateway\.auth\.token/i);
+    // An unresolved SecretRef degrades safely (probe with no creds); the warning
+    // is surfaced to the caller to annotate output only when the probe fails.
+    expect(result.failureReason).toBeUndefined();
   });
 });
 

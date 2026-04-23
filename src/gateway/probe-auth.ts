@@ -102,8 +102,10 @@ export async function resolveGatewayProbeAuthSafeWithSecretInputs(params: {
       auth: {},
       warning: resolveGatewayProbeWarning(error),
     };
-    const failureReason = await resolveLocalProbeFailureReason(params, result.auth);
-    return failureReason ? { ...result, failureReason } : result;
+    // When the SecretRef is unresolved, degrade safely by probing without
+    // credentials. Only set failureReason for definitively-missing auth (no
+    // SecretRef involved). The warning is surfaced if the probe later fails.
+    return result;
   }
 }
 
@@ -133,8 +135,10 @@ export function resolveGatewayProbeAuthSafe(params: {
       auth: {},
       warning: resolveGatewayProbeWarning(error),
     };
-    const failureReason = resolveLocalProbeFailureReasonSync(params, result.auth);
-    return failureReason ? { ...result, failureReason } : result;
+    // When the SecretRef is unresolved, degrade safely by probing without
+    // credentials. Only set failureReason for definitively-missing auth (no
+    // SecretRef involved). The warning is surfaced if the probe later fails.
+    return result;
   }
 }
 

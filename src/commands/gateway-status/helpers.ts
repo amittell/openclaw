@@ -180,12 +180,18 @@ export async function resolveAuthForTarget(
     surface,
   });
   if (surface === "local" && isLoopbackProbeTarget(target) && !auth.token && !auth.password) {
-    const interactive = await resolveGatewayInteractiveSurfaceAuth({
-      config: cfg,
-      surface: "local",
-    });
-    if (interactive.failureReason) {
-      return { ...auth, failureReason: interactive.failureReason };
+    // Only escalate to a failureReason when no SecretRef diagnostic is present.
+    // An unresolved SecretRef means auth is unknown in this command path; the
+    // probe should degrade safely (attempt with no creds) rather than
+    // short-circuit. The diagnostic is surfaced as a warning if the probe fails.
+    if (!auth.diagnostics?.length) {
+      const interactive = await resolveGatewayInteractiveSurfaceAuth({
+        config: cfg,
+        surface: "local",
+      });
+      if (interactive.failureReason) {
+        return { ...auth, failureReason: interactive.failureReason };
+      }
     }
   }
   return auth;

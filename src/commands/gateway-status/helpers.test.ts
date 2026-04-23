@@ -217,7 +217,10 @@ describe("resolveAuthForTarget", () => {
         expect(auth.diagnostics).toContain(
           "gateway.auth.token SecretRef is unresolved (env:default:MISSING_GATEWAY_TOKEN).",
         );
-        expect(auth.failureReason).toContain("gateway.auth.token");
+        // An unresolved SecretRef degrades safely: the diagnostic is preserved
+        // for warning output, but no failureReason is set so the probe is
+        // attempted without credentials rather than short-circuited.
+        expect(auth.failureReason).toBeUndefined();
         expect(auth.diagnostics?.join("\n")).not.toContain("missing or empty");
       },
     );
