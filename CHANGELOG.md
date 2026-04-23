@@ -7,6 +7,7 @@ Docs: https://docs.openclaw.ai
 ### Changes
 
 - OpenAI/images: default the bundled image-generation provider and live media smoke tests to `gpt-image-2`, and advertise the newer 2K/4K OpenAI size hints in image-generation docs and tool metadata.
+- Docs/ops: clarify that Telegram long-polling freshness is separate from gateway `/health`, document the built-in `getUpdates` liveness watchdog, and recommend keeping any host-level Telegram watchdog job definitions identical across hosts so parity drift does not hide a wedged poller on one machine while another stays healthy.
 
 ### Fixes
 

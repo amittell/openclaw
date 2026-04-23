@@ -42,6 +42,23 @@ Short guide to verify channel connectivity without guessing.
 - Gateway unreachable → start it: `openclaw gateway --port 18789` (use `--force` if the port is busy).
 - No inbound messages → confirm linked phone is online and the sender is allowed (`channels.whatsapp.allowFrom`); for group chats, ensure allowlist + mention rules match (`channels.whatsapp.groups`, `agents.list[].groupChat.mentionPatterns`).
 
+## Gateway `/health` vs channel freshness
+
+`/health` answers whether the gateway process is up and serving. It does **not** prove
+that a long-polling provider is still making forward progress.
+
+For Telegram specifically:
+
+- OpenClaw's built-in polling watchdog tracks **completed `getUpdates` liveness**, not just process reachability.
+- The default Telegram polling-stall window is controlled by `channels.telegram.pollingStallThresholdMs` (default `120000`).
+- A host can therefore report a healthy gateway while Telegram polling is still wedged on a dead-but-connected socket.
+
+If you add an external launchd/cron watchdog on top of OpenClaw:
+
+- do **not** rely on gateway `/health` alone for Telegram
+- check Telegram freshness (for example recent completed polling liveness, or repeated `Polling stall detected` / `getUpdates` network-failure patterns)
+- keep the same watchdog definition on every host that should behave the same, so parity drift does not leave one machine protected and another exposed
+
 ## Dedicated "health" command
 
 `openclaw health` asks the running gateway for its health snapshot (no direct channel
