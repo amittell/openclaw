@@ -269,6 +269,72 @@ describe("createTelegramBot", () => {
     );
   });
 
+  it("clamps timeoutSeconds below the long-poll floor and warns", () => {
+    // Regression: timeoutSeconds=30 equals Telegram's 30s long-poll hold, so
+    // grammy's client abort races Telegram's natural response and wins often
+    // enough to wedge the polling runner. See polling-session.ts watchdog.
+    const warn = vi.fn();
+    const runtime = { info: vi.fn(), warn, error: vi.fn() };
+
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 30 },
+      },
+    });
+    createTelegramBot({ token: "tok", runtime });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 35 }),
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/channels\.telegram\.timeoutSeconds=30s.*clamping.*35s/),
+    );
+    botCtorSpy.mockClear();
+    warn.mockClear();
+
+    // Per-account override below the floor is also clamped, with the account
+    // scope surfaced in the warning.
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+          accounts: { foo: { timeoutSeconds: 10 } },
+        },
+      },
+    });
+    createTelegramBot({ token: "tok", accountId: "foo", runtime });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 35 }),
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /channels\.telegram\.accounts\.foo\.timeoutSeconds=10s.*clamping.*35s/,
+      ),
+    );
+    botCtorSpy.mockClear();
+    warn.mockClear();
+
+    // Values at or above the floor pass through unchanged with no warning.
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 35 },
+      },
+    });
+    createTelegramBot({ token: "tok", runtime });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 35 }),
+      }),
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
   it("sequentializes updates by chat and thread", () => {
     createTelegramBot({ token: "tok" });
     expect(sequentializeSpy).toHaveBeenCalledTimes(1);

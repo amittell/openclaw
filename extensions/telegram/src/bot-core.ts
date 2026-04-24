@@ -292,10 +292,30 @@ export function createTelegramBotCore(
     };
   }
 
-  const timeoutSeconds =
+  const rawTimeoutSeconds =
     typeof telegramCfg?.timeoutSeconds === "number" && Number.isFinite(telegramCfg.timeoutSeconds)
       ? Math.max(1, Math.floor(telegramCfg.timeoutSeconds))
       : undefined;
+  // grammY fires a client-side abort after `timeoutSeconds` on every API call,
+  // including the long-poll `getUpdates`. Our runner holds each long-poll for
+  // up to 30 s (see `createTelegramRunnerOptions` in monitor.ts). If the client
+  // timeout is <= that hold, the abort races Telegram's natural response and
+  // wins often enough to trigger the polling-stall watchdog loop. Floor the
+  // client timeout above the long-poll hold so empty polls always win the race.
+  const TELEGRAM_CLIENT_TIMEOUT_FLOOR_SECONDS = 35;
+  let timeoutSeconds = rawTimeoutSeconds;
+  if (
+    timeoutSeconds !== undefined &&
+    timeoutSeconds < TELEGRAM_CLIENT_TIMEOUT_FLOOR_SECONDS
+  ) {
+    const scope = opts.accountId
+      ? `channels.telegram.accounts.${opts.accountId}.timeoutSeconds`
+      : "channels.telegram.timeoutSeconds";
+    runtime.warn?.(
+      `[telegram] ${scope}=${timeoutSeconds}s races the 30s long-poll hold; clamping client timeout to ${TELEGRAM_CLIENT_TIMEOUT_FLOOR_SECONDS}s to prevent polling stalls`,
+    );
+    timeoutSeconds = TELEGRAM_CLIENT_TIMEOUT_FLOOR_SECONDS;
+  }
   const apiRoot = normalizeOptionalString(telegramCfg.apiRoot);
   const normalizedApiRoot = apiRoot ? normalizeTelegramApiRoot(apiRoot) : undefined;
   const client: ApiClientOptions | undefined =
