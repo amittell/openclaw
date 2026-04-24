@@ -719,7 +719,7 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     - `channels.telegram.textChunkLimit` default is 4000.
     - `channels.telegram.chunkMode="newline"` prefers paragraph boundaries (blank lines) before length splitting.
     - `channels.telegram.mediaMaxMb` (default 100) caps inbound and outbound Telegram media size.
-    - `channels.telegram.timeoutSeconds` overrides Telegram API client timeout (if unset, grammY default applies).
+    - `channels.telegram.timeoutSeconds` overrides the Telegram API client timeout (if unset, grammY default applies). OpenClaw floors this at 35 seconds in polling mode because the value races grammY's abort against Telegram's 30-second `getUpdates` long-poll hold; values below 35 are silently clamped with a warning in the gateway log. To keep a shorter user-visible timeout on outbound sends, rely on `channels.telegram.retry` rather than lowering this value.
     - `channels.telegram.pollingStallThresholdMs` defaults to `120000`; tune between `30000` and `600000` only for false-positive polling-stall restarts.
     - group context history uses `channels.telegram.historyLimit` or `messages.groupChat.historyLimit` (default 50); `0` disables.
     - reply/quote/forward supplemental context is currently passed as received.
