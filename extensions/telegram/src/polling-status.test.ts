@@ -12,7 +12,6 @@ describe("createTelegramPollingStatusPublisher", () => {
 
     expect(setStatus).toHaveBeenNthCalledWith(1, {
       mode: "polling",
-      connected: false,
       lastConnectedAt: null,
       lastEventAt: null,
       lastTransportActivityAt: null,
@@ -29,5 +28,19 @@ describe("createTelegramPollingStatusPublisher", () => {
       mode: "polling",
       connected: false,
     });
+  });
+
+  it("notePollingStart does not carry a connected:false flag", () => {
+    // Regression: writing connected:false on every cycle start caused the gateway
+    // health monitor to restart busy telegram bots on a 10-minute cadence when the
+    // grammY startup handshake ran past the 120s connect grace window.
+    const setStatus = vi.fn();
+    const status = createTelegramPollingStatusPublisher(setStatus);
+
+    status.notePollingStart();
+
+    const [patch] = setStatus.mock.calls[0] ?? [];
+    expect(patch).toBeDefined();
+    expect(patch as Record<string, unknown>).not.toHaveProperty("connected");
   });
 });
