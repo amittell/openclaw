@@ -956,7 +956,9 @@ export const registerTelegramHandlers = ({
     const replyChain: TelegramReplyChainEntry[] = [];
     for (const node of chain) {
       let mediaRef: TelegramMediaRef | undefined;
-      const replyFileId = resolveInboundMediaFileId(node.sourceMessage);
+      const isBotAuthored =
+        typeof ctx.me?.id === "number" && node.sourceMessage.from?.id === ctx.me.id;
+      const replyFileId = isBotAuthored ? null : resolveInboundMediaFileId(node.sourceMessage);
       if (replyFileId && hasInboundMedia(node.sourceMessage)) {
         try {
           const media = await resolveMedia({
