@@ -1,3 +1,6 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import {
   resolveAgentConfig,
   resolveDefaultAgentId as resolveConfiguredDefaultAgentId,
@@ -66,6 +69,28 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 // bounded.
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
+
+// Per-memoryId mutex: serializes concurrent replace/delete calls on the same
+// ID so a memory_refresh delete/insert never interleaves with memory_forget.
+// Ids are globally-unique UUIDs, so raw-id keys cannot collide across agents.
+const _memoryLocks = new Map<string, Promise<void>>();
+
+function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _memoryLocks.get(id) ?? Promise.resolve();
+  let resolveLock!: () => void;
+  const next = new Promise<void>((r) => {
+    resolveLock = r;
+  });
+  _memoryLocks.set(id, next);
+  return prev
+    .then(() => fn())
+    .finally(() => {
+      resolveLock();
+      if (_memoryLocks.get(id) === next) {
+        _memoryLocks.delete(id);
+      }
+    });
+}
 
 export { normalizeEmbeddingVector, testing } from "./embeddings.js";
 export { parseMemoryCliFilter } from "./memory-cli.js";
@@ -426,17 +451,21 @@ export default definePluginEntry({
             const { query, memoryId } = params as { query?: string; memoryId?: string };
 
             if (memoryId) {
-              const deleted = await db.delete(agentId, memoryId);
-              if (!deleted) {
+              // Acquire per-ID lock so that a concurrent memory_refresh replace
+              // on the same ID cannot race with this delete.
+              return withMemoryLock(memoryId, async () => {
+                const deleted = await db.delete(agentId, memoryId);
+                if (!deleted) {
+                  return {
+                    content: [{ type: "text", text: `Memory ${memoryId} was not found.` }],
+                    details: { action: "not_found", id: memoryId },
+                  };
+                }
                 return {
-                  content: [{ type: "text", text: `Memory ${memoryId} was not found.` }],
-                  details: { action: "not_found", id: memoryId },
+                  content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
+                  details: { action: "deleted", id: memoryId },
                 };
-              }
-              return {
-                content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
-                details: { action: "deleted", id: memoryId },
-              };
+              });
             }
 
             if (query) {
@@ -455,11 +484,17 @@ export default definePluginEntry({
 
               const singleResult = results.length === 1 ? results[0] : undefined;
               if (singleResult && singleResult.score > 0.9) {
-                await db.delete(agentId, singleResult.entry.id);
-                return {
-                  content: [{ type: "text", text: `Forgotten: "${singleResult.entry.text}"` }],
-                  details: { action: "deleted", id: singleResult.entry.id },
-                };
+                const targetId = singleResult.entry.id;
+                // Acquire per-ID lock before the auto-delete so that a concurrent
+                // memory_refresh replace cannot interleave its delete/insert
+                // between our search-result selection and the delete.
+                return withMemoryLock(targetId, async () => {
+                  await db.delete(agentId, targetId);
+                  return {
+                    content: [{ type: "text", text: `Forgotten: "${singleResult.entry.text}"` }],
+                    details: { action: "deleted", id: targetId },
+                  };
+                });
               }
 
               const list = results
@@ -493,6 +528,180 @@ export default definePluginEntry({
         };
       },
       { name: "memory_forget" },
+    );
+
+    api.registerTool(
+      (ctx) => {
+        const agentId = resolveEnabledAgentId(
+          ctx.agentId,
+          ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? resolveRuntimeConfig(),
+        );
+        if (!agentId) {
+          return null;
+        }
+        return {
+          name: "memory_refresh",
+          label: "Memory Refresh",
+          description:
+            "Search for existing memories similar to new content, or atomically replace a specific memory by ID. Use for updating facts without data loss: call without memoryId to preview similar memories, then call with memoryId to atomically replace.",
+          parameters: Type.Object({
+            text: Type.String({ description: "New memory content (required in execute mode)" }),
+            category: Type.Optional(Type.Enum(MEMORY_CATEGORIES, { type: "string" })),
+            importance: Type.Optional(
+              Type.Number({ description: "Importance 0.0-1.0 (default: inherited or 0.7)" }),
+            ),
+            memoryId: Type.Optional(
+              Type.String({
+                description:
+                  "If provided: atomically replace this memory. If omitted: search-only mode.",
+              }),
+            ),
+          }),
+          async execute(_toolCallId, params) {
+            const { text, category, importance, memoryId } = params as {
+              text: string;
+              category?: MemoryEntry["category"];
+              importance?: number;
+              memoryId?: string;
+            };
+
+            // MODE 1: search-only preview (no memoryId) - embed and rank.
+            if (!memoryId) {
+              const vector = await embeddings.embed(text);
+              const results = await db.search(agentId, vector, 3, 0.1);
+              const matches = results.map((r) => ({
+                id: r.entry.id,
+                text: r.entry.text,
+                category: r.entry.category,
+                importance: r.entry.importance,
+                similarity: r.score,
+              }));
+
+              const summaryText =
+                matches.length === 0
+                  ? "No similar memories found."
+                  : `Found ${matches.length} similar memories:\n\n${matches
+                      .map(
+                        (m, i) =>
+                          `${i + 1}. [${m.id.slice(0, 8)}] (${(m.similarity * 100).toFixed(0)}%) ${m.text}`,
+                      )
+                      .join("\n")}`;
+
+              return {
+                content: [{ type: "text", text: summaryText }],
+                details: { operation: "search_only", matches },
+              };
+            }
+
+            // MODE 2: atomic replace. Existence check runs BEFORE the embed so
+            // a typo or stale ID returns without a wasted embedding call; the
+            // whole delete/insert runs under the per-ID lock so concurrent
+            // refresh/forget calls on the same ID serialize.
+            return withMemoryLock(memoryId, async () => {
+              const existing = await db.getById(agentId, memoryId);
+              if (!existing) {
+                return {
+                  content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
+                  details: { operation: "error", error: "not_found", memoryId },
+                };
+              }
+
+              // Inherit category and importance from the existing entry when
+              // the caller does not supply them, so a text-only update never
+              // silently resets metadata to defaults.
+              const resolvedCategory = category ?? existing.category;
+              const resolvedImportance = importance ?? existing.importance;
+
+              const vector = await embeddings.embed(text);
+              const oldTextPreview = existing.text.slice(0, 80);
+
+              await db.delete(agentId, memoryId);
+
+              let newEntry: MemoryEntry;
+              let rollbackWarning: string | undefined;
+              let rollbackSucceeded = false;
+
+              try {
+                newEntry = await db.store(agentId, {
+                  text,
+                  vector,
+                  importance: resolvedImportance,
+                  category: resolvedCategory,
+                });
+              } catch (insertErr) {
+                // Best-effort rollback: restore the original entry under its
+                // original ID so callers are never left holding a stale
+                // reference to a non-existent memory.
+                try {
+                  await db.storeRaw(agentId, existing);
+                  rollbackSucceeded = true;
+                  rollbackWarning = `Insert failed; original restored with original ID ${existing.id}. Insert error: ${String(insertErr)}`;
+                } catch (rollbackErr) {
+                  rollbackWarning = `Insert failed AND rollback failed (DATA LOSS POSSIBLE). Insert: ${String(insertErr)}. Rollback: ${String(rollbackErr)}`;
+                }
+                return {
+                  content: [{ type: "text", text: `Replace failed: ${rollbackWarning}` }],
+                  details: {
+                    operation: "error",
+                    error: "insert_failed",
+                    success: false,
+                    rollbackWarning,
+                    ...(rollbackSucceeded ? { restored_id: existing.id } : { restored_id: null }),
+                  },
+                };
+              }
+
+              // Compute similarity using 1/(1+L2) - the same metric used by
+              // memory_recall and db.search - so audit entries are comparable.
+              let similarity: number | null = null;
+              if (existing.vector.length === vector.length) {
+                const l2sq = existing.vector.reduce((sum, v, i) => {
+                  const diff = v - (vector[i] ?? 0);
+                  return sum + diff * diff;
+                }, 0);
+                similarity = 1 / (1 + Math.sqrt(l2sq));
+              }
+
+              // Append to the audit log (metadata only - memory text is
+              // private user data and must never be written to audit logs).
+              // State-dir aware: isolated OPENCLAW_STATE_DIR rigs and tests
+              // must not leak audit entries into the operator's real home.
+              const stateDir =
+                process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
+              const auditLogPath = path.join(stateDir, "memory", "refresh-audit.jsonl");
+              try {
+                await mkdir(path.dirname(auditLogPath), { recursive: true });
+                const auditEntry = {
+                  ts: Date.now(),
+                  operation: "replaced",
+                  old_id: memoryId,
+                  new_id: newEntry.id,
+                  similarity,
+                };
+                await appendFile(auditLogPath, `${JSON.stringify(auditEntry)}\n`, "utf8");
+              } catch (auditErr) {
+                api.logger.warn(`memory-lancedb: audit log write failed: ${String(auditErr)}`);
+              }
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Replaced memory ${memoryId.slice(0, 8)}… → ${newEntry.id.slice(0, 8)}…\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
+                  },
+                ],
+                details: {
+                  operation: "replaced",
+                  old_id: memoryId,
+                  new_id: newEntry.id,
+                  old_text_preview: oldTextPreview,
+                },
+              };
+            });
+          },
+        };
+      },
+      { name: "memory_refresh" },
     );
 
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, cfg.recallMaxChars);

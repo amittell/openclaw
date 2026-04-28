@@ -263,6 +263,37 @@ export class MemoryDB {
     return true;
   }
 
+  async getById(agentId: string, id: string): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    if (!UUID_PATTERN.test(id)) {
+      throw new Error(`Invalid memory ID format: ${id}`);
+    }
+    const predicate = scopedPredicate(agentId, { column: "id", operator: "=", value: id });
+    const rows = await this.table!.query().where(predicate).toArray();
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id as string,
+      text: row.text as string,
+      vector: Array.from(row.vector as ArrayLike<number>),
+      importance: row.importance as number,
+      category: row.category as MemoryEntry["category"],
+      createdAt: row.createdAt as number,
+    };
+  }
+
+  // Raw re-insert that preserves the caller-supplied id/createdAt. Only for
+  // memory_refresh rollback, where the original entry must come back under
+  // its original id so callers never hold a stale reference.
+  async storeRaw(agentId: string, entry: MemoryEntry): Promise<MemoryEntry> {
+    await this.ensureInitialized();
+    const storedEntry: StoredMemoryRow = { ...entry, agentId };
+    await this.table!.add([storedEntry]);
+    return entry;
+  }
+
   async count(agentId: string): Promise<number> {
     await this.ensureInitialized();
     return await this.table!.countRows(memoryAgentPredicate(agentId));
