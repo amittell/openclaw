@@ -3643,7 +3643,6 @@ describe("memory plugin e2e", () => {
     expect(detectCategory("Random note")).toBe("other");
   });
 
-
   // ============================================================================
   // memory_refresh tests
   // ============================================================================
@@ -3655,7 +3654,6 @@ describe("memory plugin e2e", () => {
     queryWhere: ReturnType<typeof vi.fn>;
     tableAdd: ReturnType<typeof vi.fn>;
     tableDelete: ReturnType<typeof vi.fn>;
-    // oxlint-disable-next-line typescript/no-explicit-any
     registeredTools: any[];
   }) {
     return {
@@ -3679,7 +3677,6 @@ describe("memory plugin e2e", () => {
         error: vi.fn(),
         debug: vi.fn(),
       },
-      // oxlint-disable-next-line typescript/no-explicit-any
       registerTool: (tool: any, toolOpts: any) => {
         opts.registeredTools.push({ tool, opts: toolOpts });
       },
@@ -3758,7 +3755,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3769,7 +3765,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
@@ -3851,13 +3846,11 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
 
       // Isolate the audit log under the test tmp state dir.
       vi.stubEnv("OPENCLAW_STATE_DIR", `${getTmpDir()}/.openclaw`);
 
-      // oxlint-disable-next-line typescript/no-explicit-any
       let result: any;
       try {
         const mockApi = buildMockApiForRefresh({
@@ -3869,7 +3862,6 @@ describe("memory plugin e2e", () => {
           tableDelete,
           registeredTools,
         });
-        // oxlint-disable-next-line typescript/no-explicit-any
         memoryPlugin.register(mockApi as any);
 
         const refreshTool = materializeRegisteredTool(
@@ -3969,7 +3961,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3980,7 +3971,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
@@ -4072,7 +4062,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4083,7 +4072,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
@@ -4183,7 +4171,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4194,7 +4181,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
@@ -4272,7 +4258,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4283,7 +4268,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
@@ -4381,7 +4365,6 @@ describe("memory plugin e2e", () => {
 
     try {
       const { default: memoryPlugin } = await import("./index.js");
-      // oxlint-disable-next-line typescript/no-explicit-any
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4392,7 +4375,6 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      // oxlint-disable-next-line typescript/no-explicit-any
       memoryPlugin.register(mockApi as any);
 
       const refreshTool = materializeRegisteredTool(
