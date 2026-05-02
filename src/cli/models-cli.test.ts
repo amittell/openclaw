@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   modelsSetImageCommand: vi.fn().mockResolvedValue(undefined),
   noopAsync: vi.fn(async () => undefined),
   modelsAuthAddCommand: vi.fn().mockResolvedValue(undefined),
+  modelsAuthCleanCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthListCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthLoginCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthPasteApiKeyCommand: vi.fn().mockResolvedValue(undefined),
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 
 const {
   modelsAuthAddCommand,
+  modelsAuthCleanCommand,
   modelsAuthListCommand,
   modelsAuthLoginCommand,
   modelsAuthPasteApiKeyCommand,
@@ -44,6 +46,9 @@ vi.mock("../commands/models/auth.js", () => ({
 }));
 vi.mock("../commands/models/auth-list.js", () => ({
   modelsAuthListCommand: mocks.modelsAuthListCommand,
+}));
+vi.mock("../commands/models/auth-clean.js", () => ({
+  modelsAuthCleanCommand: mocks.modelsAuthCleanCommand,
 }));
 vi.mock("../commands/models/auth-order.js", () => ({
   modelsAuthOrderClearCommand: mocks.noopAsync,
@@ -80,6 +85,7 @@ vi.mock("../commands/models/set-image.js", () => ({
 describe("models cli", () => {
   beforeEach(() => {
     modelsAuthAddCommand.mockClear();
+    modelsAuthCleanCommand.mockClear();
     modelsAuthListCommand.mockClear();
     modelsAuthLoginCommand.mockClear();
     modelsAuthPasteApiKeyCommand.mockClear();
@@ -195,6 +201,8 @@ describe("models cli", () => {
       label: "login-github-copilot",
       args: ["models", "auth", "--agent", "poe", "login-github-copilot", "--yes"],
       command: modelsAuthLoginCommand,
+      // login-github-copilot routes through modelsAuthLoginCommand with the
+      // github-copilot provider and device method preselected.
       expected: { agent: "poe", provider: "github-copilot", method: "device", yes: true },
     },
   ])("passes parent --agent to models auth $label", async ({ args, command, expected }) => {
@@ -250,6 +258,22 @@ describe("models cli", () => {
     await expect(runModelsCommand(args)).rejects.toThrow("does not support --agent");
 
     expect(command).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid --profile-id for paste-token", async () => {
+    await expect(
+      runModelsCommand([
+        "models",
+        "auth",
+        "paste-token",
+        "--provider",
+        "anthropic",
+        "--profile-id",
+        "bad id",
+      ]),
+    ).rejects.toThrow(/process\.exit unexpectedly called with "1"/);
+
+    expect(modelsAuthPasteTokenCommand).not.toHaveBeenCalled();
   });
 
   it("shows help for models auth without error exit", async () => {
