@@ -57,6 +57,11 @@ type LoadAuthProfileStoreOptions = {
   syncExternalCli?: boolean;
   externalCliProviderIds?: Iterable<string>;
   externalCliProfileIds?: Iterable<string>;
+  // Documented intent flag for callers (e.g. `models auth clean`) that want to
+  // load only the agent-local store without merging main-agent profiles.
+  // The current loader is already agent-local; flag retained for clarity and
+  // call-site documentation.
+  skipInheritance?: boolean;
 };
 
 type SaveAuthProfileStoreOptions = {
@@ -742,16 +747,30 @@ function mergeRuntimeExternalProfileState(params: {
 /** Apply an auth store update inside the SQLite write lock. */
 export async function updateAuthProfileStoreWithLock(params: {
   agentDir?: string;
+  agentLocalOnly?: boolean;
   saveOptions?: SaveAuthProfileStoreOptions;
   updater: (store: AuthProfileStore) => boolean;
 }): Promise<AuthProfileStore | null> {
   try {
     return runAuthProfileWriteTransaction(params.agentDir, (database) => {
-      const store = loadAuthProfileStoreForAgent(params.agentDir, {
-        database,
-        readOnly: true,
-        syncExternalCli: false,
-      });
+      // Locked writers must reload from disk, not from any runtime snapshot.
+      // Otherwise a live gateway can overwrite fresher CLI/config-auth writes
+      // with stale in-memory auth state during usage/cooldown updates.
+      //
+      // Subagent writes must reload only the agent-local store; otherwise a
+      // merged runtime view can leak main-agent credentials into subagent scope.
+      const useLocalOnly = params.agentLocalOnly || params.agentDir !== undefined;
+      const store = useLocalOnly
+        ? loadAgentLocalAuthProfileStore(params.agentDir, {
+            database,
+            readOnly: true,
+            syncExternalCli: false,
+          })
+        : loadAuthProfileStoreForAgent(undefined, {
+            database,
+            readOnly: true,
+            syncExternalCli: false,
+          });
       const shouldSave = params.updater(store);
       if (shouldSave) {
         saveAuthProfileStore(store, params.agentDir, params.saveOptions, database);
@@ -837,6 +856,18 @@ export function loadAuthProfileStoreForRuntime(
   );
 }
 
+/**
+ * Load auth-profile store for a specific agent directory without inheriting
+ * from the main agent. Used by `models auth clean` to inspect per-agent
+ * credentials independently.
+ */
+export function loadAgentLocalAuthProfileStore(
+  agentDir?: string,
+  options?: LoadAuthProfileStoreOptions,
+): AuthProfileStore {
+  return loadAuthProfileStoreForAgent(agentDir, { ...options, skipInheritance: true });
+}
+
 /** Load auth profiles for secret resolution without keychain prompts or writes. */
 export function loadAuthProfileStoreForSecretsRuntime(
   agentDir?: string,
@@ -885,6 +916,8 @@ export function ensureAuthProfileStore(
     externalCli?: ExternalCliAuthDiscovery;
     externalCliProviderIds?: Iterable<string>;
     externalCliProfileIds?: Iterable<string>;
+    // Documented intent flag accepted for caller clarity (e.g.
+    // `models auth clean` distinguishing probe vs migration-trigger calls).
     readOnly?: boolean;
     syncExternalCli?: boolean;
   },
