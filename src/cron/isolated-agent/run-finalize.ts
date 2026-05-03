@@ -102,12 +102,20 @@ export async function finalizeCronRun(params: {
     resolvePositiveContextTokens(prepared.cronSession.sessionEntry.contextTokens) ??
     DEFAULT_CONTEXT_TOKENS;
 
+  // A fallback-served run is transient. Persisting its runtime model would
+  // prevent the configured primary from being retried after it recovers, and
+  // persisting its context window would desynchronize status and compaction.
+  const isFromFallback =
+    modelUsed !== execution.liveSelection.model ||
+    providerUsed !== execution.liveSelection.provider;
   if (!params.isAborted()) {
-    setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
-      provider: providerUsed,
-      model: modelUsed,
-    });
-    prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+    if (!isFromFallback) {
+      setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
+        provider: providerUsed,
+        model: modelUsed,
+      });
+      prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+    }
     if (isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
       const cliSessionBinding = finalRunResult.meta?.agentMeta?.cliSessionBinding;
       const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
