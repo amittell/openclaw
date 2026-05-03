@@ -2654,6 +2654,95 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(sessionStore[sessionKey]?.contextTokens).toBe(400_000);
     });
   });
+
+  it("does not persist fallback model/provider/contextTokens when isFromFallback is true", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:explicit:test-fallback-no-persist-explicit";
+      const sessionId = "test-fallback-no-persist-explicit-session";
+      const sessionStore: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: Date.now(),
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          contextTokens: 256_000,
+        },
+      };
+      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+
+      await updateSessionStoreAfterAgentRun({
+        cfg: {} as never,
+        sessionId,
+        sessionKey,
+        storePath,
+        sessionStore,
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.4",
+        fallbackProvider: "anthropic",
+        fallbackModel: "claude-sonnet-4-20250514",
+        isFromFallback: true,
+        result: {
+          meta: {
+            agentMeta: {
+              provider: "anthropic",
+              model: "claude-sonnet-4-20250514",
+              contextTokens: 200_000,
+              usage: { input: 100, output: 50 },
+            },
+          },
+        },
+      });
+
+      const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+      expect(persisted?.model).toBe("gpt-5.4");
+      expect(persisted?.modelProvider).toBe("openai");
+      expect(persisted?.contextTokens).toBe(256_000);
+    });
+  });
+
+  it("does not persist fallback model/provider/contextTokens when fallback is auto-detected", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:explicit:test-fallback-no-persist-auto";
+      const sessionId = "test-fallback-no-persist-auto-session";
+      const sessionStore: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: Date.now(),
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          contextTokens: 256_000,
+        },
+      };
+      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+
+      await updateSessionStoreAfterAgentRun({
+        cfg: {} as never,
+        sessionId,
+        sessionKey,
+        storePath,
+        sessionStore,
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.4",
+        fallbackProvider: "anthropic",
+        fallbackModel: "claude-sonnet-4-20250514",
+        result: {
+          meta: {
+            agentMeta: {
+              provider: "anthropic",
+              model: "claude-sonnet-4-20250514",
+              contextTokens: 200_000,
+              usage: { input: 100, output: 50 },
+            },
+          },
+        },
+      });
+
+      const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+      expect(persisted?.model).toBe("gpt-5.4");
+      expect(persisted?.modelProvider).toBe("openai");
+      expect(persisted?.contextTokens).toBe(256_000);
+    });
+  });
 });
 
 describe("recordCliCompactionInStore", () => {
