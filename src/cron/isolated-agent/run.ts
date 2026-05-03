@@ -961,6 +961,8 @@ async function prepareCronRunContext(params: {
 async function finalizeCronRun(params: {
   prepared: PreparedCronRunContext;
   execution: CronExecutionResult;
+  configuredProvider: string;
+  configuredModel: string;
   abortReason: () => string;
   isAborted: () => boolean;
 }): Promise<RunCronAgentTurnResult> {
@@ -1000,7 +1002,9 @@ async function finalizeCronRun(params: {
     resolvePositiveContextTokens(prepared.cronSession.sessionEntry.contextTokens) ??
     DEFAULT_CONTEXT_TOKENS;
 
-  if (!params.isAborted()) {
+  const isFromFallback =
+    modelUsed !== params.configuredModel || providerUsed !== params.configuredProvider;
+  if (!params.isAborted() && !isFromFallback) {
     setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
       provider: providerUsed,
       model: modelUsed,
@@ -1459,6 +1463,8 @@ export async function runCronIsolatedAgentTurn(params: {
       },
     );
     const { executeCronRun } = await loadCronExecutorRuntime();
+    const configuredProvider = prepared.context.liveSelection.provider;
+    const configuredModel = prepared.context.liveSelection.model;
     const execution = await executeCronRun({
       cfg: params.cfg,
       cfgWithAgentDefaults: prepared.context.cfgWithAgentDefaults,
@@ -1504,6 +1510,8 @@ export async function runCronIsolatedAgentTurn(params: {
     const finalized = await finalizeCronRun({
       prepared: prepared.context,
       execution,
+      configuredProvider,
+      configuredModel,
       abortReason,
       isAborted,
     });
