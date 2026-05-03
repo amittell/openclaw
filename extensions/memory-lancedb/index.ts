@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir, open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
@@ -595,11 +595,28 @@ export default definePluginEntry({
               };
             }
 
-            // MODE 2: atomic replace. Existence check runs BEFORE the embed so
-            // a typo or stale ID returns without a wasted embedding call; the
-            // whole delete/insert runs under the per-ID lock so concurrent
-            // refresh/forget calls on the same ID serialize.
+            // MODE 2: atomic replace. Pre-check existence BEFORE calling
+            // embeddings.embed() so a typo or stale ID returns without a
+            // wasted embedding call; then embed OUTSIDE the per-id mutex so
+            // the slow remote call does not block other refreshes targeting
+            // the same id.
+            const precheck = await db.getById(agentId, memoryId);
+            if (!precheck) {
+              return {
+                content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
+                details: { operation: "error", error: "not_found", memoryId },
+              };
+            }
+
+            // Embed outside the lock - the remote API call dominates wall time
+            // for replace operations and has no shared state to protect.
+            const vector = await embeddings.embed(text);
+
             return withMemoryLock(memoryId, async () => {
+              // Re-validate inside the lock: a concurrent forget or another
+              // refresh that started between the precheck and lock acquisition
+              // could have removed the entry. Without this re-check the replace
+              // would resurrect a deleted memory under the same id.
               const existing = await db.getById(agentId, memoryId);
               if (!existing) {
                 return {
@@ -614,7 +631,6 @@ export default definePluginEntry({
               const resolvedCategory = category ?? existing.category;
               const resolvedImportance = importance ?? existing.importance;
 
-              const vector = await embeddings.embed(text);
               const oldTextPreview = existing.text.slice(0, 80);
 
               await db.delete(agentId, memoryId);
@@ -666,13 +682,16 @@ export default definePluginEntry({
 
               // Append to the audit log (metadata only - memory text is
               // private user data and must never be written to audit logs).
+              // The directory and file are created with restrictive modes so
+              // the audit trail is not world-readable on multi-user hosts
+              // where the process umask is permissive (e.g. 0o022).
               // State-dir aware: isolated OPENCLAW_STATE_DIR rigs and tests
               // must not leak audit entries into the operator's real home.
               const stateDir =
                 process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
               const auditLogPath = path.join(stateDir, "memory", "refresh-audit.jsonl");
               try {
-                await mkdir(path.dirname(auditLogPath), { recursive: true });
+                await mkdir(path.dirname(auditLogPath), { recursive: true, mode: 0o700 });
                 const auditEntry = {
                   ts: Date.now(),
                   operation: "replaced",
@@ -680,7 +699,27 @@ export default definePluginEntry({
                   new_id: newEntry.id,
                   similarity,
                 };
-                await appendFile(auditLogPath, `${JSON.stringify(auditEntry)}\n`, "utf8");
+                // Detect first-time creation so we can explicitly chmod after
+                // open(). open(path, "a", mode) honors mode only when the file
+                // does not yet exist, so for existing-but-loose files we still
+                // need an explicit chmod to enforce 0o600.
+                let preexisting = true;
+                try {
+                  await stat(auditLogPath);
+                } catch {
+                  preexisting = false;
+                }
+                const handle = await open(auditLogPath, "a", 0o600);
+                try {
+                  await appendFile(handle, `${JSON.stringify(auditEntry)}\n`, "utf8");
+                } finally {
+                  await handle.close();
+                }
+                if (!preexisting) {
+                  // Belt-and-braces: even when open(..., 0o600) created the
+                  // file, some platforms still apply the umask, so re-assert.
+                  await chmod(auditLogPath, 0o600);
+                }
               } catch (auditErr) {
                 api.logger.warn(`memory-lancedb: audit log write failed: ${String(auditErr)}`);
               }
