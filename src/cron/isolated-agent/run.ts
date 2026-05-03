@@ -1095,12 +1095,21 @@ async function finalizeCronRun(params: {
     resolvePositiveContextTokens(prepared.cronSession.sessionEntry.contextTokens) ??
     DEFAULT_CONTEXT_TOKENS;
 
+  // A fallback-served run must not durably persist the fallback as the session
+  // runtime model, or the configured primary would never be retried after it
+  // recovers. CLI session-binding maintenance below still runs regardless:
+  // skipping it leaves stale bindings that hijack the next CLI run.
+  const isFromFallback =
+    modelUsed !== execution.liveSelection.model ||
+    providerUsed !== execution.liveSelection.provider;
   if (!params.isAborted()) {
-    setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
-      provider: providerUsed,
-      model: modelUsed,
-    });
-    prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+    if (!isFromFallback) {
+      setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
+        provider: providerUsed,
+        model: modelUsed,
+      });
+      prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+    }
     if (isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
       const cliSessionBinding = finalRunResult.meta?.agentMeta?.cliSessionBinding;
       const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
