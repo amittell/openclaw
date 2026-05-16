@@ -114,6 +114,36 @@ Deeper docs:
 - [Plugin path ownership](/tools/plugin#blocked-plugin-path-ownership)
 - [Docker permissions](/install/docker#permissions-and-eacces)
 
+## Codex rate-limit after running pnpm openclaw on a live host
+
+If a host running the gateway suddenly stops responding through any agent that uses Codex/ChatGPT OAuth, and `~/.openclaw/logs/gateway.err.log` shows the cluster:
+
+```text
+ERR_MODULE_NOT_FOUND: Cannot find module '/.../dist/<chunk>-<hash>.js'
+[diagnostic] liveness warning: reasons=event_loop_delay ... eventLoopDelayMaxMs=NNNNN
+[agent/embedded] codex app-server connection closed during startup; restarting app-server and retrying  (x4-5)
+[agent/embedded] codex app-server connection closed during startup; retries exhausted
+Embedded agent failed before reply: ... openai-codex/...: You have hit your ChatGPT usage limit (...). Try again in ~XX min. (rate_limit)
+```
+
+The cause is almost always that someone invoked `pnpm openclaw <subcommand>` from inside the source checkout (`~/.openclaw/openclaw` or wherever the dev tree lives). The pnpm wrapper checks `dist/.buildstamp` against the watched source tree, sees it as dirty, and runs `tsup` to rebuild. The rebuild rewrites hashed ESM chunks the running gateway has loaded by their previous filenames, so every subsequent `await import()` throws `ERR_MODULE_NOT_FOUND`. The cascading rejections saturate the event loop, the codex sidecar's stdio pipe stalls, the sidecar exits, the gateway retries the spawn several times in a few seconds, and the resulting burst of OAuth-authenticated requests trips OpenAI's per-token anti-abuse throttle. The throttle returns the misleadingly-worded `rate_limit` response even though your subscription's visible quota is unused.
+
+Recovery:
+
+```bash
+# Use the installed binary (not the dev-tree wrapper).
+openclaw gateway restart --force
+openclaw channels status --probe
+```
+
+The throttle clears in well under the headline cooldown the codex CLI reports (typically minutes, not the ~86 min it advertises). Once it clears, both `in:` and `out:` timestamps in `channels status` advance again.
+
+Prevention:
+
+- On any host with a live gateway, run the system-installed `openclaw` binary, not the dev-tree wrapper. The dev-tree wrapper is for the laptop you actively build on, where a rebuild is intentional.
+- If a host does not have the system binary, install it (`npm install -g openclaw@<version>`). Do not work around its absence with `pnpm openclaw`.
+- If you must run from the dev tree on the host, stop the gateway first (`openclaw gateway stop`), do your work, then restart.
+
 ## Decision tree
 
 ```mermaid

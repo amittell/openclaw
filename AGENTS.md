@@ -150,6 +150,7 @@ Skills own workflows; root owns hard policy and routing.
 - "restart iOS/Android apps" = rebuild/reinstall/relaunch, not kill/launch.
 - SwiftUI: Observation (`@Observable`, `@Bindable`) over new `ObservableObject`.
 - Mac gateway: dev watch = `pnpm gateway:watch`; managed installs = `openclaw gateway restart/status --deep`; logs = `./scripts/clawlog.sh`. No launchd/ad-hoc tmux.
+- Live host with a running gateway: only use the system `openclaw` binary, never `pnpm openclaw` from the dev tree. The pnpm wrapper triggers a `tsup` rebuild that rewrites hashed ESM chunks; the running gateway then hits `ERR_MODULE_NOT_FOUND` on subsequent dynamic imports, the codex sidecar's stdio stalls, retry storms hit OpenAI, and the OAuth token gets transiently rate-limited. Stop the gateway first if you must run from the dev tree. Diagnosis fingerprint and recovery in `docs/help/troubleshooting.md`.
 - Version bump surfaces live in `$openclaw-release-maintainer`.
 - Parallels: `$openclaw-parallels-smoke`; Discord roundtrip: `$parallels-discord-roundtrip`.
 - Crabbox/WebVNC human demos: keep remote desktop visible/windowed; no fullscreen remote browser unless video/capture-style output.
