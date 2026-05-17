@@ -205,6 +205,20 @@ export async function resolveAuthForTarget(
       return { ...auth, failureReason: interactive.failureReason };
     }
   }
+  // Explicit URL overrides with unresolved SecretRef diagnostics must not
+  // silently probe with empty/partial auth. For arbitrary (often production)
+  // URLs this is worse than the loopback case: it leaks connection metadata
+  // and surfaces a misleading "Connect: failed" instead of the actionable
+  // "auth unresolvable" reason. Fail fast and surface the resolver diagnostic.
+  if (
+    target.kind === "explicit" &&
+    !auth.token &&
+    !auth.password &&
+    auth.diagnostics &&
+    auth.diagnostics.length > 0
+  ) {
+    return { ...auth, failureReason: auth.diagnostics.join("; ") };
+  }
   return auth;
 }
 

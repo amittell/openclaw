@@ -291,6 +291,51 @@ describe("resolveAuthForTarget - authMode guards and explicit URL overrides", ()
     expect(auth.failureReason).toBeUndefined();
   });
 
+  it("fails-fast for explicit URL when SecretRef-backed local auth is unresolved", async () => {
+    // Without this guard, an explicit URL (e.g. --url wss://prod.example/ws)
+    // would silently probe with empty/partial auth when gateway.auth.token's
+    // SecretRef does not resolve, leaking connection metadata and surfacing a
+    // misleading "Connect: failed" instead of the actionable resolver diagnostic.
+    await withEnvAsync(
+      {
+        OPENCLAW_GATEWAY_PASSWORD: undefined,
+        OPENCLAW_GATEWAY_TOKEN: undefined,
+        MISSING_GATEWAY_TOKEN: undefined,
+      },
+      async () => {
+        const auth = await resolveAuthForTarget(
+          {
+            secrets: {
+              providers: {
+                default: { source: "env" },
+              },
+            },
+            gateway: {
+              auth: {
+                mode: "token",
+                token: { source: "env", provider: "default", id: "MISSING_GATEWAY_TOKEN" },
+              },
+            },
+          },
+          {
+            id: "explicit",
+            kind: "explicit",
+            url: "wss://prod.example/ws",
+            active: true,
+          },
+          {},
+        );
+
+        expect(auth.failureReason).toContain("gateway.auth.token");
+        expect(auth.diagnostics).toStrictEqual([
+          "gateway.auth.token SecretRef is unresolved (env:default:MISSING_GATEWAY_TOKEN).",
+        ]);
+        expect(auth.token).toBeUndefined();
+        expect(auth.password).toBeUndefined();
+      },
+    );
+  });
+
   it("fails-fast for localLoopback when authMode is token and no token is present", async () => {
     // Clear ambient gateway-auth env vars so a token leaked from the test runner
     // (or another suite) cannot satisfy the resolver and mask the fail-fast path.
