@@ -70,6 +70,13 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
 
+// Minimum similarity score for memory_refresh's conflict-preview search.
+// Mirrors the default minScore on MemoryDB.search so the preview only flags
+// entries that share meaningful similarity with the new text; lower values
+// (e.g. memory_recall's liberal 0.1) surface tangentially-related rows that
+// are poor replacement targets.
+const REFRESH_CONFLICT_MIN_SCORE = 0.5;
+
 // Per-memoryId mutex: serializes concurrent replace/delete calls on the same
 // ID so a memory_refresh delete/insert never interleaves with memory_forget.
 // Ids are globally-unique UUIDs, so raw-id keys cannot collide across agents.
@@ -545,7 +552,7 @@ export default definePluginEntry({
           name: "memory_refresh",
           label: "Memory Refresh",
           description:
-            "Search for existing memories similar to new content, or atomically replace a specific memory by ID. Use for updating facts without data loss: call without memoryId to preview similar memories, then call with memoryId to atomically replace.",
+            "Search for existing memories similar to new content, or replace a specific memory by ID. Use for updating facts: call without memoryId to preview similar memories, then call with memoryId to perform a best-effort replace with process-level serialization. The replace path is NOT a storage-level transaction (LanceDB does not expose multi-statement transactions through this code path); it is a process-mutex-serialized delete-then-insert with best-effort rollback on insert failure. The replaced entry keeps its original id so any cached references stay valid.",
           parameters: Type.Object({
             text: Type.String({ description: "New memory content (required in execute mode)" }),
             category: Type.Optional(Type.Enum(MEMORY_CATEGORIES, { type: "string" })),
@@ -555,7 +562,7 @@ export default definePluginEntry({
             memoryId: Type.Optional(
               Type.String({
                 description:
-                  "If provided: atomically replace this memory. If omitted: search-only mode.",
+                  "If provided: best-effort replace of this memory (process-mutex serialized, not a storage-level transaction). If omitted: search-only mode.",
               }),
             ),
           }),
@@ -570,7 +577,7 @@ export default definePluginEntry({
             // MODE 1: search-only preview (no memoryId) - embed and rank.
             if (!memoryId) {
               const vector = await embeddings.embed(text);
-              const results = await db.search(agentId, vector, 3, 0.1);
+              const results = await db.search(agentId, vector, 3, REFRESH_CONFLICT_MIN_SCORE);
               const matches = results.map((r) => ({
                 id: r.entry.id,
                 text: r.entry.text,
@@ -595,7 +602,20 @@ export default definePluginEntry({
               };
             }
 
-            // MODE 2: atomic replace. Pre-check existence BEFORE calling
+            // MODE 2: best-effort replace (memoryId provided).
+            //
+            // ATOMICITY: NOT a storage-level transaction - LanceDB's Table API
+            // exposes no multi-statement transactions through this code path,
+            // so the replace is a delete + insert guarded by a per-id mutex.
+            // Serialized in-process; cross-process writers can still race; if
+            // the insert throws after the delete, rollback is best-effort and
+            // the response carries restored_id: null on double failure.
+            //
+            // ID PRESERVATION: the replace passes the existing memoryId to
+            // db.store({ id }) so the new row keeps the original stable
+            // identifier; old_id and new_id are equal on success.
+            //
+            // Pre-check existence BEFORE calling
             // embeddings.embed() so a typo or stale ID returns without a
             // wasted embedding call; then embed OUTSIDE the per-id mutex so
             // the slow remote call does not block other refreshes targeting
@@ -640,12 +660,16 @@ export default definePluginEntry({
               let rollbackSucceeded = false;
 
               try {
-                newEntry = await db.store(agentId, {
-                  text,
-                  vector,
-                  importance: resolvedImportance,
-                  category: resolvedCategory,
-                });
+                newEntry = await db.store(
+                  agentId,
+                  {
+                    text,
+                    vector,
+                    importance: resolvedImportance,
+                    category: resolvedCategory,
+                  },
+                  { id: memoryId },
+                );
               } catch (insertErr) {
                 // Best-effort rollback: restore the original entry under its
                 // original ID so callers are never left holding a stale

@@ -159,12 +159,23 @@ export class MemoryDB {
     }
   }
 
-  async store(agentId: string, entry: Omit<MemoryEntry, "id" | "createdAt">): Promise<MemoryEntry> {
+  async store(
+    agentId: string,
+    entry: Omit<MemoryEntry, "id" | "createdAt">,
+    options: { id?: string } = {},
+  ): Promise<MemoryEntry> {
     await this.ensureInitialized();
+
+    // memory_refresh passes the existing id so a replace preserves the stable
+    // identifier callers may have cached. Validate the shape so a malformed id
+    // can never reach the SQL filter or the row payload.
+    if (options.id !== undefined && !UUID_PATTERN.test(options.id)) {
+      throw new Error(`Invalid memory ID format: ${options.id}`);
+    }
 
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: randomUUID(),
+      id: options.id ?? randomUUID(),
       createdAt: Date.now(),
     };
     const storedEntry: StoredMemoryRow = { ...fullEntry, agentId };
