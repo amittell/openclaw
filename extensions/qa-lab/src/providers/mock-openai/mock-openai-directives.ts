@@ -287,8 +287,26 @@ export function extractToolErrorForNamedCall(params: {
   if (!error) {
     return undefined;
   }
+  // Harnesses express tool calls either as top-level `function_call` items or
+  // as content blocks inside a message item. Match both so a mock tool error
+  // is attributed to the call it belongs to instead of leaking onto the next
+  // unrelated call.
   const namedFunctionCall = params.input.some(
-    (item) => item.type === "function_call" && item.name === params.name,
+    (item) =>
+      (item.type === "function_call" && item.name === params.name) ||
+      (Array.isArray(item.content) &&
+        item.content.some((block) => {
+          if (!block || typeof block !== "object") {
+            return false;
+          }
+          const record = block as Record<string, unknown>;
+          return (
+            (record.type === "toolCall" ||
+              record.type === "tool_use" ||
+              record.type === "function_call") &&
+            record.name === params.name
+          );
+        })),
   );
   if (namedFunctionCall) {
     return error;
