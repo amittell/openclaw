@@ -3979,6 +3979,42 @@ Update and merge these partial structured summaries.`,
     expect(emptyThreadMemoryText).toContain("NONE");
     expect(emptyThreadMemoryText).not.toContain("ORBIT-22");
 
+    const declaredToolThreadMemorySummary = await postResponses(server, {
+      stream: false,
+      tools: [SESSIONS_SPAWN_TOOL],
+      input: [
+        {
+          role: "system",
+          content: "## /workspace/MEMORY.md\nThread-hidden codename: ORBIT-22.",
+        },
+        makeUserInput(
+          "@openclaw Thread memory check: what is the hidden thread codename stored only in memory? Use memory tools first and reply only in this thread.",
+        ),
+        {
+          type: "function_call",
+          name: "memory_search",
+          arguments: JSON.stringify({
+            query: "hidden thread codename ORBIT-22",
+            maxResults: 3,
+          }),
+        },
+        {
+          type: "function_call_output",
+          output: JSON.stringify({
+            results: [],
+            unavailable: true,
+            error: "database is not open",
+          }),
+        },
+      ],
+    });
+    expect(declaredToolThreadMemorySummary.status).toBe(200);
+    const declaredToolThreadMemoryText = JSON.stringify(
+      await declaredToolThreadMemorySummary.json(),
+    );
+    expect(declaredToolThreadMemoryText).toContain("ORBIT-22");
+    expect(declaredToolThreadMemoryText).not.toContain("sessions_spawn failed");
+
     const memoryFollowup = await expectStreamingResponses(server, {
       input: [
         makeUserInput(
