@@ -412,9 +412,6 @@ class MemoryDB {
 // Embeddings
 // ============================================================================
 
-const DEFAULT_EMBEDDING_TIMEOUT_MS = 10_000;
-const DEFAULT_EMBEDDING_MAX_RETRIES = 1;
-
 type Embeddings = {
   embed(text: string, options?: { timeoutMs?: number }): Promise<number[]>;
 };
@@ -432,11 +429,15 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
   ) {
     this.clientPromise = loadOpenAiModule().then(
       ({ default: OpenAI }) =>
+        // Only pass timeout/maxRetries through when the operator explicitly
+        // configured them. Leaving them unset preserves the OpenAI SDK defaults
+        // (600000ms timeout, 2 retries) so upgrading installs with slow-but-
+        // working embedding endpoints do not silently start failing.
         new OpenAI({
           apiKey,
           baseURL: baseUrl,
-          timeout: timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS,
-          maxRetries: maxRetries ?? DEFAULT_EMBEDDING_MAX_RETRIES,
+          ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+          ...(maxRetries !== undefined ? { maxRetries } : {}),
         }) as OpenAiEmbeddingClient,
     );
   }
