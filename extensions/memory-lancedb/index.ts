@@ -336,6 +336,9 @@ class MemoryDB {
 // Embeddings
 // ============================================================================
 
+const DEFAULT_EMBEDDING_TIMEOUT_MS = 10_000;
+const DEFAULT_EMBEDDING_MAX_RETRIES = 1;
+
 type Embeddings = {
   embed(text: string, options?: { timeoutMs?: number }): Promise<number[]>;
 };
@@ -348,9 +351,17 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     private model: string,
     baseUrl?: string,
     private dimensions?: number,
+    timeoutMs?: number,
+    maxRetries?: number,
   ) {
     this.clientPromise = loadOpenAiModule().then(
-      ({ default: OpenAI }) => new OpenAI({ apiKey, baseURL: baseUrl }) as OpenAiEmbeddingClient,
+      ({ default: OpenAI }) =>
+        new OpenAI({
+          apiKey,
+          baseURL: baseUrl,
+          timeout: timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS,
+          maxRetries: maxRetries ?? DEFAULT_EMBEDDING_MAX_RETRIES,
+        }) as OpenAiEmbeddingClient,
     );
   }
 
@@ -462,9 +473,16 @@ async function runWithTimeout<T>(params: {
 }
 
 function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings {
-  const { provider, model, dimensions, apiKey, baseUrl } = cfg.embedding;
+  const { provider, model, dimensions, apiKey, baseUrl, timeoutMs, maxRetries } = cfg.embedding;
   if (provider === "openai" && apiKey) {
-    return new OpenAiCompatibleEmbeddings(apiKey, model, baseUrl, dimensions);
+    return new OpenAiCompatibleEmbeddings(
+      apiKey,
+      model,
+      baseUrl,
+      dimensions,
+      timeoutMs,
+      maxRetries,
+    );
   }
   return new ProviderAdapterEmbeddings(api, cfg.embedding);
 }
