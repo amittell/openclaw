@@ -80,21 +80,21 @@ const REFRESH_CONFLICT_MIN_SCORE = 0.5;
 // Per-memoryId mutex: serializes concurrent replace/delete calls on the same
 // ID so a memory_refresh delete/insert never interleaves with memory_forget.
 // Ids are globally-unique UUIDs, so raw-id keys cannot collide across agents.
-const _memoryLocks = new Map<string, Promise<void>>();
+const memoryLocks = new Map<string, Promise<void>>();
 
 function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const prev = _memoryLocks.get(id) ?? Promise.resolve();
+  const prev = memoryLocks.get(id) ?? Promise.resolve();
   let resolveLock!: () => void;
   const next = new Promise<void>((r) => {
     resolveLock = r;
   });
-  _memoryLocks.set(id, next);
+  memoryLocks.set(id, next);
   return prev
     .then(() => fn())
     .finally(() => {
       resolveLock();
-      if (_memoryLocks.get(id) === next) {
-        _memoryLocks.delete(id);
+      if (memoryLocks.get(id) === next) {
+        memoryLocks.delete(id);
       }
     });
 }
