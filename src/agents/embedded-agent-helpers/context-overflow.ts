@@ -88,7 +88,9 @@ const RATE_LIMIT_HINT_RE =
 
 /** Detect Anthropic's 429 response for long contexts that require extra usage. */
 export function isAnthropicLongContextUsageError(errorMessage: string): boolean {
-  return errorMessage.toLowerCase().includes("extra usage is required for long context");
+  return normalizeLowercaseStringOrEmpty(errorMessage).includes(
+    "extra usage is required for long context",
+  );
 }
 
 export function isLikelyContextOverflowError(errorMessage?: string): boolean {
