@@ -2976,6 +2976,11 @@ export async function dispatchReplyFromConfig(
                 markInboundDedupeReplayUnsafe();
                 // Buffered commentary preceded this tool; land it before the summary.
                 await flushPendingCommentaryProgress();
+                // When the operator opts into messages.suppressToolErrors, never
+                // surface tool-error tool-result payloads as channel progress.
+                if (payload.isError === true && replyConfig.messages?.suppressToolErrors === true) {
+                  return;
+                }
                 const isFastModeAutoProgress = isFastModeAutoProgressPayload(payload);
                 const isForcedToolProgress =
                   shouldDeliverForcedToolProgressDespiteSourceSuppression();
