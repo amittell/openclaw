@@ -137,6 +137,48 @@ function buildSilentFallbackFailurePayload(params: {
   });
 }
 
+function isGroupOrChannelConversation(params: {
+  sessionCtx: TemplateContext;
+  sessionKey?: string;
+}): boolean {
+  const chatType = normalizeOptionalString(params.sessionCtx.ChatType)?.toLowerCase();
+  if (chatType === "group" || chatType === "channel") {
+    return true;
+  }
+  const sessionKey = normalizeOptionalString(params.sessionKey)?.toLowerCase();
+  return Boolean(sessionKey?.includes(":group:") || sessionKey?.includes(":channel:"));
+}
+
+function isTelegramConversation(sessionCtx: TemplateContext): boolean {
+  const provider = normalizeOptionalString(sessionCtx.OriginatingChannel ?? sessionCtx.Surface);
+  return provider?.toLowerCase() === "telegram";
+}
+
+function fallbackTransitionHasInternalOnlyReason(
+  fallbackTransition: ReturnType<typeof resolveFallbackTransition>,
+): boolean {
+  const reason = fallbackTransition.reasonSummary.trim().toLowerCase();
+  return reason === "unknown" || reason === "no error details" || reason === "unclassified";
+}
+
+function shouldSuppressVisibleFallbackNotice(params: {
+  fallbackTransition: ReturnType<typeof resolveFallbackTransition>;
+  sessionCtx: TemplateContext;
+  sessionKey?: string;
+  verboseEnabled: boolean;
+}): boolean {
+  if (params.verboseEnabled) {
+    return false;
+  }
+  if (fallbackTransitionHasInternalOnlyReason(params.fallbackTransition)) {
+    return true;
+  }
+  return (
+    isTelegramConversation(params.sessionCtx) ||
+    isGroupOrChannelConversation({ sessionCtx: params.sessionCtx, sessionKey: params.sessionKey })
+  );
+}
+
 function hasNonEmptyStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.some((entry) => typeof entry === "string" && entry.trim());
 }
@@ -1672,6 +1714,12 @@ export async function runReplyAgent(params: {
     };
 
     const fallbackNoticePayloads: ReplyPayload[] = [];
+    const suppressVisibleFallbackNotice = shouldSuppressVisibleFallbackNotice({
+      fallbackTransition,
+      sessionCtx,
+      sessionKey,
+      verboseEnabled,
+    });
     if (!preserveUserFacingSessionState && fallbackTransition.fallbackTransitioned) {
       emitAgentEvent({
         runId,
@@ -1688,20 +1736,22 @@ export async function runReplyAgent(params: {
           attempts: fallbackAttempts,
         },
       });
-      const fallbackNotice = buildFallbackNotice({
-        selectedProvider,
-        selectedModel,
-        activeProvider: providerUsed,
-        activeModel: modelUsed,
-        attempts: fallbackAttempts,
-      });
-      if (fallbackNotice) {
-        fallbackNoticePayloads.push(
-          markReplyPayloadForSourceSuppressionDelivery({
-            text: fallbackNotice,
-            isFallbackNotice: true,
-          }),
-        );
+      if (!suppressVisibleFallbackNotice) {
+        const fallbackNotice = buildFallbackNotice({
+          selectedProvider,
+          selectedModel,
+          activeProvider: providerUsed,
+          activeModel: modelUsed,
+          attempts: fallbackAttempts,
+        });
+        if (fallbackNotice) {
+          fallbackNoticePayloads.push(
+            markReplyPayloadForSourceSuppressionDelivery({
+              text: fallbackNotice,
+              isFallbackNotice: true,
+            }),
+          );
+        }
       }
     }
     if (!preserveUserFacingSessionState && fallbackTransition.fallbackCleared) {
@@ -1718,16 +1768,18 @@ export async function runReplyAgent(params: {
           previousActiveModel: fallbackTransition.previousState.activeModel,
         },
       });
-      fallbackNoticePayloads.push(
-        markReplyPayloadForSourceSuppressionDelivery({
-          text: buildFallbackClearedNotice({
-            selectedProvider,
-            selectedModel,
-            previousActiveModel: fallbackTransition.previousState.activeModel,
+      if (!suppressVisibleFallbackNotice) {
+        fallbackNoticePayloads.push(
+          markReplyPayloadForSourceSuppressionDelivery({
+            text: buildFallbackClearedNotice({
+              selectedProvider,
+              selectedModel,
+              previousActiveModel: fallbackTransition.previousState.activeModel,
+            }),
+            isFallbackNotice: true,
           }),
-          isFallbackNotice: true,
-        }),
-      );
+        );
+      }
     }
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".

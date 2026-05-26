@@ -2183,6 +2183,119 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(stored.totalTokensFresh).toBe(true);
   });
 
+  it("keeps internal model fallback notices out of Telegram group replies", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      modelProvider: "openai-codex",
+      model: "gpt-5.5",
+    };
+    const sessionStore = { main: sessionEntry };
+    state.runEmbeddedPiAgentMock.mockResolvedValue({
+      payloads: [{ text: "final answer" }],
+      meta: {
+        agentMeta: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          usage: { input: 1, output: 1 },
+        },
+      },
+    });
+    const fallbackSpy = vi
+      .spyOn(modelFallbackModule, "runWithModelFallback")
+      .mockImplementationOnce(
+        async ({ run }: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+          result: await run("openai-codex", "gpt-5.4"),
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          attempts: [
+            {
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              error: "codex app-server client closed before turn completed",
+              reason: "unknown",
+            },
+          ],
+        }),
+      );
+
+    try {
+      const { run } = createMinimalRun({
+        sessionEntry,
+        sessionStore,
+        sessionKey: "agent:main:telegram:group:chat",
+        sessionCtx: {
+          Provider: "telegram",
+          Surface: "telegram",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "telegram:-1001234567890",
+          ChatType: "group",
+        },
+        runOverrides: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          messageProvider: "telegram",
+        },
+      });
+      const res = await run();
+      const payloads = Array.isArray(res) ? res : res ? [res] : [];
+
+      expect(payloads.map((payload) => payload.text).join("\n")).toBe("final answer");
+      expect(payloads.some((payload) => payload.text?.includes("Model Fallback:"))).toBe(false);
+      expect(sessionEntry.fallbackNoticeSelectedModel).toBe("openai-codex/gpt-5.5");
+      expect(sessionEntry.fallbackNoticeActiveModel).toBe("openai-codex/gpt-5.4");
+      expect(sessionEntry.fallbackNoticeReason).toBe("unknown");
+    } finally {
+      fallbackSpy.mockRestore();
+    }
+  });
+
+  it("keeps generic internal fallback notices out of direct replies", async () => {
+    state.runEmbeddedPiAgentMock.mockResolvedValue({
+      payloads: [{ text: "final answer" }],
+      meta: {
+        agentMeta: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          usage: { input: 1, output: 1 },
+        },
+      },
+    });
+    const fallbackSpy = vi
+      .spyOn(modelFallbackModule, "runWithModelFallback")
+      .mockImplementationOnce(
+        async ({ run }: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+          result: await run("openai-codex", "gpt-5.4"),
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          attempts: [
+            {
+              provider: "openai-codex",
+              model: "gpt-5.5",
+              error: "codex app-server client closed before turn completed",
+              reason: "unknown",
+            },
+          ],
+        }),
+      );
+
+    try {
+      const { run } = createMinimalRun({
+        runOverrides: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+        },
+      });
+      const res = await run();
+      const payloads = Array.isArray(res) ? res : res ? [res] : [];
+
+      expect(payloads.map((payload) => payload.text).join("\n")).toBe("final answer");
+      expect(payloads.some((payload) => payload.text?.includes("Model Fallback:"))).toBe(false);
+    } finally {
+      fallbackSpy.mockRestore();
+    }
+  });
+
   it("surfaces overflow fallback when embedded run returns empty payloads", async () => {
     state.runEmbeddedPiAgentMock.mockImplementationOnce(async () => ({
       payloads: [],
