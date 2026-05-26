@@ -2068,6 +2068,35 @@ describe("dispatchReplyFromConfig", () => {
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
 
+  it("suppresses tool error payloads when messages.suppressToolErrors is enabled", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      ChatType: "direct",
+      SessionKey: "agent:main:main",
+    });
+
+    const replyResolver = async (_ctx: MsgContext, opts?: GetReplyOptions) => {
+      await opts?.onToolResult?.({ text: "⚠️ 🛠️ sqlite3 failed", isError: true });
+      return { text: "handled" } satisfies ReplyPayload;
+    };
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: {
+        messages: {
+          suppressToolErrors: true,
+        },
+      } as OpenClawConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "handled" });
+  });
+
   it("keeps message-tool-only failed tool output compact in normal verbose mode", async () => {
     setNoAbort();
     sessionStoreMocks.currentEntry = {

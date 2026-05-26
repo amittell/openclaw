@@ -1922,6 +1922,13 @@ export async function dispatchReplyFromConfig(
                 if (!suppressAutomaticSourceDelivery) {
                   await onToolResultFromReplyOptions?.(payload);
                 }
+                // When the operator opts into messages.suppressToolErrors, never
+                // surface tool-error tool-result payloads as channel progress,
+                // regardless of source delivery mode. payloads.ts already drops
+                // the warning text; this drops the visible progress delivery too.
+                if (payload.isError === true && replyConfig.messages?.suppressToolErrors === true) {
+                  return;
+                }
                 if (isDispatchOperationAborted()) {
                   return;
                 }
