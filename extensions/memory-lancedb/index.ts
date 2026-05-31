@@ -709,8 +709,13 @@ export default definePluginEntry({
               // where the process umask is permissive (e.g. 0o022).
               // State-dir aware: isolated OPENCLAW_STATE_DIR rigs and tests
               // must not leak audit entries into the operator's real home.
+              // Prefer $OPENCLAW_STATE_DIR, then $HOME, before os.homedir():
+              // libuv's uv_os_homedir() ignores env mutations inside Vitest
+              // worker threads, while both env vars are honored in every
+              // context, so isolated rigs never leak into the real home.
               const stateDir =
-                process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
+                process.env.OPENCLAW_STATE_DIR?.trim() ||
+                path.join(process.env.HOME ?? homedir(), ".openclaw");
               const auditLogPath = path.join(stateDir, "memory", "refresh-audit.jsonl");
               try {
                 await mkdir(path.dirname(auditLogPath), { recursive: true, mode: 0o700 });
