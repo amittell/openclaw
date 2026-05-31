@@ -3609,13 +3609,70 @@ describe("memory plugin e2e", () => {
   });
 
   test("looksLikeEnvelopeSludge does not false-positive on user-typed brackets", () => {
-    // No elapsed/date marker inside the bracket — should pass through.
+    // No elapsed/date marker inside the bracket — should pass through when the
+    // bracketed label is not a known channel id.
     expect(looksLikeEnvelopeSludge("[note] John: hi")).toBe(false);
     expect(looksLikeEnvelopeSludge("[1] some footnote")).toBe(false);
     expect(looksLikeEnvelopeSludge("[TODO] fix this later")).toBe(false);
     // Mid-line quote of the marker shape is not anchored at start, so safe.
     expect(looksLikeEnvelopeSludge("I always think +5m is too short")).toBe(false);
     expect(looksLikeEnvelopeSludge("Meeting on Mon 2026-05-17 at 3pm")).toBe(false);
+  });
+
+  test("looksLikeEnvelopeSludge detects marker-free `[channel from]` envelopes", () => {
+    // formatAgentEnvelope drops `+<elapsed>`, host, ip, and timestamp when their
+    // inputs are absent, leaving just `[<channel> <from>] <body>`. Anchoring on
+    // the canonical bundled channel-id list keeps this detector and the
+    // formatter from drifting.
+    expect(looksLikeEnvelopeSludge("[telegram alice] hello world")).toBe(true);
+    expect(looksLikeEnvelopeSludge("[discord user] ping")).toBe(true);
+    expect(looksLikeEnvelopeSludge("[slack #general user] message")).toBe(true);
+    expect(looksLikeEnvelopeSludge("[imessage Bob] hello")).toBe(true);
+    expect(looksLikeEnvelopeSludge("[whatsapp +15551234567] hi")).toBe(true);
+    // Multi-line body still gets filtered when the envelope leads the first line.
+    expect(looksLikeEnvelopeSludge("[telegram alice] hello\nsecond line\nthird")).toBe(true);
+  });
+
+  test("looksLikeEnvelopeSludge marker-free match is case insensitive", () => {
+    // Production paths feed lowercase channel ids, but the formatter does not
+    // lowercase `params.channel` itself; accept either casing so a stray uppercase
+    // id never bypasses the filter.
+    expect(looksLikeEnvelopeSludge("[Telegram Alice] hi")).toBe(true);
+    expect(looksLikeEnvelopeSludge("[DISCORD user] msg")).toBe(true);
+  });
+
+  test("looksLikeEnvelopeSludge does not false-positive on markdown link syntax", () => {
+    // `[text](url)` is a Markdown link, not a `[channel from] body` envelope.
+    expect(looksLikeEnvelopeSludge("[click here](https://example.com)")).toBe(false);
+    expect(looksLikeEnvelopeSludge("[telegram link](https://t.me/x)")).toBe(false);
+  });
+
+  test("looksLikeEnvelopeSludge does not false-positive on unknown bracketed labels", () => {
+    // Unknown bracketed labels (not in BUNDLED_CHAT_CHANNEL_IDS) stay safe.
+    expect(looksLikeEnvelopeSludge("[note] my thoughts")).toBe(false);
+    expect(looksLikeEnvelopeSludge("[bug] this is broken")).toBe(false);
+    expect(looksLikeEnvelopeSludge("[wip] still figuring this out")).toBe(false);
+    // A bare `[channel]` with no from label is too degenerate to match safely.
+    expect(looksLikeEnvelopeSludge("[telegram] foo")).toBe(false);
+  });
+
+  test("sanitizeForMemoryCapture strips marker-free `[channel from]` envelope prefix", () => {
+    // Mirror the looksLikeEnvelopeSludge marker-free coverage so the full
+    // capture flow (sanitize -> shouldCapture) also handles the shape.
+    expect(sanitizeForMemoryCapture("[telegram alice] I prefer dark mode")).toBe(
+      "I prefer dark mode",
+    );
+    expect(sanitizeForMemoryCapture("[discord user] ping")).toBe("ping");
+    // Group-chat sender-prefix on the body is also stripped when the bracket is
+    // recognized as an envelope.
+    expect(sanitizeForMemoryCapture("[slack #general user] user: hello")).toBe("hello");
+  });
+
+  test("sanitizeForMemoryCapture leaves markdown links and unknown labels alone", () => {
+    expect(sanitizeForMemoryCapture("[click here](https://example.com)")).toBe(
+      "[click here](https://example.com)",
+    );
+    expect(sanitizeForMemoryCapture("[note] my thoughts")).toBe("[note] my thoughts");
   });
 
   test("sanitizeForMemoryCapture strips formatInboundEnvelope direct-message prefix", () => {
