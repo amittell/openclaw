@@ -1,12 +1,33 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveRuntimeServiceVersion } from "../version.js";
 import { authorizeHttpGatewayConnect, isLocalDirectRequest } from "./auth.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { classifyGatewayProbePath } from "./gateway-http-route-contracts.js";
+import { isGatewayShuttingDown } from "./server-close.js";
 import type { ReadinessChecker, StartupChecker, StartupResult } from "./server/readiness.js";
 
 const getHttpAuthUtilsModule = createLazyRuntimeModule(() => import("./http-auth-utils.js"));
+
+const gatewayProbeLog = createSubsystemLogger("gateway/probe");
+// Logging the shutting-down 503 response once per shutdown sequence is enough to
+// trace the zombie cascade; bursts add noise without value because every callers'
+// probe round-trips during the same window.
+let shuttingDownResponseLogged = false;
+export function noteShuttingDownProbeResponse(requestPath: string): void {
+  if (shuttingDownResponseLogged) {
+    return;
+  }
+  shuttingDownResponseLogged = true;
+  gatewayProbeLog.warn(
+    `gateway.healthz.shutting_down_response path=${requestPath}; returning 503 so supervised lock recovery treats this gateway as draining`,
+  );
+}
+export function resetGatewayHealthzShuttingDownLogForTest(): void {
+  shuttingDownResponseLogged = false;
+}
+
 
 async function shouldIncludeGatewayProbeDetails(params: {
   req: IncomingMessage;
@@ -57,6 +78,7 @@ export async function handleGatewayProbeRequest(
   allowRealIpFallback: boolean,
   getReadiness?: ReadinessChecker,
   getStartup?: StartupChecker,
+  getShuttingDown: () => boolean = isGatewayShuttingDown,
 ): Promise<boolean> {
   const status = classifyGatewayProbePath(requestPath);
   if (status === "namespace" || status === "outside") {
@@ -77,7 +99,15 @@ export async function handleGatewayProbeRequest(
 
   let statusCode: number;
   let body: string;
-  if (status === "ready" && getReadiness) {
+  // Live probes flip to 503 the moment shutdown starts so supervised lock
+  // recovery distinguishes a healthy gateway from a zombie that still holds
+  // the HTTP listener. The flag is owned by `server-close` and is set before
+  // any close-handler await.
+  if (status === "live" && getShuttingDown()) {
+    noteShuttingDownProbeResponse(requestPath);
+    statusCode = 503;
+    body = JSON.stringify({ live: false, phase: "shutting_down" });
+  } else if (status === "ready" && getReadiness) {
     // Readiness details expose subsystem names, so only local direct or authenticated
     // callers receive them; unauthenticated remote probes get the aggregate boolean.
     const includeDetails = await shouldIncludeGatewayProbeDetails({

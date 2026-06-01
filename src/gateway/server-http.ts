@@ -21,6 +21,8 @@ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
+
+import { isGatewayShuttingDown } from "./server-close.js";
 import {
   CONTROL_UI_CATALOG_ICON_PATH_PREFIX,
   CONTROL_UI_PLUGIN_ICON_PATH_PREFIX,
@@ -53,6 +55,7 @@ import {
   type ResolvePluginNodeCapabilityRoute,
 } from "./server-http-plugin-auth.js";
 import { handleGatewayProbeRequest } from "./server-http-probes.js";
+export { resetGatewayHealthzShuttingDownLogForTest } from "./server-http-probes.js";
 import type { HooksRequestHandler } from "./server/hooks-request-handler.js";
 import { runWithGatewayHttpWorkAdmission } from "./server/http-work-admission.js";
 import {
@@ -181,6 +184,10 @@ export function createGatewayHttpServer(opts: {
   getRuntimeConfig?: () => OpenClawConfig;
   isStartupPluginRuntimeReady?: () => boolean;
   isTerminalEnabled?: () => boolean;
+  // Test seam: injected so tests can drive the shutting-down flag without
+  // touching the module-level state. Production callers leave it undefined so
+  // the canonical `isGatewayShuttingDown` from server-close is used.
+  getShuttingDown?: () => boolean;
   tlsOptions?: TlsOptions;
 }): HttpServer {
   const {
@@ -203,6 +210,7 @@ export function createGatewayHttpServer(opts: {
     getReadiness,
     getStartup,
   } = opts;
+  const getShuttingDown = opts.getShuttingDown ?? isGatewayShuttingDown;
   const getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);
   const loadGatewayConfig = opts.getRuntimeConfig ?? getRuntimeConfig;
   const openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;
@@ -255,6 +263,7 @@ export function createGatewayHttpServer(opts: {
           false,
           getReadiness,
           getStartup,
+          getShuttingDown,
         );
         return;
       }
@@ -307,6 +316,7 @@ export function createGatewayHttpServer(opts: {
               allowRealIpFallback,
               getReadiness,
               getStartup,
+              getShuttingDown,
             ),
         },
       ];

@@ -126,6 +126,7 @@ export async function createGatewayHttpTransport(params: {
   desktopSessionRegistry?: DesktopSessionRegistry;
   nodeDesktopStreamBroker?: NodeDesktopStreamBroker;
   clients: Set<GatewayWsClient>;
+  getShuttingDown?: () => boolean;
 }): Promise<{
   httpServer: HttpServer;
   httpServers: HttpServer[];
@@ -301,6 +302,7 @@ export async function createGatewayHttpTransport(params: {
       getRuntimeConfig: loadRuntimeConfig,
       isStartupPluginRuntimeReady: params.isStartupPluginRuntimeReady,
       isTerminalEnabled: params.isTerminalEnabled,
+      getShuttingDown: params.getShuttingDown,
       tlsOptions: params.gatewayTls?.enabled ? params.gatewayTls.tlsOptions : undefined,
     });
     // Attach upgrade handler BEFORE listening to prevent race condition
