@@ -55,7 +55,14 @@ import {
   type ResolvePluginNodeCapabilityRoute,
 } from "./server-http-plugin-auth.js";
 import { handleGatewayProbeRequest } from "./server-http-probes.js";
-export { resetGatewayHealthzShuttingDownLogForTest } from "./server-http-probes.js";
+import {
+  resetShuttingDownProbeResponseLogForTest as resetGatewayHealthzShuttingDownLogForTest,
+} from "./gateway-shutdown-state.js";
+// Re-export for source compatibility; backing impl now lives in
+// `gateway-shutdown-state.ts` so the per-cycle reset happens at the
+// state-transition site (markGatewayShuttingDown / resetGatewayShuttingDownState).
+// Per ClawSweeper review P3 on #88908.
+export { resetGatewayHealthzShuttingDownLogForTest };
 import type { HooksRequestHandler } from "./server/hooks-request-handler.js";
 import { runWithGatewayHttpWorkAdmission } from "./server/http-work-admission.js";
 import {

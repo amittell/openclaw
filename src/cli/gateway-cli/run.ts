@@ -527,7 +527,7 @@ async function probeGatewayHealthz(params: {
         hostname: normalizeGatewayHealthProbeHost(params.host),
         port: params.port,
         // ?strict=1 opts into shutdown-aware 503 responses (see
-        // `isStrictLiveProbeRequest` in server-http.ts). Public probes that
+        // `isStrictLiveProbeRequest` in server-http-probes.ts). Public probes that
         // hit /healthz without this marker continue to receive 200 even during
         // shutdown, so external monitors keep their legacy contract.
         path: "/healthz?strict=1",
