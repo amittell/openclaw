@@ -553,6 +553,11 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
+  // Reset the shutting-down flag before any startup work so in-process restart
+  // (close handler already ran in the prior cycle, then we re-enter startup
+  // without process exit) starts answering /healthz as 200 again.
+  const { resetGatewayShuttingDownState } = await loadGatewayCloseModule();
+  resetGatewayShuttingDownState();
   // runGatewayLoop calls this after closing the previous server on both fresh
   // and in-process restarts, making retired plugin generations safe to remove.
   try {
