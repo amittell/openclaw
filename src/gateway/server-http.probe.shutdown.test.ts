@@ -1,0 +1,86 @@
+// Shutting-down probe tests: live probes (/health, /healthz) flip to 503 the
+// moment the gateway starts shutting down so supervised lock recovery
+// distinguishes a draining gateway from a zombie that lost its close path.
+// Split out of server-http.probe.test.ts (which sits at the test max-lines
+// budget) to keep both files under the gate.
+import { afterEach, describe, expect, it } from "vitest";
+import { markGatewayShuttingDown, resetGatewayShuttingDownForTest } from "./server-close.js";
+import { resetGatewayHealthzShuttingDownLogForTest } from "./server-http.js";
+import {
+  AUTH_NONE,
+  createRequest,
+  createResponse,
+  dispatchRequest,
+  withGatewayServer,
+} from "./server-http.test-harness.js";
+
+afterEach(() => {
+  resetGatewayShuttingDownForTest();
+  resetGatewayHealthzShuttingDownLogForTest();
+});
+
+describe("gateway probe endpoints: shutting-down 503", () => {
+  it("returns 503 on /healthz when the gateway is shutting down", async () => {
+    await withGatewayServer({
+      prefix: "probe-healthz-shutting-down",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getShuttingDown: () => true },
+      run: async (server) => {
+        const req = createRequest({ path: "/healthz" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(getBody())).toEqual({ live: false, phase: "shutting_down" });
+      },
+    });
+  });
+
+  it("returns 503 on /health when the gateway is shutting down", async () => {
+    await withGatewayServer({
+      prefix: "probe-health-shutting-down",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getShuttingDown: () => true },
+      run: async (server) => {
+        const req = createRequest({ path: "/health" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(getBody())).toEqual({ live: false, phase: "shutting_down" });
+      },
+    });
+  });
+
+  it("respects the module-level shutting-down flag without an injected getter", async () => {
+    await withGatewayServer({
+      prefix: "probe-healthz-module-flag",
+      resolvedAuth: AUTH_NONE,
+      run: async (server) => {
+        markGatewayShuttingDown();
+        const req = createRequest({ path: "/healthz" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(getBody())).toEqual({ live: false, phase: "shutting_down" });
+      },
+    });
+  });
+
+  it("returns shutting-down HEAD /healthz without a body but with 503", async () => {
+    await withGatewayServer({
+      prefix: "probe-healthz-head-shutting-down",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getShuttingDown: () => true },
+      run: async (server) => {
+        const req = createRequest({ path: "/healthz", method: "HEAD" });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(getBody()).toBe("");
+      },
+    });
+  });
+});
