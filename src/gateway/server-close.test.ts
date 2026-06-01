@@ -1894,19 +1894,11 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("arms the post-shutdown exit watchdog with the clean reason and duration", async () => {
-<<<<<<< HEAD
     // Typed mock signature mirrors the production injection point so the
     // `mock.calls[0][0]` access stays index-safe under tsgo's strict mode.
     const armPostShutdownExitWatchdog = vi.fn<
       (opts: { reason: string; shutdownDurationMs: number }) => { cancel: () => void } | null
     >(() => null);
-=======
-    // Typed mock signature mirrors the production injection point so the
-    // `mock.calls[0][0]` access stays index-safe under tsgo's strict mode.
-    const armPostShutdownExitWatchdog = vi.fn<
-      (opts: { reason: string; shutdownDurationMs: number }) => { cancel: () => void } | null
-    >(() => null);
->>>>>>> 910c9c27825 (test(gateway): type the armPostShutdownExitWatchdog mock for tsgo strict mode)
     const deps = createGatewayCloseTestDeps({ armPostShutdownExitWatchdog });
     const close = createGatewayCloseHandler(deps);
 
