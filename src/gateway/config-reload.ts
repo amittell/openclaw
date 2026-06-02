@@ -719,6 +719,18 @@ export function startGatewayConfigReloader(opts: {
       return;
     }
     if (plan.restartGateway) {
+      // Read nextSettings, not the stale `settings` binding: the incoming
+      // config owns this decision (same source as the mode==="off" check
+      // above), otherwise a config that switches modes logs nothing.
+      // "hybrid" is the hot-capable mode (legacy "hot" resolves to it), so a
+      // restart-required plan here is the case operators need explained.
+      if (nextSettings.mode === "hybrid") {
+        opts.log.warn(
+          `config reload requires gateway restart; hybrid mode scheduling restart (${plan.restartReasons.join(
+            ", ",
+          )})`,
+        );
+      }
       await opts.onConfigChange?.(plan, nextConfig);
       await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
