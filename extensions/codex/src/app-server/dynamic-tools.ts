@@ -68,6 +68,10 @@ type CodexDynamicToolHookContext = {
   hasRepliedRef?: { value: boolean };
   onToolOutcome?: EmbeddedRunAttemptParams["onToolOutcome"];
   allocateToolOutcomeOrdinal?: EmbeddedRunAttemptParams["allocateToolOutcomeOrdinal"];
+  turnSourceChannel?: string;
+  turnSourceTo?: string;
+  turnSourceAccountId?: string;
+  turnSourceThreadId?: string | number;
 };
 
 type CodexToolResultHookContext = Omit<CodexDynamicToolHookContext, "config">;

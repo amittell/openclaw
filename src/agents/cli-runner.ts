@@ -415,6 +415,12 @@ async function runCliAgentInternal(params: RunCliAgentParams): Promise<EmbeddedA
         workspaceDir: params.workspaceDir,
         trigger: params.trigger,
         ...buildAgentHookContextChannelFields(params),
+        ...((params.messageChannel ?? params.messageProvider)
+          ? { turnSourceChannel: params.messageChannel ?? params.messageProvider }
+          : {}),
+        ...(params.currentChannelId ? { turnSourceTo: params.currentChannelId } : {}),
+        ...(params.agentAccountId ? { turnSourceAccountId: params.agentAccountId } : {}),
+        ...(params.currentThreadTs ? { turnSourceThreadId: params.currentThreadTs } : {}),
       } as const;
       params.onExecutionPhase?.({
         phase: "before_agent_reply",
@@ -548,6 +554,12 @@ export async function runPreparedCliAgent(
       ? { contextWindowReferenceTokens: context.contextWindowInfo.referenceTokens }
       : {}),
     ...buildAgentHookContextChannelFields(params),
+    ...((params.messageChannel ?? params.messageProvider)
+      ? { turnSourceChannel: params.messageChannel ?? params.messageProvider }
+      : {}),
+    ...(params.currentChannelId ? { turnSourceTo: params.currentChannelId } : {}),
+    ...(params.agentAccountId ? { turnSourceAccountId: params.agentAccountId } : {}),
+    ...(params.currentThreadTs ? { turnSourceThreadId: params.currentThreadTs } : {}),
   } as const;
 
   const buildAgentEndMessages = (lastAssistant?: unknown): unknown[] => [
