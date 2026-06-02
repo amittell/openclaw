@@ -638,16 +638,17 @@ watchdog because Codex has proven the turn is still alive. Tool handoffs use a
 longer post-tool idle budget: after OpenClaw returns an `item/tool/call`
 response, after native tool items such as `commandExecution` complete, after raw
 `custom_tool_call_output` completions, and after post-tool raw assistant
-progress, raw reasoning completions, or reasoning progress. The guard uses
+progress, raw reasoning `rawResponseItem/completed` completions with no active
+items, or reasoning progress. The guard uses
 `appServer.postToolRawAssistantCompletionIdleTimeoutMs` when configured and
 defaults to five minutes otherwise. That same post-tool budget also extends the
 progress watchdog for the silent synthesis window before Codex emits the next
-current-turn event. Global app-server notifications, such as rate-limit updates,
-do not reset turn-idle progress. Reasoning completions, commentary
+current-turn event. Global app-server notifications, such as rate-limit
+updates, do not reset turn-idle progress. Reasoning completions, commentary
 `agentMessage` completions, and pre-tool raw reasoning or assistant progress can
 be followed by an automatic final reply, so they use the post-progress reply
-guard instead of releasing the session lane immediately. Only
-final/non-commentary completed `agentMessage` items and pre-tool raw
+guard instead of releasing the session lane immediately. Only final/non-commentary
+completed `agentMessage` items and pre-tool raw
 assistant completions arm the assistant-output release: if Codex then goes quiet
 without `turn/completed`, OpenClaw best-effort interrupts the native turn and
 releases the session lane. Replay-safe stdio app-server failures, including
