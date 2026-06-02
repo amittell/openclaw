@@ -691,6 +691,15 @@ async function requestPluginToolApproval(params: {
     if (hasImmediateDecision) {
       decision = requestResult?.decision;
       if (decision === null) {
+        if (approval.unavailableBehavior === "allow") {
+          const resolution = PluginApprovalResolutions.ALLOW_ONCE;
+          notifyPluginApprovalResolution(approval, resolution);
+          return {
+            blocked: false,
+            params: mergeParamsWithApprovalOverrides(params.baseParams, params.overrideParams),
+            approvalResolution: resolution,
+          };
+        }
         notifyPluginApprovalResolution(approval, PluginApprovalResolutions.CANCELLED);
         return {
           blocked: true,
