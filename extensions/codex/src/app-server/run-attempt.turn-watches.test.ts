@@ -2522,7 +2522,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     ).toBe(false);
   });
 
-  it("keeps waiting after post-tool raw reasoning completes with no active items", async () => {
+  it("uses the post-tool timeout after raw reasoning completes", async () => {
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     let handleRequest:
       | ((request: { id: string; method: string; params?: unknown }) => Promise<unknown>)
@@ -2568,7 +2568,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     const run = runCodexAppServerAttempt(params, {
       turnCompletionIdleTimeoutMs: 5,
       turnAssistantCompletionIdleTimeoutMs: 500,
-      postToolRawAssistantCompletionIdleTimeoutMs: 80,
+      postToolRawAssistantCompletionIdleTimeoutMs: 100,
       turnTerminalIdleTimeoutMs: 500,
     }).finally(() => {
       settled = true;
@@ -2588,10 +2588,9 @@ describe("runCodexAppServerAttempt turn watches", () => {
       },
     })) as { success?: boolean };
     expect(toolResult.success).toBe(false);
-    // A raw reasoning completion after a tool handoff is progress, not a
-    // terminal stall signal. Keep the turn alive past the short completion
-    // guard so long-running reasoning can continue until Codex sends a real
-    // terminal turn notification.
+    // Post-tool reasoning can precede the final reply; keep the post-tool
+    // continuation guard armed instead of falling back to the generic
+    // completion idle timeout.
     await notify({
       method: "rawResponseItem/completed",
       params: {
@@ -2613,17 +2612,21 @@ describe("runCodexAppServerAttempt turn watches", () => {
       ),
     ).toBe(false);
 
-    await notify({
-      method: "turn/completed",
-      params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
-      },
-    });
     const result = await run;
-    expect(result.aborted).toBe(false);
-    expect(result.timedOut).toBe(false);
-    expect(result.promptError).toBeNull();
+    expect(result.aborted).toBe(true);
+    expect(result.timedOut).toBe(true);
+    expect(result.promptError).toBe(
+      "codex app-server turn idle timed out waiting for turn/completed",
+    );
+    const completionWarnCall = warn.mock.calls.find(
+      ([message]) => message === "codex app-server turn idle timed out waiting for completion",
+    );
+    expect(completionWarnCall).toBeDefined();
+    const completionWarnData = completionWarnCall?.[1] as
+      | { lastActivityReason?: string; timeoutMs?: number }
+      | undefined;
+    expect(completionWarnData?.timeoutMs).toBe(100);
+    expect(completionWarnData?.lastActivityReason).toBe("notification:rawResponseItem/completed");
     expect(
       warn.mock.calls.some(
         ([message]) =>
