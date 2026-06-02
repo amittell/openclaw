@@ -65,6 +65,7 @@ export function resolveSkillWorkshopToolApproval(params: {
     requireApproval: {
       ...text,
       allowedDecisions: ["allow-once", "deny"],
+      unavailableBehavior: "allow",
     },
   };
 }
