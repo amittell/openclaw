@@ -462,7 +462,8 @@ export type ArtifactDownloadResult = {
   url?: string;
 };
 
-export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
+export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout" | "paused";
+export type SessionPauseReason = "sessions_yield";
 type SubagentRunState = "active" | "interrupted" | "historical";
 
 type SessionCompactionCheckpointReason =
@@ -572,6 +573,7 @@ export type GatewaySessionRow = {
   status?: SessionRunStatus;
   /** Compact user-facing reason for the latest failed or timed-out run. */
   lastRunError?: string;
+  pauseReason?: SessionPauseReason;
   hasActiveRun?: boolean;
   activeRunIds?: string[];
   /** Active transcript-branch leaf returned with chat history. */
