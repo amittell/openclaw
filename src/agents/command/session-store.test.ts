@@ -2743,7 +2743,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
           contextTokens: 256_000,
         },
       };
-      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+      await seedSessionStore(storePath, sessionStore);
 
       await updateSessionStoreAfterAgentRun({
         cfg: {} as never,
@@ -2758,7 +2758,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         isFromFallback: true,
         result: {
           meta: {
+            durationMs: 1,
             agentMeta: {
+              sessionId,
               provider: "anthropic",
               model: "claude-sonnet-4-20250514",
               contextTokens: 200_000,
@@ -2768,7 +2770,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         },
       });
 
-      const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+      const persisted = loadSessionEntry({ storePath, sessionKey });
       expect(persisted?.model).toBe("gpt-5.4");
       expect(persisted?.modelProvider).toBe("openai");
       expect(persisted?.contextTokens).toBe(256_000);
@@ -2788,7 +2790,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
           contextTokens: 256_000,
         },
       };
-      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf8");
+      await seedSessionStore(storePath, sessionStore);
 
       await updateSessionStoreAfterAgentRun({
         cfg: {} as never,
@@ -2802,7 +2804,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         fallbackModel: "claude-sonnet-4-20250514",
         result: {
           meta: {
+            durationMs: 1,
             agentMeta: {
+              sessionId,
               provider: "anthropic",
               model: "claude-sonnet-4-20250514",
               contextTokens: 200_000,
@@ -2812,7 +2816,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         },
       });
 
-      const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+      const persisted = loadSessionEntry({ storePath, sessionKey });
       expect(persisted?.model).toBe("gpt-5.4");
       expect(persisted?.modelProvider).toBe("openai");
       expect(persisted?.contextTokens).toBe(256_000);
