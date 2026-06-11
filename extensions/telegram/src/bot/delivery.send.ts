@@ -33,7 +33,10 @@ import type { TelegramThreadSpec } from "./helpers.js";
 
 export { buildTelegramSendParams } from "../reply-parameters.js";
 
-const EMPTY_TEXT_ERR_RE = /message text is empty/i;
+// Telegram rejects empty-text sends with two known descriptions: the
+// long-standing "message text is empty" and the newer "text must be non-empty"
+// Bot API variant. Match either so the post-render empty-text skip catches both.
+const EMPTY_TEXT_ERR_RE = /message text is empty|text must be non-empty/i;
 function createTelegramDeliverySendRetry() {
   return createChannelApiRetryRunner({
     shouldRetry: (err) => isSafeToRetrySendError(err) || isTelegramRateLimitError(err),
@@ -111,7 +114,18 @@ export async function sendTelegramText(
     silent?: boolean;
     replyMarkup?: ReturnType<typeof buildInlineKeyboard>;
   },
-): Promise<number> {
+): Promise<number | undefined> {
+  // Silently skip empty-text sends before any API work. An interrupted
+  // mid-reply turn can emit content that collapses to only whitespace after the
+  // markdown render + supported-tag filter (a half-emitted code fence, a
+  // heading with no body). Telegram rejects those with a 400 ("message text is
+  // empty" / "text must be non-empty"), which would surface as a delivery
+  // failure even though the model produced nothing visible. Skipping pre-flight
+  // returns no message id so callers do not count it as delivered.
+  if (!text.trim()) {
+    runtime.log?.(`telegram sendMessage skipped chat=${chatId}: empty text after trim`);
+    return undefined;
+  }
   const baseParams = buildTelegramSendParams({
     replyToMessageId: opts?.replyToMessageId,
     replyQuoteMessageId: opts?.replyQuoteMessageId,
@@ -165,9 +179,10 @@ export async function sendTelegramText(
     });
     if (isEmptyTelegramRichMessage(richPlan.richMessage)) {
       if (!hasFallbackText) {
-        throw new Error(
-          "telegram sendRichMessage failed: empty rich text and empty plain fallback",
+        runtime.log?.(
+          `telegram sendRichMessage skipped chat=${chatId}: empty rich text and empty plain fallback`,
         );
+        return undefined;
       }
       runtime.log?.("telegram sendRichMessage rendered empty; falling back to plain text");
       return await sendPlainFallback();
@@ -190,6 +205,16 @@ export async function sendTelegramText(
       runtime.log?.(`telegram sendRichMessage ok chat=${chatId} message=${res.message_id}`);
       return res.message_id;
     } catch (err) {
+      const errText = formatErrorMessage(err);
+      // Telegram rejecting the rendered payload as empty means nothing visible
+      // would have been shown; treat it as a silent no-op instead of a delivery
+      // failure, matching the pre-flight empty-text skip above.
+      if (EMPTY_TEXT_ERR_RE.test(errText)) {
+        runtime.log?.(
+          `telegram sendRichMessage skipped chat=${chatId}: Telegram rejected text as empty (${errText})`,
+        );
+        return undefined;
+      }
       const fallbackPlan = buildTelegramPlainFallbackPlan({
         plainText: richPlan.plainText || fallbackText,
         err,
@@ -206,10 +231,14 @@ export async function sendTelegramText(
   // Markdown can render to empty HTML for syntax-only chunks; recover with plain text.
   if (!htmlText.trim()) {
     if (!hasFallbackText) {
-      throw new Error("telegram sendMessage failed: empty formatted text and empty plain fallback");
+      runtime.log?.(
+        `telegram sendMessage skipped chat=${chatId}: formatted text collapsed to empty and plain fallback is empty`,
+      );
+      return undefined;
     }
     return await sendPlainFallback();
   }
+
   try {
     const res = await sendTelegramWithThreadFallback({
       operation: "sendMessage",
@@ -232,7 +261,17 @@ export async function sendTelegramText(
     return res.message_id;
   } catch (err) {
     const errText = formatErrorMessage(err);
-    if (isTelegramHtmlParseError(err) || EMPTY_TEXT_ERR_RE.test(errText)) {
+    if (EMPTY_TEXT_ERR_RE.test(errText)) {
+      if (!hasFallbackText) {
+        runtime.log?.(
+          `telegram sendMessage skipped chat=${chatId}: Telegram rejected text as empty (${errText})`,
+        );
+        return undefined;
+      }
+      runtime.log?.(`telegram formatted send failed; retrying without formatting: ${errText}`);
+      return await sendPlainFallback();
+    }
+    if (isTelegramHtmlParseError(err)) {
       if (!hasFallbackText) {
         throw err;
       }
