@@ -30,6 +30,10 @@ import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import { buildNonSensitiveProbeFailure, resolveHealthAccountContext } from "./account-context.js";
 import { buildDeliveryQueueHealthSummary } from "./delivery-queue.js";
+import {
+  buildRuntimeConfigHealthSummary,
+  readRuntimeHealthConfigState,
+} from "./runtime-config.js";
 import type {
   AgentHealthSummary,
   ChannelAccountHealthSummary,
@@ -199,7 +203,8 @@ export async function collectGatewayHealthSnapshot(params: {
   eventLoop?: HealthSummary["eventLoop"];
   configReloadHotReloadStatus?: GatewayHotReloadStatus;
 }): Promise<HealthSummary> {
-  const cfg = await readRuntimeHealthConfig();
+  const runtimeConfigState = await readRuntimeHealthConfigState();
+  const cfg = runtimeConfigState.config;
   const { defaultAgentId, ordered } = resolveHealthAgentOrder(cfg);
   const channelBindings = buildChannelAccountBindings(cfg);
   const sessionCache = new Map<string, HealthSummary["sessions"]>();
@@ -396,6 +401,9 @@ export async function collectGatewayHealthSnapshot(params: {
   const pluginHealth = buildPluginHealthSummary();
   const contextEngineHealth = buildContextEngineHealthSummary();
   const deliveryQueueHealth = buildDeliveryQueueHealthSummary();
+  const runtimeConfigHealth = buildRuntimeConfigHealthSummary(runtimeConfigState, {
+    includeFingerprints: includeSensitive,
+  });
   return {
     ok: true,
     ts: Date.now(),
@@ -404,6 +412,7 @@ export async function collectGatewayHealthSnapshot(params: {
     ...(pluginHealth ? { plugins: pluginHealth } : {}),
     ...(contextEngineHealth ? { contextEngines: contextEngineHealth } : {}),
     ...(deliveryQueueHealth ? { deliveryQueues: deliveryQueueHealth } : {}),
+    ...(runtimeConfigHealth ? { runtimeConfig: runtimeConfigHealth } : {}),
     ...(params.configReloadHotReloadStatus
       ? { configReload: { hotReloadStatus: params.configReloadHotReloadStatus } }
       : {}),
@@ -419,9 +428,4 @@ export async function collectGatewayHealthSnapshot(params: {
       recent: sessions.recent,
     },
   };
-}
-
-async function readRuntimeHealthConfig(): Promise<OpenClawConfig> {
-  const { getRuntimeConfig } = await import("../../config/config.js");
-  return getRuntimeConfig();
 }

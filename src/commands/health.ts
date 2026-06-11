@@ -146,6 +146,29 @@ function formatEventLoopHealthLine(summary: HealthSummary): string | null {
   }`;
 }
 
+/** Formats applied-versus-disk runtime config drift for text health output. */
+export function formatRuntimeConfigHealthLine(summary: HealthSummary): string | null {
+  const runtimeConfig = summary.runtimeConfig;
+  if (!runtimeConfig) {
+    return null;
+  }
+  if (runtimeConfig.state === "drift") {
+    const paths = runtimeConfig.driftPaths?.length
+      ? runtimeConfig.driftPaths.join(", ")
+      : "model/provider/auth config";
+    const modelDetail =
+      runtimeConfig.liveDefaultModel || runtimeConfig.diskDefaultModel
+        ? `; live=${runtimeConfig.liveDefaultModel ?? "unknown"} disk=${runtimeConfig.diskDefaultModel ?? "unknown"}`
+        : "";
+    return `Runtime config: warning (live gateway differs from disk for ${paths}; restart required or pending${modelDetail})`;
+  }
+  if (runtimeConfig.state === "unknown") {
+    const reason = runtimeConfig.message?.trim() || "disk source unavailable";
+    return `Runtime config: warning (unknown disk source: ${reason})`;
+  }
+  return null;
+}
+
 /** Formats context engine quarantine state for text health output. */
 export function formatContextEngineHealthLine(summary: HealthSummary): string | null {
   const quarantined = summary.contextEngines?.quarantined ?? [];
@@ -400,6 +423,10 @@ export async function healthCommand(
     const eventLoopLine = formatEventLoopHealthLine(summary);
     if (eventLoopLine) {
       runtime.log(styleHealthChannelLine(eventLoopLine, rich));
+    }
+    const runtimeConfigLine = formatRuntimeConfigHealthLine(summary);
+    if (runtimeConfigLine) {
+      runtime.log(styleHealthChannelLine(runtimeConfigLine, rich));
     }
     const contextEngineLine = formatContextEngineHealthLine(summary);
     if (contextEngineLine) {
