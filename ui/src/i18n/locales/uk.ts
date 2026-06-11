@@ -230,6 +230,7 @@ export const uk: TranslationMap = {
     statusFailed: "Помилка",
     statusKilled: "Завершено примусово",
     statusTimeout: "Час очікування минув",
+    statusPaused: "Paused",
     model: "Модель",
     provider: "Провайдер",
     runtime: "Середовище виконання",

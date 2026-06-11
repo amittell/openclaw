@@ -230,6 +230,7 @@ export const fa: TranslationMap = {
     statusFailed: "ناموفق",
     statusKilled: "متوقف شد",
     statusTimeout: "زمان به پایان رسید",
+    statusPaused: "Paused",
     model: "مدل",
     provider: "ارائه‌دهنده",
     runtime: "زمان اجرا",

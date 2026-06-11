@@ -229,6 +229,7 @@ export const vi: TranslationMap = {
     statusFailed: "Thất bại",
     statusKilled: "Đã bị dừng",
     statusTimeout: "Đã hết thời gian chờ",
+    statusPaused: "Paused",
     model: "Mô hình",
     provider: "Nhà cung cấp",
     runtime: "Runtime",

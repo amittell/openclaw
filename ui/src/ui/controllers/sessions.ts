@@ -312,6 +312,7 @@ const SESSION_EVENT_ROW_FIELDS = [
   "model",
   "modelProvider",
   "outputTokens",
+  "pauseReason",
   "reasoningLevel",
   "runtimeMs",
   "sessionId",
