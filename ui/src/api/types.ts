@@ -431,7 +431,8 @@ export type ArtifactDownloadResult = {
   url?: string;
 };
 
-export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
+export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout" | "paused";
+export type SessionPauseReason = "sessions_yield";
 type SubagentRunState = "active" | "interrupted" | "historical";
 
 type SessionCompactionCheckpointReason =
@@ -507,6 +508,7 @@ export type GatewaySessionRow = {
   totalTokensFresh?: boolean;
   estimatedCostUsd?: number;
   status?: SessionRunStatus;
+  pauseReason?: SessionPauseReason;
   hasActiveRun?: boolean;
   activeRunIds?: string[];
   subagentRunState?: SubagentRunState;

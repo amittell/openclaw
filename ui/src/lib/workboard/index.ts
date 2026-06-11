@@ -3,6 +3,12 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { requestSessionCreate } from "../sessions/index.ts";
 // Control UI controller manages workboard gateway state.
+<<<<<<< HEAD:ui/src/lib/workboard/index.ts
+=======
+import { GatewayRequestError, type GatewayBrowserClient } from "../gateway.ts";
+import { isSessionRunActive } from "../session-run-state.ts";
+import type { GatewaySessionRow } from "../types.ts";
+>>>>>>> 62dfbcc8c82 (fix(agents): pause yielded main-session runs):ui/src/ui/controllers/workboard.ts
 
 export const WORKBOARD_STATUSES = [
   "triage",
@@ -2930,7 +2936,12 @@ function sessionTitle(session: GatewaySessionRow, recentUserText: string | null)
 }
 
 function sessionCaptureStatus(session: GatewaySessionRow): WorkboardStatus {
-  if (session.hasActiveRun === true || session.status === "running") {
+  // Use the shared `isSessionRunActive` so paused (sessions_yield) sessions
+  // are reported as `running` in the Workboard view. A paused session has a
+  // queued continuation pending; treating it as `done` / `review` here would
+  // let the Workboard mark the yield as resolved while the runner is still
+  // about to drain the continuation.
+  if (isSessionRunActive(session)) {
     return "running";
   }
   if (session.abortedLastRun || isFailedSessionStatus(session.status)) {

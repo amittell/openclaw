@@ -31,7 +31,9 @@ export type GatewaySessionsDefaults = {
 };
 
 /** Runtime status surfaced for the latest session run. */
-export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
+export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout" | "paused";
+
+export type SessionPauseReason = "sessions_yield";
 
 type SubagentRunState = "active" | "interrupted" | "historical";
 
@@ -95,6 +97,7 @@ export type GatewaySessionRow = {
   status?: SessionRunStatus;
   hasActiveRun?: boolean;
   activeRunIds?: string[];
+  pauseReason?: SessionPauseReason;
   subagentRunState?: SubagentRunState;
   hasActiveSubagentRun?: boolean;
   startedAt?: number;
