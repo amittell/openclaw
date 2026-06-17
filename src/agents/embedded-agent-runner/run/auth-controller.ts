@@ -38,7 +38,11 @@ import {
   protectPreparedProviderRuntimeAuth,
   unwrapSecretSentinelsForProviderEgress,
 } from "../../provider-secret-egress.js";
-import { clampRuntimeAuthRefreshDelayMs } from "../../runtime-auth-refresh.js";
+import {
+  clampRuntimeAuthRefreshDelayMs,
+  RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS,
+  withRuntimeAuthRefreshDeadline,
+} from "../../runtime-auth-refresh.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 import {
@@ -260,7 +264,7 @@ export function createEmbeddedRunAuthController(params: {
     // after another profile or credential has already become active.
     const refreshGeneration = runtimeAuthState.generation;
     const refreshProfileId = runtimeAuthState.profileId;
-    const refreshPromise: Promise<void> = (async () => {
+    const refreshOperation: Promise<void> = (async () => {
       const currentRuntimeAuthState = params.getRuntimeAuthState();
       const sourceApiKey = currentRuntimeAuthState?.sourceApiKey.trim() ?? "";
       if (!sourceApiKey) {
@@ -303,7 +307,15 @@ export function createEmbeddedRunAuthController(params: {
           `Runtime auth refreshed for ${runtimeModel.provider}; expires in ${Math.max(0, Math.floor(remaining / 1000))}s.`,
         );
       }
-    })()
+    })();
+    // Hard backstop: a provider auth hook, keychain read, or cross-agent lock
+    // wait that never settles must not leave `refreshInFlight` pending forever,
+    // or every later model turn deadlocks awaiting it (see #88xx rh-bot freeze).
+    const refreshPromise: Promise<void> = withRuntimeAuthRefreshDeadline(
+      refreshOperation,
+      RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS,
+      params.getRuntimeModel().provider,
+    )
       .catch((err: unknown) => {
         const runtimeModel = params.getRuntimeModel();
         params.log.warn(
@@ -312,12 +324,12 @@ export function createEmbeddedRunAuthController(params: {
         throw err;
       })
       .finally(() => {
+        // Clear whenever this promise is still the active in-flight handle.
+        // Intentionally not gated on generation: a profile rotation during a
+        // slow/hung refresh must still release the handle it owns, otherwise the
+        // stale handle wedges the new generation's refreshes.
         const activeState = params.getRuntimeAuthState();
-        if (
-          activeState &&
-          activeState.generation === refreshGeneration &&
-          activeState.refreshInFlight === refreshPromise
-        ) {
+        if (activeState && activeState.refreshInFlight === refreshPromise) {
           activeState.refreshInFlight = undefined;
         }
       });
