@@ -1387,23 +1387,26 @@ describe("memory plugin e2e", () => {
 
           const hookEvent = { prompt: "what editor should i use?", messages: [] };
           const resultPromise = beforePromptBuild?.(hookEvent, { agentId: "main" });
-          await vi.advanceTimersByTimeAsync(15_000);
+          await vi.advanceTimersByTimeAsync(5_000);
 
           await expect(resultPromise).resolves.toBeUndefined();
           expect(ensureGlobalUndiciEnvProxyDispatcher).toHaveBeenCalledOnce();
           expect(firstMockArg(post as unknown as MockCallSource, "post path")).toBe("/embeddings");
           const postOptions = firstObjectArg(post as unknown as MockCallSource, "post options", 1);
           expect(postOptions.maxRetries).toBe(0);
-          expect(postOptions.timeout).toBe(15_000);
+          // Auto-recall carries a tighter 5s budget than the explicit recall
+          // tool: it runs on the prompt-build hot path, and a breach parks
+          // recall on the shared cooldown instead of re-stalling every turn.
+          expect(postOptions.timeout).toBe(5_000);
           expect(loadLanceDbModule).not.toHaveBeenCalled();
           expect(logger.warn).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
+            "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
           );
 
           expect(await beforePromptBuild?.(hookEvent, { agentId: "main" })).toBeUndefined();
           expect(post).toHaveBeenCalledTimes(1);
           expect(logger.debug).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 15s",
+            "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 5s",
           );
 
           const recallTool = materializeRegisteredTool(
@@ -1417,7 +1420,7 @@ describe("memory plugin e2e", () => {
             count: 0,
             disabled: true,
             unavailable: true,
-            error: "auto-recall timed out after 15s",
+            error: "auto-recall timed out after 5s",
           });
           expect(post).toHaveBeenCalledTimes(1);
 
