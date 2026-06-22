@@ -37,12 +37,12 @@ function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>
   }
 
   // Scan top-level tools.media if present.
+  // Only tools.media carries `models`; the per-capability image/audio/video
+  // configs are `Omit<MediaUnderstandingConfig, "models">` and select from the
+  // shared list via preferredModel, so there is nothing else to scan here.
   const media = cfg.tools?.media;
   if (media) {
     addFromModels(media.models);
-    addFromModels(media.image?.models);
-    addFromModels(media.audio?.models);
-    addFromModels(media.video?.models);
   }
 
   // Always scan per-agent tool overrides, even when cfg.tools.media is absent.
@@ -54,9 +54,6 @@ function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>
       continue;
     }
     addFromModels(agentMedia.models);
-    addFromModels(agentMedia.image?.models);
-    addFromModels(agentMedia.audio?.models);
-    addFromModels(agentMedia.video?.models);
   }
 
   return ids;
