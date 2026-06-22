@@ -197,7 +197,14 @@ function resolveAutoCaptureStartIndex(
 // ============================================================================
 
 const TABLE_NAME = "memories";
-const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 15_000;
+// Auto-recall runs on the prompt-build hot path, so its embed timeout doubles
+// as a startup-stall budget: a healthy embedder answers in well under a second,
+// so 5s is generous headroom while still capping the worst-case wait. A breach
+// trips the shared recall cooldown (see the before_prompt_build hook) so the
+// next turns skip the embed instantly instead of re-paying the timeout. The
+// explicit memory_recall tool keeps the longer budget below: the user is
+// actively waiting on that call, so failing it fast is the wrong trade.
+const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 5_000;
 const DEFAULT_TOOL_RECALL_TIMEOUT_MS = 15_000;
 const DEFAULT_TOOL_RECALL_COOLDOWN_MS = 60_000;
 const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
@@ -1889,6 +1896,13 @@ export default definePluginEntry({
       if (!event.prompt || event.prompt.length < 5) {
         return undefined;
       }
+      // Circuit breaker: a recent embed failure (from either recall path) parks
+      // recall on a shared cooldown. While it is open, skip the embed entirely
+      // rather than re-stalling prompt build; the cooldown self-expires, so the
+      // next turn becomes a single half-open probe that closes it on success.
+      if (readMemoryRecallCooldown()) {
+        return undefined;
+      }
 
       try {
         const recallQuery = normalizeRecallQuery(
@@ -1908,8 +1922,12 @@ export default definePluginEntry({
           },
         });
         if (recall.status === "timeout") {
+          const message = `auto-recall timed out after ${DEFAULT_AUTO_RECALL_TIMEOUT_MS}ms`;
+          recordMemoryRecallCooldown(message);
           api.logger.warn?.(
-            `memory-lancedb: auto-recall timed out after ${DEFAULT_AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
+            `memory-lancedb: ${message}; pausing recall for ${Math.round(
+              DEFAULT_TOOL_RECALL_COOLDOWN_MS / 1000,
+            )}s to avoid restalling prompt build`,
           );
           return undefined;
         }
@@ -1934,7 +1952,13 @@ export default definePluginEntry({
           prependContext: context,
         };
       } catch (err) {
-        api.logger.warn(`memory-lancedb: recall failed: ${String(err)}`);
+        const message = formatMemoryRecallError(err);
+        recordMemoryRecallCooldown(message);
+        api.logger.warn(
+          `memory-lancedb: recall failed: ${message}; pausing recall for ${Math.round(
+            DEFAULT_TOOL_RECALL_COOLDOWN_MS / 1000,
+          )}s`,
+        );
       }
       return undefined;
     });

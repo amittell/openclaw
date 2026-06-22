@@ -1265,11 +1265,21 @@ describe("memory plugin e2e", () => {
           expect(firstMockArg(post as unknown as MockCallSource, "post path")).toBe("/embeddings");
           const postOptions = firstObjectArg(post as unknown as MockCallSource, "post options", 1);
           expect(postOptions.maxRetries).toBe(0);
-          expect(postOptions.timeout).toBe(15_000);
+          expect(postOptions.timeout).toBe(5_000);
           expect(loadLanceDbModule).not.toHaveBeenCalled();
           expect(logger.warn).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
+            "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
           );
+
+          // Circuit breaker: the timeout tripped the shared recall cooldown, so a
+          // second prompt-build skips the embed entirely instead of re-paying it.
+          const skipped = await beforePromptBuild?.(
+            { prompt: "what editor should i use?", messages: [] },
+            {},
+          );
+          expect(skipped).toBeUndefined();
+          expect(post).toHaveBeenCalledTimes(1);
+
           await vi.advanceTimersByTimeAsync(15_000);
         },
       });
