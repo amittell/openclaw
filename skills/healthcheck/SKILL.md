@@ -75,6 +75,8 @@ Get-BitLockerVolume
 
 ## Risk profile
 
+For macOS mount/share checks, do not assume `/Volumes` is authoritative. Also inspect `mount`/`df` output and any known custom mount points or symlink targets (for example `~/ShareName` mounted by a script or LaunchAgent) before concluding a share is unmounted.
+
 After context is known, ask desired posture:
 
 1. Convenience: local/private, minimal prompts.
