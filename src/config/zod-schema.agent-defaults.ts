@@ -42,6 +42,12 @@ const EmbeddedAgentConfigSchema = z
   })
   .strict();
 
+const AgentExecutionPathModelSchema = z
+  .object({
+    model: AgentModelSchema.optional(),
+  })
+  .strict();
+
 export const SilentReplyPolicyConfigSchema = z
   .object({
     group: SilentReplyPolicySchema.optional(),
@@ -54,7 +60,12 @@ export const AgentDefaultsSchema = z
     /** Global default provider params applied to all models before per-model and per-agent overrides. */
     params: z.record(z.string(), z.unknown()).optional(),
     model: AgentModelSchema.optional(),
+<<<<<<< HEAD
     utilityModel: z.string().optional(),
+=======
+    chat: AgentExecutionPathModelSchema.optional(),
+    dispatch: AgentExecutionPathModelSchema.optional(),
+>>>>>>> 7d8efee4405 (feat(config): split agent model defaults)
     imageModel: AgentToolModelSchema.optional(),
     imageGenerationModel: AgentToolModelSchema.optional(),
     videoGenerationModel: AgentToolModelSchema.optional(),

@@ -2,6 +2,11 @@
  * Collects configured native harness runtime ids from model provider config.
  */
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import {
+  resolveAgentDefaultChatModelConfig,
+  resolveAgentDefaultDispatchModelConfig,
+} from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isRecord } from "../utils.js";
 import { OPENCLAW_AGENT_RUNTIME_ID, isDefaultAgentRuntimeId } from "./agent-runtime-id.js";
@@ -146,9 +151,14 @@ function pushConfiguredAgentModelRuntimeIds(
     pushModelRefs(Object.keys(models), agentId);
   };
 
-  const defaultsModel = config.agents?.defaults?.model;
+  const defaultsModel = resolveAgentDefaultChatModelConfig(config.agents?.defaults);
   const defaultsModelRefs: string[] = [];
   pushAgentModelRefs(defaultsModelRefs, defaultsModel);
+  pushAgentModelRefs(defaultsModelRefs, config.agents?.defaults?.subagents?.model);
+  pushAgentModelRefs(
+    defaultsModelRefs,
+    resolveAgentDefaultDispatchModelConfig(config.agents?.defaults),
+  );
   pushModelRefs(defaultsModelRefs);
   pushModelMapRefs(config.agents?.defaults?.models);
 
@@ -162,6 +172,10 @@ function pushConfiguredAgentModelRuntimeIds(
     const agentId = typeof agent.id === "string" ? agent.id : undefined;
     const selectedModelRefs: string[] = [];
     pushAgentModelRefs(selectedModelRefs, agent.model ?? defaultsModel);
+    pushAgentModelRefs(
+      selectedModelRefs,
+      isRecord(agent.subagents) ? agent.subagents.model : undefined,
+    );
     pushModelRefs(selectedModelRefs, agentId);
     pushModelMapRefs(agent.models, agentId);
   }

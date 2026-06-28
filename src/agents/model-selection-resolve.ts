@@ -4,7 +4,7 @@
  * This module exposes model-selection helpers that need default fallback model
  * handling before checking aliases, allowlists, catalogs, and plugin manifests.
  */
-import { resolveAgentModelFallbackValues } from "../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import type { ModelManifestNormalizationContext, ModelRef } from "./model-selection-normalize.js";
@@ -26,7 +26,7 @@ export {
 export type { ModelRefStatus } from "./model-selection-shared.js";
 
 function resolveDefaultFallbackModels(cfg: OpenClawConfig): string[] {
-  return resolveAgentModelFallbackValues(cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(cfg.agents?.defaults);
 }
 
 /** Returns whether a normalized model ref is available, allowed, or fallback-backed. */

@@ -1,7 +1,7 @@
 /**
  * Builds model visibility policies with configured fallbacks included.
  */
-import { resolveAgentModelFallbackValues } from "../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentModelFallbacksOverride } from "./agent-scope.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
@@ -23,7 +23,7 @@ function resolveAllowedFallbacks(params: { cfg: OpenClawConfig; agentId?: string
       return override;
     }
   }
-  return resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
 }
 
 export function createModelVisibilityPolicy(

@@ -365,6 +365,15 @@ Time format in system prompt. Default: `auto` (OS preference).
         fallbacks: ["minimax/MiniMax-M2.7"],
       },
       utilityModel: "openai/gpt-5.4-mini",
+      chat: {
+        model: {
+          primary: "kebab-rtx6000/qwen3.6-27b",
+          fallbacks: ["openai/gpt-5.5"],
+        },
+      },
+      dispatch: {
+        model: "openai/gpt-5.4-mini",
+      },
       imageModel: {
         primary: "openrouter/qwen/qwen-2.5-vl-72b-instruct:free",
         fallbacks: ["openrouter/google/gemini-2.0-flash-vision:free"],
@@ -401,6 +410,10 @@ Time format in system prompt. Default: `auto` (OS preference).
 - `model`: accepts either a string (`"provider/model"`) or an object (`{ primary, fallbacks }`).
   - String form sets only the primary model.
   - Object form sets primary plus ordered failover models.
+  - Backward-compatible default for normal chat replies, native subagents, and dispatch workers when their execution-path defaults are unset.
+- `chat.model`: explicit default for normal OpenClaw chat/main-session replies. When unset, OpenClaw uses `agents.defaults.model`.
+- `subagents.model`: explicit default for native `sessions_spawn` subagents. When unset, native subagents inherit the chat default.
+- `dispatch.model`: explicit default for scheduler/chilisaus dispatch workers when their CLI `--model` flag is omitted. When unset, dispatch workers inherit `agents.defaults.model`.
 - `utilityModel`: optional `provider/model` ref or alias for short internal tasks. It currently powers generated Control UI session titles, Telegram DM topic titles, and Discord auto-thread titles. These tasks fall back to the agent's primary model when unset; `agents.list[].utilityModel` overrides the default, and an operation-specific model override wins over both. Utility tasks make separate model calls and send task-specific content to the selected model provider. Dashboard title generation sends at most the first 1,000 characters of the first non-command message. Choose a provider that matches your cost and data-handling requirements.
 - `imageModel`: accepts either a string (`"provider/model"`) or an object (`{ primary, fallbacks }`).
   - Used by the `image` tool path as its vision-model config.
