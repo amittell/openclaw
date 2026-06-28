@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
-import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../../config/model-input.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   createFileBackedCompactionCheckpointStore,
@@ -434,7 +434,9 @@ function resolveCompactionFallbacksOverride(
 
 function hasCompactionModelFallbackCandidates(params: CompactEmbeddedAgentSessionParams): boolean {
   const fallbacksOverride = resolveCompactionFallbacksOverride(params);
-  const defaultFallbacks = resolveAgentModelFallbackValues(params.config?.agents?.defaults?.model);
+  const defaultFallbacks = resolveAgentDefaultChatModelFallbackValues(
+    params.config?.agents?.defaults,
+  );
   return (fallbacksOverride ?? defaultFallbacks).length > 0;
 }
 

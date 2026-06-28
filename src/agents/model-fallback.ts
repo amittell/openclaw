@@ -4,6 +4,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import {
+  resolveAgentDefaultChatModelFallbackValues,
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
 } from "../config/model-input.js";
@@ -906,6 +907,7 @@ function resolveFallbackCandidateCacheKey(
     model: params.model,
     fallbacksOverride: params.fallbacksOverride,
     agentsDefaultsModel: params.cfg?.agents?.defaults?.model,
+    agentsDefaultsChatModel: params.cfg?.agents?.defaults?.chat?.model,
     agentsDefaultsModels: params.cfg?.agents?.defaults?.models,
     modelProviders: resolveFallbackCandidateModelProviderCacheParts(params.cfg),
     pluginControlPlane: resolvePluginControlPlaneFingerprint({
@@ -1025,7 +1027,7 @@ function resolveFallbackCandidatesUncached(
   const modelFallbacks =
     params.fallbacksOverride !== undefined
       ? params.fallbacksOverride
-      : resolveAgentModelFallbackValues(params.cfg?.agents?.defaults?.model);
+      : resolveAgentDefaultChatModelFallbackValues(params.cfg?.agents?.defaults);
 
   for (const raw of modelFallbacks) {
     const resolved = resolveModelRefFromString({

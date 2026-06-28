@@ -25,6 +25,9 @@ export const AGENT_MODEL_CONFIG_KEYS = [
   "pdfModel",
 ] as const;
 
+/** Nested agent execution-path defaults that contain a model config. */
+export const AGENT_EXECUTION_PATH_MODEL_CONFIG_KEYS = ["chat", "dispatch", "subagents"] as const;
+
 /** Collect configured model references from agents, channels, hooks, and message config. */
 export function collectConfiguredModelRefs(
   config: unknown,
@@ -58,13 +61,15 @@ export function collectConfiguredModelRefs(
     for (const key of AGENT_MODEL_CONFIG_KEYS) {
       collectModelConfig(`${path}.${key}`, agent[key]);
     }
+    for (const key of AGENT_EXECUTION_PATH_MODEL_CONFIG_KEYS) {
+      collectModelConfig(
+        `${path}.${key}.model`,
+        isRecord(agent[key]) ? agent[key].model : undefined,
+      );
+    }
     pushModelRef(
       `${path}.heartbeat.model`,
       isRecord(agent.heartbeat) ? agent.heartbeat.model : undefined,
-    );
-    collectModelConfig(
-      `${path}.subagents.model`,
-      isRecord(agent.subagents) ? agent.subagents.model : undefined,
     );
     if (isRecord(agent.compaction)) {
       pushModelRef(`${path}.compaction.model`, agent.compaction.model);

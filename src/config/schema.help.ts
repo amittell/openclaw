@@ -1415,9 +1415,22 @@ export const FIELD_HELP: Record<string, string> = {
     "Plugin-defined configuration payload interpreted by that plugin's own schema and validation rules. Use only documented fields from the plugin to prevent ignored or invalid settings.",
   "agents.list.*.identity.avatar":
     "Agent avatar (workspace-relative path, http(s) URL, or data URI).",
-  "agents.defaults.model.primary": "Primary model (provider/model).",
+  "agents.defaults.model.primary":
+    "Legacy primary model (provider/model). Used when chat, native subagent, or dispatch defaults are unset.",
   "agents.defaults.model.fallbacks":
-    "Ordered fallback models (provider/model). Used when the primary model fails.",
+    "Legacy ordered fallback models (provider/model). Used when chat fallbacks are unset.",
+  "agents.defaults.chat.model.primary":
+    "Primary model (provider/model) for normal OpenClaw chat/main-session replies.",
+  "agents.defaults.chat.model.fallbacks":
+    "Ordered fallback models (provider/model) for normal OpenClaw chat/main-session replies.",
+  "agents.defaults.subagents.model.primary":
+    "Primary model (provider/model) for native sessions_spawn subagents.",
+  "agents.defaults.subagents.model.fallbacks":
+    "Ordered fallback models (provider/model) for native sessions_spawn subagents.",
+  "agents.defaults.dispatch.model.primary":
+    "Primary model (provider/model) for scheduler/chilisaus dispatch workers.",
+  "agents.defaults.dispatch.model.fallbacks":
+    "Ordered fallback models (provider/model) for scheduler/chilisaus dispatch workers.",
   "agents.list.*.models": "Per-agent model catalog overrides keyed by full provider/model IDs.",
   "agents.list.*.models.*.agentRuntime":
     "Optional per-model runtime policy for this agent. Use this for agent-specific model exceptions instead of setting a whole-agent runtime.",

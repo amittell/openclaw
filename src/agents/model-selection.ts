@@ -6,8 +6,9 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import {
-  resolveAgentModelFallbackValues,
-  resolveAgentModelPrimaryValue,
+  resolveAgentDefaultChatModelConfig,
+  resolveAgentDefaultChatModelFallbackValues,
+  resolveAgentDefaultChatModelPrimaryValue,
   toAgentModelListLike,
 } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -232,9 +233,14 @@ export function resolveDefaultModelForAgent(
             ...params.cfg.agents,
             defaults: {
               ...params.cfg.agents?.defaults,
-              model: {
-                ...toAgentModelListLike(params.cfg.agents?.defaults?.model),
-                primary: agentModelOverride,
+              chat: {
+                ...params.cfg.agents?.defaults?.chat,
+                model: {
+                  ...toAgentModelListLike(
+                    resolveAgentDefaultChatModelConfig(params.cfg.agents?.defaults),
+                  ),
+                  primary: agentModelOverride,
+                },
               },
             },
           },
@@ -320,7 +326,7 @@ function resolveAllowedFallbacks(params: { cfg: OpenClawConfig; agentId?: string
       return override;
     }
   }
-  return resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
 }
 
 export function resolveSubagentConfiguredModelSelection(params: {
@@ -375,8 +381,9 @@ export function resolveSubagentSpawnModelSelection(params: {
     return configured;
   }
   const raw =
-    normalizeModelSelection(resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model)) ??
-    `${runtimeDefault.provider}/${runtimeDefault.model}`;
+    normalizeModelSelection(
+      resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults),
+    ) ?? `${runtimeDefault.provider}/${runtimeDefault.model}`;
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg,
     defaultProvider: runtimeDefault.provider,

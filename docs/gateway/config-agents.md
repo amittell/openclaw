@@ -384,6 +384,15 @@ Time format in system prompt. Default: `auto` (OS preference).
         primary: "anthropic/claude-opus-4-6",
         fallbacks: ["minimax/MiniMax-M2.7"],
       },
+      chat: {
+        model: {
+          primary: "kebab-rtx6000/qwen3.6-27b",
+          fallbacks: ["openai/gpt-5.5"],
+        },
+      },
+      dispatch: {
+        model: "openai/gpt-5.4-mini",
+      },
       imageModel: {
         primary: "openrouter/qwen/qwen-2.5-vl-72b-instruct:free",
         fallbacks: ["openrouter/google/gemini-2.0-flash-vision:free"],
@@ -420,6 +429,10 @@ Time format in system prompt. Default: `auto` (OS preference).
 - `model`: accepts either a string (`"provider/model"`) or an object (`{ primary, fallbacks }`).
   - String form sets only the primary model.
   - Object form sets primary plus ordered failover models.
+  - Backward-compatible default for normal chat replies, native subagents, and dispatch workers when their execution-path defaults are unset.
+- `chat.model`: explicit default for normal OpenClaw chat/main-session replies. When unset, OpenClaw uses `agents.defaults.model`.
+- `subagents.model`: explicit default for native `sessions_spawn` subagents. When unset, native subagents inherit the chat default.
+- `dispatch.model`: explicit default for scheduler/chilisaus dispatch workers when their CLI `--model` flag is omitted. When unset, dispatch workers inherit `agents.defaults.model`.
 - `imageModel`: accepts either a string (`"provider/model"`) or an object (`{ primary, fallbacks }`).
   - Used by the `image` tool path as its vision-model config.
   - Also used as fallback routing when the selected/default model cannot accept image input.

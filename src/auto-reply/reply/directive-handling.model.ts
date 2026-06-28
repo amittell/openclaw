@@ -17,6 +17,7 @@ import {
 } from "../../agents/model-selection.js";
 import { buildAgentRuntimeAuthPlan } from "../../agents/runtime-plan/auth.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
+import { resolveAgentDefaultChatModelConfig } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { shortenHomePath } from "../../utils.js";
@@ -198,7 +199,7 @@ function buildModelPickerCatalog(params: {
 
     pushRef(resolvedDefault);
 
-    const modelConfig = params.cfg.agents?.defaults?.model;
+    const modelConfig = resolveAgentDefaultChatModelConfig(params.cfg.agents?.defaults);
     const modelFallbacks =
       modelConfig && typeof modelConfig === "object" ? (modelConfig.fallbacks ?? []) : [];
     for (const fallback of modelFallbacks) {

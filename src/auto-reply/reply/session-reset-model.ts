@@ -6,7 +6,7 @@ import {
   buildAllowedModelSetWithFallbacks,
   isModelKeyAllowedBySet,
 } from "../../agents/model-selection-shared.js";
-import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
@@ -52,7 +52,7 @@ async function resolveResetFallbackModels(params: {
       return override;
     }
   }
-  return resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
 }
 
 async function buildResetAllowedModelKeys(params: {

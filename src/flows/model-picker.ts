@@ -24,8 +24,8 @@ import { formatTokenK } from "../commands/models/shared.js";
 import {
   normalizeAgentModelMapForConfig,
   normalizeAgentModelRefForConfig,
+  resolveAgentDefaultChatModelPrimaryValue,
   resolveAgentModelFallbackValues,
-  resolveAgentModelPrimaryValue,
 } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveOwningPluginIdsForProviderRef } from "../plugins/providers.js";
@@ -110,7 +110,7 @@ const loadResolvedModelPickerRuntime = createLazyRuntimeSurface(
 );
 
 function resolveConfiguredModelRaw(cfg: OpenClawConfig): string {
-  return resolveAgentModelPrimaryValue(cfg.agents?.defaults?.model) ?? "";
+  return resolveAgentDefaultChatModelPrimaryValue(cfg.agents?.defaults) ?? "";
 }
 
 function resolveConfiguredModelKeys(cfg: OpenClawConfig): string[] {

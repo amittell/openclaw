@@ -18,6 +18,11 @@ type AgentModelListLike = {
 };
 
 type AgentModelInput = AgentModelConfig | AgentToolModelConfig;
+type AgentDefaultsModelInput = {
+  model?: AgentModelInput;
+  chat?: { model?: AgentModelInput };
+  dispatch?: { model?: AgentModelInput };
+};
 
 /** Returns the primary model ref from either string or object-style agent model config. */
 export function resolveAgentModelPrimaryValue(model?: AgentModelInput): string | undefined {
@@ -30,6 +35,41 @@ export function resolveAgentModelFallbackValues(model?: AgentModelInput): string
     return [];
   }
   return Array.isArray(model.fallbacks) ? model.fallbacks : [];
+}
+
+/** Returns the explicit chat/main-session model config, falling back to the legacy default model. */
+export function resolveAgentDefaultChatModelConfig(
+  defaults?: AgentDefaultsModelInput,
+): AgentModelInput | undefined {
+  return defaults?.chat?.model ?? defaults?.model;
+}
+
+/** Returns the explicit dispatch-worker model config, falling back to the legacy default model. */
+export function resolveAgentDefaultDispatchModelConfig(
+  defaults?: AgentDefaultsModelInput,
+): AgentModelInput | undefined {
+  return defaults?.dispatch?.model ?? defaults?.model;
+}
+
+/** Returns the chat/main-session primary model with legacy `agents.defaults.model` compatibility. */
+export function resolveAgentDefaultChatModelPrimaryValue(
+  defaults?: AgentDefaultsModelInput,
+): string | undefined {
+  return resolveAgentModelPrimaryValue(resolveAgentDefaultChatModelConfig(defaults));
+}
+
+/** Returns chat/main-session fallback refs with legacy `agents.defaults.model` compatibility. */
+export function resolveAgentDefaultChatModelFallbackValues(
+  defaults?: AgentDefaultsModelInput,
+): string[] {
+  return resolveAgentModelFallbackValues(resolveAgentDefaultChatModelConfig(defaults));
+}
+
+/** Returns the dispatch-worker primary model with legacy `agents.defaults.model` compatibility. */
+export function resolveAgentDefaultDispatchModelPrimaryValue(
+  defaults?: AgentDefaultsModelInput,
+): string | undefined {
+  return resolveAgentModelPrimaryValue(resolveAgentDefaultDispatchModelConfig(defaults));
 }
 
 /** Returns a positive finite tool timeout rounded down to whole milliseconds. */

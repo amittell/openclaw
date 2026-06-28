@@ -13,9 +13,18 @@ describe("configured model refs", () => {
         agents: {
           defaults: {
             model: { primary: "openai/gpt-5.5", fallbacks: ["anthropic/claude-sonnet-4-6"] },
+            chat: { model: "openai/gpt-5.5-chat" },
+            dispatch: { model: { primary: "openai/gpt-5.5-dispatch" } },
+            subagents: { model: { primary: "openai/gpt-5.5-subagent" } },
             compaction: { memoryFlush: { model: "openai/gpt-5.5-mini" } },
           },
-          list: [{ id: "custom", model: "xai/grok-4-fast" }],
+          list: [
+            {
+              id: "custom",
+              model: "xai/grok-4-fast",
+              subagents: { model: "anthropic/claude-haiku-4-6" },
+            },
+          ],
         },
         hooks: {
           mappings: [{ model: "openai/gpt-5.5-nano" }],
@@ -34,8 +43,12 @@ describe("configured model refs", () => {
     ).toEqual([
       { path: "agents.defaults.model.primary", value: "openai/gpt-5.5" },
       { path: "agents.defaults.model.fallbacks.0", value: "anthropic/claude-sonnet-4-6" },
+      { path: "agents.defaults.chat.model", value: "openai/gpt-5.5-chat" },
+      { path: "agents.defaults.dispatch.model.primary", value: "openai/gpt-5.5-dispatch" },
+      { path: "agents.defaults.subagents.model.primary", value: "openai/gpt-5.5-subagent" },
       { path: "agents.defaults.compaction.memoryFlush.model", value: "openai/gpt-5.5-mini" },
       { path: "agents.list.0.model", value: "xai/grok-4-fast" },
+      { path: "agents.list.0.subagents.model", value: "anthropic/claude-haiku-4-6" },
       { path: "channels.modelByChannel.discord.guild", value: "anthropic/claude-opus-4-8" },
       { path: "hooks.mappings.0.model", value: "openai/gpt-5.5-nano" },
       { path: "messages.tts.summaryModel", value: "openai/gpt-5.5-mini" },
