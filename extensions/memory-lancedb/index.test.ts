@@ -1359,7 +1359,7 @@ describe("memory plugin e2e", () => {
             { prompt: "what editor should i use?", messages: [] },
             {},
           );
-          await vi.advanceTimersByTimeAsync(15_000);
+          await vi.advanceTimersByTimeAsync(5_000);
 
           await expect(resultPromise).resolves.toBeUndefined();
           expect(ensureGlobalUndiciEnvProxyDispatcher).toHaveBeenCalledOnce();
@@ -1371,7 +1371,7 @@ describe("memory plugin e2e", () => {
           expect(logger.warn).toHaveBeenCalledWith(
             "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
           );
-          await vi.advanceTimersByTimeAsync(15_000);
+          await vi.advanceTimersByTimeAsync(5_000);
         },
       });
     } finally {
@@ -3154,7 +3154,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3165,7 +3165,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -3234,10 +3234,8 @@ describe("memory plugin e2e", () => {
       })),
     }));
 
-    let auditLogPath: string | null = null;
-
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
 
       // Use tmpDir for audit log by temporarily pointing homedir there
@@ -3255,7 +3253,7 @@ describe("memory plugin e2e", () => {
           tableDelete,
           registeredTools,
         });
-        memoryPlugin.register(mockApi as any);
+        memoryPluginUnderTest.register(mockApi as any);
 
         const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
         expect(refreshTool).toBeDefined();
@@ -3293,7 +3291,7 @@ describe("memory plugin e2e", () => {
       expect(addCall.importance).toBe(0.9);
 
       // Check audit log was written
-      auditLogPath = `${getTmpDir()}/.openclaw/memory/refresh-audit.jsonl`;
+      const auditLogPath = `${getTmpDir()}/.openclaw/memory/refresh-audit.jsonl`;
       const fsPromises = await import("node:fs/promises");
       const auditContent = await fsPromises.readFile(auditLogPath, "utf8").catch(() => null);
       expect(auditContent).not.toBeNull();
@@ -3317,6 +3315,81 @@ describe("memory plugin e2e", () => {
         const dirStat = await fsPromises.stat(`${getTmpDir()}/.openclaw/memory`);
         expect(dirStat.mode & 0o777).toBe(0o700);
       }
+    } finally {
+      vi.doUnmock("openai");
+      vi.doUnmock("@lancedb/lancedb");
+      vi.resetModules();
+    }
+  });
+
+  test("memory_refresh replace handles typed-array stored vectors from LanceDB", async () => {
+    const existingId = "bbbbbbbb-0000-0000-0000-000000000002";
+    const existingEntry = {
+      id: existingId,
+      text: "Old memory text stored with a typed vector",
+      vector: new Float32Array([0.1, 0.2, 0.3]),
+      importance: 0.7,
+      category: "fact",
+      createdAt: 1000,
+    };
+
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.15, 0.25, 0.35] }],
+    }));
+    const tableAdd = vi.fn(async () => undefined);
+    const tableDelete = vi.fn(async () => undefined);
+    const toArray = vi.fn(async () => [existingEntry]);
+    const queryWhere = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({
+      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
+    }));
+
+    vi.resetModules();
+    vi.doMock("openai", () => ({
+      default: class MockOpenAI {
+        post = vi.fn((_path: string, opts: { body?: unknown }) =>
+          invokeEmbeddingCreate(embeddingsCreate, opts.body),
+        );
+      },
+    }));
+    vi.doMock("@lancedb/lancedb", () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          query: vi.fn(() => ({ where: queryWhere })),
+          countRows: vi.fn(async () => 1),
+          add: tableAdd,
+          delete: tableDelete,
+        })),
+      })),
+    }));
+
+    try {
+      const { default: memoryPluginUnderTest } = await import("./index.js");
+      const registeredTools: any[] = [];
+      const mockApi = buildMockApiForRefresh({
+        dbPath: getDbPath(),
+        embeddingsCreate,
+        vectorSearch,
+        queryWhere,
+        tableAdd,
+        tableDelete,
+        registeredTools,
+      });
+      memoryPluginUnderTest.register(mockApi as any);
+
+      const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
+      expect(refreshTool).toBeDefined();
+
+      const result = await refreshTool.execute("test-refresh-typed-vector", {
+        text: "Updated memory text with normalized stored vector",
+        memoryId: existingId,
+      });
+
+      expect(result.details.operation).toBe("replaced");
+      expect(tableDelete).toHaveBeenCalledWith(`id = '${existingId}'`);
+      expect(tableAdd).toHaveBeenCalledTimes(1);
     } finally {
       vi.doUnmock("openai");
       vi.doUnmock("@lancedb/lancedb");
@@ -3360,7 +3433,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3371,7 +3444,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -3452,7 +3525,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3463,7 +3536,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -3552,7 +3625,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3563,7 +3636,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -3630,7 +3703,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3641,7 +3714,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -3700,7 +3773,9 @@ describe("memory plugin e2e", () => {
     // With the mutex the expected log is ["delete","add","delete","add"].
     const tableDelete = vi.fn(async () => {
       callLog.push("delete");
-      await new Promise<void>((r) => setTimeout(r, 5));
+      await new Promise<void>((r) => {
+        setTimeout(r, 5);
+      });
     });
     const tableAdd = vi.fn(async () => {
       callLog.push("add");
@@ -3728,7 +3803,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -3739,7 +3814,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -4761,7 +4836,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4772,7 +4847,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshRegistration = registeredTools.find((t) => t.opts?.name === "memory_refresh");
       expect(refreshRegistration).toBeDefined();
@@ -4839,7 +4914,7 @@ describe("memory plugin e2e", () => {
         importance: 0.4,
         category: "other",
         createdAt: 1002,
-        _distance: 2.0,
+        _distance: 2,
       },
     ];
 
@@ -4870,7 +4945,7 @@ describe("memory plugin e2e", () => {
     }));
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4881,7 +4956,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
@@ -4963,7 +5038,7 @@ describe("memory plugin e2e", () => {
     process.env.HOME = getTmpDir();
 
     try {
-      const { default: memoryPlugin } = await import("./index.js");
+      const { default: memoryPluginUnderTest } = await import("./index.js");
       const registeredTools: any[] = [];
       const mockApi = buildMockApiForRefresh({
         dbPath: getDbPath(),
@@ -4974,7 +5049,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPlugin.register(mockApi as any);
+      memoryPluginUnderTest.register(mockApi as any);
 
       const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
       expect(refreshTool).toBeDefined();
