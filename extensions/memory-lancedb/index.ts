@@ -224,6 +224,74 @@ function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     });
 }
 
+function finiteVectorFromArrayLike(value: ArrayLike<unknown>): number[] | null {
+  const vector: number[] = [];
+  for (const item of Array.from(value)) {
+    if (typeof item !== "number" || !Number.isFinite(item)) {
+      return null;
+    }
+    vector.push(item);
+  }
+  return vector;
+}
+
+function normalizeStoredMemoryVector(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return finiteVectorFromArrayLike(value) ?? [];
+  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    return finiteVectorFromArrayLike(value as unknown as ArrayLike<unknown>) ?? [];
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      const parsedVector = normalizeStoredMemoryVector(parsed);
+      if (parsedVector.length > 0) {
+        return parsedVector;
+      }
+    } catch {}
+    return [];
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  const toArray = record.toArray;
+  if (typeof toArray === "function") {
+    try {
+      const vector = normalizeStoredMemoryVector(toArray.call(value));
+      if (vector.length > 0) {
+        return vector;
+      }
+    } catch {}
+  }
+  for (const key of ["values", "data", "vector", "embedding"] as const) {
+    if (key in record) {
+      const vector = normalizeStoredMemoryVector(record[key]);
+      if (vector.length > 0) {
+        return vector;
+      }
+    }
+  }
+  if (typeof record.length === "number") {
+    return finiteVectorFromArrayLike(record as unknown as ArrayLike<unknown>) ?? [];
+  }
+  return [];
+}
+
+function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number[]): number | null {
+  const previousVector = normalizeStoredMemoryVector(existingVector);
+  if (previousVector.length === 0 || previousVector.length !== nextVector.length) {
+    return null;
+  }
+  let l2sq = 0;
+  for (let index = 0; index < previousVector.length; index += 1) {
+    const diff = previousVector[index] - (nextVector[index] ?? 0);
+    l2sq += diff * diff;
+  }
+  return 1 / (1 + Math.sqrt(l2sq));
+}
+
 // ============================================================================
 // LanceDB Provider
 // ============================================================================
@@ -2019,14 +2087,10 @@ export default definePluginEntry({
 
             // Compute similarity using 1/(1+L2) — the same metric used by
             // memory_recall and db.search — so audit log entries are comparable.
-            let similarity: number | null = null;
-            if (existing.vector.length === vector.length) {
-              const l2sq = existing.vector.reduce((sum, v, i) => {
-                const diff = v - (vector[i] ?? 0);
-                return sum + diff * diff;
-              }, 0);
-              similarity = 1 / (1 + Math.sqrt(l2sq));
-            }
+            // LanceDB may return stored vectors as typed arrays or array-like
+            // wrappers, so normalize before scoring instead of assuming
+            // Array.prototype.reduce exists.
+            const similarity = scoreStoredVectorSimilarity(existing.vector, vector);
 
             // Append to audit log (metadata only — memory text is private user data
             // and must never be written to audit logs). The directory and file
