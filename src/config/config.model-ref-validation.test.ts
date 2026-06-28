@@ -115,6 +115,41 @@ describe("config model reference validation", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("validates explicit execution-path default model refs", () => {
+    const res = validateConfigObjectWithPlugins(
+      {
+        agents: {
+          defaults: {
+            chat: { model: { primary: "openai/gpt-5.3-codex-spark" } },
+            dispatch: { model: "openai/gpt-5.3-codex-spark" },
+          },
+        },
+      },
+      {
+        pluginMetadataSnapshot: {
+          manifestRegistry: createModelSuppressionRegistry(),
+        },
+      },
+    );
+
+    expect(res.ok).toBe(false);
+    if (res.ok) {
+      return;
+    }
+    expect(res.issues).toEqual([
+      {
+        path: "agents.defaults.chat.model.primary",
+        message:
+          "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is no longer exposed by the OpenAI or Codex catalogs. Use openai/gpt-5.5.",
+      },
+      {
+        path: "agents.defaults.dispatch.model",
+        message:
+          "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is no longer exposed by the OpenAI or Codex catalogs. Use openai/gpt-5.5.",
+      },
+    ]);
+  });
+
   it("accepts available openai fallback model pairs", () => {
     const res = validateConfigObjectWithPlugins(
       {

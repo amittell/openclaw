@@ -1,7 +1,10 @@
 /** Higher-level agent scope helpers for model selection, fallbacks, skills, and workspaces. */
 import fs from "node:fs";
 import path from "node:path";
-import { resolveAgentModelFallbackValues } from "../config/model-input.js";
+import {
+  resolveAgentDefaultChatModelFallbackValues,
+  resolveAgentDefaultChatModelPrimaryValue,
+} from "../config/model-input.js";
 import { hasSessionAutoModelFallbackProvenance } from "../config/sessions/model-override-provenance.js";
 export { hasSessionAutoModelFallbackProvenance } from "../config/sessions/model-override-provenance.js";
 import {
@@ -367,7 +370,7 @@ export function resolveAgentEffectiveModelPrimary(
 ): string | undefined {
   return (
     resolveAgentExplicitModelPrimary(cfg, agentId) ??
-    resolvePrimaryStringValue(cfg.agents?.defaults?.model)
+    resolveAgentDefaultChatModelPrimaryValue(cfg.agents?.defaults)
   );
 }
 
@@ -404,7 +407,14 @@ export function setAgentEffectiveModelPrimary(
   }
   cfg.agents ??= {};
   cfg.agents.defaults ??= {};
-  cfg.agents.defaults.model = updateAgentModelPrimary(cfg.agents.defaults.model, primary);
+  if (cfg.agents.defaults.chat?.model) {
+    cfg.agents.defaults.chat.model = updateAgentModelPrimary(
+      cfg.agents.defaults.chat.model,
+      primary,
+    );
+  } else {
+    cfg.agents.defaults.model = updateAgentModelPrimary(cfg.agents.defaults.model, primary);
+  }
   return "defaults";
 }
 
@@ -528,7 +538,7 @@ export function hasConfiguredModelFallbacks(params: {
   sessionKey?: string | null;
 }): boolean {
   const fallbacksOverride = resolveRunModelFallbacksOverride(params);
-  const defaultFallbacks = resolveAgentModelFallbackValues(params.cfg?.agents?.defaults?.model);
+  const defaultFallbacks = resolveAgentDefaultChatModelFallbackValues(params.cfg?.agents?.defaults);
   return (fallbacksOverride ?? defaultFallbacks).length > 0;
 }
 
@@ -556,7 +566,7 @@ export function resolveEffectiveModelFallbacks(params: {
   if (subagentFallbacksOverride !== undefined) {
     return subagentFallbacksOverride;
   }
-  const defaultFallbacks = resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  const defaultFallbacks = resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
   return agentFallbacksOverride ?? defaultFallbacks;
 }
 

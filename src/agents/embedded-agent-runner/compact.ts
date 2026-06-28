@@ -1,7 +1,7 @@
 /**
  * Public facade and fallback coordinator for embedded-agent compaction.
  */
-import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../../config/model-input.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
@@ -76,7 +76,9 @@ function resolveCompactionFallbacksOverride(
 
 function hasCompactionModelFallbackCandidates(params: CompactEmbeddedAgentSessionParams): boolean {
   const fallbacksOverride = resolveCompactionFallbacksOverride(params);
-  const defaultFallbacks = resolveAgentModelFallbackValues(params.config?.agents?.defaults?.model);
+  const defaultFallbacks = resolveAgentDefaultChatModelFallbackValues(
+    params.config?.agents?.defaults,
+  );
   return (fallbacksOverride ?? defaultFallbacks).length > 0;
 }
 

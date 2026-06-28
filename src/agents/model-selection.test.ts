@@ -3105,6 +3105,56 @@ describe("resolveSubagentConfiguredModelSelection", () => {
   });
 });
 
+describe("resolveDefaultModelForAgent execution-path defaults", () => {
+  it("uses agents.defaults.chat.model for normal replies when it is configured", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+          chat: { model: { primary: "kebab-rtx6000/qwen3.6-27b" } },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(resolveDefaultModelForAgent({ cfg })).toEqual({
+      provider: "kebab-rtx6000",
+      model: "qwen3.6-27b",
+    });
+  });
+
+  it("keeps agents.defaults.model as the backward-compatible chat default", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(resolveDefaultModelForAgent({ cfg })).toEqual({
+      provider: "openai",
+      model: "gpt-5.5",
+    });
+  });
+
+  it("keeps per-agent model overrides above the chat default", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+          chat: { model: { primary: "kebab-rtx6000/qwen3.6-27b" } },
+        },
+        list: [{ id: "research", model: "anthropic/claude-sonnet-4-6" }],
+      },
+    } as OpenClawConfig;
+
+    expect(resolveDefaultModelForAgent({ cfg, agentId: "research" })).toEqual({
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+    });
+  });
+});
+
 describe("resolveSubagentSpawnModelSelection", () => {
   it("resolves a model alias override to its full provider/model ref", () => {
     const cfg = {
@@ -3167,6 +3217,22 @@ describe("resolveSubagentSpawnModelSelection", () => {
     expect(resolveSubagentSpawnModelSelection({ cfg, agentId: "main" })).toBe("openai/gpt-5.4");
   });
 
+  it("uses the native subagent default before the chat default", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+          chat: { model: { primary: "kebab-rtx6000/qwen3.6-27b" } },
+          subagents: { model: "openai/gpt-5.4-mini" },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(resolveSubagentSpawnModelSelection({ cfg, agentId: "main" })).toBe(
+      "openai/gpt-5.4-mini",
+    );
+  });
+
   it("passes through already-qualified provider/model refs unchanged", () => {
     const cfg = {
       agents: {
@@ -3183,6 +3249,21 @@ describe("resolveSubagentSpawnModelSelection", () => {
         modelOverride: "openai/gpt-5.4",
       }),
     ).toBe("openai/gpt-5.4");
+  });
+
+  it("falls back to chat default when no subagent override is configured", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+          chat: { model: { primary: "kebab-rtx6000/qwen3.6-27b" } },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(resolveSubagentSpawnModelSelection({ cfg, agentId: "main" })).toBe(
+      "kebab-rtx6000/qwen3.6-27b",
+    );
   });
 
   it("falls back to runtime default when no override or config", () => {

@@ -16,6 +16,9 @@ export const AGENT_MODEL_CONFIG_KEYS = [
   "pdfModel",
 ] as const;
 
+/** Nested agent execution-path defaults that contain a model config. */
+export const AGENT_EXECUTION_PATH_MODEL_CONFIG_KEYS = ["chat", "dispatch", "subagents"] as const;
+
 /** List raw refs from one string or primary/fallback model selector. */
 export function listModelRefsFromConfigValue(value: unknown): string[] {
   if (typeof value === "string") {
@@ -79,10 +82,12 @@ export function collectConfiguredModelRefs(
       `${path}.heartbeat.model`,
       isRecord(agent.heartbeat) ? agent.heartbeat.model : undefined,
     );
-    collectModelConfig(
-      `${path}.subagents.model`,
-      isRecord(agent.subagents) ? agent.subagents.model : undefined,
-    );
+    for (const key of AGENT_EXECUTION_PATH_MODEL_CONFIG_KEYS) {
+      collectModelConfig(
+        `${path}.${key}.model`,
+        isRecord(agent[key]) ? agent[key].model : undefined,
+      );
+    }
     if (isRecord(agent.compaction)) {
       pushModelRef(`${path}.compaction.model`, agent.compaction.model);
       pushModelRef(

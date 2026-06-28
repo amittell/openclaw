@@ -115,4 +115,23 @@ describe("configured model refs", () => {
       }),
     ).toEqual([]);
   });
+
+  it("collects execution-path model defaults (chat, dispatch, subagents)", () => {
+    // The split agent defaults each carry their own selector; every path must
+    // be collected or a configured model silently misses catalog validation.
+    const refs = collectConfiguredModelRefs({
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-sonnet-4-6" },
+          chat: { model: "openai/gpt-5.5-chat" },
+          dispatch: { model: { primary: "openai/gpt-5.4-mini" } },
+          subagents: { model: { primary: "openai/gpt-5.5-mini" } },
+        },
+      },
+    });
+    const byPath = new Map(refs.map((ref) => [ref.path, ref.value]));
+    expect(byPath.get("agents.defaults.chat.model")).toBe("openai/gpt-5.5-chat");
+    expect(byPath.get("agents.defaults.dispatch.model.primary")).toBe("openai/gpt-5.4-mini");
+    expect(byPath.get("agents.defaults.subagents.model.primary")).toBe("openai/gpt-5.5-mini");
+  });
 });

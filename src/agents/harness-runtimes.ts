@@ -3,6 +3,10 @@
  */
 import { listModelRefsFromConfigValue } from "@openclaw/model-catalog-core/configured-model-refs";
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+import {
+  resolveAgentDefaultChatModelConfig,
+  resolveAgentDefaultDispatchModelConfig,
+} from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isRecord } from "../utils.js";
 import { OPENCLAW_AGENT_RUNTIME_ID, isDefaultAgentRuntimeId } from "./agent-runtime-id.js";
@@ -119,8 +123,15 @@ function pushConfiguredAgentModelRuntimeIds(
     pushModelRefs(Object.keys(models), agentId);
   };
 
-  const defaultsModel = config.agents?.defaults?.model;
+  // Chat/dispatch/subagent execution paths each carry their own default model
+  // selector; every one of them can pin a harness runtime, so all must be
+  // collected or a configured runtime silently fails to load.
+  const defaultsModel = resolveAgentDefaultChatModelConfig(config.agents?.defaults);
   pushModelRefs(listModelRefsFromConfigValue(defaultsModel));
+  pushModelRefs(listModelRefsFromConfigValue(config.agents?.defaults?.subagents?.model));
+  pushModelRefs(
+    listModelRefsFromConfigValue(resolveAgentDefaultDispatchModelConfig(config.agents?.defaults)),
+  );
   pushModelMapRefs(config.agents?.defaults?.models);
 
   for (const agent of listAgentEntries(config)) {

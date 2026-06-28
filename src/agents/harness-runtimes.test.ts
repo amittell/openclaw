@@ -147,4 +147,25 @@ describe("collectConfiguredAgentHarnessRuntimes", () => {
 
     expect(collectConfiguredAgentHarnessRuntimes(config)).toEqual(["claude"]);
   });
+
+  it("requires Codex for execution-path OpenAI model defaults", () => {
+    const config = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-sonnet-4-6" },
+          chat: { model: "openai/gpt-5.5" },
+          dispatch: { model: { primary: "openai/gpt-5.4-mini" } },
+          subagents: { model: { primary: "openai/gpt-5.5-mini" } },
+        },
+        list: [
+          {
+            id: "worker",
+            subagents: { model: "openai/gpt-5.4" },
+          },
+        ],
+      },
+    } as OpenClawConfig;
+
+    expect(collectConfiguredAgentHarnessRuntimes(config)).toEqual(["codex"]);
+  });
 });

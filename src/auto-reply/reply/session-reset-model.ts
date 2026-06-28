@@ -6,7 +6,7 @@ import {
   buildAllowedModelSetWithFallbacks,
   isModelKeyAllowedBySet,
 } from "../../agents/model-selection-shared.js";
-import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { resolveAgentDefaultChatModelFallbackValues } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { SessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import {
@@ -71,7 +71,7 @@ async function resolveResetFallbackModels(params: {
       return override;
     }
   }
-  return resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
 }
 
 async function buildResetAllowedModelKeys(params: {

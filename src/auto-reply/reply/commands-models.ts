@@ -37,6 +37,7 @@ import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/open
 import { loadPreparedModelCatalogSnapshot } from "../../agents/prepared-model-catalog.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
+import { resolveAgentDefaultChatModelConfig } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
@@ -291,7 +292,7 @@ export async function buildModelsProviderData(
   };
 
   const addModelConfigEntries = () => {
-    const modelConfig = cfg.agents?.defaults?.model;
+    const modelConfig = resolveAgentDefaultChatModelConfig(cfg.agents?.defaults);
     if (typeof modelConfig === "string") {
       addRawModelRef(modelConfig);
     } else if (modelConfig && typeof modelConfig === "object") {

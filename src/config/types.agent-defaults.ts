@@ -63,6 +63,11 @@ export type AgentModelListConfig = {
   fallbacks?: string[];
 };
 
+export type AgentExecutionPathModelConfig = {
+  /** Primary model and fallbacks for this execution path (provider/model). */
+  model?: AgentModelConfig;
+};
+
 export type AgentContextPruningConfig = {
   /** Pruning mode for old tool results in model context. */
   mode?: "off" | "cache-ttl";
@@ -123,10 +128,20 @@ export type AgentDefaultsConfig = {
   promptOverlays?: { gpt5?: { personality?: "friendly" | "on" | "off" } };
   /** Global default provider params applied to all models before per-model and per-agent overrides. */
   params?: Record<string, unknown>;
-  /** Primary model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
+  /** Legacy/default chat model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
   model?: AgentModelConfig;
   /** Optional lower-cost model for short internal tasks such as generated session titles. */
   utilityModel?: string;
+  /**
+   * Explicit default for normal OpenClaw chat/main-session replies.
+   * When unset, `agents.defaults.model` remains the backward-compatible default.
+   */
+  chat?: AgentExecutionPathModelConfig;
+  /**
+   * Explicit default for scheduler/chilisaus dispatch workers.
+   * When unset, dispatch workers fall back to `agents.defaults.model`.
+   */
+  dispatch?: AgentExecutionPathModelConfig;
   /**
    * @deprecated Legacy raw config accepted only by doctor/migration repair.
    * Normal schema parsing rejects this key; use per-model agentRuntime instead.

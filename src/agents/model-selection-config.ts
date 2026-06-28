@@ -1,5 +1,8 @@
 /** Pure configured-model selection helpers safe for config validation. */
-import { toAgentModelListLike } from "../config/model-input.js";
+import {
+  resolveAgentDefaultChatModelConfig,
+  toAgentModelListLike,
+} from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentConfig, resolveAgentEffectiveModelPrimary } from "./agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
@@ -24,9 +27,17 @@ export function resolveDefaultModelForAgent(
             ...params.cfg.agents,
             defaults: {
               ...params.cfg.agents?.defaults,
-              model: {
-                ...toAgentModelListLike(params.cfg.agents?.defaults?.model),
-                primary: agentModelOverride,
+              // Per-agent overrides target the chat execution path: writing the
+              // legacy `model` selector would leave dispatch/subagent defaults
+              // pointing at the unoverridden model.
+              chat: {
+                ...params.cfg.agents?.defaults?.chat,
+                model: {
+                  ...toAgentModelListLike(
+                    resolveAgentDefaultChatModelConfig(params.cfg.agents?.defaults),
+                  ),
+                  primary: agentModelOverride,
+                },
               },
             },
           },

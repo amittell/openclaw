@@ -66,7 +66,20 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
     "Plugin-defined configuration payload interpreted by that plugin's own schema and validation rules. Use only documented fields from the plugin to prevent ignored or invalid settings.",
   "agents.entries.*.identity.avatar":
     "Agent avatar (workspace-relative path, http(s) URL, or data URI).",
-  "agents.defaults.model.primary": "Primary model (provider/model).",
+  "agents.defaults.model.primary":
+    "Legacy primary model (provider/model). Used when chat, native subagent, or dispatch defaults are unset.",
+  "agents.defaults.chat.model.primary":
+    "Primary model (provider/model) for normal OpenClaw chat/main-session replies.",
+  "agents.defaults.chat.model.fallbacks":
+    "Ordered fallback models (provider/model) for normal OpenClaw chat/main-session replies.",
+  "agents.defaults.subagents.model.primary":
+    "Primary model (provider/model) for native sessions_spawn subagents.",
+  "agents.defaults.subagents.model.fallbacks":
+    "Ordered fallback models (provider/model) for native sessions_spawn subagents.",
+  "agents.defaults.dispatch.model.primary":
+    "Primary model (provider/model) for scheduler/chilisaus dispatch workers.",
+  "agents.defaults.dispatch.model.fallbacks":
+    "Ordered fallback models (provider/model) for scheduler/chilisaus dispatch workers.",
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",
   "agents.defaults.utilityModel":

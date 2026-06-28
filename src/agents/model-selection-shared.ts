@@ -6,7 +6,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
-import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
+import { resolveAgentDefaultChatModelPrimaryValue } from "../config/model-input.js";
 import {
   computeModelPolicyAllowlist,
   hasExplicitModelPolicyAllow,
@@ -831,7 +831,8 @@ export function resolveConfiguredModelRef(
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
 ): ModelRef {
-  const rawModel = resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model) ?? "";
+  const rawModel =
+    resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults) ?? "";
   if (rawModel) {
     const trimmed = rawModel.trim();
     const { model: modelWithoutProfile } = splitTrailingAuthProfile(trimmed);

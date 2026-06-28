@@ -241,6 +241,39 @@ describe("agent defaults schema", () => {
     );
   });
 
+  it("accepts explicit chat and dispatch model defaults", () => {
+    const defaults = AgentDefaultsSchema.parse({
+      model: { primary: "openai/gpt-5.5" },
+      chat: {
+        model: {
+          primary: "kebab-rtx6000/qwen3.6-27b",
+          fallbacks: ["openai/gpt-5.5"],
+        },
+      },
+      dispatch: {
+        model: "openai/gpt-5.4-mini",
+      },
+    });
+
+    expect(defaults?.chat?.model).toEqual({
+      primary: "kebab-rtx6000/qwen3.6-27b",
+      fallbacks: ["openai/gpt-5.5"],
+    });
+    expect(defaults?.dispatch?.model).toBe("openai/gpt-5.4-mini");
+    expectSchemaFailurePath(
+      AgentDefaultsSchema.safeParse({
+        chat: { model: { primary: "openai/gpt-5.5", timeoutMs: 30_000 } },
+      }),
+      "chat.model",
+    );
+    expectSchemaFailurePath(
+      AgentDefaultsSchema.safeParse({
+        dispatch: { model: { primary: "openai/gpt-5.5", timeoutMs: 30_000 } },
+      }),
+      "dispatch.model",
+    );
+  });
+
   it("accepts experimental.localModelLean", () => {
     const result = AgentDefaultsSchema.parse({
       experimental: {

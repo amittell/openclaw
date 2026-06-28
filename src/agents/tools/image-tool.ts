@@ -1,6 +1,7 @@
 import { resolve, isAbsolute } from "node:path";
 import { Type } from "typebox";
 import { findCapabilityProviderById } from "../../../packages/media-generation-core/src/capability-model-ref.js";
+import { resolveAgentDefaultChatModelPrimaryValue } from "../../config/model-input.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MediaUnderstandingModelConfig } from "../../config/types.tools.js";
 import {
@@ -147,11 +148,7 @@ const imageToolProviderDeps = {
 };
 
 function hasExplicitDefaultPrimaryModel(cfg?: OpenClawConfig): boolean {
-  const model = cfg?.agents?.defaults?.model;
-  if (typeof model === "string") {
-    return model.trim().length > 0;
-  }
-  return typeof model?.primary === "string" && model.primary.trim().length > 0;
+  return Boolean(resolveAgentDefaultChatModelPrimaryValue(cfg?.agents?.defaults));
 }
 
 function modelRefProvider(candidate: string | null | undefined): string | undefined {

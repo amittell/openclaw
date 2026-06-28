@@ -6,8 +6,8 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import {
-  resolveAgentModelFallbackValues,
-  resolveAgentModelPrimaryValue,
+  resolveAgentDefaultChatModelFallbackValues,
+  resolveAgentDefaultChatModelPrimaryValue,
 } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentModelFallbacksOverride } from "./agent-scope.js";
@@ -287,7 +287,7 @@ function resolveAllowedFallbacks(params: { cfg: OpenClawConfig; agentId?: string
       return override;
     }
   }
-  return resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model);
+  return resolveAgentDefaultChatModelFallbackValues(params.cfg.agents?.defaults);
 }
 
 /**
@@ -329,7 +329,9 @@ export function resolveSubagentSpawnModelSelection(params: {
     return configured;
   }
   const raw =
-    normalizeModelSelection(resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model)) ??
+    normalizeModelSelection(
+      resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults),
+    ) ??
     `${runtimeDefault.provider}/${runtimeDefault.model}`;
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg,

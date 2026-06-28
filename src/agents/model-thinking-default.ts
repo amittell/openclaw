@@ -10,6 +10,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveThinkingDefaultForModel } from "../auto-reply/thinking.js";
 import type { ThinkLevel } from "../auto-reply/thinking.shared.js";
+import { resolveAgentDefaultChatModelPrimaryValue } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import { legacyModelKey, modelKey, normalizeProviderId } from "./model-ref-shared.js";
@@ -37,7 +38,9 @@ export function resolveThinkingDefault(params: {
   const legacyKey = legacyModelKey(params.provider, params.model);
   const normalizedCanonicalKey = normalizeLowercaseStringOrEmpty(canonicalKey);
   const normalizedLegacyKey = normalizeOptionalLowercaseString(legacyKey);
-  const primarySelection = normalizeModelSelection(params.cfg.agents?.defaults?.model);
+  const primarySelection = normalizeModelSelection(
+    resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults),
+  );
   const normalizedPrimarySelection = normalizeOptionalLowercaseString(primarySelection);
   const explicitModelConfigured =
     (configuredModels ? canonicalKey in configuredModels : false) ||
