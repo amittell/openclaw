@@ -147,4 +147,76 @@ describe("spawnSubagentDirect runtime model persistence", () => {
     expect(persistedEntry?.modelOverrideFallbackOriginProvider).toBe("openai");
     expect(persistedEntry?.modelOverrideFallbackOriginModel).toBe("gpt-5.4");
   });
+
+  it("re-applies execution override fields during final runtime model persistence", async () => {
+    const dedicatedUpdateSessionStoreMock = vi.fn();
+    const {
+      resetSubagentRegistryForTests: resetForRuntimeRestoreTest,
+      spawnSubagentDirect: spawnWithConfiguredModel,
+    } = await loadSubagentSpawnModuleForTest({
+      callGatewayMock,
+      getRuntimeConfig: () =>
+        createSubagentSpawnTestConfig(os.tmpdir(), {
+          agents: {
+            defaults: {
+              workspace: os.tmpdir(),
+              model: { primary: "openai/gpt-5.5" },
+              subagents: { model: "kebab-rtx6000/qwen3.6-27b" },
+            },
+          },
+        }),
+      updateSessionStoreMock: dedicatedUpdateSessionStoreMock,
+      pruneLegacyStoreKeysMock,
+      workspaceDir: os.tmpdir(),
+    });
+    resetForRuntimeRestoreTest();
+
+    const store: Record<string, Record<string, unknown>> = {};
+    let updateCount = 0;
+    let persistedStore: Record<string, Record<string, unknown>> | undefined;
+    dedicatedUpdateSessionStoreMock.mockImplementation(
+      async (
+        _storePath: string,
+        mutator: (store: Record<string, Record<string, unknown>>) => unknown,
+      ) => {
+        updateCount += 1;
+        await mutator(store);
+        if (updateCount === 1) {
+          const [, entry] = Object.entries(store)[0] ?? [];
+          if (entry) {
+            delete entry.providerOverride;
+            delete entry.modelOverride;
+            delete entry.modelOverrideSource;
+            delete entry.modelOverrideFallbackOriginProvider;
+            delete entry.modelOverrideFallbackOriginModel;
+          }
+        }
+        persistedStore = store;
+        return store;
+      },
+    );
+
+    const result = await spawnWithConfiguredModel(
+      {
+        task: "test",
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "guildchat",
+      },
+    );
+
+    expect(result.status).toBe("accepted");
+    expect(result.resolvedModel).toBe("kebab-rtx6000/qwen3.6-27b");
+    expectPersistedRuntimeModel({
+      persistedStore,
+      sessionKey: /^agent:main:subagent:/,
+      provider: "kebab-rtx6000",
+      model: "qwen3.6-27b",
+      overrideSource: "auto",
+    });
+    const [, persistedEntry] = Object.entries(persistedStore ?? {})[0] ?? [];
+    expect(persistedEntry?.modelOverrideFallbackOriginProvider).toBe("kebab-rtx6000");
+    expect(persistedEntry?.modelOverrideFallbackOriginModel).toBe("qwen3.6-27b");
+  });
 });

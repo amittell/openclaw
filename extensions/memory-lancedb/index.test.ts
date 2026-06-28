@@ -3045,6 +3045,103 @@ describe("memory plugin e2e", () => {
     }
   });
 
+  test("memory_refresh replace tolerates stored vector objects without Array methods", async () => {
+    const existingId = "bbbbbbbb-0000-0000-0000-000000000001";
+    const originalHome = process.env.HOME;
+    process.env.HOME = getTmpDir();
+    const existingEntry = {
+      id: existingId,
+      text: "Old stale secret memory",
+      category: "fact",
+      vector: { length: 3, 0: 0.1, 1: 0.2, 2: 0.3 },
+      importance: 0.9,
+      createdAt: Date.now(),
+    };
+    let rows: Array<Record<string, unknown>> = [existingEntry];
+    const add = vi.fn(async (entries: Array<Record<string, unknown>>) => {
+      rows = entries;
+    });
+    const tableDelete = vi.fn(async () => {
+      rows = [];
+    });
+    const toArray = vi.fn(async () => rows);
+    const where = vi.fn(() => ({ toArray }));
+    const query = vi.fn(() => ({ where }));
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.1, 0.2, 0.4] }],
+    }));
+
+    try {
+      await withMockedOpenAiMemoryPlugin({
+        ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
+        embeddingsCreate,
+        loadLanceDbModule: vi.fn(async () => ({
+          connect: vi.fn(async () => ({
+            tableNames: vi.fn(async () => ["memories"]),
+            openTable: vi.fn(async () => ({
+              query,
+              add,
+              delete: tableDelete,
+              vectorSearch: vi.fn(() => ({
+                limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
+              })),
+              countRows: vi.fn(async () => rows.length),
+            })),
+          })),
+        })),
+        run: async (dynamicMemoryPlugin) => {
+          const registeredTools: any[] = [];
+          const mockApi = {
+            id: "memory-lancedb",
+            name: "Memory (LanceDB)",
+            source: "test",
+            config: {},
+            pluginConfig: {
+              embedding: { apiKey: OPENAI_API_KEY, model: "text-embedding-3-small" },
+              dbPath: getDbPath(),
+              autoCapture: false,
+              autoRecall: false,
+            },
+            runtime: {},
+            logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+            registerTool: (tool: any, opts: any) => {
+              registeredTools.push({ tool, opts });
+            },
+            registerCli: vi.fn(),
+            registerService: vi.fn(),
+            on: vi.fn(),
+            resolvePath: (p: string) => p,
+          };
+
+          dynamicMemoryPlugin.register(mockApi as any);
+          const refreshTool = registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool;
+          expect(refreshTool).toBeDefined();
+
+          const result = await refreshTool.execute("test-refresh-vector-object", {
+            text: "Updated non-secret memory",
+            memoryId: existingId,
+          });
+
+          expect(result.details).toMatchObject({
+            operation: "replaced",
+            old_id: existingId,
+            new_id: existingId,
+          });
+          expect(tableDelete).toHaveBeenCalledWith(`id = '${existingId}'`);
+          expect(add).toHaveBeenCalledTimes(1);
+          expect(firstAddedMemory(add).id).toBe(existingId);
+          expect(firstAddedMemory(add).vector).toEqual([0.1, 0.2, 0.4]);
+        },
+      });
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
+  });
+
   test("looksLikeEnvelopeSludge detects inbound metadata sentinels", () => {
     expect(looksLikeEnvelopeSludge("Conversation info (untrusted metadata):")).toBe(true);
     expect(looksLikeEnvelopeSludge("Sender (untrusted metadata):")).toBe(true);

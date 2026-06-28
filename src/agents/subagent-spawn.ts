@@ -367,6 +367,7 @@ async function persistInitialChildSessionRuntimeModel(params: {
   cfg: OpenClawConfig;
   childSessionKey: string;
   resolvedModel?: string;
+  initialSessionPatch?: Record<string, unknown>;
 }): Promise<string | undefined> {
   const { provider, model } = splitModelRef(params.resolvedModel);
   if (!model) {
@@ -383,7 +384,12 @@ async function persistInitialChildSessionRuntimeModel(params: {
         canonicalKey: target.canonicalKey,
         candidates: target.storeKeys,
       });
+      const executionPatch = buildDirectChildSessionPatch({
+        ...params.initialSessionPatch,
+        model: params.resolvedModel,
+      });
       store[target.canonicalKey] = mergeSessionEntry(store[target.canonicalKey], {
+        ...executionPatch,
         model,
         ...(provider ? { modelProvider: provider } : {}),
       });
@@ -1366,6 +1372,7 @@ export async function spawnSubagentDirect(
       cfg,
       childSessionKey,
       resolvedModel,
+      initialSessionPatch: plan.initialSessionPatch,
     });
     if (runtimeModelPersistError) {
       try {

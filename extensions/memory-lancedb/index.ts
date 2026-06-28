@@ -8,6 +8,9 @@
 
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { appendFile, chmod, mkdir, open, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
@@ -212,6 +215,27 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
 const DUPLICATE_SEARCH_LIMIT = 5;
+const REFRESH_CONFLICT_MIN_SCORE = 0.5;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const memoryLocks = new Map<string, Promise<void>>();
+
+function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = memoryLocks.get(id) ?? Promise.resolve();
+  let resolveLock!: () => void;
+  const next = new Promise<void>((resolve) => {
+    resolveLock = resolve;
+  });
+  memoryLocks.set(id, next);
+  return prev
+    .then(() => fn())
+    .finally(() => {
+      resolveLock();
+      if (memoryLocks.get(id) === next) {
+        memoryLocks.delete(id);
+      }
+    });
+}
 
 function parsePositiveIntegerOption(value: string | undefined, flag: string): number | undefined {
   if (value === undefined) {
@@ -275,12 +299,19 @@ class MemoryDB {
     }
   }
 
-  async store(entry: Omit<MemoryEntry, "id" | "createdAt">): Promise<MemoryEntry> {
+  async store(
+    entry: Omit<MemoryEntry, "id" | "createdAt">,
+    options: { id?: string } = {},
+  ): Promise<MemoryEntry> {
     await this.ensureInitialized();
+
+    if (options.id !== undefined && !UUID_RE.test(options.id)) {
+      throw new Error(`Invalid memory ID format: ${options.id}`);
+    }
 
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: randomUUID(),
+      id: options.id ?? randomUUID(),
       createdAt: Date.now(),
     };
 
@@ -302,7 +333,7 @@ class MemoryDB {
         entry: {
           id: row.id as string,
           text: row.text as string,
-          vector: row.vector as number[],
+          vector: normalizeStoredMemoryVector(row.vector),
           importance: row.importance as number,
           category: row.category as MemoryEntry["category"],
           createdAt: row.createdAt as number,
@@ -342,12 +373,37 @@ class MemoryDB {
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
     // Validate UUID format to prevent injection
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(id)) {
+    if (!UUID_RE.test(id)) {
       throw new Error(`Invalid memory ID format: ${id}`);
     }
     await this.table!.delete(`id = '${id}'`);
     return true;
+  }
+
+  async getById(id: string): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    if (!UUID_RE.test(id)) {
+      throw new Error(`Invalid memory ID format: ${id}`);
+    }
+    const rows = await this.table!.query().where(`id = '${id}'`).toArray();
+    if (rows.length === 0) {
+      return null;
+    }
+    const row = rows[0];
+    return {
+      id: row.id as string,
+      text: row.text as string,
+      vector: normalizeStoredMemoryVector(row.vector),
+      importance: row.importance as number,
+      category: row.category as MemoryEntry["category"],
+      createdAt: row.createdAt as number,
+    };
+  }
+
+  async storeRaw(entry: MemoryEntry): Promise<MemoryEntry> {
+    await this.ensureInitialized();
+    await this.table!.add([entry]);
+    return entry;
   }
 
   async count(): Promise<number> {
@@ -575,6 +631,105 @@ export function normalizeEmbeddingVector(value: unknown): number[] {
   }
 
   throw new Error("Embedding response is missing a vector");
+}
+
+function floatsFromBytes(bytes: Buffer): number[] | null {
+  if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const floats: number[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += Float32Array.BYTES_PER_ELEMENT) {
+    const value = view.getFloat32(offset, true);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    floats.push(value);
+  }
+  return floats;
+}
+
+function finiteVectorFromArrayLike(value: ArrayLike<unknown>): number[] | null {
+  const length = value.length;
+  if (!Number.isFinite(length) || length < 0) {
+    return null;
+  }
+  const out: number[] = [];
+  for (let index = 0; index < Math.floor(length); index += 1) {
+    const item = value[index];
+    if (typeof item !== "number" || !Number.isFinite(item)) {
+      return null;
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+export function normalizeStoredMemoryVector(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return finiteVectorFromArrayLike(value) ?? [];
+  }
+  if (Buffer.isBuffer(value)) {
+    return floatsFromBytes(value) ?? [];
+  }
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof DataView) {
+      return floatsFromBytes(Buffer.from(value.buffer, value.byteOffset, value.byteLength)) ?? [];
+    }
+    return finiteVectorFromArrayLike(value as unknown as ArrayLike<unknown>) ?? [];
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      const parsedVector = normalizeStoredMemoryVector(parsed);
+      if (parsedVector.length > 0) {
+        return parsedVector;
+      }
+    } catch {}
+    try {
+      return normalizeEmbeddingVector(value);
+    } catch {
+      return [];
+    }
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return [];
+  }
+  const toArray = record.toArray;
+  if (typeof toArray === "function") {
+    try {
+      const vector = normalizeStoredMemoryVector(toArray.call(value));
+      if (vector.length > 0) {
+        return vector;
+      }
+    } catch {}
+  }
+  for (const key of ["values", "data", "vector", "embedding"] as const) {
+    if (key in record) {
+      const vector = normalizeStoredMemoryVector(record[key]);
+      if (vector.length > 0) {
+        return vector;
+      }
+    }
+  }
+  if (typeof record.length === "number") {
+    return finiteVectorFromArrayLike(record as unknown as ArrayLike<unknown>) ?? [];
+  }
+  return [];
+}
+
+function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number[]): number | null {
+  const previousVector = normalizeStoredMemoryVector(existingVector);
+  if (previousVector.length === 0 || previousVector.length !== nextVector.length) {
+    return null;
+  }
+  let l2sq = 0;
+  for (let index = 0; index < previousVector.length; index += 1) {
+    const diff = previousVector[index] - (nextVector[index] ?? 0);
+    l2sq += diff * diff;
+  }
+  return 1 / (1 + Math.sqrt(l2sq));
 }
 
 // ============================================================================
@@ -1698,11 +1853,13 @@ export default definePluginEntry({
           const { query, memoryId } = params as { query?: string; memoryId?: string };
 
           if (memoryId) {
-            await db.delete(memoryId);
-            return {
-              content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
-              details: { action: "deleted", id: memoryId },
-            };
+            return withMemoryLock(memoryId, async () => {
+              await db.delete(memoryId);
+              return {
+                content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
+                details: { action: "deleted", id: memoryId },
+              };
+            });
           }
 
           if (query) {
@@ -1720,11 +1877,14 @@ export default definePluginEntry({
             }
 
             if (results.length === 1 && results[0].score > 0.9) {
-              await db.delete(results[0].entry.id);
-              return {
-                content: [{ type: "text", text: `Forgotten: "${results[0].entry.text}"` }],
-                details: { action: "deleted", id: results[0].entry.id },
-              };
+              const targetId = results[0].entry.id;
+              return withMemoryLock(targetId, async () => {
+                await db.delete(targetId);
+                return {
+                  content: [{ type: "text", text: `Forgotten: "${results[0].entry.text}"` }],
+                  details: { action: "deleted", id: targetId },
+                };
+              });
             }
 
             const list = results
@@ -1757,6 +1917,192 @@ export default definePluginEntry({
         },
       },
       { name: "memory_forget" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_refresh",
+        label: "Memory Refresh",
+        description:
+          "Search for existing memories similar to new content, or replace a specific memory by ID. Use for updating facts: call without memoryId to preview similar memories, then call with memoryId to perform a best-effort replace with process-level serialization. The replace path is not a storage-level transaction; it is a process-mutex-serialized delete-then-insert with best-effort rollback on insert failure. The replaced entry keeps its original id so cached references stay valid.",
+        parameters: Type.Object({
+          text: Type.String({ description: "New memory content" }),
+          category: Type.Optional(
+            Type.Unsafe<MemoryCategory>({
+              type: "string",
+              enum: [...MEMORY_CATEGORIES],
+            }),
+          ),
+          importance: optionalFiniteNumberSchema({
+            description: "Importance 0.0-1.0 (default: inherited or 0.7)",
+            minimum: 0,
+            maximum: 1,
+          }),
+          memoryId: Type.Optional(
+            Type.String({
+              description:
+                "If provided: best-effort replace of this memory (process-mutex serialized, not a storage-level transaction). If omitted: search-only mode.",
+            }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const rawParams = params as Record<string, unknown>;
+          if (typeof rawParams.text !== "string") {
+            throw new Error("text must be a string");
+          }
+          const text = rawParams.text;
+          const category = rawParams.category as MemoryEntry["category"] | undefined;
+          const importance = readFiniteNumberParam(rawParams, "importance", {
+            min: 0,
+            max: 1,
+          });
+          const memoryId =
+            typeof rawParams.memoryId === "string" && rawParams.memoryId.trim()
+              ? rawParams.memoryId.trim()
+              : undefined;
+
+          if (!memoryId) {
+            const vector = await embeddings.embed(text);
+            const results = await db.search(vector, 3, REFRESH_CONFLICT_MIN_SCORE);
+            const matches = results.map((r) => ({
+              id: r.entry.id,
+              text: r.entry.text,
+              category: r.entry.category,
+              importance: r.entry.importance,
+              similarity: r.score,
+            }));
+
+            const summaryText =
+              matches.length === 0
+                ? "No similar memories found."
+                : `Found ${matches.length} similar memories:\n\n${matches
+                    .map(
+                      (m, i) =>
+                        `${i + 1}. [${m.id.slice(0, 8)}] (${(m.similarity * 100).toFixed(0)}%) ${m.text}`,
+                    )
+                    .join("\n")}`;
+
+            return {
+              content: [{ type: "text", text: summaryText }],
+              details: { operation: "search_only", matches },
+            };
+          }
+
+          const precheck = await db.getById(memoryId);
+          if (!precheck) {
+            return {
+              content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
+              details: { operation: "error", error: "not_found", memoryId },
+            };
+          }
+
+          const vector = await embeddings.embed(text);
+
+          return withMemoryLock(memoryId, async () => {
+            const existing = await db.getById(memoryId);
+            if (!existing) {
+              return {
+                content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
+                details: { operation: "error", error: "not_found", memoryId },
+              };
+            }
+
+            const resolvedCategory = category ?? existing.category;
+            const resolvedImportance = importance ?? existing.importance;
+            const oldTextPreview = existing.text.slice(0, 80);
+
+            await db.delete(memoryId);
+
+            let newEntry: MemoryEntry;
+            let rollbackWarning: string | undefined;
+            try {
+              newEntry = await db.store(
+                {
+                  text,
+                  vector,
+                  importance: resolvedImportance,
+                  category: resolvedCategory,
+                },
+                { id: memoryId },
+              );
+            } catch (insertErr) {
+              let rollbackSucceeded = false;
+              try {
+                await db.storeRaw(existing);
+                rollbackSucceeded = true;
+                rollbackWarning = `Insert failed; original restored with original ID ${existing.id}. Insert error: ${String(insertErr)}`;
+              } catch (rollbackErr) {
+                rollbackWarning = `Insert failed AND rollback failed (DATA LOSS POSSIBLE). Insert: ${String(insertErr)}. Rollback: ${String(rollbackErr)}`;
+              }
+              return {
+                content: [{ type: "text", text: `Replace failed: ${rollbackWarning}` }],
+                details: {
+                  operation: "error",
+                  error: "insert_failed",
+                  success: false,
+                  rollbackWarning,
+                  ...(rollbackSucceeded ? { restored_id: existing.id } : { restored_id: null }),
+                },
+              };
+            }
+
+            const similarity = scoreStoredVectorSimilarity(existing.vector, vector);
+            const homeForAudit = process.env.HOME ?? homedir();
+            const auditLogPath = path.join(
+              homeForAudit,
+              ".openclaw",
+              "memory",
+              "refresh-audit.jsonl",
+            );
+            try {
+              await mkdir(path.dirname(auditLogPath), { recursive: true, mode: 0o700 });
+              let preexisting = true;
+              try {
+                await stat(auditLogPath);
+              } catch {
+                preexisting = false;
+              }
+              const handle = await open(auditLogPath, "a", 0o600);
+              try {
+                await appendFile(
+                  handle,
+                  JSON.stringify({
+                    ts: Date.now(),
+                    operation: "replaced",
+                    old_id: memoryId,
+                    new_id: newEntry.id,
+                    similarity,
+                  }) + "\n",
+                  "utf8",
+                );
+              } finally {
+                await handle.close();
+              }
+              if (!preexisting) {
+                await chmod(auditLogPath, 0o600);
+              }
+            } catch (auditErr) {
+              api.logger.warn(`memory-lancedb: audit log write failed: ${String(auditErr)}`);
+            }
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Replaced memory ${memoryId.slice(0, 8)} (id preserved)\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
+                },
+              ],
+              details: {
+                operation: "replaced",
+                old_id: memoryId,
+                new_id: newEntry.id,
+                old_text_preview: oldTextPreview,
+              },
+            };
+          });
+        },
+      },
+      { name: "memory_refresh" },
     );
 
     // ========================================================================
