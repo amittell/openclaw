@@ -321,6 +321,7 @@ describe("retryAsync", () => {
   it("clamps final retryAfter delay to MAX_TIMER_TIMEOUT_MS even after jitter pushes it upward", async () => {
     // The pre-jitter value is safe, but positive jitter near the cap must still
     // re-clamp before it reaches Node's overflow range.
+    randomMocks.generateSecureFraction.mockReturnValue(1);
     const delays = await runRetryAfterCase({
       minDelayMs: 0,
       maxDelayMs: Number.POSITIVE_INFINITY,
