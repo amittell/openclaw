@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  makeIsolatedAgentTurnJob,
-  makeIsolatedAgentTurnParams,
-  setupRunCronIsolatedAgentTurnSuite,
-} from "./run.suite-helpers.js";
+import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
+import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
   loadRunCronIsolatedAgentTurn,
   makeCronSession,
   resolveCronSessionMock,
   runWithModelFallbackMock,
-  setSessionRuntimeModelMock,
 } from "./run.test-harness.js";
 
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
@@ -50,16 +46,13 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
     });
 
     const result = await runCronIsolatedAgentTurn(
-      makeIsolatedAgentTurnParams({
-        job: makeIsolatedAgentTurnJob(),
+      makeIsolatedAgentParamsFixture({
+        job: makeIsolatedAgentJobFixture(),
       }),
     );
 
     expect(result.status).toBe("ok");
 
-    // setSessionRuntimeModel must NOT have been called because the run
-    // was served by a fallback model, not the configured primary.
-    expect(setSessionRuntimeModelMock).not.toHaveBeenCalled();
     // contextTokens belongs to the runtime-model snapshot: when the run was a
     // fallback we must preserve the existing entry value so status %used and
     // compaction heuristics do not desync from the unchanged primary model.
@@ -101,16 +94,15 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
     });
 
     const result = await runCronIsolatedAgentTurn(
-      makeIsolatedAgentTurnParams({
-        job: makeIsolatedAgentTurnJob(),
+      makeIsolatedAgentParamsFixture({
+        job: makeIsolatedAgentJobFixture(),
       }),
     );
 
     expect(result.status).toBe("ok");
 
-    // Primary was used — setSessionRuntimeModel should have been called and
-    // contextTokens should have been updated as part of the runtime snapshot.
-    expect(setSessionRuntimeModelMock).toHaveBeenCalled();
+    expect(cronSession.sessionEntry.model).toBe("gpt-5.4");
+    expect(cronSession.sessionEntry.modelProvider).toBe("openai");
     expect(typeof cronSession.sessionEntry.contextTokens).toBe("number");
   });
 });
