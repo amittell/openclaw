@@ -214,6 +214,18 @@ async function resolveLocalProbeFailureReason(
 }
 
 export async function hasCachedPairedDeviceToken(env?: NodeJS.ProcessEnv): Promise<boolean> {
+  // Callers that pass an isolated env object expect this lookup to stay inside
+  // that sandbox instead of falling back to the host user's real state dir.
+  if (
+    env &&
+    env !== process.env &&
+    !env.OPENCLAW_STATE_DIR &&
+    !env.OPENCLAW_HOME &&
+    !env.HOME &&
+    !env.USERPROFILE
+  ) {
+    return false;
+  }
   // Mirror probeGateway's device-identity check: only attach a paired
   // identity when this CLI has a cached operator device token. If the
   // resolution throws (read-only state dir, missing identity, etc.)
