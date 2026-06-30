@@ -58,6 +58,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
   defaultModel: string;
   fallbackProvider?: string;
   fallbackModel?: string;
+  isFromFallback?: boolean;
   result: RunResult;
   touchInteraction?: boolean;
   /**
