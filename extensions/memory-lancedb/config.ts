@@ -9,6 +9,10 @@ export type MemoryConfig = {
     model: string;
     apiKey?: string;
     baseUrl?: string;
+    // Optional secondary OpenAI-compatible endpoint. When set, the embedder
+    // fails over to it if the primary baseUrl is unreachable (client-side
+    // failover; see OpenAiCompatibleEmbeddings).
+    fallbackBaseUrl?: string;
     dimensions?: number;
   };
   dreaming?: Record<string, unknown>;
@@ -33,7 +37,14 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-small": 1536,
   "text-embedding-3-large": 3072,
 };
-const EMBEDDING_CONFIG_KEYS = ["provider", "apiKey", "model", "baseUrl", "dimensions"] as const;
+const EMBEDDING_CONFIG_KEYS = [
+  "provider",
+  "apiKey",
+  "model",
+  "baseUrl",
+  "fallbackBaseUrl",
+  "dimensions",
+] as const;
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -214,6 +225,10 @@ export const memoryConfigSchema = {
         apiKey: typeof embedding.apiKey === "string" ? resolveEnvVars(embedding.apiKey) : undefined,
         baseUrl:
           typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined,
+        fallbackBaseUrl:
+          typeof embedding.fallbackBaseUrl === "string"
+            ? resolveEnvVars(embedding.fallbackBaseUrl)
+            : undefined,
         dimensions,
       },
       dreaming,
@@ -242,6 +257,12 @@ export const memoryConfigSchema = {
       label: "Base URL",
       placeholder: "https://api.openai.com/v1",
       help: "Optional provider or OpenAI-compatible embedding endpoint base URL",
+      advanced: true,
+    },
+    "embedding.fallbackBaseUrl": {
+      label: "Fallback Base URL",
+      placeholder: "http://standby-host:8000/api/v1",
+      help: "Optional secondary OpenAI-compatible embedding endpoint; used only when the primary baseUrl fails",
       advanced: true,
     },
     "embedding.dimensions": {
