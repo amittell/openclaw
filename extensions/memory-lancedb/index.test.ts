@@ -161,7 +161,18 @@ async function withMockedOpenAiMemoryPlugin<T>(params: {
   }));
   vi.doMock("openai", () => ({
     default: class MockOpenAI {
-      post = post;
+      // Capture baseURL so failover tests can route per-endpoint; existing
+      // single-endpoint mocks simply ignore the extra third argument.
+      baseURL?: string;
+      constructor(opts?: { baseURL?: string }) {
+        this.baseURL = opts?.baseURL;
+      }
+      post = (path: string, opts: { body?: unknown }) =>
+        (post as (p: string, o: { body?: unknown }, baseURL?: string) => unknown)(
+          path,
+          opts,
+          this.baseURL,
+        );
     },
   }));
   vi.doMock("./lancedb-runtime.js", () => ({
@@ -1184,6 +1195,96 @@ describe("memory plugin e2e", () => {
     });
   });
 
+  test("fails over to the secondary embedding endpoint when the primary fails", async () => {
+    const PRIMARY = "http://primary.invalid/v1";
+    const FALLBACK = "http://fallback.invalid/api/v1";
+    const seenBaseUrls: (string | undefined)[] = [];
+    const post = vi.fn(async (_path: string, _opts: { body?: unknown }, baseURL?: string) => {
+      seenBaseUrls.push(baseURL);
+      if (baseURL === PRIMARY) {
+        throw new Error("ECONNREFUSED: primary embedder down");
+      }
+      return { data: [{ embedding: [0.1, 0.2, 0.3] }] };
+    });
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const toArray = vi.fn(async () => [
+      {
+        id: "failover-1",
+        text: "Failover memory survived.",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.8,
+        category: "preference",
+        createdAt: 1,
+        _distance: 0.1,
+      },
+    ]);
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch: vi.fn(() => ({ limit: vi.fn(() => ({ toArray })) })),
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      openAiPost: post,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const on = vi.fn();
+        const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+              baseUrl: PRIMARY,
+              fallbackBaseUrl: FALLBACK,
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: true,
+          },
+          runtime: {},
+          logger,
+          registerTool: vi.fn(),
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on,
+          resolvePath: (p: string) => p,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const beforePromptBuild = on.mock.calls.find(
+          ([hookName]) => hookName === "before_prompt_build",
+        )?.[1];
+        expect(beforePromptBuild).toBeTypeOf("function");
+
+        const result = await beforePromptBuild?.(
+          {
+            prompt: "what do you remember?",
+            messages: [{ role: "user", content: "what do you remember about my setup?" }],
+          },
+          {},
+        );
+
+        // The primary is tried and fails, then the fallback serves the vector, so
+        // the memory still reaches the prompt: client-side failover engaged.
+        expect(seenBaseUrls).toContain(PRIMARY);
+        expect(seenBaseUrls).toContain(FALLBACK);
+        expect(result?.prependContext).toContain("Failover memory survived.");
+      },
+    });
+  });
+
   test("bounds auto-recall latency during prompt build", async () => {
     vi.useFakeTimers();
     const post = vi.fn(
@@ -1265,10 +1366,10 @@ describe("memory plugin e2e", () => {
           expect(firstMockArg(post as unknown as MockCallSource, "post path")).toBe("/embeddings");
           const postOptions = firstObjectArg(post as unknown as MockCallSource, "post options", 1);
           expect(postOptions.maxRetries).toBe(0);
-          expect(postOptions.timeout).toBe(15_000);
+          expect(postOptions.timeout).toBe(5_000);
           expect(loadLanceDbModule).not.toHaveBeenCalled();
           expect(logger.warn).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
+            "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
           );
           await vi.advanceTimersByTimeAsync(15_000);
         },
