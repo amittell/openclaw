@@ -1572,6 +1572,7 @@ export async function runCodexAppServerAttempt(
     );
   const turnTerminalIdleTimeoutMs = resolveCodexTurnTerminalIdleTimeoutMs(
     options.turnTerminalIdleTimeoutMs,
+    params.runTimeoutOverrideMs,
   );
   const turnAttemptIdleTimeoutMs = Math.max(100, Math.floor(params.timeoutMs));
   let nativeHookRelayLastRenewedAt = 0;
