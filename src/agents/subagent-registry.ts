@@ -1239,6 +1239,7 @@ export function replaceSubagentRunAfterSteer(params: {
   runTimeoutSeconds?: number;
   preserveFrozenResultFallback?: boolean;
   transcriptFile?: string;
+  task?: string;
 }) {
   return subagentRunManager.replaceSubagentRunAfterSteer(params);
 }

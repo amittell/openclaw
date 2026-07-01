@@ -2583,6 +2583,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             await reactivateCompletedSubagentSession({
               sessionKey: resolvedSessionKey,
               runId,
+              task: message,
             });
           }
 
