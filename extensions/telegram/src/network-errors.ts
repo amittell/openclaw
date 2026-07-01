@@ -397,3 +397,14 @@ export function isRecoverableTelegramNetworkError(
 
   return false;
 }
+
+export function isRetryableTelegramApiError(
+  err: unknown,
+  options: { context?: TelegramNetworkErrorContext; allowMessageMatch?: boolean } = {},
+): boolean {
+  return (
+    isRecoverableTelegramNetworkError(err, options) ||
+    isTelegramServerError(err) ||
+    isTelegramRateLimitError(err)
+  );
+}
