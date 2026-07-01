@@ -38,6 +38,12 @@
       "help": "Optional provider or OpenAI-compatible embedding endpoint base URL",
       "advanced": true
     },
+    "embedding.fallbackBaseUrl": {
+      "label": "Fallback Base URL",
+      "placeholder": "http://standby-host:8000/api/v1",
+      "help": "Optional secondary OpenAI-compatible embedding endpoint; used only when the primary baseUrl fails",
+      "advanced": true
+    },
     "embedding.dimensions": {
       "label": "Dimensions",
       "placeholder": "1536",
@@ -104,6 +110,9 @@
             "type": "string"
           },
           "baseUrl": {
+            "type": "string"
+          },
+          "fallbackBaseUrl": {
             "type": "string"
           },
           "dimensions": {
