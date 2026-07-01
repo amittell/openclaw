@@ -31,7 +31,7 @@ import {
   isExecApprovalFollowupSessionRebound,
   parseExecApprovalFollowupApprovalId,
 } from "../../agents/bash-tools.exec-approval-followup-state.js";
-import { clearAllCliSessions } from "../../agents/cli-session.js";
+import { clearAllCliSessions, hasProviderOwnedSession } from "../../agents/cli-session.js";
 import type { AgentCommandOpts } from "../../agents/command/types.js";
 import { isTimeoutError } from "../../agents/failover-error.js";
 import {
@@ -70,6 +70,7 @@ import {
   resolveSessionResetPolicy,
   resolveSessionResetType,
   type SessionEntry,
+  type SessionFreshness,
   updateSessionStore,
 } from "../../config/sessions.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
@@ -1759,13 +1760,17 @@ export const agentHandlers: GatewayRequestHandlers = {
               agentId: canonicalSessionAgentId,
             })
           : undefined;
+        const skipImplicitExpiry =
+          resetPolicy.configured !== true && hasProviderOwnedSession(entry);
         let freshness = entry
-          ? evaluateSessionFreshness({
-              updatedAt: entry.updatedAt,
-              ...lifecycleTimestamps,
-              now,
-              policy: resetPolicy,
-            })
+          ? skipImplicitExpiry
+            ? ({ fresh: true } satisfies SessionFreshness)
+            : evaluateSessionFreshness({
+                updatedAt: entry.updatedAt,
+                ...lifecycleTimestamps,
+                now,
+                policy: resetPolicy,
+              })
           : undefined;
         const resolveFailedSessionTranscriptMissingForEntry = (
           candidateEntry: SessionEntry | undefined,
@@ -1946,13 +1951,17 @@ export const agentHandlers: GatewayRequestHandlers = {
                 agentId: sessionAgent,
               })
             : undefined;
+          const freshSkipImplicitExpiry =
+            resetPolicy.configured !== true && hasProviderOwnedSession(freshEntry);
           const freshFreshness = freshEntry
-            ? evaluateSessionFreshness({
-                updatedAt: freshEntry.updatedAt,
-                ...freshLifecycleTimestamps,
-                now,
-                policy: resetPolicy,
-              })
+            ? freshSkipImplicitExpiry
+              ? ({ fresh: true } satisfies SessionFreshness)
+              : evaluateSessionFreshness({
+                  updatedAt: freshEntry.updatedAt,
+                  ...freshLifecycleTimestamps,
+                  now,
+                  policy: resetPolicy,
+                })
             : undefined;
           const freshRequestedSessionMatchesEntry = Boolean(
             requestedSessionId && freshEntry?.sessionId?.trim() === requestedSessionId,

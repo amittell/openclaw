@@ -19,6 +19,17 @@ export function hashCliSessionText(value: string | undefined): string | undefine
   return crypto.createHash("sha256").update(trimmed).digest("hex");
 }
 
+/**
+ * Provider-owned CLI sessions (claude-cli, codex, gemini-cli) are exempt from
+ * implicit daily-reset freshness cuts; rotating them clears the CLI session
+ * binding and splits the transcript. Shared so gateway and auto-reply freshness
+ * decisions use one predicate (upstream #97931).
+ */
+export function hasProviderOwnedSession(entry: SessionEntry | undefined): boolean {
+  const provider = normalizeOptionalString(entry?.providerOverride ?? entry?.modelProvider);
+  return Boolean(provider && getCliSessionBinding(entry, provider));
+}
+
 /** Read the stored CLI session binding for a provider, including legacy Claude state. */
 export function getCliSessionBinding(
   entry: SessionEntry | undefined,
