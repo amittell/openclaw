@@ -71,18 +71,43 @@ async function drainRetainedProviders(): Promise<void> {
   }
 }
 
+// Per-endpoint failure cooldown; only consulted when more than one embedding
+// endpoint is configured, so the single-endpoint path carries no extra state.
+const EMBEDDING_ENDPOINT_COOLDOWN_MS = 30_000;
+// Floor for each endpoint's slice of the caller's timeout budget when failover
+// splits it across candidates, so a slow endpoint can't starve the fallback.
+const MIN_EMBEDDING_ATTEMPT_TIMEOUT_MS = 2_000;
+
 class OpenAiCompatibleEmbeddings implements Embeddings {
-  private clientPromise: Promise<OpenAiEmbeddingClient>;
+  // One lazy client per endpoint URL (keyed by url; the no-baseUrl default is
+  // keyed by ""). Per-url clients keep each request pinned to its endpoint.
+  private clients = new Map<string, Promise<OpenAiEmbeddingClient>>();
+  private endpointDownUntil = new Map<string, number>();
+  private readonly baseUrls: (string | undefined)[];
 
   constructor(
-    apiKey: string,
+    private apiKey: string,
     private model: string,
-    baseUrl?: string,
+    baseUrls: (string | undefined)[],
     private dimensions?: number,
   ) {
-    this.clientPromise = loadOpenAiModule().then(
-      ({ default: OpenAI }) => new OpenAI({ apiKey, baseURL: baseUrl }) as OpenAiEmbeddingClient,
-    );
+    // Keep the primary first; drop empty fallbacks but always retain one slot so
+    // the default (no baseUrl) path is unchanged.
+    const cleaned = baseUrls.filter((url, index) => index === 0 || (url && url.length > 0));
+    this.baseUrls = cleaned.length > 0 ? cleaned : [undefined];
+  }
+
+  private clientFor(baseUrl: string | undefined): Promise<OpenAiEmbeddingClient> {
+    const key = baseUrl ?? "";
+    let client = this.clients.get(key);
+    if (!client) {
+      client = loadOpenAiModule().then(
+        ({ default: OpenAI }) =>
+          new OpenAI({ apiKey: this.apiKey, baseURL: baseUrl }) as OpenAiEmbeddingClient,
+      );
+      this.clients.set(key, client);
+    }
+    return client;
   }
 
   async embed(text: string, options?: { timeoutMs?: number }): Promise<number[]> {
@@ -126,15 +151,62 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     };
 
     ensureGlobalUndiciEnvProxyDispatcher();
+
+    // Single endpoint: identical behavior to before, no failover bookkeeping.
+    if (this.baseUrls.length === 1) {
+      return await this.postVia(this.baseUrls[0], params, request.options?.timeoutMs);
+    }
+
+    // Failover: prefer endpoints not in cooldown (primary order); if all are
+    // cooling down, try them all as a re-probe. Split the caller's timeout
+    // across candidates so a primary failure plus a fallback success still fit
+    // inside the recall deadline that wraps this call.
+    const now = Date.now();
+    const healthy = this.baseUrls.filter(
+      (url) => (this.endpointDownUntil.get(url ?? "") ?? 0) <= now,
+    );
+    const candidates = healthy.length > 0 ? healthy : this.baseUrls;
+    const perAttempt = request.options?.timeoutMs
+      ? Math.max(
+          MIN_EMBEDDING_ATTEMPT_TIMEOUT_MS,
+          Math.floor(request.options.timeoutMs / candidates.length),
+        )
+      : undefined;
+
+    let lastError: unknown;
+    for (const baseUrl of candidates) {
+      try {
+        const response = await this.postVia(baseUrl, params, perAttempt);
+        this.endpointDownUntil.delete(baseUrl ?? "");
+        return response;
+      } catch (error) {
+        // A rejected `dimensions` param is a request-shape problem, not an
+        // endpoint outage: surface it so the caller's retry-without-dimensions
+        // path runs instead of burning the fallback on the same bad request.
+        if (isEmbeddingDimensionsRejectedError(error)) {
+          throw error;
+        }
+        this.endpointDownUntil.set(baseUrl ?? "", Date.now() + EMBEDDING_ENDPOINT_COOLDOWN_MS);
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error("memory-lancedb: all embedding endpoints failed");
+  }
+
+  private async postVia(
+    baseUrl: string | undefined,
+    params: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<EmbeddingCreateResponse> {
     // The OpenAI SDK's embeddings helper injects encoding_format=base64 when
     // omitted, then decodes the response. Several compatible providers either
     // reject encoding_format or always return float arrays, so use the generic
     // transport and normalize the response ourselves.
     return await (
-      await this.clientPromise
+      await this.clientFor(baseUrl)
     ).post<EmbeddingCreateResponse>("/embeddings", {
       body: params,
-      ...(request.options?.timeoutMs ? { timeout: request.options.timeoutMs, maxRetries: 0 } : {}),
+      ...(timeoutMs ? { timeout: timeoutMs, maxRetries: 0 } : {}),
     });
   }
 }
@@ -446,9 +518,9 @@ export const testing = {
 } as const;
 
 export function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings {
-  const { provider, model, dimensions, apiKey, baseUrl } = cfg.embedding;
+  const { provider, model, dimensions, apiKey, baseUrl, fallbackBaseUrl } = cfg.embedding;
   if (provider === "openai" && apiKey) {
-    return new OpenAiCompatibleEmbeddings(apiKey, model, baseUrl, dimensions);
+    return new OpenAiCompatibleEmbeddings(apiKey, model, [baseUrl, fallbackBaseUrl], dimensions);
   }
   return new ProviderAdapterEmbeddings(api, cfg.embedding);
 }
