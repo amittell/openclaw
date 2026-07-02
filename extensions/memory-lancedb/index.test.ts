@@ -167,9 +167,9 @@ async function withMockedOpenAiMemoryPlugin<T>(params: {
       constructor(opts?: { baseURL?: string }) {
         this.baseURL = opts?.baseURL;
       }
-      post = (path: string, opts: { body?: unknown }) =>
+      post = (requestPath: string, opts: { body?: unknown }) =>
         (post as (p: string, o: { body?: unknown }, baseURL?: string) => unknown)(
-          path,
+          requestPath,
           opts,
           this.baseURL,
         );
