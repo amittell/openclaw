@@ -2640,7 +2640,9 @@ describe("runCodexAppServerAttempt turn watches", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
     expect(settled).toBe(false);
     expect(
       warn.mock.calls.some(

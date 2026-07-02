@@ -1003,12 +1003,17 @@ async function finalizeCronRun(params: {
 
   const isFromFallback =
     modelUsed !== params.configuredModel || providerUsed !== params.configuredProvider;
-  if (!params.isAborted() && !isFromFallback) {
-    setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
-      provider: providerUsed,
-      model: modelUsed,
-    });
-    prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+  if (!params.isAborted()) {
+    // A fallback run must not be persisted as the session's model, but CLI
+    // session-binding maintenance still tracks the provider that actually ran:
+    // skipping it leaves stale bindings that hijack the next CLI run.
+    if (!isFromFallback) {
+      setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
+        provider: providerUsed,
+        model: modelUsed,
+      });
+      prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+    }
     if (isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
       const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
       if (finalRunResult.meta?.agentMeta?.clearCliSessionBinding === true) {
