@@ -112,6 +112,7 @@ import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch.js";
 import { loadManifestModelCatalog } from "./model-catalog.js";
 import { runWithModelFallback } from "./model-fallback.js";
+import type { FallbackAttempt } from "./model-fallback.types.js";
 import { normalizeConfiguredProviderCatalogModelId } from "./model-ref-shared.js";
 import type { ModelManifestNormalizationContext } from "./model-selection-normalize.js";
 import {
@@ -404,6 +405,22 @@ const OVERRIDE_FIELDS_CLEARED_BY_DELETE: OverrideFieldClearedByDelete[] = [
 ];
 
 const OVERRIDE_VALUE_MAX_LENGTH = 256;
+
+function autoFallbackPrimaryProbeHasDurableFailureEvidence(params: {
+  probeProvider: string;
+  probeModel: string;
+  attempts: readonly FallbackAttempt[];
+}): boolean {
+  const probeAttempt = params.attempts.find(
+    (attempt) => attempt.provider === params.probeProvider && attempt.model === params.probeModel,
+  );
+  const reason = normalizeOptionalString(probeAttempt?.reason);
+  if (reason) {
+    return reason !== "unknown";
+  }
+  const error = normalizeOptionalString(probeAttempt?.error);
+  return Boolean(error && error !== "unknown");
+}
 
 async function persistSessionEntry(
   params: PersistSessionEntryParams & {
@@ -1986,6 +2003,14 @@ async function agentCommandInternal(
           if (
             fallbackProvider === autoFallbackPrimaryProbe.provider &&
             fallbackModel === autoFallbackPrimaryProbe.model
+          ) {
+            clearAutoFallbackPrimaryProbeSelection(nextSessionEntry);
+          } else if (
+            !autoFallbackPrimaryProbeHasDurableFailureEvidence({
+              probeProvider: autoFallbackPrimaryProbe.provider,
+              probeModel: autoFallbackPrimaryProbe.model,
+              attempts: fallbackResult.attempts,
+            })
           ) {
             clearAutoFallbackPrimaryProbeSelection(nextSessionEntry);
           } else {
