@@ -197,7 +197,14 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
         lastError = error;
       }
     }
-    throw lastError ?? new Error("memory-lancedb: all embedding endpoints failed");
+    // Preserve the real endpoint error so callers can classify it (timeout vs
+    // auth vs dimensions); only synthesize when nothing threw an Error.
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error("memory-lancedb: all embedding endpoints failed", {
+      cause: lastError,
+    });
   }
 
   private async postVia(
