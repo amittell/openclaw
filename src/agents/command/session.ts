@@ -9,7 +9,6 @@ import {
   type ThinkLevel,
   type VerboseLevel,
 } from "../../auto-reply/thinking.js";
-import { hasProviderOwnedSession } from "../cli-session.js";
 import {
   hasTerminalMainSessionTranscriptNewerThanRegistrySync,
   resolveSessionLifecycleTimestamps,
@@ -39,7 +38,7 @@ import {
 import { resolveSessionIdMatchSelection } from "../../sessions/session-id-resolution.js";
 import { listAgentIds, resolveDefaultAgentId } from "../agent-scope.js";
 import { clearBootstrapSnapshotOnSessionRollover } from "../bootstrap-cache.js";
-import { clearAllCliSessions } from "../cli-session.js";
+import { clearAllCliSessions, hasProviderOwnedSession } from "../cli-session.js";
 
 /** Resolved command session identity plus backing store metadata. */
 type SessionResolution = {
