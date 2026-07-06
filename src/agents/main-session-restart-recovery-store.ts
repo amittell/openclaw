@@ -88,7 +88,10 @@ function isPendingFinalDeliveryRecoveryBackoffActive(params: {
   if (attemptCount <= 0 || lastAttemptAt === undefined) {
     return false;
   }
-  return params.nowMs - lastAttemptAt < resolvePendingFinalDeliveryRecoveryBackoffMs(attemptCount);
+  // A clock skew / future timestamp would otherwise read as an infinite
+  // backoff and strand the pending final; treat it as not-backed-off.
+  const elapsedMs = params.nowMs - lastAttemptAt;
+  return elapsedMs >= 0 && elapsedMs < resolvePendingFinalDeliveryRecoveryBackoffMs(attemptCount);
 }
 
 /** Drop an undeliverable pending final so recovery stops retrying it forever. */
@@ -261,6 +264,9 @@ export async function recoverStore(params: {
         continue;
       }
       if (isPendingFinalDeliveryRecoveryBackoffActive({ entry, nowMs: Date.now() })) {
+        log.info(
+          `pending final delivery restart recovery backoff active for ${sessionKey} after ${pendingAttempts}/${DEFAULT_PENDING_FINAL_DELIVERY_MAX_RECOVERY_ATTEMPTS} attempts`,
+        );
         result.skipped++;
         continue;
       }
