@@ -41,6 +41,7 @@ import {
   type TranscriptEntryAnchor,
 } from "./session-accessor.js";
 import type { SessionTranscriptTurnLifecyclePatch } from "./session-transcript-turn-lifecycle.types.js";
+import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import {
   applyBeforeMessageWriteToAssistant,
   type AssistantBeforeMessageWrite,
@@ -229,10 +230,15 @@ function parseRecentConversationText(
   if (upstreamUserText === null) {
     return undefined;
   }
-  const text =
+  // Assistant text is grounded before replay: a fabricated managed-media path
+  // (model hallucination) must not re-enter later prompts as if it were a real
+  // attachment. User text is only whitespace-trimmed, never redacted.
+  const rawText =
     message.role === "assistant"
       ? extractAssistantPhaseText(message)
       : (upstreamUserText ?? extractFirstTextBlock(message)?.trim());
+  const text =
+    message.role === "assistant" && rawText ? redactUngroundedMediaRefs(rawText) : rawText;
   if (!text) {
     return undefined;
   }
