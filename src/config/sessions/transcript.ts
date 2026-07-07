@@ -19,6 +19,7 @@ import {
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
 import { loadSessionStore, resolveSessionStoreEntry } from "./store.js";
+import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { resolveMirroredTranscriptText } from "./transcript-mirror.js";
 import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 
@@ -185,10 +186,15 @@ function parseRecentConversationText(line: string): SessionRecentConversationTex
   if (message.role === "assistant" && isTranscriptOnlyOpenClawAssistantMessage(message)) {
     return undefined;
   }
-  const text =
+  // Assistant text is grounded before replay: a fabricated managed-media path
+  // (model hallucination) must not re-enter later prompts as if it were a real
+  // attachment. User text is never rewritten.
+  const rawText =
     message.role === "assistant"
       ? extractAssistantVisibleText(message)
       : extractFirstTextBlock(message)?.trim();
+  const text =
+    message.role === "assistant" && rawText ? redactUngroundedMediaRefs(rawText) : rawText;
   if (!text) {
     return undefined;
   }
