@@ -32,12 +32,25 @@ export type PluginHealthSummary = Omit<ProtocolPlugin, "unavailable"> & {
   >;
 };
 
+/** Live-vs-disk runtime config drift diagnostic surfaced by `openclaw health`. */
+export type RuntimeConfigHealthSummary = {
+  state: "ok" | "drift" | "unknown";
+  liveSourceFingerprint?: string | null;
+  diskSourceFingerprint?: string | null;
+  liveDefaultModel?: string | null;
+  diskDefaultModel?: string | null;
+  driftPaths?: string[];
+  message?: string;
+};
+
 /** Full gateway health payload consumed by `openclaw health`. */
 export type HealthSummary = ProtocolHealth & {
   ok: true;
   ts: number;
   durationMs: number;
   plugins?: PluginHealthSummary;
+  /** Live-vs-disk runtime config drift diagnostic (recomputed on cache hits). */
+  runtimeConfig?: RuntimeConfigHealthSummary;
   channels: Record<string, ChannelHealthSummary>;
   channelOrder: string[];
   channelLabels: Record<string, string>;

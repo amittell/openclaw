@@ -2,11 +2,17 @@
 // detecting stale channel runtime state against live gateway snapshots.
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { ChannelAccountSnapshot } from "../../channels/plugins/types.public.js";
+import { buildRuntimeConfigHealth } from "../../commands/health.js";
 import { getStatusSummary } from "../../status/summary.js";
+import { getConfigReloadObservedGeneration } from "../config-reload-observed.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import { buildContextEngineHealthSummary } from "../health/context-engine.js";
 import { buildDeliveryQueueHealthSummary } from "../health/delivery-queue.js";
-import type { ChannelHealthSummary, HealthSummary } from "../health/types.js";
+import type {
+  ChannelHealthSummary,
+  HealthSummary,
+  RuntimeConfigHealthSummary,
+} from "../health/types.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
 import { formatError } from "../server-utils.js";
@@ -95,17 +101,51 @@ function cachedHealthDiffersFromRuntime(
   return false;
 }
 
+// Single-slot drift cache keyed by the reloader's disk-observation generation:
+// the reloader is the canonical observer of config-file changes, so a cache
+// hit with an unchanged generation reuses the last summary instead of
+// re-reading and re-parsing openclaw.json per health call (ClawSweeper P1
+// #89526). Any watcher or in-process write observation bumps the generation
+// and forces one fresh recompute.
+let lastRuntimeConfigHealth: {
+  generation: number;
+  includeSensitive: boolean;
+  summary: RuntimeConfigHealthSummary | undefined;
+} | null = null;
+
+async function resolveRuntimeConfigHealth(
+  includeSensitive: boolean,
+): Promise<RuntimeConfigHealthSummary | undefined> {
+  const generation = getConfigReloadObservedGeneration();
+  if (
+    lastRuntimeConfigHealth &&
+    lastRuntimeConfigHealth.generation === generation &&
+    lastRuntimeConfigHealth.includeSensitive === includeSensitive
+  ) {
+    return lastRuntimeConfigHealth.summary;
+  }
+  const summary = await buildRuntimeConfigHealth({ includeFingerprints: includeSensitive });
+  lastRuntimeConfigHealth = { generation, includeSensitive, summary };
+  return summary;
+}
+
 /** Merges cheap live runtime facts into a cached health summary before responding. */
-function mergeCachedHealthRuntimeState(params: {
+async function mergeCachedHealthRuntimeState(params: {
   cached: HealthSummary;
   eventLoop?: HealthSummary["eventLoop"];
   configReloadHotReloadStatus?: GatewayHotReloadStatus;
-}): HealthSummary {
+  includeSensitive: boolean;
+}): Promise<HealthSummary> {
   const {
     contextEngines: _cachedContextEngines,
     deliveryQueues: _cachedDeliveryQueues,
+    runtimeConfig: _cachedRuntimeConfig,
     ...cached
   } = params.cached;
+  // Runtime-config drift compares the live gateway config against the disk
+  // file, so a cached "ok" must not mask drift that appeared after the cache
+  // was filled. Fingerprints stay gated to admin-scoped callers.
+  const runtimeConfig = await resolveRuntimeConfigHealth(params.includeSensitive);
   // Dead-letter counts are cheap live reads. Preserve the grouped pressure
   // aggregate for the cache interval so routine health RPCs do not amplify it.
   const deliveryQueues = buildDeliveryQueueHealthSummary(
@@ -120,6 +160,7 @@ function mergeCachedHealthRuntimeState(params: {
     ...(params.configReloadHotReloadStatus
       ? { configReload: { hotReloadStatus: params.configReloadHotReloadStatus } }
       : {}),
+    ...(runtimeConfig ? { runtimeConfig } : {}),
   };
 }
 
@@ -151,10 +192,11 @@ export const healthHandlers: GatewayRequestHandlers = {
     ) {
       respond(
         true,
-        mergeCachedHealthRuntimeState({
+        await mergeCachedHealthRuntimeState({
           cached,
           eventLoop: context.getEventLoopHealth?.(),
           configReloadHotReloadStatus: context.getConfigReloaderHotReloadStatus?.(),
+          includeSensitive,
         }),
         undefined,
         { cached: true },
