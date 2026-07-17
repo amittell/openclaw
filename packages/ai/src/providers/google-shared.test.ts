@@ -7,6 +7,7 @@ import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-bound
 import {
   buildGoogleGenerateContentParams,
   consumeGoogleGenerateContentStream,
+  runGoogleGenerateContentLifecycle,
 } from "./google-shared.js";
 
 const model: Model<"google-generative-ai"> = {
@@ -226,6 +227,34 @@ describe("consumeGoogleGenerateContentStream", () => {
         arguments: {},
       },
     ]);
+  });
+});
+
+describe("runGoogleGenerateContentLifecycle", () => {
+  it("surfaces HTTP response body text from Google-compatible errors", async () => {
+    const output = createOutput();
+    const stream = new AssistantMessageEventStream();
+    const error = Object.assign(new Error("502 status code (no body)"), {
+      status: 502,
+      body: "gateway maintenance",
+    });
+
+    await runGoogleGenerateContentLifecycle({
+      stream,
+      model,
+      output,
+      createClient: () => ({
+        models: {
+          generateContentStream: async () => {
+            throw error;
+          },
+        },
+      }),
+      buildParams: () => ({ model: model.id, contents: [] }),
+      nextToolCallId: () => "call_1",
+    });
+
+    expect(output.errorMessage).toBe("502: gateway maintenance");
   });
 });
 
