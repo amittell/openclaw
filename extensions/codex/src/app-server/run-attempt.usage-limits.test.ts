@@ -192,6 +192,44 @@ describe("runCodexAppServerAttempt usage limits", () => {
     expect(result.promptError).not.toContain("Codex did not return a reset time");
   });
 
+  it("does not report exhaustion when refreshed account limits show full availability", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const harness = createStartedThreadHarness(async (method) => {
+      if (method === "turn/start") {
+        throw Object.assign(new Error("You've reached your usage limit."), {
+          data: { codexErrorInfo: "usageLimitExceeded" },
+        });
+      }
+      if (method === "account/rateLimits/read") {
+        return {
+          rateLimits: {
+            limitId: "codex",
+            primary: { usedPercent: 0, windowDurationMins: null, resetsAt: null },
+            secondary: null,
+            rateLimitReachedType: null,
+          },
+        };
+      }
+      return undefined;
+    });
+
+    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await harness.waitForMethod("account/rateLimits/read");
+
+    const result = await run;
+    expect(result.promptErrorSource).toBe("prompt");
+    // The 7.1 attempt result surfaces promptError as formatted text on this
+    // path (newer upstream keeps the Error object); assert on the message.
+    const promptErrorMessage =
+      result.promptError instanceof Error ? result.promptError.message : String(result.promptError);
+    expect(promptErrorMessage).toContain(
+      "current account usage does not report an exhausted limit",
+    );
+    expect(promptErrorMessage).not.toContain("subscription usage limit");
+    expect(promptErrorMessage).not.toContain("could not determine a reset time");
+  });
+
   it("refreshes Codex account rate limits when a failed turn omits reset details", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
