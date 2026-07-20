@@ -157,6 +157,20 @@ function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number
   return 1 / (1 + Math.sqrt(l2sq));
 }
 
+// Heartbeat turns are machine-generated keepalives, not user conversation:
+// injecting recalled memories into them wastes an embed on the prompt-build
+// hot path and pollutes the heartbeat prompt with unrelated context.
+function isHeartbeatHookContext(ctx: unknown): boolean {
+  const record = asRecord(ctx);
+  if (!record) {
+    return false;
+  }
+  if (record.trigger === "heartbeat") {
+    return true;
+  }
+  return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
+}
+
 function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
   const prev = memoryLocks.get(id) ?? Promise.resolve();
   let resolveLock!: () => void;
@@ -846,6 +860,9 @@ export default definePluginEntry({
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, cfg.recallMaxChars);
 
     api.on("before_prompt_build", async (event, ctx) => {
+      if (isHeartbeatHookContext(ctx)) {
+        return undefined;
+      }
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoRecall) {
         return undefined;
