@@ -3,12 +3,7 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { requestSessionCreate } from "../sessions/index.ts";
 // Control UI controller manages workboard gateway state.
-<<<<<<< HEAD:ui/src/lib/workboard/index.ts
-=======
-import { GatewayRequestError, type GatewayBrowserClient } from "../gateway.ts";
 import { isSessionRunActive } from "../session-run-state.ts";
-import type { GatewaySessionRow } from "../types.ts";
->>>>>>> 62dfbcc8c82 (fix(agents): pause yielded main-session runs):ui/src/ui/controllers/workboard.ts
 
 export const WORKBOARD_STATUSES = [
   "triage",

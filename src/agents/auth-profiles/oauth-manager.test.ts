@@ -11,14 +11,17 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { MAX_DATE_TIMESTAMP_MS } from "../../shared/number-coercion.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-import { testing as externalAuthTesting } from "./external-auth.js";
 import {
-  createOAuthManager,
+  OAUTH_REFRESH_CALL_TIMEOUT_MS,
+  OAUTH_REFRESH_INLOCK_TIMEOUT_MS,
+  OAUTH_REFRESH_LOCK_OPTIONS,
+} from "./constants.js";
+import { testing as externalAuthTesting } from "./external-auth.test-support.js";
+import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
+import {
   isSafeToAdoptBootstrapOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
-  isSafeToOverwriteStoredOAuthIdentity,
-  OAuthManagerRefreshError,
-} from "./oauth-manager.js";
+} from "./oauth-shared.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   ensureAuthProfileStore,
@@ -75,26 +78,8 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
-describe("isSafeToOverwriteStoredOAuthIdentity", () => {
-  it("refuses overwriting an existing identity-less credential with a different token", () => {
-    expect(
-      isSafeToOverwriteStoredOAuthIdentity(
-        createCredential({}),
-        createCredential({ access: "rotated-access", accountId: "acct-123" }),
-      ),
-    ).toBe(false);
-  });
-
-  it("refuses non-overlapping identity evidence", () => {
-    expect(
-      isSafeToOverwriteStoredOAuthIdentity(
-        createCredential({ accountId: "acct-123" }),
-        createCredential({ access: "rotated-access", email: "user@example.com" }),
-      ),
-    ).toBe(false);
-  });
-
-  it("still allows identity-less external bootstrap adoption", () => {
+describe("isSafeToAdoptBootstrapOAuthIdentity", () => {
+  it("allows identity-less external bootstrap adoption", () => {
     const existing = createCredential({
       access: "expired-local-access",
       refresh: "expired-local-refresh",
@@ -106,7 +91,6 @@ describe("isSafeToOverwriteStoredOAuthIdentity", () => {
       expires: Date.now() + 60_000,
     });
 
-    expect(isSafeToOverwriteStoredOAuthIdentity(existing, incoming)).toBe(false);
     expect(isSafeToAdoptBootstrapOAuthIdentity(existing, incoming)).toBe(true);
   });
 });
@@ -130,29 +114,17 @@ describe("isSafeToAdoptMainStoreOAuthIdentity", () => {
 });
 
 describe("matching account identity adoption", () => {
-  it.each([
-    {
-      name: "stored credential overwrite",
-      check: () =>
-        isSafeToOverwriteStoredOAuthIdentity(
-          createCredential({ accountId: "acct-123" }),
-          createCredential({ access: "rotated-access", accountId: "acct-123" }),
-        ),
-    },
-    {
-      name: "main-store adoption",
-      check: () =>
-        isSafeToAdoptMainStoreOAuthIdentity(
-          createCredential({ accountId: "acct-123" }),
-          createCredential({
-            access: "main-access",
-            refresh: "main-refresh",
-            accountId: "acct-123",
-          }),
-        ),
-    },
-  ])("accepts matching account identities for $name", ({ check }) => {
-    expect(check()).toBe(true);
+  it("accepts matching account identities for main-store adoption", () => {
+    expect(
+      isSafeToAdoptMainStoreOAuthIdentity(
+        createCredential({ accountId: "acct-123" }),
+        createCredential({
+          access: "main-access",
+          refresh: "main-refresh",
+          accountId: "acct-123",
+        }),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -323,6 +295,35 @@ describe("createOAuthManager", () => {
       cfg,
       agentDir: undefined,
     });
+  });
+
+  it("keeps the in-lock critical-section deadline between the call timeout and the stale window", () => {
+    // The held-lock critical section (keychain load + buildApiKey + network
+    // refresh) is now wrapped by withRefreshCallTimeout(OAUTH_REFRESH_INLOCK_TIMEOUT_MS)
+    // so a wedged in-lock op cannot pin the cross-agent lock. The budget must sit
+    // above the network call timeout (so the tighter network budget fires first)
+    // and below the stale window (so a waiter never reclaims the lock while the
+    // owner is still within its allowed runtime). A timing-based behavior test is
+    // impractical here because the surrounding withFileLock uses a real file lock
+    // that does not coordinate with fake timers; the deadline mechanism itself is
+    // covered by withRuntimeAuthRefreshDeadline's tests and the auth-controller
+    // cold-start regression test.
+    expect(OAUTH_REFRESH_CALL_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS);
+    expect(OAUTH_REFRESH_INLOCK_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_LOCK_OPTIONS.stale);
+  });
+
+  it("keeps the minimum lock-wait retry budget above the in-lock owner deadline", () => {
+    // A peer waiter uses OAUTH_REFRESH_LOCK_OPTIONS to retry the file lock; if
+    // its guaranteed (jitter-free) cumulative wait can expire before the owner's
+    // full held-lock ceiling (OAUTH_REFRESH_INLOCK_TIMEOUT_MS), the waiter would
+    // surface refresh_contention while the owner is still legitimately in budget.
+    // Randomization only lengthens delays, so the floor is the worst case.
+    const { retries, factor, minTimeout, maxTimeout } = OAUTH_REFRESH_LOCK_OPTIONS.retries;
+    let minBudgetMs = 0;
+    for (let attempt = 0; attempt < retries; attempt++) {
+      minBudgetMs += Math.min(maxTimeout, minTimeout * factor ** attempt);
+    }
+    expect(minBudgetMs).toBeGreaterThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS + 10_000);
   });
 
   it("does not overlay external auth while checking main-store adoption", async () => {
@@ -558,6 +559,153 @@ describe("createOAuthManager", () => {
 
       expect(result).toBeNull();
       expect(refreshCredential).not.toHaveBeenCalled();
+    });
+  });
+
+  it("force-persists a refreshed credential after a same-identity CAS race", async () => {
+    await withOAuthTempRoot("oauth-manager-cas-same-identity-", async (tempRoot) => {
+      const agentDir = path.join(tempRoot, "agents", "main", "agent");
+      await fs.mkdir(agentDir, { recursive: true });
+      const profileId = "openai:oauth";
+      const expired = createCredential({
+        access: "expired-access",
+        refresh: "expired-refresh",
+        expires: Date.now() - 60_000,
+        accountId: "acct-123",
+      });
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: {
+            [profileId]: expired,
+          },
+        },
+        agentDir,
+        { filterExternalAuthProfiles: false },
+      );
+
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential: vi.fn(async () => {
+          saveAuthProfileStore(
+            {
+              version: 1,
+              profiles: {
+                [profileId]: createCredential({
+                  access: "stale-race-access",
+                  refresh: "consumed-race-refresh",
+                  expires: Date.now() + 10 * 60_000,
+                  accountId: "acct-123",
+                }),
+              },
+            },
+            agentDir,
+            { filterExternalAuthProfiles: false },
+          );
+          return {
+            access: "rotated-access",
+            refresh: "rotated-refresh",
+            expires: Date.now() + 60_000,
+          };
+        }),
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      const result = await manager.resolveOAuthAccess({
+        store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+          allowKeychainPrompt: false,
+        }),
+        profileId,
+        credential: expired,
+        agentDir,
+      });
+
+      expect(result?.apiKey).toBe("rotated-access");
+      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      expect(persisted.profiles[profileId]).toMatchObject({
+        type: "oauth",
+        access: "rotated-access",
+        refresh: "rotated-refresh",
+        accountId: "acct-123",
+      });
+    });
+  });
+
+  it("uses a different-identity stored credential after a CAS race", async () => {
+    await withOAuthTempRoot("oauth-manager-cas-different-identity-", async (tempRoot) => {
+      const mainAgentDir = path.join(tempRoot, "agents", "main", "agent");
+      const agentDir = path.join(tempRoot, "agents", "sub", "agent");
+      await fs.mkdir(mainAgentDir, { recursive: true });
+      await fs.mkdir(agentDir, { recursive: true });
+      const profileId = "openai:oauth";
+      const expired = createCredential({
+        access: "expired-access",
+        refresh: "expired-refresh",
+        expires: Date.now() - 60_000,
+        accountId: "acct-123",
+      });
+      const relogged = createCredential({
+        access: "relogged-access",
+        refresh: "relogged-refresh",
+        expires: Date.now() + 10 * 60_000,
+        accountId: "acct-456",
+      });
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: {
+            [profileId]: expired,
+          },
+        },
+        agentDir,
+        { filterExternalAuthProfiles: false },
+      );
+
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential: vi.fn(async () => {
+          saveAuthProfileStore(
+            {
+              version: 1,
+              profiles: {
+                [profileId]: relogged,
+              },
+            },
+            agentDir,
+            { filterExternalAuthProfiles: false },
+          );
+          return {
+            access: "rotated-access",
+            refresh: "rotated-refresh",
+            expires: Date.now() + 60_000,
+          };
+        }),
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      const result = await manager.resolveOAuthAccess({
+        store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+          allowKeychainPrompt: false,
+        }),
+        profileId,
+        credential: expired,
+        agentDir,
+      });
+
+      expect(result?.apiKey).toBe("relogged-access");
+      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      expect(persisted.profiles[profileId]).toMatchObject({
+        type: "oauth",
+        access: "relogged-access",
+        refresh: "relogged-refresh",
+        accountId: "acct-456",
+      });
     });
   });
 
