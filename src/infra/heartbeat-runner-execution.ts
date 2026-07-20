@@ -638,6 +638,7 @@ export async function invokeHeartbeatAgentRun(
     [REPLY_OPERATION_RUN_STATE]: replyOperationRunState,
     ...(heartbeatModelOverride ? { heartbeatModelOverride } : {}),
     suppressToolErrorWarnings: false,
+    disableMessageTool: true,
     ...(usesHeartbeatResponseTool ? { enableHeartbeatTool: true, forceHeartbeatTool: true } : {}),
     ...(usesHeartbeatResponseTool ? { sourceReplyDeliveryMode: "message_tool_only" as const } : {}),
     ...(hasDueCommitments ? { disableTools: true, skillFilter: [] } : {}),

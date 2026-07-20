@@ -149,6 +149,8 @@ export type GetReplyOptions = {
   shouldSuppressToolErrorWarnings?: () => boolean | undefined;
   /** If true, run the model without OpenClaw tools for this turn. */
   disableTools?: boolean;
+  /** If true, omit the user-facing message tool while keeping other tools available. */
+  disableMessageTool?: boolean;
   /** Runtime tool allow-list for this turn. Empty means no tools. */
   toolsAllow?: string[];
   /** If true, include the heartbeat response tool for structured heartbeat outcomes. */

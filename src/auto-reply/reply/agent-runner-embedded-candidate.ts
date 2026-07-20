@@ -235,6 +235,10 @@ export async function runEmbeddedFallbackCandidate(params: {
           turn.opts?.shouldSuppressToolErrorWarnings ?? turn.opts?.suppressToolErrorWarnings,
         toolsAllow: turn.opts?.toolsAllow,
         disableTools: turn.opts?.disableTools,
+        // Heartbeat turns never address a user directly, so the user-facing
+        // message tool must be off: leaving it exposed lets a heartbeat turn
+        // send unsolicited chat messages.
+        disableMessageTool: turn.isHeartbeat ? true : turn.opts?.disableMessageTool,
         enableHeartbeatTool: turn.opts?.enableHeartbeatTool,
         forceHeartbeatTool: turn.opts?.forceHeartbeatTool,
         bootstrapContextMode: turn.opts?.bootstrapContextMode,
