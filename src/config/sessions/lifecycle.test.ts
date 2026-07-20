@@ -11,9 +11,11 @@ const baseEntry = (overrides: Partial<SessionEntry>): SessionEntry => ({
 });
 
 describe("resolveTerminalMainSessionTranscriptRegistryCheck", () => {
-  it("returns a transcript-registry check for a clean done main session", () => {
+  it("returns a transcript-registry check for a killed main session", () => {
+    // done/failed rows short-circuit as reusable (#99985); killed rows are the
+    // terminal shape that still reaches the transcript-registry check.
     const check = resolveTerminalMainSessionTranscriptRegistryCheck({
-      entry: baseEntry({ status: "done", endedAt: 1_000_500, updatedAt: 1_000_700 }),
+      entry: baseEntry({ status: "killed", endedAt: 1_000_500, updatedAt: 1_000_700 }),
       sessionScope: "per-sender",
       sessionKey: "agent:main:main",
       agentId: "main",
