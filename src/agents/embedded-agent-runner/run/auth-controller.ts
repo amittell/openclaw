@@ -39,6 +39,7 @@ import {
 import {
   clampRuntimeAuthRefreshDelayMs,
   RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS,
+  RuntimeAuthDeadlineError,
   withRuntimeAuthRefreshDeadline,
 } from "../../runtime-auth-refresh.js";
 import {
@@ -310,13 +311,27 @@ export function createEmbeddedRunAuthController(params: {
     })();
     // Hard backstop: a provider auth hook, keychain read, or cross-agent lock
     // wait that never settles must not leave `refreshInFlight` pending forever,
-    // or every later model turn deadlocks awaiting it (see #88xx rh-bot freeze).
+    // or every later model turn deadlocks awaiting it, freezing the gateway
+    // until restart (observed in production).
     const refreshPromise: Promise<void> = withAuthDeadline(
       refreshOperation,
       params.getRuntimeModel().provider,
     )
       .catch((err: unknown) => {
         const runtimeModel = params.getRuntimeModel();
+        if (err instanceof RuntimeAuthDeadlineError) {
+          // The deadline abandons refreshOperation without cancelling it, and
+          // the continuation still holds this generation's stale-check
+          // snapshot. Bump the generation so the abandoned completion fails
+          // that check instead of overwriting credentials a retry installs.
+          const activeState = params.getRuntimeAuthState();
+          if (activeState && activeState.generation === refreshGeneration) {
+            activeState.generation = refreshGeneration + 1;
+            params.log.debug(
+              `Invalidated runtime auth generation ${refreshGeneration} for ${runtimeModel.provider}; deadline abandoned an in-flight refresh.`,
+            );
+          }
+        }
         params.log.warn(
           `Runtime auth refresh failed for ${runtimeModel.provider}: ${formatErrorMessage(err)}`,
         );
