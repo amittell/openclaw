@@ -542,11 +542,26 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     return client;
   }
 
+  private embeddingParams(text: string, includeDimensions: boolean): Record<string, unknown> {
+    return {
+      model: this.model,
+      input: text,
+      ...(includeDimensions && typeof this.dimensions === "number"
+        ? { dimensions: this.dimensions }
+        : {}),
+    };
+  }
+
   private async embedVia(
     baseUrl: string | undefined,
     params: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<number[]> {
+    ensureGlobalUndiciEnvProxyDispatcher();
+    // The OpenAI SDK's embeddings helper injects encoding_format=base64 when
+    // omitted, then decodes the response. Several compatible providers either
+    // reject encoding_format or always return float arrays, so use the generic
+    // transport and normalize the response ourselves.
     const response = await (
       await this.clientFor(baseUrl)
     ).post<EmbeddingCreateResponse>("/embeddings", {
@@ -556,23 +571,41 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     return normalizeEmbeddingVector(response.data?.[0]?.embedding);
   }
 
-  async embed(text: string, options?: { timeoutMs?: number }): Promise<number[]> {
-    const params: Record<string, unknown> = {
-      model: this.model,
-      input: text,
-    };
-    if (this.dimensions) {
-      params.dimensions = this.dimensions;
+  // Per-endpoint attempt. Providers that reject the request-body `dimensions`
+  // field (400/422 extra-field errors) get one retry against the SAME endpoint
+  // without `dimensions` on the remaining budget, truncating locally, so only
+  // non-dimensions failures escape into endpoint failover.
+  private async embedAttempt(
+    baseUrl: string | undefined,
+    text: string,
+    timeoutMs?: number,
+  ): Promise<number[]> {
+    const dimensions = this.dimensions;
+    const startedAtMs = timeoutMs && Number.isFinite(timeoutMs) ? Date.now() : null;
+    try {
+      return await this.embedVia(baseUrl, this.embeddingParams(text, true), timeoutMs);
+    } catch (error) {
+      if (typeof dimensions !== "number" || !isEmbeddingDimensionsRejectedError(error)) {
+        throw error;
+      }
     }
-    ensureGlobalUndiciEnvProxyDispatcher();
-    // The OpenAI SDK's embeddings helper injects encoding_format=base64 when
-    // omitted, then decodes the response. Several compatible providers either
-    // reject encoding_format or always return float arrays, so use the generic
-    // transport and normalize the response ourselves.
 
+    const fallbackTimeoutMs =
+      startedAtMs === null || timeoutMs === undefined
+        ? timeoutMs
+        : Math.max(1, timeoutMs - (Date.now() - startedAtMs));
+    const embedding = await this.embedVia(
+      baseUrl,
+      this.embeddingParams(text, false),
+      fallbackTimeoutMs,
+    );
+    return truncateEmbeddingVector(embedding, dimensions, this.model);
+  }
+
+  async embed(text: string, options?: { timeoutMs?: number }): Promise<number[]> {
     // Single endpoint: identical behavior to before, no failover bookkeeping.
     if (this.baseUrls.length === 1) {
-      return this.embedVia(this.baseUrls[0], params, options?.timeoutMs);
+      return this.embedAttempt(this.baseUrls[0], text, options?.timeoutMs);
     }
 
     // Failover: prefer endpoints not in cooldown (primary order); if all are
@@ -594,7 +627,7 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     let lastError: unknown;
     for (const baseUrl of candidates) {
       try {
-        const vector = await this.embedVia(baseUrl, params, perAttempt);
+        const vector = await this.embedAttempt(baseUrl, text, perAttempt);
         this.endpointDownUntil.delete(baseUrl ?? "");
         return vector;
       } catch (error) {
@@ -609,6 +642,61 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
       cause: lastError,
     });
   }
+}
+
+function isEmbeddingDimensionsRejectedError(error: unknown): boolean {
+  const record = asRecord(error);
+  if (record?.status !== 400 && record?.status !== 422) {
+    return false;
+  }
+  const details = stringifyEmbeddingApiError(error).toLowerCase();
+  return /\bdimensions\b/.test(details) && isUnsupportedEmbeddingFieldError(details);
+}
+
+function isUnsupportedEmbeddingFieldError(details: string): boolean {
+  if (/\b(?:parameter|field|argument)[_ -]value\b/.test(details)) {
+    return false;
+  }
+  return (
+    /\bextra[_ -]forbidden\b/.test(details) ||
+    /\bextra inputs? (?:are )?not permitted\b/.test(details) ||
+    /\bextra fields? (?:are )?not permitted\b/.test(details) ||
+    /\b(?:unknown|unrecognized|unexpected|unsupported)[_ -](?:request[_ -])?(?:parameter|field|argument)\b/.test(
+      details,
+    )
+  );
+}
+
+function stringifyEmbeddingApiError(error: unknown): string {
+  const record = asRecord(error);
+  const parts = error instanceof Error ? [error.message] : [];
+  for (const value of [record?.code, record?.type, record?.param, record?.error]) {
+    if (typeof value === "string" || typeof value === "number") {
+      parts.push(String(value));
+      continue;
+    }
+    if (value && typeof value === "object") {
+      try {
+        parts.push(JSON.stringify(value));
+      } catch {
+        // The SDK error message and scalar fields still provide bounded detection.
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+function truncateEmbeddingVector(embedding: number[], dimensions: number, model: string): number[] {
+  if (embedding.length < dimensions) {
+    throw new Error(
+      `Embedding model ${model} returned ${embedding.length} dimensions, need at least ${dimensions} for local truncation`,
+    );
+  }
+  const truncated = embedding.slice(0, dimensions);
+  // Prefix truncation changes vector magnitude. Re-normalize so LanceDB distance
+  // ranking compares fallback query and stored vectors on the same scale.
+  const magnitude = Math.sqrt(truncated.reduce((sum, value) => sum + value * value, 0));
+  return magnitude > 0 ? truncated.map((value) => value / magnitude) : truncated;
 }
 
 class ProviderAdapterEmbeddings implements Embeddings {
@@ -741,7 +829,9 @@ class MemoryRecallEmbeddingError extends Error {
 }
 
 export const testing = {
+  isEmbeddingDimensionsRejectedError,
   runWithTimeout,
+  truncateEmbeddingVector,
 } as const;
 
 function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings {
