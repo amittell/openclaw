@@ -2,7 +2,6 @@
  * Collects configured native harness runtime ids from model provider config.
  */
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
-import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
   resolveAgentDefaultChatModelConfig,
   resolveAgentDefaultDispatchModelConfig,
