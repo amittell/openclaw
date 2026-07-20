@@ -542,6 +542,7 @@ export async function prepareGatewayLifecycle(params: {
     const transport = transportBridge.current();
     await transport?.portalService.closeAll();
     await createGatewayCloseHandler({
+      postShutdownExitWatchdogEnabled: runtime.opts.postShutdownExitWatchdog === true,
       bonjourStop: runtimeState.bonjourStop,
       tailscaleCleanup: runtimeState.tailscaleCleanup,
       clearSecretsRuntimeSnapshot: clearSecretsRuntimeSnapshotState,
