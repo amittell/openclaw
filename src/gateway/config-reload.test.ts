@@ -951,7 +951,7 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("does not notify lifecycle owners when hot mode ignores a restart-only change", async () => {
+  it("schedules a restart when hot mode sees a restart-only change", async () => {
     const initialConfig: OpenClawConfig = {
       gateway: { reload: { mode: "hot", debounceMs: 0 }, terminal: { enabled: true } },
     };
@@ -964,9 +964,15 @@ describe("startGatewayConfigReloader", () => {
     harness.watcher.emit("change");
     await vi.runAllTimersAsync();
 
-    expect(harness.onConfigChange).not.toHaveBeenCalled();
+    // Hot mode must not silently drop restart-required changes; it queues the
+    // restart and notifies lifecycle owners so runtime state cannot go stale.
+    expect(harness.onConfigChange).toHaveBeenCalledTimes(1);
     expect(harness.onHotReload).not.toHaveBeenCalled();
-    expect(harness.onRestart).not.toHaveBeenCalled();
+    const [plan] = getOnlyRestartCall(harness);
+    expect(plan.restartReasons).toEqual(["gateway.terminal.enabled"]);
+    expect(harness.log.warn).toHaveBeenCalledWith(
+      "config reload requires gateway restart; hot mode scheduling restart (gateway.terminal.enabled)",
+    );
     await harness.reloader.stop();
   });
 
