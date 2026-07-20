@@ -1,9 +1,9 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import { requestSessionCreate } from "../sessions/index.ts";
 // Control UI controller manages workboard gateway state.
 import { isSessionRunActive } from "../session-run-state.ts";
+import { requestSessionCreate } from "../sessions/index.ts";
 
 export const WORKBOARD_STATUSES = [
   "triage",

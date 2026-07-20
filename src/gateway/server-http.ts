@@ -26,6 +26,11 @@ import {
   type ResolvedGatewayAuth,
 } from "./auth.js";
 import type { ControlUiRootState } from "./control-ui.js";
+import {
+  isGatewayShuttingDown,
+  noteShuttingDownProbeResponse,
+  resetShuttingDownProbeResponseLogForTest,
+} from "./gateway-shutdown-state.js";
 import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import { sendGatewayAuthFailure, setDefaultSecurityHeaders } from "./http-common.js";
 import { resolveRequestClientIp } from "./net.js";
@@ -33,11 +38,6 @@ import {
   normalizePluginNodeCapabilityScopedUrl,
   type PluginNodeCapabilitySurface,
 } from "./plugin-node-capability.js";
-import {
-  isGatewayShuttingDown,
-  noteShuttingDownProbeResponse,
-  resetShuttingDownProbeResponseLogForTest,
-} from "./gateway-shutdown-state.js";
 import type { HooksRequestHandler } from "./server/hooks-request-handler.js";
 import {
   isProtectedPluginRoutePathFromContext,
