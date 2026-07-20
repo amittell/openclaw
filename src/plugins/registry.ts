@@ -141,7 +141,6 @@ export type {
   PluginServiceRegistration,
   PluginSessionExtensionRegistryRegistration,
 } from "./registry-types.js";
-import { getActivePluginRegistry } from "./runtime.js";
 import {
   withPluginRuntimePluginIdScope,
   withPluginRuntimePluginScope,
@@ -2808,8 +2807,11 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     const sideEffectGuard = createPluginSideEffectGuard(record.id);
     const isLoadedRecordInRegistry = () =>
       registry.plugins.some((plugin) => plugin.id === record.id && plugin.status === "loaded");
-    const isLoadedRecordInActiveRegistry = () =>
-      getActivePluginRegistry() === registry && isLoadedRecordInRegistry();
+    const isLoadedRecordInLiveRegistry = () =>
+      sideEffectGuard.active &&
+      isPluginRegistryActivated(registry) &&
+      !isPluginRegistryRetired(registry) &&
+      isLoadedRecordInRegistry();
     const isActivatingLoadedRecord = () =>
       registryParams.activateGlobalSideEffects !== false &&
       record.enabled &&
@@ -3085,7 +3087,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
                   return { ok: false, error: "global side effects disabled" };
                 }
                 try {
-                  if (!isLoadedRecordInActiveRegistry()) {
+                  if (!isLoadedRecordInLiveRegistry()) {
                     return { ok: false, error: "plugin is not loaded" };
                   }
                   const runtimeConfig =
@@ -3114,7 +3116,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
                   origin: record.origin,
                   schedule,
                   cron: getHostCronService(),
-                  shouldCommit: isLoadedRecordInActiveRegistry,
+                  shouldCommit: isLoadedRecordInLiveRegistry,
                   ownerRegistry: registry,
                 });
               },
@@ -3123,7 +3125,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
                   return { removed: 0, failed: 0 };
                 }
                 await Promise.resolve();
-                if (!isLoadedRecordInActiveRegistry()) {
+                if (!isLoadedRecordInLiveRegistry()) {
                   return { removed: 0, failed: 0 };
                 }
                 return unschedulePluginSessionTurnsByTag({
