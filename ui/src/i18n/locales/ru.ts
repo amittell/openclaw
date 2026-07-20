@@ -265,6 +265,7 @@ export const ru: TranslationMap = {
     statusFailed: "Сбой",
     statusKilled: "Завершено принудительно",
     statusTimeout: "Время ожидания истекло",
+    statusPaused: "Приостановлено",
     model: "Модель",
     provider: "Поставщик",
     runtime: "Среда выполнения",

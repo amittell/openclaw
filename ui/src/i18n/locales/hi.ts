@@ -263,6 +263,7 @@ export const hi: TranslationMap = {
     statusFailed: "विफल",
     statusKilled: "समाप्त किया गया",
     statusTimeout: "समय समाप्त",
+    statusPaused: "रोका गया",
     model: "मॉडल",
     provider: "प्रदाता",
     runtime: "रनटाइम",
