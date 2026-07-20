@@ -537,6 +537,22 @@ function buildFallbackSelectionStatePatch(entry: SessionEntry): Partial<SessionE
   };
 }
 
+function hasDurableAutoFallbackPrimaryProbeFailureEvidence(params: {
+  probeProvider: string;
+  probeModel: string;
+  attempts: readonly RuntimeFallbackAttempt[];
+}): boolean {
+  const probeAttempt = params.attempts.find(
+    (attempt) => attempt.provider === params.probeProvider && attempt.model === params.probeModel,
+  );
+  const reason = normalizeOptionalString(probeAttempt?.reason);
+  if (reason) {
+    return reason !== "unknown";
+  }
+  const error = normalizeOptionalString(probeAttempt?.error);
+  return Boolean(error && error !== "unknown");
+}
+
 function buildFallbackSelectionState(params: {
   provider: string;
   model: string;
@@ -2049,6 +2065,7 @@ async function runAgentTurnWithFallbackInternal(
   const clearRecoveredAutoFallbackPrimaryProbe = async (paramsForClear: {
     provider: string;
     model: string;
+    force?: boolean;
   }): Promise<void> => {
     if (preserveUserFacingSessionState) {
       return;
@@ -2057,7 +2074,10 @@ async function runAgentTurnWithFallbackInternal(
     if (!probe) {
       return;
     }
-    if (paramsForClear.provider !== probe.provider || paramsForClear.model !== probe.model) {
+    if (
+      !paramsForClear.force &&
+      (paramsForClear.provider !== probe.provider || paramsForClear.model !== probe.model)
+    ) {
       return;
     }
     if (!params.sessionKey || !params.activeSessionStore) {
@@ -3145,9 +3165,19 @@ async function runAgentTurnWithFallbackInternal(
           }))
         : [];
       if (!fallbackExhausted) {
+        const activeProbe = effectiveRun.autoFallbackPrimaryProbe;
+        const fallbackUsedAfterNonDurableProbeFailure =
+          activeProbe &&
+          (fallbackProvider !== activeProbe.provider || fallbackModel !== activeProbe.model) &&
+          !hasDurableAutoFallbackPrimaryProbeFailureEvidence({
+            probeProvider: activeProbe.provider,
+            probeModel: activeProbe.model,
+            attempts: fallbackAttempts,
+          });
         await clearRecoveredAutoFallbackPrimaryProbe({
           provider: fallbackProvider,
           model: fallbackModel,
+          force: fallbackUsedAfterNonDurableProbeFailure,
         });
       }
 
