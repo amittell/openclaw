@@ -2712,6 +2712,9 @@ async function runAgentTurnWithFallbackInternal(
                       params.opts?.suppressToolErrorWarnings,
                     toolsAllow: params.opts?.toolsAllow,
                     disableTools: params.opts?.disableTools,
+                    disableMessageTool: params.isHeartbeat
+                      ? true
+                      : params.opts?.disableMessageTool,
                     enableHeartbeatTool: params.opts?.enableHeartbeatTool,
                     forceHeartbeatTool: params.opts?.forceHeartbeatTool,
                     bootstrapContextMode: params.opts?.bootstrapContextMode,

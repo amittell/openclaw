@@ -114,6 +114,23 @@ describe("openclaw-tools update_plan gating", () => {
     expect(toolNames(tools)).toContain("message");
   });
 
+  it("omits message but keeps heartbeat_respond when heartbeat turns disable direct messaging", () => {
+    setEmbeddedMode(true);
+    const names = toolNames(
+      createOpenClawTools({
+        config: {} as OpenClawConfig,
+        disableMessageTool: true,
+        disablePluginTools: true,
+        enableHeartbeatTool: true,
+        sourceReplyDeliveryMode: "message_tool_only",
+        wrapBeforeToolCallHook: false,
+      }),
+    );
+
+    expect(names).not.toContain("message");
+    expect(names).toContain("heartbeat_respond");
+  });
+
   it("requires explicit transcripts enablement before registering the transcripts tool", () => {
     const defaultTools = createFastToolNames({
       config: {} as OpenClawConfig,

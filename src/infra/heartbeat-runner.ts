@@ -1997,6 +1997,7 @@ export async function runHeartbeatOnce(opts: {
       [REPLY_OPERATION_RUN_STATE]: replyOperationRunState,
       ...(heartbeatModelOverride ? { heartbeatModelOverride } : {}),
       suppressToolErrorWarnings,
+      disableMessageTool: true,
       ...(usesHeartbeatResponseTool ? { enableHeartbeatTool: true, forceHeartbeatTool: true } : {}),
       ...(usesHeartbeatResponseTool
         ? { sourceReplyDeliveryMode: "message_tool_only" as const }
