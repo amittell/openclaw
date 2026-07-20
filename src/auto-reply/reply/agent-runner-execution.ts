@@ -74,6 +74,28 @@ import {
 } from "./reply-operation-abort.js";
 import { isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 
+/**
+ * A probe failure only justifies persisting an auto-fallback override when the
+ * probe attempt carries a durable reason/error. Without that evidence the run
+ * fell back for an unknown/transient cause, so the persisted probe must be
+ * cleared instead of pinning the override to the fallback model.
+ */
+function hasDurableAutoFallbackPrimaryProbeFailureEvidence(params: {
+  probeProvider: string;
+  probeModel: string;
+  attempts: readonly RuntimeFallbackAttempt[];
+}): boolean {
+  const probeAttempt = params.attempts.find(
+    (attempt) => attempt.provider === params.probeProvider && attempt.model === params.probeModel,
+  );
+  const reason = normalizeOptionalString(probeAttempt?.reason);
+  if (reason) {
+    return reason !== "unknown";
+  }
+  const error = normalizeOptionalString(probeAttempt?.error);
+  return Boolean(error && error !== "unknown");
+}
+
 function resolveRunStartupPhase(
   phase: EmbeddedAgentExecutionPhase,
 ): ChatRunStartupPhase | undefined {
@@ -282,15 +304,31 @@ async function executeAgentTurnInternalWithRetryState(
   const clearRecoveredAutoFallbackPrimaryProbe = async (paramsForClear: {
     provider: string;
     model: string;
-  }): Promise<void> =>
-    clearRecoveredAutoFallbackPrimaryProbeSelection({
+    force?: boolean;
+  }): Promise<void> => {
+    // When the run settled on a model other than the probe, only keep the
+    // persisted probe if the probe attempt itself failed for a durable reason.
+    const activeProbe = effectiveRun.autoFallbackPrimaryProbe;
+    const fallbackUsedAfterNonDurableProbeFailure = Boolean(
+      activeProbe &&
+        (paramsForClear.provider !== activeProbe.provider ||
+          paramsForClear.model !== activeProbe.model) &&
+        !hasDurableAutoFallbackPrimaryProbeFailureEvidence({
+          probeProvider: activeProbe.provider,
+          probeModel: activeProbe.model,
+          attempts: fallbackAttempts,
+        }),
+    );
+    return await clearRecoveredAutoFallbackPrimaryProbeSelection({
       run: effectiveRun,
       ...paramsForClear,
+      force: paramsForClear.force || fallbackUsedAfterNonDurableProbeFailure,
       sessionKey: params.sessionKey,
       activeSessionStore: params.activeSessionStore,
       getActiveSessionEntry: params.getActiveSessionEntry,
       storePath: params.storePath,
     });
+  };
 
   while (true) {
     try {

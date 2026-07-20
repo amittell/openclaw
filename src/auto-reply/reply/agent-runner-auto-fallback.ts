@@ -108,12 +108,21 @@ export async function clearRecoveredAutoFallbackPrimaryProbeSelection(params: {
   activeSessionStore?: Record<string, SessionEntry>;
   getActiveSessionEntry: () => SessionEntry | undefined;
   storePath?: string;
+  /**
+   * Clear the persisted probe even when the run settled on a different
+   * provider/model. Set when the fallback was taken without durable failure
+   * evidence for the probe, so a transient blip cannot pin the override.
+   */
+  force?: boolean;
 }): Promise<void> {
   if (shouldPreserveUserFacingSessionStateForInputProvenance(params.run.inputProvenance)) {
     return;
   }
   const probe = params.run.autoFallbackPrimaryProbe;
-  if (!probe || params.provider !== probe.provider || params.model !== probe.model) {
+  if (!probe) {
+    return;
+  }
+  if (!params.force && (params.provider !== probe.provider || params.model !== probe.model)) {
     return;
   }
   if (!params.sessionKey || !params.activeSessionStore) {
