@@ -2363,7 +2363,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         isFromFallback: true,
         result: {
           meta: {
+            durationMs: 1_000,
             agentMeta: {
+              sessionId: "session-fallback",
               provider: "anthropic",
               model: "claude-sonnet-4-20250514",
               contextTokens: 200_000,
@@ -2407,7 +2409,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         fallbackModel: "claude-sonnet-4-20250514",
         result: {
           meta: {
+            durationMs: 1_000,
             agentMeta: {
+              sessionId: "session-fallback",
               provider: "anthropic",
               model: "claude-sonnet-4-20250514",
               contextTokens: 200_000,
