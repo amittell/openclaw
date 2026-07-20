@@ -523,6 +523,9 @@ export async function waitForGatewayHealthyRestart(params: {
   expectedVersion?: string | null;
   includeUnknownListenersAsStale?: boolean;
   requireRunningService?: boolean;
+  // On macOS the launchd supervisor immediately respawns the gateway, so a
+  // freshly-respawned listener must not be misreported as a stale process.
+  supervisorKeepsAlive?: boolean;
 }): Promise<GatewayRestartSnapshot> {
   const attempts = params.attempts ?? DEFAULT_RESTART_HEALTH_ATTEMPTS;
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
@@ -562,7 +565,12 @@ export async function waitForGatewayHealthyRestart(params: {
     if (snapshot.staleGatewayPids.length > 0 && snapshot.runtime.status !== "running") {
       return withWaitContext(snapshot, "stale-pids", attempt * delayMs);
     }
-    if (shouldEarlyExitStoppedFree(snapshot, attempt, minAttemptForEarlyExit)) {
+    // launchd KeepAlive can report a transient stopped state while its throttle window runs.
+    // Let the bounded standard deadline decide failure when the caller knows supervision persists.
+    if (
+      !params.supervisorKeepsAlive &&
+      shouldEarlyExitStoppedFree(snapshot, attempt, minAttemptForEarlyExit)
+    ) {
       consecutiveStoppedFreeCount += 1;
       if (consecutiveStoppedFreeCount >= STOPPED_FREE_THRESHOLD) {
         return withWaitContext(snapshot, "stopped-free", attempt * delayMs);
