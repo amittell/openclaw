@@ -1195,6 +1195,84 @@ describe("memory plugin e2e", () => {
     });
   });
 
+  test("skips auto-recall for heartbeat prompt-build contexts", async () => {
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+    }));
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const vectorSearch = vi.fn(() => ({
+      limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
+    }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      embeddingsCreate,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const on = vi.fn();
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: true,
+          },
+          runtime: {},
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerTool: vi.fn(),
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on,
+          resolvePath: (p: string) => p,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+
+        const beforePromptBuild = on.mock.calls.find(
+          ([hookName]) => hookName === "before_prompt_build",
+        )?.[1];
+        expect(beforePromptBuild).toBeTypeOf("function");
+
+        const result = await beforePromptBuild?.(
+          {
+            prompt: "heartbeat poll should not pull stale memories",
+            messages: [{ role: "user", content: "Update the scheduled job to match please" }],
+          },
+          { trigger: "heartbeat", sessionKey: "agent:main:heartbeat" },
+        );
+
+        expect(result).toBeUndefined();
+        expect(loadLanceDbModule).not.toHaveBeenCalled();
+        expect(ensureGlobalUndiciEnvProxyDispatcher).not.toHaveBeenCalled();
+        expect(embeddingsCreate).not.toHaveBeenCalled();
+        expect(vectorSearch).not.toHaveBeenCalled();
+      },
+    });
+  });
+
   test("fails over to the secondary embedding endpoint when the primary fails", async () => {
     const PRIMARY = "http://primary.invalid/v1";
     const FALLBACK = "http://fallback.invalid/api/v1";

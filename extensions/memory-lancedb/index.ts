@@ -890,6 +890,17 @@ function cleanMemorySearchResults(results: MemorySearchResult[]): Array<{
   });
 }
 
+function isHeartbeatHookContext(ctx: unknown): boolean {
+  const record = asRecord(ctx);
+  if (!record) {
+    return false;
+  }
+  if (record.trigger === "heartbeat") {
+    return true;
+  }
+  return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
+}
+
 // ============================================================================
 // Envelope / transport metadata contamination detection
 // ============================================================================
@@ -2356,9 +2367,12 @@ export default definePluginEntry({
     // ========================================================================
 
     // Auto-recall: inject relevant memories during prompt build
-    api.on("before_prompt_build", async (event) => {
+    api.on("before_prompt_build", async (event, ctx) => {
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoRecall) {
+        return undefined;
+      }
+      if (isHeartbeatHookContext(ctx)) {
         return undefined;
       }
       if (!event.prompt || event.prompt.length < 5) {
