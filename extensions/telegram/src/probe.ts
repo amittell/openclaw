@@ -49,6 +49,17 @@ const MAX_PROBE_TRANSPORT_CACHE_SIZE = 64;
 // 4 MiB guards against a misbehaving or hostile API endpoint streaming an oversized payload.
 const TELEGRAM_BOT_API_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
+async function readTelegramDiagnosticBody(response: Response, timeoutMs: number): Promise<Buffer> {
+  return await readResponseWithLimit(response, TELEGRAM_BOT_API_MAX_RESPONSE_BYTES, {
+    timeoutMs,
+    chunkTimeoutMs: timeoutMs / 2,
+    onIdleTimeout: ({ chunkTimeoutMs }) =>
+      new Error(`Telegram diagnostic response body stalled for ${chunkTimeoutMs}ms`),
+    onTimeout: ({ timeoutMs: resolvedTimeoutMs }) =>
+      new Error(`Telegram diagnostic response body timed out after ${resolvedTimeoutMs}ms`),
+  });
+}
+
 export function resetTelegramProbeFetcherCacheForTests(): void {
   probeTransportCache.clear();
 }
@@ -197,7 +208,12 @@ export async function probeTelegram(
     }
 
     const meJson = JSON.parse(
-      (await readResponseWithLimit(meRes, TELEGRAM_BOT_API_MAX_RESPONSE_BYTES)).toString("utf8"),
+      (
+        await readTelegramDiagnosticBody(
+          meRes,
+          Math.min(timeoutBudgetMs, resolveRemainingBudgetMs()),
+        )
+      ).toString("utf8"),
     ) as {
       ok?: boolean;
       description?: string;
@@ -242,9 +258,12 @@ export async function probeTelegram(
             fetcher,
           );
           const webhookJson = JSON.parse(
-            (await readResponseWithLimit(webhookRes, TELEGRAM_BOT_API_MAX_RESPONSE_BYTES)).toString(
-              "utf8",
-            ),
+            (
+              await readTelegramDiagnosticBody(
+                webhookRes,
+                Math.min(timeoutBudgetMs, resolveRemainingBudgetMs()),
+              )
+            ).toString("utf8"),
           ) as {
             ok?: boolean;
             result?: { url?: string; has_custom_certificate?: boolean };

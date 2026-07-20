@@ -344,6 +344,7 @@ describe("telegramPlugin gateway startup", () => {
       network: undefined,
       apiRoot: undefined,
       includeWebhookInfo: false,
+      abortSignal: expect.any(AbortSignal),
     });
   });
 
@@ -573,6 +574,7 @@ describe("telegramPlugin gateway startup", () => {
       network: undefined,
       apiRoot: undefined,
       includeWebhookInfo: false,
+      abortSignal: expect.any(AbortSignal),
     });
   });
 
