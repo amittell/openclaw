@@ -4955,6 +4955,7 @@ public struct SessionRow: Codable, Sendable {
     public let lastactivityat: Double?
     public let lastinteractionat: Double?
     public let status: AnyCodable?
+    public let pausereason: AnyCodable?
     public let lastrunerror: String?
     public let activeleafentryid: AnyCodable?
     public let spawnedby: String?
@@ -5010,6 +5011,7 @@ public struct SessionRow: Codable, Sendable {
         lastactivityat: Double? = nil,
         lastinteractionat: Double? = nil,
         status: AnyCodable? = nil,
+        pausereason: AnyCodable? = nil,
         lastrunerror: String? = nil,
         activeleafentryid: AnyCodable? = nil,
         spawnedby: String? = nil,
@@ -5064,6 +5066,7 @@ public struct SessionRow: Codable, Sendable {
         self.lastactivityat = lastactivityat
         self.lastinteractionat = lastinteractionat
         self.status = status
+        self.pausereason = pausereason
         self.lastrunerror = lastrunerror
         self.activeleafentryid = activeleafentryid
         self.spawnedby = spawnedby
@@ -5120,6 +5123,7 @@ public struct SessionRow: Codable, Sendable {
         case lastactivityat = "lastActivityAt"
         case lastinteractionat = "lastInteractionAt"
         case status
+        case pausereason = "pauseReason"
         case lastrunerror = "lastRunError"
         case activeleafentryid = "activeLeafEntryId"
         case spawnedby = "spawnedBy"
