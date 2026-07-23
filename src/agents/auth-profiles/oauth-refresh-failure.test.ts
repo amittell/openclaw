@@ -13,8 +13,44 @@ import {
   classifyOAuthRefreshFailure,
   classifyOAuthRefreshFailureError,
   formatOAuthRefreshFailureLoginCommandMarkdown,
+  isPermanentOAuthRefreshFailure,
   OAuthRefreshFailureError,
 } from "./oauth-refresh-failure.js";
+
+describe("isPermanentOAuthRefreshFailure", () => {
+  it("classifies dead-grant refresh failures as permanent, including nested causes", () => {
+    expect(
+      isPermanentOAuthRefreshFailure(
+        new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}'),
+      ),
+    ).toBe(true);
+    expect(
+      isPermanentOAuthRefreshFailure(
+        new Error(
+          'OpenAI Codex token refresh failed (401): {"error":{"message":"Could not validate your refresh token. Please try signing in again.","code":"invalid_refresh_token"}}',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isPermanentOAuthRefreshFailure(
+        new Error("wrapper", {
+          cause: new Error("OAuth token refresh failed for openai: token revoked"),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats rotation races and unclassified failures as transient", () => {
+    expect(
+      isPermanentOAuthRefreshFailure(
+        new Error("OpenAI Codex token refresh failed (400): refresh_token_reused"),
+      ),
+    ).toBe(false);
+    expect(isPermanentOAuthRefreshFailure(new Error("fetch failed: ECONNRESET"))).toBe(false);
+    expect(isPermanentOAuthRefreshFailure(undefined)).toBe(false);
+    expect(isPermanentOAuthRefreshFailure("invalid_grant")).toBe(false);
+  });
+});
 
 describe("buildAuthProfileUnusableHint", () => {
   it("keeps Claude subscription and Anthropic API-key recovery distinct", () => {
@@ -58,6 +94,8 @@ describe("buildAuthProfileUnusableHint", () => {
       "Gemini CLI OAuth cannot be repaired by OpenClaw. Connect Google with an AI Studio API key using `openclaw models auth login --provider google`, then select that Google profile for the Gemini CLI runtime.",
     );
     expect(hint).not.toContain("--provider google-gemini-cli");
+
+
   });
 });
 
