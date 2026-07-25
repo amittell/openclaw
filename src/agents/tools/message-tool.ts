@@ -81,6 +81,10 @@ import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reas
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { listAllChannelSupportedActions, listChannelSupportedActions } from "../channel-tools.js";
+import {
+  isMessagingToolDuplicateNormalized,
+  normalizeTextForComparison,
+} from "../embedded-agent-helpers/messaging-dedupe.js";
 import { stripInternalRuntimeContext } from "../internal-runtime-context.js";
 import {
   channelTargetSchema,
@@ -207,6 +211,21 @@ const POLL_VOTE_ECHO_TTL_MS = 30_000;
 const recentPollVoteBySession = new Map<
   string,
   { option: string; route: string; recordedAt: number }
+>();
+
+// Duplicate-send guard: models that re-narrate after each tool result
+// (thinking-mode and small models especially) can call send twice with
+// near-identical text in one run, double-posting the channel. Keyed per run
+// (session fallback) and route-checked like the poll-vote echo above; TTL +
+// bounded list so a long-lived gateway cannot accumulate state.
+const DUPLICATE_SEND_TTL_MS = 10 * 60 * 1000;
+const DUPLICATE_SEND_MAX_TRACKED_PER_RUN = 8;
+// Both directions must be within 2x length so a short earlier send can never
+// suppress a genuinely longer follow-up that merely quotes it.
+const DUPLICATE_SEND_MIN_LENGTH_RATIO = 0.5;
+const recentMessageToolSendsByRun = new Map<
+  string,
+  { sends: { route: string; normalized: string }[]; recordedAt: number }
 >();
 
 function resolvePollVoteEchoRoute(params: {
@@ -1703,6 +1722,42 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         }
       }
 
+      // Strictly per-run: repeating an answer in a LATER run (user asked again)
+      // is legitimate; only intra-run re-narration is the pathology.
+      const duplicateSendKey = options?.runId?.trim() || undefined;
+      // Text-only guard: a media send with a repeated caption is a distinct
+      // deliverable and must never be suppressed.
+      const duplicateSendHasMedia =
+        readFirstStringParam(params, ["media", "mediaUrl", "path", "filePath", "fileUrl"]).length >
+        0;
+      const duplicateSendText =
+        action === "send" && !duplicateSendHasMedia
+          ? (readStringParam(params, "text") ??
+            readStringParam(params, "message") ??
+            readStringParam(params, "content"))
+          : undefined;
+      if (duplicateSendKey && duplicateSendText && pollVoteEchoRoute) {
+        const tracked = recentMessageToolSendsByRun.get(duplicateSendKey);
+        if (tracked && Date.now() - tracked.recordedAt <= DUPLICATE_SEND_TTL_MS) {
+          const normalized = normalizeTextForComparison(duplicateSendText);
+          const priorOnRoute = tracked.sends
+            .filter(
+              (sent) =>
+                sent.route === pollVoteEchoRoute &&
+                sent.normalized.length >= normalized.length * DUPLICATE_SEND_MIN_LENGTH_RATIO,
+            )
+            .map((sent) => sent.normalized);
+          if (isMessagingToolDuplicateNormalized(normalized, priorOnRoute)) {
+            return jsonResult({
+              status: "suppressed",
+              reason: "duplicate_send",
+              message:
+                "Suppressed a near-duplicate of a message already sent in this run. The earlier message was delivered; do not re-send it.",
+            });
+          }
+        }
+      }
+
       const gatewayResolved = resolveGatewayOptions(gatewayOpts);
       const callerOwnsTerminalReceipt =
         gatewayResolved.target === "remote" ||
@@ -1867,6 +1922,29 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
             recordedAt,
           });
         }
+      }
+      if (duplicateSendKey && duplicateSendText && pollVoteEchoRoute) {
+        // Record only after a non-throwing send so a failed delivery can still
+        // be retried with the same text.
+        const recordedAt = Date.now();
+        for (const [key, entry] of recentMessageToolSendsByRun) {
+          if (recordedAt - entry.recordedAt > DUPLICATE_SEND_TTL_MS) {
+            recentMessageToolSendsByRun.delete(key);
+          }
+        }
+        const entry = recentMessageToolSendsByRun.get(duplicateSendKey) ?? {
+          sends: [],
+          recordedAt,
+        };
+        entry.recordedAt = recordedAt;
+        entry.sends.push({
+          route: pollVoteEchoRoute,
+          normalized: normalizeTextForComparison(duplicateSendText),
+        });
+        if (entry.sends.length > DUPLICATE_SEND_MAX_TRACKED_PER_RUN) {
+          entry.sends.splice(0, entry.sends.length - DUPLICATE_SEND_MAX_TRACKED_PER_RUN);
+        }
+        recentMessageToolSendsByRun.set(duplicateSendKey, entry);
       }
       if (toolResult) {
         return toolResult;
