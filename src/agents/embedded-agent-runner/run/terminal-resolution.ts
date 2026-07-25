@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isCompactionReplayCheckpoint } from "@openclaw/ai/transports";
-import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { SILENT_REPLY_TOKEN, isSilentReplyText } from "../../../auto-reply/tokens.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import type { ProviderRouteOverridePresence } from "../../../plugin-sdk/provider-model-types.js";
@@ -26,6 +26,7 @@ import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolTerminalContinuationInstruction,
+  SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -45,6 +46,7 @@ import {
 } from "./terminal-outcome.js";
 import {
   MAX_BEFORE_AGENT_FINALIZE_REVISIONS,
+  MAX_SILENT_STOP_NUDGES,
   type EmbeddedRunTerminalRetryState,
 } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
@@ -453,6 +455,36 @@ export async function resolveEmbeddedRunTerminal(input: {
       `before_agent_finalize requested one more pass: ` +
         `runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
         `attempt=${retryState.beforeFinalizeRevisionAttempts}/${MAX_BEFORE_AGENT_FINALIZE_REVISIONS}`,
+    );
+    return { action: "retry" };
+  }
+
+  // Silent-stop nudge: under message_tool_only the model can end the turn with
+  // assistant text it never sent through the message tool; the payload builder
+  // suppresses that text, so the user gets no reply at all. Key on the raw
+  // assistant text (payloads are already suppressed here), excluding an
+  // intentional NO_REPLY.
+  const silentStopAssistantText = attempt.assistantTexts.some(
+    (text) => text.trim().length > 0 && !isSilentReplyText(text),
+  );
+  const silentStopDeliveryGap =
+    runParams.sourceReplyDeliveryMode === "message_tool_only" &&
+    silentStopAssistantText &&
+    attempt.didDeliverSourceReplyViaMessageTool !== true &&
+    (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
+    !input.terminalAborted &&
+    !input.promptError &&
+    !input.terminalTimedOut &&
+    !attempt.clientToolCalls &&
+    !attempt.yieldDetected &&
+    !hasAttemptTerminalState(attempt);
+  if (silentStopDeliveryGap && retryState.silentStopNudges < MAX_SILENT_STOP_NUDGES) {
+    retryState.silentStopNudges += 1;
+    input.activateInternalPrompt(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, false);
+    log.warn(
+      `silent-stop nudge: undelivered visible text under message_tool_only; ` +
+        `retrying ${retryState.silentStopNudges}/${MAX_SILENT_STOP_NUDGES}: ` +
+        `runId=${runParams.runId} sessionId=${runParams.sessionId}`,
     );
     return { action: "retry" };
   }
