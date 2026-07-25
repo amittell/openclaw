@@ -11,7 +11,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import { FAST_MODE_AUTO_PROGRESS_KIND, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
-import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
+import { SILENT_REPLY_TOKEN, isSilentReplyText } from "../../auto-reply/tokens.js";
 import { getRuntimeConfigSnapshot } from "../../config/config.js";
 import { resolveStorePath } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -223,6 +223,7 @@ import {
 import {
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+  SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
   hasAttemptTerminalState,
   resolveAttemptReplayMetadata,
   resolveEmptyResponseRetryInstruction,
@@ -1681,6 +1682,11 @@ async function runEmbeddedAgentInternal(
       let reasoningOnlyRetryInstruction: string | null = null;
       let emptyResponseRetryInstruction: string | null = null;
       let compactionContinuationRetryInstruction: string | null = null;
+      // Bounded to one continuation per run so a model that refuses to use the
+      // message tool cannot ping-pong the loop.
+      const MAX_SILENT_STOP_NUDGES = 1;
+      let silentStopNudges = 0;
+      let silentStopDeliveryRetryInstruction: string | null = null;
       let nextAttemptPromptOverride: string | null = null;
       let rateLimitProfileRotations = 0;
       let timeoutCompactionAttempts = 0;
@@ -2034,6 +2040,7 @@ async function runEmbeddedAgentInternal(
             reasoningOnlyRetryInstruction,
             emptyResponseRetryInstruction,
             compactionContinuationRetryInstruction,
+            silentStopDeliveryRetryInstruction,
           ].filter(
             (value): value is string => typeof value === "string" && value.trim().length > 0,
           );
@@ -4189,6 +4196,37 @@ async function runEmbeddedAgentInternal(
               `before_agent_finalize requested one more pass: ` +
                 `runId=${params.runId} sessionId=${params.sessionId} ` +
                 `attempt=${beforeAgentFinalizeRevisionAttempts}/${MAX_BEFORE_AGENT_FINALIZE_REVISIONS}`,
+            );
+            continue;
+          }
+
+          // Silent-stop nudge: under message_tool_only the model can end the
+          // turn with assistant text it never sent through the message tool;
+          // the payload builder suppresses that text, so the user gets no
+          // reply at all. Key on the raw assistant text (payloads are already
+          // suppressed here), excluding an intentional NO_REPLY.
+          const silentStopAssistantText =
+            attempt.assistantTexts?.some(
+              (text) => text.trim().length > 0 && !isSilentReplyText(text),
+            ) ?? false;
+          const silentStopDeliveryGap =
+            params.sourceReplyDeliveryMode === "message_tool_only" &&
+            silentStopAssistantText &&
+            attempt.didDeliverSourceReplyViaMessageTool !== true &&
+            (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
+            !aborted &&
+            !promptError &&
+            !timedOut &&
+            !attempt.clientToolCalls &&
+            !attempt.yieldDetected &&
+            !hasAttemptTerminalState(attempt);
+          if (silentStopDeliveryGap && silentStopNudges < MAX_SILENT_STOP_NUDGES) {
+            silentStopNudges += 1;
+            silentStopDeliveryRetryInstruction = SILENT_STOP_DELIVERY_RETRY_INSTRUCTION;
+            log.warn(
+              `silent-stop nudge: undelivered visible text under message_tool_only; ` +
+                `retrying ${silentStopNudges}/${MAX_SILENT_STOP_NUDGES}: ` +
+                `runId=${params.runId} sessionId=${params.sessionId}`,
             );
             continue;
           }

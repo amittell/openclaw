@@ -136,6 +136,11 @@ export const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 export const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+// Under message_tool_only delivery, text that never went through the message
+// tool is dropped by the channel layer: the user sees nothing. One bounded
+// continuation asks the model to actually deliver before the turn is accepted.
+export const SILENT_STOP_DELIVERY_RETRY_INSTRUCTION =
+  "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.";
 
 /**
  * Marks whether retrying the attempt can safely replay the prompt. Concrete
