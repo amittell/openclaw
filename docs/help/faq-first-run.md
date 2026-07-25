@@ -538,9 +538,11 @@ and troubleshooting see the main [FAQ](/help/faq).
     the request is trying to use Anthropic's 1M context window (a GA-capable 1M Claude 4.x
     model, or legacy `params.context1m: true` config), and your current credential is not
     eligible for long-context billing. OpenClaw classifies this body as a context overflow
-    and automatically attempts **compact + retry** on the standard usage tier before
-    surfacing the error, so if the session fits after compaction the retry succeeds
-    without operator intervention.
+      and automatically attempts **compact + retry** on the standard usage tier before
+      surfacing the error, so if the session fits after compaction the retry succeeds
+      without operator intervention. If compaction cannot refit the session, the run
+      ends blocked; fallback models are not tried for context overflow. Start a fresh
+      session with `/reset` (or `/new`), or switch to a larger-context model.
 
     Set a **fallback model** so OpenClaw keeps replying when compact + retry is not
     enough and a provider remains rate-limited.
