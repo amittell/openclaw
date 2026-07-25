@@ -24,6 +24,7 @@ import {
   buildAttemptReplayMetadata,
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+  SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
   resolveEmptyResponseRetryInstruction,
   isIncompleteTerminalAssistantTurn,
   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
@@ -1808,6 +1809,110 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       );
     }
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
+  });
+
+
+  it("nudges one delivery continuation when message_tool_only text was never sent", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Here is the status summary you asked for."],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "end_turn",
+          provider: "gpufarm",
+          model: "qwen3.6-27b",
+          content: [{ type: "text", text: "Here is the status summary you asked for." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Sent."],
+        didSendViaMessagingTool: true,
+        didDeliverSourceReplyViaMessageTool: true,
+        messagingToolSourceReplyPayloads: [{ text: "Status summary" }],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "end_turn",
+          provider: "gpufarm",
+          model: "qwen3.6-27b",
+          content: [{ type: "text", text: "Sent." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      sourceReplyDeliveryMode: "message_tool_only",
+      provider: "gpufarm",
+      model: "qwen3.6-27b",
+      runId: "run-silent-stop-nudge",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    const secondCall = runAttemptCall(1);
+    expect(secondCall.prompt).toContain(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION);
+    expectWarnMessageWith("silent-stop nudge");
+  });
+
+  it("accepts the turn without nudging when message_tool_only delivery happened", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Done — sent the summary."],
+        didSendViaMessagingTool: true,
+        didDeliverSourceReplyViaMessageTool: true,
+        messagingToolSourceReplyPayloads: [{ text: "the summary" }],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "end_turn",
+          provider: "gpufarm",
+          model: "qwen3.6-27b",
+          content: [{ type: "text", text: "Done — sent the summary." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      sourceReplyDeliveryMode: "message_tool_only",
+      provider: "gpufarm",
+      model: "qwen3.6-27b",
+      runId: "run-silent-stop-delivered",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    const onlyCall = runAttemptCall(0);
+    expect(onlyCall.prompt).not.toContain(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION);
+    expectNoWarnMessageWith("silent-stop nudge");
+  });
+
+  it("gives up after one silent-stop nudge instead of looping", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    const undelivered = () =>
+      makeAttemptResult({
+        assistantTexts: ["I looked into it and everything is fine."],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "end_turn",
+          provider: "gpufarm",
+          model: "qwen3.6-27b",
+          content: [{ type: "text", text: "I looked into it and everything is fine." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      });
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(undelivered());
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(undelivered());
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      sourceReplyDeliveryMode: "message_tool_only",
+      provider: "gpufarm",
+      model: "qwen3.6-27b",
+      runId: "run-silent-stop-bounded",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
   });
 
   it("retries reasoning-only assistant turns even when deliberate silence is allowed", async () => {
