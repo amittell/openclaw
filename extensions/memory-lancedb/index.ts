@@ -151,7 +151,7 @@ function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number
   }
   let l2sq = 0;
   for (let index = 0; index < previousVector.length; index += 1) {
-    const diff = previousVector[index] - (nextVector[index] ?? 0);
+    const diff = (previousVector[index] ?? 0) - (nextVector[index] ?? 0);
     l2sq += diff * diff;
   }
   return 1 / (1 + Math.sqrt(l2sq));

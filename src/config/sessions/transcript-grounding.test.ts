@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { UNGROUNDED_MEDIA_PLACEHOLDER, redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { replaceSessionEntry } from "./session-accessor.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
+import { UNGROUNDED_MEDIA_PLACEHOLDER, redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { readRecentUserAssistantTextForSession } from "./transcript.js";
 
 describe("redactUngroundedMediaRefs", () => {

@@ -41,11 +41,11 @@ import {
   type TranscriptEntryAnchor,
 } from "./session-accessor.js";
 import type { SessionTranscriptTurnLifecyclePatch } from "./session-transcript-turn-lifecycle.types.js";
-import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import {
   applyBeforeMessageWriteToAssistant,
   type AssistantBeforeMessageWrite,
 } from "./transcript-assistant-message.js";
+import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { resolveMirroredTranscriptText } from "./transcript-mirror.js";
 import {
   isWithinTranscriptWindow,
