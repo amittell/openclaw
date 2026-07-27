@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import { isSessionRunActive } from "../session-run-state.ts";
 import { isFailedSessionStatus, staleSessionState, workboardCardSessionKey } from "./card-state.ts";
 import { getWorkboardRuntime, type WorkboardHost } from "./runtime.ts";
 import { sessionUpdatedAtValue, taskLifecycleSourceUpdatedAt } from "./task-links.ts";
