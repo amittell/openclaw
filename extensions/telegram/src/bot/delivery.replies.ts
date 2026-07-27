@@ -285,7 +285,14 @@ async function deliverTextReply(params: {
           replyMarkup,
         },
       );
-      if (messageId != null && firstDeliveredMessageId == null) {
+      if (messageId == null) {
+        // sendTelegramText resolves undefined for a skipped empty-text send.
+        // Projecting a prompt-context record without a real message id would
+        // register a page Telegram never received, and later edits would
+        // target a nonexistent message.
+        return messageId;
+      }
+      if (firstDeliveredMessageId == null) {
         firstDeliveredMessageId = messageId;
       }
       await params.progress.promptContext?.accept({ messageId, text: chunk.plainText });
@@ -601,7 +608,7 @@ async function deliverMediaReply(params: {
             await sendVoiceMedia(noCaptionParams);
             const fallbackText = resolveVoiceFallbackText(params.reply);
             if (fallbackText?.trim()) {
-              await deliverTextReply({
+              const captionFallbackMessageId = await deliverTextReply({
                 bot: params.bot,
                 chatId: params.chatId,
                 runtime: params.runtime,

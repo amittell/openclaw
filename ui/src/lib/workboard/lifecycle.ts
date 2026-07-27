@@ -1,4 +1,5 @@
 import type { GatewaySessionRow } from "../../api/types.ts";
+import { isSessionRunActive } from "../session-run-state.ts";
 import { isFailedSessionStatus, staleSessionState, workboardCardSessionKey } from "./card-state.ts";
 import { isRecord } from "./normalization-utils.ts";
 import { getWorkboardRuntime, type WorkboardHost } from "./runtime.ts";

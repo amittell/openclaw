@@ -4898,9 +4898,7 @@ describe("startGatewayConfigReloader watcher error recovery", () => {
       // a restart-required plan) share this logger and would otherwise make
       // the assertion brittle without testing anything about recovery.
       expect(
-        log.warn.mock.calls.filter((call) =>
-          String(call[0]).includes("re-creating watcher"),
-        ),
+        log.warn.mock.calls.filter((call) => String(call[0]).includes("re-creating watcher")),
       ).toHaveLength(4);
       expect(watchOptions(4)?.usePolling).toBe(false);
       expect(log.warn).not.toHaveBeenCalledWith(

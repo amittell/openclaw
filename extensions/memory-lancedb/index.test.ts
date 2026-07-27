@@ -3786,7 +3786,7 @@ describe("memory plugin e2e", () => {
       expect(result.details.matches).toHaveLength(3);
       const matches = result.details.matches as Array<Record<string, unknown>>;
       expect(matches[0]).toHaveProperty("similarity");
-      expect(matches[0].similarity).toBeGreaterThan(0);
+      expect(matches[0]?.similarity).toBeGreaterThan(0);
 
       // Verify nothing was written to the DB
       expect(tableAdd).not.toHaveBeenCalled();
@@ -4025,7 +4025,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => []); // empty → not found
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     vi.resetModules();
     vi.doMock("openai", () => ({
@@ -4114,7 +4116,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     // First call to add throws (new entry); second call succeeds (rollback restore)
     let addCallCount = 0;
@@ -4226,7 +4230,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     // Both insert and rollback fail
     const tableAdd = vi.fn(async () => {
@@ -4316,7 +4322,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     vi.resetModules();
     vi.doMock("openai", () => ({
@@ -4409,7 +4417,9 @@ describe("memory plugin e2e", () => {
     // Static mock: getById always returns the same entry regardless of prior deletes.
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     // tableDelete introduces a small async gap so that without the mutex the
     // two calls' delete operations would both complete before either add fires,
@@ -5475,7 +5485,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => []);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     vi.resetModules();
     vi.doMock("openai", () => ({
@@ -5687,7 +5699,9 @@ describe("memory plugin e2e", () => {
     const tableDelete = vi.fn(async () => undefined);
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
-    const vectorSearch = vi.fn(() => createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))));
+    const vectorSearch = vi.fn(() =>
+      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+    );
 
     vi.resetModules();
     vi.doMock("openai", () => ({

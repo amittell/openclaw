@@ -331,8 +331,7 @@ export function resolveSubagentSpawnModelSelection(params: {
   const raw =
     normalizeModelSelection(
       resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults),
-    ) ??
-    `${runtimeDefault.provider}/${runtimeDefault.model}`;
+    ) ?? `${runtimeDefault.provider}/${runtimeDefault.model}`;
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg,
     defaultProvider: runtimeDefault.provider,

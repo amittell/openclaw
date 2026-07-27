@@ -831,8 +831,7 @@ export function resolveConfiguredModelRef(
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
 ): ModelRef {
-  const rawModel =
-    resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults) ?? "";
+  const rawModel = resolveAgentDefaultChatModelPrimaryValue(params.cfg.agents?.defaults) ?? "";
   if (rawModel) {
     const trimmed = rawModel.trim();
     const { model: modelWithoutProfile } = splitTrailingAuthProfile(trimmed);

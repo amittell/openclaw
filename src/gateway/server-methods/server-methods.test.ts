@@ -5195,7 +5195,10 @@ describe("gateway healthHandlers.health cache freshness", () => {
     const respond = vi.fn();
     const refreshHealthSnapshot = vi.fn().mockResolvedValue(fresh);
 
-    await expectDefined(healthHandlers.health, "healthHandlers.health test invariant")({
+    await expectDefined(
+      healthHandlers.health,
+      "healthHandlers.health test invariant",
+    )({
       req: {} as never,
       params: {} as never,
       respond: respond as never,
