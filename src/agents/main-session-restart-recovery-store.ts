@@ -17,7 +17,6 @@ import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { resolveDefaultAgentId } from "./agent-scope-config.js";
 import { persistSessionEntry } from "./command/attempt-execution.shared.js";
-import { normalizeFiniteTimestamp } from "./main-session-restart-recovery-shared.js";
 import {
   listActiveEmbeddedRunSessionIds,
   listActiveEmbeddedRunSessionKeys,
@@ -46,6 +45,7 @@ import {
   hasReplaySafeCodeModeCheckpointInCurrentTurn,
   resolveMainSessionResumePolicy,
 } from "./main-session-restart-recovery-resume-policy.js";
+import { normalizeFiniteTimestamp } from "./main-session-restart-recovery-shared.js";
 import {
   type ExhaustedRestartRecoveryTarget,
   type ExpectedRestartRecoveryTarget,
@@ -54,7 +54,6 @@ import {
   MAX_RECOVERY_RETRIES,
   normalizeStringSet,
 } from "./main-session-restart-recovery-shared.js";
-
 
 // A pending final delivery that never lands would otherwise be retried on every
 // restart forever. Cap the attempts and back off exponentially between them so

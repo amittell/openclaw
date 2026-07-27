@@ -307,13 +307,13 @@ async function executeAgentTurnInternalWithRetryState(
     const activeProbe = effectiveRun.autoFallbackPrimaryProbe;
     const fallbackUsedAfterNonDurableProbeFailure = Boolean(
       activeProbe &&
-        (paramsForClear.provider !== activeProbe.provider ||
-          paramsForClear.model !== activeProbe.model) &&
-        !hasDurableAutoFallbackPrimaryProbeFailureEvidence({
-          probeProvider: activeProbe.provider,
-          probeModel: activeProbe.model,
-          attempts: fallbackAttempts,
-        }),
+      (paramsForClear.provider !== activeProbe.provider ||
+        paramsForClear.model !== activeProbe.model) &&
+      !hasDurableAutoFallbackPrimaryProbeFailureEvidence({
+        probeProvider: activeProbe.provider,
+        probeModel: activeProbe.model,
+        attempts: fallbackAttempts,
+      }),
     );
     return await clearRecoveredAutoFallbackPrimaryProbeSelection({
       run: effectiveRun,
