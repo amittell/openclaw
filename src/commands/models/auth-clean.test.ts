@@ -442,8 +442,8 @@ describe("modelsAuthCleanCommand", () => {
     await modelsAuthCleanCommand({ json: true }, runtime);
 
     expect(runtime.logs.length).toBe(2);
-    const plan = JSON.parse(runtime.logs[0]);
-    const result = JSON.parse(runtime.logs[1]);
+    const plan = JSON.parse(runtime.logs[0] ?? "");
+    const result = JSON.parse(runtime.logs[1] ?? "");
 
     expect(plan).toMatchObject({ toRemove: ["anthropic:manual"], dryRun: false });
     expect(result).toMatchObject({ ok: true, removed: 1 });
@@ -459,7 +459,7 @@ describe("modelsAuthCleanCommand", () => {
     await modelsAuthCleanCommand({ json: true, dryRun: true }, runtime);
 
     expect(runtime.logs.length).toBe(1);
-    const plan = JSON.parse(runtime.logs[0]);
+    const plan = JSON.parse(runtime.logs[0] ?? "");
     expect(plan).toMatchObject({ toRemove: ["anthropic:manual"], dryRun: true });
     expect(mocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
   });
@@ -580,10 +580,11 @@ describe("modelsAuthCleanCommand", () => {
           {
             id: "worker",
             tools: {
+              // Per-capability image/audio/video configs no longer carry their
+              // own `models`; the shared tools.media.models list is the only
+              // place profile references live.
               media: {
-                image: {
-                  models: [{ model: "gpt-4o", preferredProfile: "anthropic:preferred-agent" }],
-                },
+                models: [{ model: "gpt-4o", preferredProfile: "anthropic:preferred-agent" }],
               },
             },
           },

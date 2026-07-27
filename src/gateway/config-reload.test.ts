@@ -4506,13 +4506,13 @@ describe("startGatewayConfigReloader", () => {
   it("queues restart-required gateway auth changes in hybrid mode instead of leaving runtime stale", async () => {
     const previousConfig: OpenClawConfig = {
       gateway: {
-        reload: { mode: "hybrid", debounceMs: 0 },
+        reload: { mode: "hybrid" },
         auth: { mode: "token", token: "old-token" },
       },
     };
     const nextConfig: OpenClawConfig = {
       gateway: {
-        reload: { mode: "hybrid", debounceMs: 0 },
+        reload: { mode: "hybrid" },
         auth: { mode: "token", token: "new-token" },
       },
     };
@@ -4546,7 +4546,7 @@ describe("startGatewayConfigReloader", () => {
 
   it("hot-reloads doctor-repaired OpenAI model route changes in hot mode", async () => {
     const previousConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "hot", debounceMs: 0 } },
+      gateway: { reload: { mode: "hybrid" } },
       agents: {
         defaults: {
           model: { primary: "openai-codex/gpt-5.5", fallbacks: ["openai-codex/gpt-5.4"] },
@@ -4554,7 +4554,7 @@ describe("startGatewayConfigReloader", () => {
       },
     };
     const nextConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "hot", debounceMs: 0 } },
+      gateway: { reload: { mode: "hybrid" } },
       agents: {
         defaults: {
           model: { primary: "openai/gpt-5.5", fallbacks: ["openai/gpt-5.4"] },
