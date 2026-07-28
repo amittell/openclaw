@@ -10,7 +10,6 @@ import { clearSessionSuspensionTimers } from "../agents/session-suspension.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
-import { parseStrictPositiveInteger } from "../infra/parse-finite-number.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { closePluginStateDatabase } from "../plugin-state/plugin-state-store.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
@@ -50,8 +49,7 @@ const RESTART_REPLY_POST_ABORT_DRAIN_TIMEOUT_MS = 1_000;
 const RESTART_REPLY_POST_ABORT_DRAIN_POLL_MS = 50;
 const RESTART_TERMINAL_PERSISTENCE_WAIT_TIMEOUT_MS = 1_000;
 const RESTART_MARKER_SLOW_WARNING_MS = 1_000;
-const DEFAULT_POST_SHUTDOWN_EXIT_TIMEOUT_MS = 5_000;
-const POST_SHUTDOWN_EXIT_TIMEOUT_ENV = "OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS";
+const POST_SHUTDOWN_EXIT_TIMEOUT_MS = 5_000;
 
 // Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers
 // that only need the running / shutting-down distinction (gateway startup,
@@ -70,15 +68,6 @@ export {
   resetGatewayShuttingDownForTest,
   resetGatewayShuttingDownState,
 };
-
-function resolvePostShutdownExitTimeoutMs(): number {
-  const raw = process.env[POST_SHUTDOWN_EXIT_TIMEOUT_ENV]?.trim();
-  if (!raw) {
-    return DEFAULT_POST_SHUTDOWN_EXIT_TIMEOUT_MS;
-  }
-  const parsed = parseStrictPositiveInteger(raw);
-  return parsed ?? DEFAULT_POST_SHUTDOWN_EXIT_TIMEOUT_MS;
-}
 
 function summarizeActiveHandlesForZombieReport(): string {
   const processWithResourceAccess = process as NodeJS.Process & {
@@ -136,7 +125,7 @@ export function armGatewayPostShutdownExitWatchdog(opts?: {
   if (process.env.VITEST !== undefined && opts?.exitProcess === undefined) {
     return { cancel: () => {} };
   }
-  const timeoutMs = Math.max(0, Math.floor(opts?.timeoutMs ?? resolvePostShutdownExitTimeoutMs()));
+  const timeoutMs = Math.max(0, Math.floor(opts?.timeoutMs ?? POST_SHUTDOWN_EXIT_TIMEOUT_MS));
   const exit = opts?.exitProcess ?? ((code: number) => process.exit(code));
   const reason = opts?.reason ?? "gateway stopping";
   const shutdownDurationMs = opts?.shutdownDurationMs;
