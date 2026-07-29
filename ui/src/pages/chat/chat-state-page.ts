@@ -4,6 +4,8 @@ import { fetchAssistantIdentity } from "../../app/assistant-identity.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { loadLocalUserIdentity, loadSettings, patchSettings } from "../../app/settings.ts";
 import { resolveSafeExternalUrl } from "../../lib/open-external-url.ts";
+import { canonicalUiSessionKeyForPersistence } from "../../lib/sessions/session-key.ts";
+import { resolveAgentIdForSession } from "./chat-avatar.ts";
 import { removeQueuedMessage } from "./chat-queue.ts";
 import { attachChatRealtimeActions, createInitialChatRealtimeState } from "./chat-realtime.ts";
 import {
@@ -22,9 +24,22 @@ import type { RenderLifecycle } from "./render-lifecycle.ts";
 import { handleAbortChat } from "./run-lifecycle.ts";
 import { handleChatScroll, resetChatScroll, scheduleChatScroll } from "./scroll.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
+import {
+  updateSidebarSessionActivePanel,
+  updateSidebarSessionLayout,
+} from "./sidebar-layout-persistence.ts";
+import {
+  SIDEBAR_NARROW_BREAKPOINT_PX,
+  activatePanel,
+  closeSlot,
+  fitSidebarLayout,
+  normalizeSidebarLayout,
+  openSlot,
+} from "./sidebar-layout.ts";
 import { resetToolStream } from "./tool-stream.ts";
 
 type ChatPageElement = {
+  getBoundingClientRect?: () => DOMRect;
   querySelector: (selectors: string) => Element | null;
 };
 
@@ -50,9 +65,18 @@ async function loadPageAssistantIdentity(
   const client = state.client;
   const sessionKey = opts?.sessionKey?.trim() || state.sessionKey.trim();
   const expectedSessionKey = opts?.expectedSessionKey?.trim() || sessionKey;
+  const agentId = resolveAgentIdForSession({
+    sessionKey,
+    assistantAgentId: state.assistantAgentId,
+    agentsList: state.agentsList,
+    hello: state.hello,
+  });
+  if (!agentId) {
+    return;
+  }
   const requestVersion = ++state.assistantIdentityRequestVersion;
   try {
-    const identity = await fetchAssistantIdentity(client, sessionKey);
+    const identity = await fetchAssistantIdentity(client, agentId);
     if (
       state.client !== client ||
       !state.connected ||
@@ -81,6 +105,10 @@ export function createPageState(
   chatMessagesBySession: ChatMessageCache = new Map(),
 ): ChatPageHost {
   const settings = loadSettings();
+  const sidebarSessionKey = canonicalUiSessionKeyForPersistence(
+    { agentsList: context.agents.state.agentsList, hello: context.gateway?.snapshot.hello },
+    settings.sessionKey,
+  );
   const identity = loadLocalUserIdentity();
   const appConfig = context.config.current;
   const state = {
@@ -104,6 +132,7 @@ export function createPageState(
     connected: false,
     connectionEpoch: 0,
     hello: null,
+    canvasPluginSurfaceUrl: null,
     terminalAvailable: false,
     browserPanelAvailable: false,
     assistantAgentId: context.agentSelection.state.selectedId,
@@ -195,11 +224,12 @@ export function createPageState(
     chatFollowLocked: false,
     chatIsProgrammaticScroll: false,
     chatProgrammaticScrollTarget: 0,
-    sidebarOpen: false,
+    sidebarLayout: normalizeSidebarLayout(settings.sidebarSessionLayouts?.[sidebarSessionKey]),
     sidebarContent: null,
+    sidebarFocusPanelId: settings.sidebarSessionActivePanels?.[sidebarSessionKey] ?? "",
+    sidebarFocusVersion: 0,
     imageLightbox: null,
     imageLightboxRequestVersion: 0,
-    splitRatio: settings.splitRatio,
     toolStreamById: new Map(),
     toolStreamOrder: [],
     toolStreamSyncTimer: null,
@@ -229,9 +259,7 @@ export function createPageState(
       chatShowToolCalls: next.chatShowToolCalls,
       chatPersistCommentary: next.chatPersistCommentary,
       chatSendShortcut: next.chatSendShortcut,
-      splitRatio: next.splitRatio,
     });
-    state.splitRatio = state.settings.splitRatio;
     renderLifecycle.invalidate();
   };
   state.setChatViewMenuOpen = (open, options) => {
@@ -275,14 +303,58 @@ export function createPageState(
     await steerQueuedChatMessage(state, id);
     renderLifecycle.invalidate();
   };
-  state.handleOpenSidebar = (content) => {
-    state.sidebarContent = content;
-    state.sidebarOpen = true;
+  state.updateSidebarLayout = (layout) => {
+    const normalized = normalizeSidebarLayout(layout);
+    state.sidebarLayout = normalized;
+    state.settings = patchSettings({
+      sidebarSessionLayouts: updateSidebarSessionLayout(
+        loadSettings().sidebarSessionLayouts,
+        canonicalUiSessionKeyForPersistence(state, state.sessionKey),
+        normalized,
+      ),
+    });
     renderLifecycle.invalidate();
   };
-  state.handleCloseSidebar = () => {
-    state.sidebarOpen = false;
+  state.updateSidebarActivePanel = (panelId) => {
+    const normalizedPanelId = panelId.trim();
+    if (!normalizedPanelId) {
+      return;
+    }
+    state.sidebarFocusPanelId = normalizedPanelId;
+    state.sidebarFocusVersion += 1;
+    state.settings = patchSettings({
+      sidebarSessionActivePanels: updateSidebarSessionActivePanel(
+        loadSettings().sidebarSessionActivePanels,
+        canonicalUiSessionKeyForPersistence(state, state.sessionKey),
+        normalizedPanelId,
+      ),
+    });
     renderLifecycle.invalidate();
+  };
+  state.handleOpenSidebar = (content) => {
+    let opened = openSlot(state.sidebarLayout, "detail", "right");
+    const detailPanel = opened.columns
+      .flatMap((column) => column.panels)
+      .find((panel) => panel.slot === "detail");
+    if (detailPanel) {
+      opened = activatePanel(opened, detailPanel.id);
+    }
+    const newColumn = opened.columns.find(
+      (column) => !state.sidebarLayout.columns.some((current) => current.id === column.id),
+    );
+    const availableWidth = page.getBoundingClientRect?.().width ?? 0;
+    const fitted =
+      availableWidth > 0 && availableWidth >= SIDEBAR_NARROW_BREAKPOINT_PX
+        ? (fitSidebarLayout(opened, availableWidth, newColumn?.id) ?? opened)
+        : opened;
+    state.sidebarContent = content;
+    state.updateSidebarLayout(fitted);
+    if (detailPanel) {
+      state.updateSidebarActivePanel(detailPanel.id);
+    }
+  };
+  state.handleCloseSidebar = () => {
+    state.updateSidebarLayout(closeSlot(state.sidebarLayout, "detail"));
   };
   state.beginImageOpen = () => {
     const requestVersion = invalidateImageLightbox(state);
@@ -308,10 +380,6 @@ export function createPageState(
   state.handleCloseImage = () => {
     invalidateImageLightbox(state);
     renderLifecycle.invalidate();
-  };
-  state.handleSplitRatioChange = (ratio) => {
-    const next = Math.max(0.4, Math.min(0.7, ratio));
-    state.applySettings({ ...state.settings, splitRatio: next });
   };
   return state;
 }

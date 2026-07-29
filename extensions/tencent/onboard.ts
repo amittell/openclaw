@@ -1,11 +1,6 @@
 import { readManifestProviderDefaultModelRef } from "openclaw/plugin-sdk/provider-catalog-shared";
+import { createModelCatalogPresetAppliers } from "openclaw/plugin-sdk/provider-onboard";
 import {
-  createModelCatalogPresetAppliers,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/provider-onboard";
-import {
-  buildTokenHubModelDefinition,
-  buildTokenPlanModelDefinition,
   TOKENHUB_BASE_URL,
   TOKENHUB_MODEL_CATALOG,
   TOKENHUB_PROVIDER_ID,
@@ -21,13 +16,13 @@ export const TOKENHUB_DEFAULT_MODEL_REF = readManifestProviderDefaultModelRef(
   TOKENHUB_PROVIDER_ID,
 )!;
 
-const tokenHubPresetAppliers = createModelCatalogPresetAppliers({
+export const { applyConfig: applyTokenHubConfig } = createModelCatalogPresetAppliers<[]>({
   primaryModelRef: TOKENHUB_DEFAULT_MODEL_REF,
-  resolveParams: (_cfg: OpenClawConfig) => ({
+  resolveParams: () => ({
     providerId: TOKENHUB_PROVIDER_ID,
     api: "openai-completions",
     baseUrl: TOKENHUB_BASE_URL,
-    catalogModels: TOKENHUB_MODEL_CATALOG.map(buildTokenHubModelDefinition),
+    catalogModels: structuredClone(TOKENHUB_MODEL_CATALOG),
     aliases: [
       { modelRef: TOKENHUB_DEFAULT_MODEL_REF, alias: "Hy3 (TokenHub)" },
       { modelRef: TOKENHUB_PREVIEW_MODEL_REF, alias: "Hy3 preview (TokenHub)" },
@@ -35,26 +30,18 @@ const tokenHubPresetAppliers = createModelCatalogPresetAppliers({
   }),
 });
 
-export function applyTokenHubConfig(cfg: OpenClawConfig): OpenClawConfig {
-  return tokenHubPresetAppliers.applyConfig(cfg);
-}
-
 export const TOKENPLAN_DEFAULT_MODEL_REF = readManifestProviderDefaultModelRef(
   manifest,
   TOKENPLAN_PROVIDER_ID,
 )!;
 
-const tokenPlanPresetAppliers = createModelCatalogPresetAppliers({
+export const { applyConfig: applyTokenPlanConfig } = createModelCatalogPresetAppliers<[]>({
   primaryModelRef: TOKENPLAN_DEFAULT_MODEL_REF,
-  resolveParams: (_cfg: OpenClawConfig) => ({
+  resolveParams: () => ({
     providerId: TOKENPLAN_PROVIDER_ID,
     api: "openai-completions",
     baseUrl: TOKENPLAN_BASE_URL,
-    catalogModels: TOKENPLAN_MODEL_CATALOG.map(buildTokenPlanModelDefinition),
+    catalogModels: structuredClone(TOKENPLAN_MODEL_CATALOG),
     aliases: [{ modelRef: TOKENPLAN_DEFAULT_MODEL_REF, alias: "Hy3 (TokenPlan)" }],
   }),
 });
-
-export function applyTokenPlanConfig(cfg: OpenClawConfig): OpenClawConfig {
-  return tokenPlanPresetAppliers.applyConfig(cfg);
-}

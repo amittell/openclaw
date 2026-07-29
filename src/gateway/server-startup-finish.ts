@@ -154,6 +154,7 @@ export async function finishGatewayStartup(params: {
     pluginHostServices,
     baseMethods,
     startupPluginIds,
+    pluginManifestRecords,
     pluginLookUpTable,
     ambientEnvTriggers,
     replaceAttachedPluginRuntime,
@@ -411,10 +412,8 @@ export async function finishGatewayStartup(params: {
         startCron: false,
         logCron,
         log,
-        pluginLookUpTable,
       });
       runtimeState.heartbeatRunner = activated.heartbeatRunner;
-      runtimeState.stopModelPricingRefresh = activated.stopModelPricingRefresh;
     });
   };
   ({
@@ -444,6 +443,7 @@ export async function finishGatewayStartup(params: {
           logTailscale,
           gatewayPluginConfigAtStart,
           activationSourceConfig: startupActivationSourceConfig,
+          pluginManifestRecords,
           ambientEnvTriggers,
           pluginRegistry: pluginRuntime.registry,
           defaultWorkspaceDir,

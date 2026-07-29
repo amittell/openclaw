@@ -622,6 +622,7 @@ describe("renderSkills", () => {
               slug: "github",
               displayName: "GitHub",
               summary: "GitHub integration for OpenClaw",
+              icon: `https://clawhub.ai/api/v1/skill-icons/${"a".repeat(64)}`,
               version: "1.2.3",
             },
           ],
@@ -646,6 +647,9 @@ describe("renderSkills", () => {
       "GitHub integration for OpenClaw",
     );
     expect(resultItem?.querySelector(".settings-row__value")?.textContent?.trim()).toBe("v1.2.3");
+    expect(resultItem?.querySelector<HTMLImageElement>(".clawhub-skill-icon")?.src).toBe(
+      `https://clawhub.ai/api/v1/skill-icons/${"a".repeat(64)}`,
+    );
     expect(installButton?.textContent?.trim()).toBe("Install");
     detailButton!.click();
     installButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -669,6 +673,7 @@ describe("renderSkills", () => {
               slug: "github",
               displayName: "GitHub",
               summary: "GitHub integration for OpenClaw",
+              icon: `https://clawhub.ai/api/v1/skill-icons/${"b".repeat(64)}`,
               createdAt: 1_700_000_000,
               updatedAt: 1_700_000_100,
             },
@@ -699,6 +704,10 @@ describe("renderSkills", () => {
     expect(normalizeText(container.querySelector(".md-preview-dialog__body")!)).toBe(
       "GitHub integration for OpenClaw By OpenClaw (@openclaw) Latest: v1.2.3 Added search support Platforms: macos, linux Install GitHub",
     );
+    expect(container.querySelector<HTMLImageElement>(".clawhub-skill-icon--detail")?.src).toBe(
+      `https://clawhub.ai/api/v1/skill-icons/${"b".repeat(64)}`,
+    );
+    expect(container.querySelector(".clawhub-skill-icon--profile")).toBeNull();
 
     const detailInstallButton = container.querySelector<HTMLButtonElement>(
       ".md-preview-dialog__body .btn.primary",
@@ -773,12 +782,14 @@ describe("renderSkills", () => {
       skills: [linkedSkill],
     };
     const verdictKey = "https://clawhub.ai\u0000agentreceipt\u00001.2.3";
+    const onDetailTabChange = vi.fn();
 
     render(
       renderSkills(
         createProps({
           report,
           detailKey: "agentreceipt",
+          onDetailTabChange,
           clawhubVerdicts: {
             [verdictKey]: {
               registry: "https://clawhub.ai",
@@ -806,6 +817,13 @@ describe("renderSkills", () => {
     expect(
       container.querySelector<HTMLAnchorElement>('a[href*="security-audit"]')?.textContent?.trim(),
     ).toBe("Full security report");
+    expect(container.querySelector("#skill-detail-tab-overview")?.hasAttribute("active")).toBe(
+      true,
+    );
+    container
+      .querySelector("#skill-detail-tab-card")
+      ?.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
+    expect(onDetailTabChange).toHaveBeenCalledWith("card");
 
     render(
       renderSkills(
@@ -836,6 +854,7 @@ describe("renderSkills", () => {
     );
     await Promise.resolve();
 
+    expect(container.querySelector("#skill-detail-tab-card")?.hasAttribute("active")).toBe(true);
     expect(container.querySelector(".sidebar-markdown strong")?.textContent).toBe("trust");
     expect(normalizeText(container)).toContain("AgentReceipt Local trust card.");
   });
