@@ -78,6 +78,7 @@ import {
 } from "../../infra/outbound/outbound-policy.js";
 import { sourceDeliveryTargetsMatch } from "../../infra/outbound/source-delivery-plan.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { getPreparedMessageToolCatalog } from "../../plugins/prepared-message-tool-catalog.js";
 import { POLL_CREATION_PARAM_DEFS, SHARED_POLL_CREATION_PARAM_NAMES } from "../../poll-params.js";
@@ -225,6 +226,7 @@ const recentPollVoteBySession = new Map<
 // near-identical text in one run, double-posting the channel. Keyed per run
 // (session fallback) and route-checked like the poll-vote echo above; TTL +
 // bounded list so a long-lived gateway cannot accumulate state.
+const messageToolLog = createSubsystemLogger("message-tool");
 const DUPLICATE_SEND_TTL_MS = 10 * 60 * 1000;
 const DUPLICATE_SEND_MAX_TRACKED_PER_RUN = 8;
 // Both directions must be within 2x length so a short earlier send can never
@@ -1881,6 +1883,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
             )
             .map((sent) => sent.normalized);
           if (isMessagingToolDuplicateNormalized(normalized, priorOnRoute)) {
+            // Observability: the suppression verdict only reaches the model;
+            // this warn line is the sole operator-visible signal the guard fired.
+            messageToolLog.warn(
+              `duplicate_send suppressed: near-duplicate outbound message blocked for run=${duplicateSendKey}`,
+            );
             return jsonResult({
               status: "suppressed",
               reason: "duplicate_send",
