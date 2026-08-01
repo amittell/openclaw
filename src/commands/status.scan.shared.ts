@@ -300,38 +300,23 @@ export async function resolveGatewayProbeSnapshot(params: {
     ? await loadGatewayProbeModule().then(({ resolveGatewayProbeAuthResolution }) =>
         resolveGatewayProbeAuthResolution(params.cfg),
       )
-    : { auth: {}, warning: undefined, failureReason: undefined };
+    : { auth: {}, warning: undefined };
   let gatewayProbeAuthWarning = gatewayProbeAuthResolution.warning;
   const defaultProbeTimeoutMs = params.opts.all ? 5000 : 2500;
   const timeoutMsExplicit = params.opts.timeoutMs !== undefined;
   const probeTimeoutMs = params.opts.timeoutMs ?? defaultProbeTimeoutMs;
-  // Fail fast when local probe auth could not be resolved: surfacing the real
-  // credential failure beats a generic connect error from an attempted socket.
-  const initialGatewayProbe = !shouldProbe
-    ? null
-    : gatewayProbeAuthResolution.failureReason
-      ? ({
-          ok: false,
-          url: gatewayConnection.url,
-          connectLatencyMs: null,
-          error: gatewayProbeAuthResolution.failureReason,
-          close: null,
-          auth: { role: null, scopes: [], capability: "unknown" },
-          health: null,
-          status: null,
-          presence: null,
-          configSnapshot: null,
-        } satisfies GatewayProbeResult)
-      : await loadProbeGatewayModule()
-          .then(({ probeGateway }) =>
-            probeGateway({
-              url: gatewayConnection.url,
-              auth: gatewayProbeAuthResolution.auth,
-              timeoutMs: probeTimeoutMs,
-              detailLevel: params.opts.detailLevel ?? "presence",
-            }),
-          )
-          .catch(() => null);
+  const initialGatewayProbe = shouldProbe
+    ? await loadProbeGatewayModule()
+        .then(({ probeGateway }) =>
+          probeGateway({
+            url: gatewayConnection.url,
+            auth: gatewayProbeAuthResolution.auth,
+            timeoutMs: probeTimeoutMs,
+            detailLevel: params.opts.detailLevel ?? "presence",
+          }),
+        )
+        .catch(() => null)
+    : null;
   const gatewayProbe = await applyLocalStatusRpcFallback({
     cfg: params.cfg,
     gatewayMode,
@@ -345,7 +330,6 @@ export async function resolveGatewayProbeSnapshot(params: {
   if (
     (params.opts.mergeAuthWarningIntoProbeError ?? true) &&
     gatewayProbeAuthWarning &&
-    !gatewayProbeAuthResolution.failureReason &&
     gatewayProbe?.ok === false
   ) {
     gatewayProbe.error = gatewayProbe.error
