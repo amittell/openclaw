@@ -4,7 +4,7 @@ import {
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.js";
-import { probeGateway, type GatewayProbeResult } from "../../gateway/probe.js";
+import { probeGateway } from "../../gateway/probe.js";
 import {
   discoverGatewayBeacons,
   type GatewayBonjourBeacon,
@@ -129,41 +129,25 @@ export async function runGatewayStatusProbePass(params: {
           token: readStringValue(params.opts.token),
           password: readStringValue(params.opts.password),
         });
-        // Fail fast when local probe auth could not be resolved: attempting the
-        // socket would surface a confusing connect error instead of the real
-        // "no usable credentials" cause.
-        const probe: GatewayProbeResult = authResolution.failureReason
-          ? {
-              ok: false,
-              url: target.url,
-              connectLatencyMs: null,
-              error: authResolution.failureReason,
-              close: null,
-              auth: { role: null, scopes: [], capability: "unknown" },
-              health: null,
-              status: null,
-              presence: null,
-              configSnapshot: null,
-            }
-          : await probeGateway({
-              url: target.url,
-              // Explicit, configured-remote, and SSH targets must not inherit the
-              // local Gateway's device token, even when the transport is loopback.
-              ...(target.kind === "sshTunnel"
-                ? { suppressStoredDeviceAuth: true }
-                : target.kind !== "localLoopback"
-                  ? { originScopedDeviceAuth: true }
-                  : {}),
-              auth: {
-                token: authResolution.token,
-                password: authResolution.password,
-              },
-              tlsFingerprint:
-                target.kind === "localLoopback" && target.url.startsWith("wss://")
-                  ? params.localTlsFingerprint
-                  : undefined,
-              timeoutMs: resolveProbeBudgetMs(params.overallTimeoutMs, target),
-            });
+        const probe = await probeGateway({
+          url: target.url,
+          // Explicit, configured-remote, and SSH targets must not inherit the
+          // local Gateway's device token, even when the transport is loopback.
+          ...(target.kind === "sshTunnel"
+            ? { suppressStoredDeviceAuth: true }
+            : target.kind !== "localLoopback"
+              ? { originScopedDeviceAuth: true }
+              : {}),
+          auth: {
+            token: authResolution.token,
+            password: authResolution.password,
+          },
+          tlsFingerprint:
+            target.kind === "localLoopback" && target.url.startsWith("wss://")
+              ? params.localTlsFingerprint
+              : undefined,
+          timeoutMs: resolveProbeBudgetMs(params.overallTimeoutMs, target),
+        });
         return {
           target,
           probe,

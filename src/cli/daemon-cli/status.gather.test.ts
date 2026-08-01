@@ -1254,19 +1254,13 @@ describe("gatherDaemonStatus", () => {
 
     const status = await gatherStatus();
 
-    expect(callGatewayStatusProbe).not.toHaveBeenCalled();
-    // The fail-fast synthesized the rpc failure without probing; restart-health
-    // must not run its own unauthenticated loopback probe either.
-    expect(inspectGatewayRestart).not.toHaveBeenCalled();
-    expect(status.rpc?.ok).toBe(false);
-    expect(status.rpc?.error).toContain("gateway.auth.token");
-    expect(status.rpc?.authWarning).toContain(
-      "gateway.auth.token SecretRef is unresolved in this command path",
-    );
-    expect(status.rpc?.authWarning).not.toContain("probing without configured auth credentials");
+    const probeInput = callArg(callGatewayStatusProbe) as { token?: string; password?: string };
+    expect(probeInput.token).toBeUndefined();
+    expect(probeInput.password).toBeUndefined();
+    expect(status.rpc?.authWarning).toBeUndefined();
   });
 
-  it("probes explicit URL override despite unresolved local auth SecretRef and surfaces authWarning", async () => {
+  it("surfaces authWarning when daemon probe auth SecretRef is unresolved and probe fails", async () => {
     daemonLoadedConfig = {
       gateway: {
         bind: "lan",
@@ -1285,19 +1279,25 @@ describe("gatherDaemonStatus", () => {
     callGatewayStatusProbe.mockResolvedValueOnce({
       ok: false,
       error: "gateway closed",
-      url: "wss://gateway.example:19001",
+      url: "wss://127.0.0.1:19001",
     });
 
+<<<<<<< HEAD
     const status = await gatherStatus({
       rpc: { url: "wss://gateway.example:19001" },
+=======
+    const status = await gatherDaemonStatus({
+      rpc: {},
+      probe: true,
+      deep: false,
+>>>>>>> 3a3014adf5d (fix(status): preserve degraded probing for unresolved auth)
     });
 
-    expect(callGatewayStatusProbe).toHaveBeenCalledTimes(1);
     expect(status.rpc?.ok).toBe(false);
-    expect(status.rpc?.error).toBe("gateway closed");
     expect(status.rpc?.authWarning).toContain(
       "gateway.auth.token SecretRef is unresolved in this command path",
     );
+    expect(status.rpc?.authWarning).toContain("probing without configured auth credentials");
   });
 
   it("keeps configured remote password authoritative for remote probes", async () => {
