@@ -3,8 +3,8 @@
 // distinguishes a draining gateway from a zombie that lost its close path.
 // Split out of server-http.probe.test.ts (which sits at the test max-lines
 // budget) to keep both files under the gate.
-import { afterEach, describe, expect, it } from "vitest";
-import { markGatewayShuttingDown, resetGatewayShuttingDownForTest } from "./server-close.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { markGatewayShuttingDown, resetGatewayShuttingDownForTest } from "./gateway-shutdown-state.js";
 import { resetGatewayHealthzShuttingDownLogForTest } from "./server-http.js";
 import {
   AUTH_NONE,
@@ -14,9 +14,30 @@ import {
   withGatewayServer,
 } from "./server-http.test-harness.js";
 
+const gatewayProbeWarn = vi.hoisted(() => vi.fn());
+
+vi.mock("../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => {
+      const logger = actual.createSubsystemLogger(...args);
+      if (args[0] !== "gateway/probe") {
+        return logger;
+      }
+      return new Proxy(logger, {
+        get(target, property, receiver) {
+          return property === "warn" ? gatewayProbeWarn : Reflect.get(target, property, receiver);
+        },
+      });
+    },
+  };
+});
+
 afterEach(() => {
   resetGatewayShuttingDownForTest();
   resetGatewayHealthzShuttingDownLogForTest();
+  gatewayProbeWarn.mockClear();
 });
 
 describe("gateway probe endpoints: shutting-down 503", () => {
@@ -84,9 +105,8 @@ describe("gateway probe endpoints: shutting-down 503", () => {
     });
   });
 
-  // ClawSweeper #88908 review P1: narrowing the live-probe 503 contract to
-  // strict-mode preserves backwards compat for external monitors and service
-  // managers hitting the plain /healthz path. These tests pin that contract.
+  // Strict mode preserves backwards compatibility for external monitors and
+  // service managers hitting the plain /healthz path.
   it("returns 200 on plain /healthz even when shutting down (public probe contract)", async () => {
     await withGatewayServer({
       prefix: "probe-healthz-shutting-down-no-strict",
@@ -119,11 +139,7 @@ describe("gateway probe endpoints: shutting-down 503", () => {
     });
   });
 
-  // ClawSweeper #88908 review P3: each new shutdown cycle must emit the
-  // gateway.healthz.shutting_down_response signal at least once. The log
-  // dedupe was previously latched across the process lifetime and reset only
-  // by tests, so the second in-process restart's shutdown was silent. Now
-  // markGatewayShuttingDown resets the dedupe via gateway-shutdown-state.
+  // Each new shutdown cycle must emit the shutdown signal exactly once.
   it("resets the shutting-down probe log dedupe on each shutdown cycle", async () => {
     await withGatewayServer({
       prefix: "probe-healthz-strict-dedupe-cycles",
@@ -135,12 +151,19 @@ describe("gateway probe endpoints: shutting-down 503", () => {
         const { res: res1 } = createResponse();
         await dispatchRequest(server, req1, res1);
         expect(res1.statusCode).toBe(503);
+        expect(gatewayProbeWarn).toHaveBeenCalledTimes(1);
+        expect(gatewayProbeWarn).toHaveBeenLastCalledWith(
+          expect.stringContaining("gateway.healthz.shutting_down_response path=/healthz"),
+        );
 
         // Second probe in the SAME shutdown cycle should not emit again (dedupe).
+        // Repeated close-path marking must be idempotent too.
+        markGatewayShuttingDown();
         const req1b = createRequest({ path: "/healthz?strict=1" });
         const { res: res1b } = createResponse();
         await dispatchRequest(server, req1b, res1b);
         expect(res1b.statusCode).toBe(503);
+        expect(gatewayProbeWarn).toHaveBeenCalledTimes(1);
 
         // Simulate startup completing a new cycle, then a fresh shutdown.
         resetGatewayShuttingDownForTest();
@@ -149,6 +172,7 @@ describe("gateway probe endpoints: shutting-down 503", () => {
         const { res: res2 } = createResponse();
         await dispatchRequest(server, req2, res2);
         expect(res2.statusCode).toBe(503);
+        expect(gatewayProbeWarn).toHaveBeenCalledTimes(2);
       },
     });
   });

@@ -108,7 +108,7 @@ export async function handleGatewayProbeRequest(
   // managers expect 200 on /health and /healthz during normal shutdown),
   // shutdown-aware 503 is gated on an explicit ?strict=1 query parameter that
   // the supervised lock-recovery preflight sets. Public callers without the
-  // strict marker continue to receive 200. Per ClawSweeper review on #88908.
+  // strict marker continue to receive 200.
   const isStrictLiveProbe = isStrictLiveProbeRequest(req);
   if (status === "live" && isStrictLiveProbe && getShuttingDown()) {
     noteShuttingDownProbeResponse(requestPath);

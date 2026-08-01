@@ -22,6 +22,7 @@ import {
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-descriptors.js";
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import { disposeNodeConnectionNotifications } from "./node-connection-notifications.js";
 import { clearNodeWakeState } from "./node-wake-state.js";
 import { createLazyGatewayCronState } from "./server-cron-lazy.js";
@@ -470,6 +471,7 @@ export async function prepareGatewayLifecycle(params: {
     return configReloaderStopPromise;
   };
   const beginClosePrelude = async () => {
+    markGatewayShuttingDown();
     fenceSessionSuspensionWritesForGatewayShutdown();
     markClosePreludeStarted();
     // Owners are fenced synchronously above. Join them before any runtime they
