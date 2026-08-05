@@ -55,6 +55,7 @@ import {
   TELEGRAM_RICH_TEXT_LIMIT,
   type TelegramInputRichMessage,
 } from "../rich-message.js";
+import { isTelegramEmptyContentError } from "../rich-plain-fallback.js";
 import { isTelegramPhotoLimitError } from "../send-error-predicates.js";
 import { buildInlineKeyboard, reactMessageTelegram } from "../send.js";
 import { recordSentMessage } from "../sent-message-cache.js";
@@ -178,7 +179,7 @@ function markDelivered(progress: DeliveryProgress): void {
 }
 
 function filterEmptyTelegramTextChunks<
-  T extends { text: string; richMessage?: TelegramInputRichMessage },
+  T extends { text: string; plainText?: string; richMessage?: TelegramInputRichMessage },
 >(chunks: readonly T[]): T[] {
   // Telegram rejects whitespace-only text payloads; drop them before sendMessage so
   // hook-mutated or model-emitted empty replies become a no-op instead of a 400.
@@ -186,7 +187,7 @@ function filterEmptyTelegramTextChunks<
   // can have an empty plain projection and must still send.
   return chunks.filter((chunk) =>
     chunk.richMessage
-      ? !isEmptyTelegramRichMessage(chunk.richMessage)
+      ? !isEmptyTelegramRichMessage(chunk.richMessage) || Boolean(chunk.plainText?.trim())
       : chunk.text.trim().length > 0,
   );
 }
@@ -267,6 +268,11 @@ async function deliverTextReply(params: {
     onRejected: (error) =>
       params.runtime.error?.(
         danger(`telegram reply chunk rejected; continuing: ${formatErrorMessage(error)}`),
+      ),
+    isSilentSkip: isTelegramEmptyContentError,
+    onSilentSkip: (error) =>
+      params.runtime.log?.(
+        `telegram reply chunk rendered empty; skipping: ${formatErrorMessage(error)}`,
       ),
     markDelivered,
     sendChunk: async ({ chunk, isFirstChunk, replyToMessageId, replyMarkup, replyQuoteText }) => {

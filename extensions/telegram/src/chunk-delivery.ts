@@ -26,6 +26,8 @@ function isTelegramSkippableChunkSendError(error: unknown): boolean {
 export function createTelegramChunkDeliveryTracker(params: {
   invalidate: () => void;
   onRejected: (error: unknown) => void;
+  isSilentSkip?: (error: unknown) => boolean;
+  onSilentSkip?: (error: unknown) => void;
   partialDeliveryResult: () => PartialDeliveryResult;
 }) {
   let acceptedCount = 0;
@@ -38,14 +40,18 @@ export function createTelegramChunkDeliveryTracker(params: {
     throw createChannelPartialDeliveryError(error, params.partialDeliveryResult());
   };
 
-  const reject = (error: unknown): false => {
+  const reject = (error: unknown): "rejected" | "silent-skip" => {
+    if (params.isSilentSkip?.(error)) {
+      params.onSilentSkip?.(error);
+      return "silent-skip";
+    }
     if (!isTelegramSkippableChunkSendError(error)) {
       throwAfterAccepted(error);
     }
     firstRejectedError ??= error;
     params.invalidate();
     params.onRejected(error);
-    return false;
+    return "rejected";
   };
 
   const recordAccepted = async <T>(result: T, record: (result: T) => Promise<void>) => {
@@ -66,10 +72,11 @@ export function createTelegramChunkDeliveryTracker(params: {
         return reject(error);
       }
       await recordAccepted(result, record);
-      return true;
+      return "accepted" as const;
     },
     recordAccepted,
     reject,
+    fail: throwAfterAccepted,
     finish() {
       if (firstRejectedError !== undefined) {
         throwAfterAccepted(firstRejectedError);

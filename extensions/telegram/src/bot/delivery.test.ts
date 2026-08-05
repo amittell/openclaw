@@ -1472,6 +1472,28 @@ describe("deliverReplies", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("records no delivery when Telegram rejects rendered-empty HTML", async () => {
+    messageHookRunner.hasHooks.mockImplementation((name: string) => name === "message_sent");
+    const runtime = createRuntime();
+    const sendMessage = vi.fn().mockRejectedValue(new Error("Bad Request: text must be non-empty"));
+
+    await expect(
+      deliverWith({
+        replies: [{ text: "<i></i>" }],
+        runtime,
+        bot: createBot({ sendMessage }),
+        textMode: "html",
+      }),
+    ).resolves.toEqual({ delivered: false });
+
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(recordSentMessage).not.toHaveBeenCalled();
+    expectRecordFields(mockCallArg(messageHookRunner.runMessageSent, 0, 0), {
+      success: false,
+      content: "<i></i>",
+    });
+  });
+
   it("uses reply_parameters when quote text is provided", async () => {
     const runtime = createRuntime();
     const sendMessage = vi.fn().mockResolvedValue({

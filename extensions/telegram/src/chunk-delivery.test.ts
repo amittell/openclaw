@@ -28,10 +28,37 @@ describe("Telegram chunk delivery", () => {
     );
 
     if (expected) {
-      await expect(attempt).resolves.toBe(false);
+      await expect(attempt).resolves.toBe("rejected");
     } else {
       await expect(attempt).rejects.toBe(error);
     }
+  });
+
+  it("records empty content as a silent skip without invalidating delivery", async () => {
+    const invalidate = vi.fn();
+    const onRejected = vi.fn();
+    const onSilentSkip = vi.fn();
+    const emptyError = telegramError(400, "text must be non-empty");
+    const tracker = createTelegramChunkDeliveryTracker({
+      invalidate,
+      onRejected,
+      isSilentSkip: (error) => error === emptyError,
+      onSilentSkip,
+      partialDeliveryResult: () => ({ visibleReplySent: true }),
+    });
+
+    await expect(
+      tracker.attempt(
+        async () => {
+          throw emptyError;
+        },
+        async () => {},
+      ),
+    ).resolves.toBe("silent-skip");
+    expect(() => tracker.finish()).not.toThrow();
+    expect(onSilentSkip).toHaveBeenCalledWith(emptyError);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(onRejected).not.toHaveBeenCalled();
   });
 
   it("drains skippable failures then reports accepted partial delivery", async () => {

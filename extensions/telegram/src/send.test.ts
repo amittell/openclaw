@@ -1850,6 +1850,43 @@ describe("sendMessageTelegram", () => {
     expect(cursor.complete).toBe(false);
   });
 
+  it("finalizes the visible chunk when Telegram rejects an invisible tail", async () => {
+    const storePath = `/tmp/openclaw-telegram-empty-tail-${process.pid}-${Date.now()}.json`;
+    const cursor = createTelegramPromptContextProjectionCursor({
+      transcriptMessageId: "assistant-empty-tail",
+    });
+    const onDeliveryResult = vi.fn();
+    botApi.sendMessage
+      .mockResolvedValueOnce({ message_id: 71, chat: { id: "123" } })
+      .mockRejectedValueOnce(new Error("Bad Request: text must be non-empty"))
+      .mockRejectedValueOnce(new Error("Bad Request: text must be non-empty"));
+    botApi.editMessageReplyMarkup.mockResolvedValueOnce({ message_id: 71 });
+
+    const result = await sendMessageTelegram("123", `${"A".repeat(4000)}\u200B\u200B`, {
+      cfg: { session: { store: storePath } },
+      token: "tok",
+      textMode: "html",
+      buttons: [[{ text: "OK", callback_data: "ok" }]],
+      onDeliveryResult,
+      promptContextProjectionPlan: { cursor, finalPart: true },
+    });
+
+    expect(botApi.sendMessage).toHaveBeenCalledTimes(3);
+    expect(botApi.editMessageReplyMarkup).toHaveBeenCalledWith("123", 71, {
+      reply_markup: { inline_keyboard: [[{ text: "OK", callback_data: "ok" }]] },
+    });
+    expect(result.messageId).toBe("71");
+    expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+    expect(onDeliveryResult.mock.calls[0]?.[0]?.meta?.telegramHasInlineKeyboard).toBe(false);
+    const cached = await createTelegramMessageCache({
+      scope: resolveTelegramMessageCacheScope(storePath),
+    }).get({ accountId: "default", chatId: "123", messageId: "71" });
+    expect(cached?.promptContextProjectionMarker).toEqual({
+      kind: "valid",
+      projection: { ...cursor.source, partIndex: 0, finalPart: true },
+    });
+  });
+
   it("fails when every Telegram chunk is rejected", async () => {
     const rejection = createChunkRejection();
     botApi.sendMessage.mockRejectedValue(rejection);
