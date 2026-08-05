@@ -48,6 +48,11 @@ import type {
 import type { OpenClawConfig } from "./send.runtime.js";
 import { recordSentMessage } from "./sent-message-cache.js";
 
+type SendTextOptions = {
+  replyToAlreadyUsed?: boolean;
+  beforeFirstAccepted?: () => Promise<void>;
+};
+
 function buildTelegramTextSendReceipt(params: {
   messageIds: readonly string[];
   chatId: string;
@@ -226,7 +231,7 @@ export function createTelegramTextSender(config: {
       : undefined;
   };
 
-  const createTextDelivery = (context: string) => {
+  const createTextDelivery = (context: string, beforeFirstAccepted?: () => Promise<void>) => {
     type PendingChunk = {
       result: TelegramMessageLike;
       messageId: number;
@@ -234,6 +239,7 @@ export function createTelegramTextSender(config: {
       plainText: string;
       reportChatId: string | number;
       hasInlineKeyboard: boolean;
+      reported: boolean;
     };
 
     let lastMessageId = "";
@@ -248,16 +254,23 @@ export function createTelegramTextSender(config: {
     let pendingChunk: PendingChunk | undefined;
 
     const flushChunk = async (chunk: PendingChunk, finalPart: boolean) => {
+      let hasInlineKeyboard = chunk.hasInlineKeyboard;
+      let keyboardError: unknown;
       if (finalPart && replyMarkup && !chunk.hasInlineKeyboard) {
         try {
           await api.editMessageReplyMarkup(chunk.reportChatId, chunk.messageId, {
             reply_markup: replyMarkup,
           });
+          hasInlineKeyboard = true;
         } catch (error) {
-          sendLogger.warn(
-            `telegram ${context} final keyboard attachment failed: ${formatErrorMessage(error)}`,
-          );
+          keyboardError = error;
         }
+      }
+      if (!chunk.reported) {
+        await reportDelivery(chunk.messageId, chunk.reportChatId, {
+          telegramDeliveredText: chunk.plainText,
+          telegramHasInlineKeyboard: hasInlineKeyboard,
+        });
       }
       await recordDeliveredPromptContext(
         {
@@ -270,6 +283,14 @@ export function createTelegramTextSender(config: {
         },
         finalPart,
       );
+      if (keyboardError !== undefined) {
+        // finish() routes this through tracker.fail(), which preserves the
+        // accepted message IDs in a partial-delivery error.
+        if (keyboardError instanceof Error) {
+          throw keyboardError;
+        }
+        throw new Error(formatErrorMessage(keyboardError));
+      }
     };
 
     const flushPending = async (finalPart: boolean) => {
@@ -294,12 +315,18 @@ export function createTelegramTextSender(config: {
       lastAcceptedParams = params.acceptedParams;
       acceptedReplyToMessageId ??= resolveAcceptedReplyToMessageId(params.acceptedParams);
       messageIds.push(lastMessageId);
+      if (sentChunkCount === 0) {
+        await beforeFirstAccepted?.();
+      }
       sentChunkCount += 1;
       recordSentMessage(chatId, messageId, cfg);
-      await reportDelivery(messageId, params.result?.chat?.id ?? chatId, {
-        telegramDeliveredText: params.plainText,
-        telegramHasInlineKeyboard: params.hasInlineKeyboard,
-      });
+      const reported = !replyMarkup;
+      if (reported) {
+        await reportDelivery(messageId, params.result?.chat?.id ?? chatId, {
+          telegramDeliveredText: params.plainText,
+          telegramHasInlineKeyboard: params.hasInlineKeyboard,
+        });
+      }
       const previousChunk = pendingChunk;
       pendingChunk = {
         result: params.result,
@@ -308,6 +335,7 @@ export function createTelegramTextSender(config: {
         plainText: params.plainText,
         reportChatId: params.result?.chat?.id ?? chatId,
         hasInlineKeyboard: params.hasInlineKeyboard,
+        reported,
       };
       if (previousChunk) {
         await flushChunk(previousChunk, false);
@@ -376,9 +404,9 @@ export function createTelegramTextSender(config: {
   const sendTelegramTextChunks = async (
     chunks: TelegramTextChunk[],
     context: string,
-    options: { replyToAlreadyUsed?: boolean } = {},
+    options: SendTextOptions = {},
   ): Promise<TelegramSendResult> => {
-    const delivery = createTextDelivery(context);
+    const delivery = createTextDelivery(context, options.beforeFirstAccepted);
     const tracker = createTelegramChunkDeliveryTracker({
       invalidate: () => opts.promptContextProjectionPlan?.cursor.invalidate(),
       onRejected: (error) =>
@@ -459,14 +487,16 @@ export function createTelegramTextSender(config: {
   const sendChunkedText = async (
     rawText: string,
     context: string,
-    options: { replyToAlreadyUsed?: boolean } = {},
+    options: SendTextOptions = {},
   ) => {
     try {
       return useRichMessages
         ? await sendTelegramRichTextChunks(buildRichTextPlan(rawText), context, options)
         : await sendTelegramTextChunks(buildChunkedTextPlan(rawText, context), context, options);
     } catch (error) {
-      opts.promptContextProjectionPlan?.cursor.invalidate();
+      if (!isTelegramEmptyContentError(error)) {
+        opts.promptContextProjectionPlan?.cursor.invalidate();
+      }
       throw error;
     }
   };
@@ -489,10 +519,10 @@ export function createTelegramTextSender(config: {
   const sendTelegramRichTextChunks = async (
     chunks: TelegramRichTextChunk[],
     context: string,
-    options: { replyToAlreadyUsed?: boolean } = {},
+    options: SendTextOptions = {},
   ): Promise<TelegramSendResult> => {
     const richRawApi = getTelegramRichRawApi(api);
-    const delivery = createTextDelivery(context);
+    const delivery = createTextDelivery(context, options.beforeFirstAccepted);
     const tracker = createTelegramChunkDeliveryTracker({
       invalidate: () => opts.promptContextProjectionPlan?.cursor.invalidate(),
       onRejected: (error) =>

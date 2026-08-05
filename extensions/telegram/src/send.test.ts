@@ -1877,7 +1877,7 @@ describe("sendMessageTelegram", () => {
     });
     expect(result.messageId).toBe("71");
     expect(onDeliveryResult).toHaveBeenCalledTimes(1);
-    expect(onDeliveryResult.mock.calls[0]?.[0]?.meta?.telegramHasInlineKeyboard).toBe(false);
+    expect(onDeliveryResult.mock.calls[0]?.[0]?.meta?.telegramHasInlineKeyboard).toBe(true);
     const cached = await createTelegramMessageCache({
       scope: resolveTelegramMessageCacheScope(storePath),
     }).get({ accountId: "default", chatId: "123", messageId: "71" });
@@ -1885,6 +1885,69 @@ describe("sendMessageTelegram", () => {
       kind: "valid",
       projection: { ...cursor.source, partIndex: 0, finalPart: true },
     });
+  });
+
+  it("reports partial delivery when the final keyboard retrofit fails", async () => {
+    const storePath = `/tmp/openclaw-telegram-empty-tail-keyboard-failure-${process.pid}-${Date.now()}.json`;
+    const cursor = createTelegramPromptContextProjectionCursor({
+      transcriptMessageId: "assistant-empty-tail-keyboard-failure",
+    });
+    const emptyError = new Error("Bad Request: text must be non-empty");
+    const retrofitError = new Error("keyboard retrofit failed");
+    const onDeliveryResult = vi.fn();
+    botApi.sendMessage
+      .mockResolvedValueOnce({ message_id: 72, chat: { id: "123" } })
+      .mockRejectedValueOnce(emptyError)
+      .mockRejectedValueOnce(emptyError);
+    botApi.editMessageReplyMarkup.mockRejectedValueOnce(retrofitError);
+
+    let observed: unknown;
+    try {
+      await sendMessageTelegram("123", `${"A".repeat(4000)}\u200B\u200B`, {
+        cfg: { session: { store: storePath } },
+        token: "tok",
+        textMode: "html",
+        buttons: [[{ text: "OK", callback_data: "ok" }]],
+        onDeliveryResult,
+        promptContextProjectionPlan: { cursor, finalPart: true },
+      });
+    } catch (error) {
+      observed = error;
+    }
+
+    expect(isChannelPartialDeliveryError(observed)).toBe(true);
+    if (!isChannelPartialDeliveryError(observed)) {
+      throw observed;
+    }
+    expect(observed.deliveryResult.messageIds).toEqual(["72"]);
+    expect(botApi.editMessageReplyMarkup).toHaveBeenCalledWith("123", 72, {
+      reply_markup: { inline_keyboard: [[{ text: "OK", callback_data: "ok" }]] },
+    });
+    expect(onDeliveryResult).toHaveBeenCalledOnce();
+    expect(onDeliveryResult.mock.calls[0]?.[0]?.messageId).toBe("72");
+    expect(onDeliveryResult.mock.calls[0]?.[0]?.meta?.telegramHasInlineKeyboard).toBe(false);
+    const cached = await createTelegramMessageCache({
+      scope: resolveTelegramMessageCacheScope(storePath),
+    }).get({ accountId: "default", chatId: "123", messageId: "72" });
+    expect(cached?.promptContextProjectionMarker).toEqual({
+      kind: "valid",
+      projection: { ...cursor.source, partIndex: 0, finalPart: true },
+    });
+  });
+
+  it("fails when every Telegram chunk renders empty", async () => {
+    const emptyError = new Error("Bad Request: text must be non-empty");
+    botApi.sendMessage.mockRejectedValue(emptyError);
+
+    await expect(
+      sendMessageTelegram("123", "\u200B\u200B", {
+        cfg: TELEGRAM_TEST_CFG,
+        token: "tok",
+        textMode: "html",
+      }),
+    ).rejects.toBe(emptyError);
+
+    expect(botApi.sendMessage).toHaveBeenCalledTimes(2);
   });
 
   it("fails when every Telegram chunk is rejected", async () => {
@@ -2333,6 +2396,44 @@ describe("sendMessageTelegram", () => {
       { platformMessageId: "70", kind: "media", index: 0 },
       { platformMessageId: "71", kind: "text", index: 1 },
     ]);
+  });
+
+  it("finalizes media when its separate text renders empty", async () => {
+    const storePath = `/tmp/openclaw-telegram-empty-media-follow-up-${process.pid}-${Date.now()}.json`;
+    const cursor = createTelegramPromptContextProjectionCursor({
+      transcriptMessageId: "assistant-empty-media-follow-up",
+    });
+    const emptyError = new Error("Bad Request: text must be non-empty");
+    const onDeliveryResult = vi.fn();
+    botApi.sendPhoto.mockResolvedValueOnce({ message_id: 70, chat: { id: "123" } });
+    botApi.sendMessage.mockRejectedValue(emptyError);
+    botApi.editMessageReplyMarkup.mockResolvedValueOnce({ message_id: 70 });
+    mockLoadedMedia({ contentType: "image/jpeg", fileName: "photo.jpg" });
+
+    const result = await sendMessageTelegram("123", "\u200B".repeat(1025), {
+      cfg: { session: { store: storePath } },
+      token: "tok",
+      textMode: "html",
+      mediaUrl: "https://example.com/photo.jpg",
+      buttons: [[{ text: "OK", callback_data: "ok" }]],
+      onDeliveryResult,
+      promptContextProjectionPlan: { cursor, finalPart: true },
+    });
+
+    expect(result).toEqual({ messageId: "70", chatId: "123" });
+    expect(botApi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(botApi.editMessageReplyMarkup).toHaveBeenCalledWith("123", 70, {
+      reply_markup: { inline_keyboard: [[{ text: "OK", callback_data: "ok" }]] },
+    });
+    expect(onDeliveryResult).toHaveBeenCalledOnce();
+    expect(onDeliveryResult.mock.calls[0]?.[0]?.meta?.telegramHasInlineKeyboard).toBe(true);
+    const cached = await createTelegramMessageCache({
+      scope: resolveTelegramMessageCacheScope(storePath),
+    }).get({ accountId: "default", chatId: "123", messageId: "70" });
+    expect(cached?.promptContextProjectionMarker).toEqual({
+      kind: "valid",
+      projection: { ...cursor.source, partIndex: 0, finalPart: true },
+    });
   });
 
   it("reports delivered media before a caption follow-up fails", async () => {

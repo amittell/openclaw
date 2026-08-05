@@ -34,7 +34,7 @@ describe("Telegram chunk delivery", () => {
     }
   });
 
-  it("records empty content as a silent skip without invalidating delivery", async () => {
+  it("throws the original error when every chunk is silently skipped", async () => {
     const invalidate = vi.fn();
     const onRejected = vi.fn();
     const onSilentSkip = vi.fn();
@@ -55,10 +55,29 @@ describe("Telegram chunk delivery", () => {
         async () => {},
       ),
     ).resolves.toBe("silent-skip");
-    expect(() => tracker.finish()).not.toThrow();
+    expect(() => tracker.finish()).toThrow(emptyError);
     expect(onSilentSkip).toHaveBeenCalledWith(emptyError);
     expect(invalidate).not.toHaveBeenCalled();
     expect(onRejected).not.toHaveBeenCalled();
+  });
+
+  it("accepts a visible chunk after a silent skip", async () => {
+    const emptyError = telegramError(400, "text must be non-empty");
+    const record = vi.fn(async (_value: number) => {});
+    const tracker = createTelegramChunkDeliveryTracker({
+      invalidate: vi.fn(),
+      onRejected: vi.fn(),
+      isSilentSkip: (error) => error === emptyError,
+      partialDeliveryResult: () => ({ visibleReplySent: true }),
+    });
+
+    await tracker.attempt(async () => {
+      throw emptyError;
+    }, record);
+    await expect(tracker.attempt(async () => 7, record)).resolves.toBe("accepted");
+    expect(() => tracker.finish()).not.toThrow();
+    expect(record).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith(7);
   });
 
   it("drains skippable failures then reports accepted partial delivery", async () => {

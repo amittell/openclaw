@@ -32,6 +32,7 @@ export function createTelegramChunkDeliveryTracker(params: {
 }) {
   let acceptedCount = 0;
   let firstRejectedError: unknown;
+  let firstSilentSkipError: unknown;
 
   const throwAfterAccepted = (error: unknown): never => {
     if (acceptedCount === 0 || isChannelPartialDeliveryError(error)) {
@@ -42,6 +43,7 @@ export function createTelegramChunkDeliveryTracker(params: {
 
   const reject = (error: unknown): "rejected" | "silent-skip" => {
     if (params.isSilentSkip?.(error)) {
+      firstSilentSkipError ??= error;
       params.onSilentSkip?.(error);
       return "silent-skip";
     }
@@ -80,6 +82,9 @@ export function createTelegramChunkDeliveryTracker(params: {
     finish() {
       if (firstRejectedError !== undefined) {
         throwAfterAccepted(firstRejectedError);
+      }
+      if (acceptedCount === 0 && firstSilentSkipError !== undefined) {
+        throwAfterAccepted(firstSilentSkipError);
       }
     },
   };
