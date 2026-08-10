@@ -13,7 +13,6 @@ import {
   formatConfigReloadHealthLine,
   formatContextEngineHealthLine,
   formatDeliveryQueueHealthLine,
-  formatHealthChannelLines,
   formatRuntimeConfigHealthLine,
   healthCommand,
 } from "./health.js";

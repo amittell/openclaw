@@ -444,7 +444,7 @@ export async function healthCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const cfg = opts.config ?? (await readBestEffortHealthConfig());
+  const cfg = opts.config ?? (await (await loadConfigRuntime()).readBestEffortConfig());
   // Always query the running gateway; do not open a direct Baileys socket here.
   let summary: HealthSummary;
   try {
@@ -756,9 +756,4 @@ export async function healthCommand(
   if (fatal) {
     runtime.exit(1);
   }
-}
-
-async function readBestEffortHealthConfig(): Promise<OpenClawConfig> {
-  const { readBestEffortConfig } = await loadConfigRuntime();
-  return await readBestEffortConfig();
 }
