@@ -41,6 +41,11 @@ import {
   classifyGatewayProbePath,
   classifyMcpAppStandalonePath,
 } from "./gateway-http-route-contracts.js";
+import {
+  isGatewayShuttingDown,
+  noteShuttingDownProbeResponse,
+  resetShuttingDownProbeResponseLogForTest,
+} from "./gateway-shutdown-state.js";
 import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import {
   finishFailedGatewayHttpResponse,
@@ -52,11 +57,6 @@ import {
   normalizePluginNodeCapabilityScopedUrl,
   type PluginNodeCapabilitySurface,
 } from "./plugin-node-capability.js";
-import {
-  isGatewayShuttingDown,
-  noteShuttingDownProbeResponse,
-  resetShuttingDownProbeResponseLogForTest,
-} from "./gateway-shutdown-state.js";
 import type { HooksRequestHandler } from "./server/hooks-request-handler.js";
 import {
   runWithGatewayHttpWorkAdmission,

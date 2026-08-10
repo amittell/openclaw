@@ -725,7 +725,7 @@ export async function gatherDaemonStatus(
     rpcAuthWarning = undefined;
   }
   const health =
-      opts.probe && serviceTargetsProbe && loaded && rpc?.ok !== true
+    opts.probe && serviceTargetsProbe && loaded && rpc?.ok !== true
       ? await loadRestartHealthModule()
           .then(({ inspectGatewayRestart }) =>
             inspectGatewayRestart({

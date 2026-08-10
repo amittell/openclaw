@@ -224,9 +224,7 @@ describe("recoverEmbeddedRunOverflow", () => {
       kind: "context_overflow",
       errorText: expect.stringContaining("Extra usage is required for long context"),
     });
-    expect(mocks.warn).toHaveBeenCalledWith(
-      expect.stringContaining("anthropic/claude-opus-4-8"),
-    );
+    expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("anthropic/claude-opus-4-8"));
   });
 
   it("recovers a canonical zero-output length overflow", async () => {

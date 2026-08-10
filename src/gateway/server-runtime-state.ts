@@ -327,7 +327,7 @@ export async function createGatewayRuntimeState(params: {
       isStartupPluginRuntimeReady: params.isStartupPluginRuntimeReady,
       isTerminalEnabled: params.isTerminalEnabled,
       getShuttingDown: params.getShuttingDown,
-      tlsOptions:
+      tlsOptions: params.gatewayTls?.enabled ? params.gatewayTls.tlsOptions : undefined,
     });
     // Attach upgrade handler BEFORE listening to prevent race condition
     attachGatewayUpgradeHandler({
