@@ -19,3 +19,20 @@ export function createLegacyHealthSnapshotCollector(
     });
   };
 }
+
+export function createValidSourceConfigSnapshotForTest(sourceConfig: Record<string, unknown>) {
+  return {
+    path: "/tmp/openclaw.json",
+    exists: true,
+    raw: JSON.stringify(sourceConfig),
+    parsed: sourceConfig,
+    sourceConfig,
+    resolved: sourceConfig,
+    valid: true,
+    runtimeConfig: sourceConfig,
+    config: sourceConfig,
+    issues: [],
+    warnings: [],
+    legacyIssues: [],
+  };
+}

@@ -25,7 +25,6 @@ import { formatExecDeniedUserMessage } from "../exec-approval-result.js";
 import { isModelNotFoundErrorMessage } from "../live-model-errors.js";
 import { formatSandboxToolPolicyBlockedMessage } from "../sandbox/runtime-status.js";
 import {
-  isAnthropicLongContextUsageError,
   isContextOverflowError,
   isLikelyContextOverflowError,
   isReasoningConstraintErrorMessage,

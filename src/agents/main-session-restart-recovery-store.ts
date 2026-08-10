@@ -16,7 +16,6 @@ import { resolveGatewaySessionStoreTarget } from "../gateway/session-utils.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { resolveDefaultAgentId } from "./agent-scope-config.js";
-import { persistSessionEntry } from "./command/attempt-execution.shared.js";
 import {
   listActiveEmbeddedRunSessionIds,
   listActiveEmbeddedRunSessionKeys,
@@ -45,7 +44,6 @@ import {
   hasReplaySafeCodeModeCheckpointInCurrentTurn,
   resolveMainSessionResumePolicy,
 } from "./main-session-restart-recovery-resume-policy.js";
-import { normalizeFiniteTimestamp } from "./main-session-restart-recovery-shared.js";
 import {
   type ExhaustedRestartRecoveryTarget,
   type ExpectedRestartRecoveryTarget,
@@ -55,79 +53,6 @@ import {
   normalizeStringSet,
   shouldSkipMainRecovery,
 } from "./main-session-restart-recovery-shared.js";
-
-// A pending final delivery that never lands would otherwise be retried on every
-// restart forever. Cap the attempts and back off exponentially between them so
-// a permanently undeliverable reply cannot pin restart recovery.
-const DEFAULT_PENDING_FINAL_DELIVERY_MAX_RECOVERY_ATTEMPTS = 10;
-const PENDING_FINAL_DELIVERY_RECOVERY_BACKOFF_BASE_MS = 30_000;
-const PENDING_FINAL_DELIVERY_RECOVERY_BACKOFF_MAX_MS = 30 * 60_000;
-
-function normalizeAttemptCount(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-}
-
-function resolvePendingFinalDeliveryRecoveryBackoffMs(attemptCount: number): number {
-  if (attemptCount <= 0) {
-    return 0;
-  }
-  const exponent = Math.max(0, Math.min(attemptCount - 1, 20));
-  return Math.min(
-    PENDING_FINAL_DELIVERY_RECOVERY_BACKOFF_BASE_MS * 2 ** exponent,
-    PENDING_FINAL_DELIVERY_RECOVERY_BACKOFF_MAX_MS,
-  );
-}
-
-function isPendingFinalDeliveryRecoveryBackoffActive(params: {
-  entry: SessionEntry;
-  nowMs: number;
-}): boolean {
-  const attemptCount = normalizeAttemptCount(params.entry.pendingFinalDeliveryAttemptCount);
-  const lastAttemptAt = normalizeFiniteTimestamp(params.entry.pendingFinalDeliveryLastAttemptAt);
-  if (attemptCount <= 0 || lastAttemptAt === undefined) {
-    return false;
-  }
-  // A clock skew / future timestamp would otherwise read as an infinite
-  // backoff and strand the pending final; treat it as not-backed-off.
-  const elapsedMs = params.nowMs - lastAttemptAt;
-  return elapsedMs >= 0 && elapsedMs < resolvePendingFinalDeliveryRecoveryBackoffMs(attemptCount);
-}
-
-/** Drop an undeliverable pending final so recovery stops retrying it forever. */
-async function deadLetterPendingFinalDelivery(params: {
-  attemptCount: number;
-  maxAttempts: number;
-  storePath: string;
-  sessionKey: string;
-  entry: SessionEntry;
-}): Promise<void> {
-  const now = Date.now();
-  await persistSessionEntry({
-    // This path reads entries through the accessor rather than holding a
-    // long-lived store map; a scoped record keeps persistSessionEntry's
-    // in-memory alignment contract satisfied without inventing shared state.
-    sessionStore: { [params.sessionKey]: params.entry },
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-    initialEntry: params.entry,
-    entry: {
-      ...params.entry,
-      abortedLastRun: false,
-      updatedAt: now,
-      pendingFinalDelivery: undefined,
-      pendingFinalDeliveryText: undefined,
-      pendingFinalDeliveryCreatedAt: undefined,
-      pendingFinalDeliveryLastAttemptAt: undefined,
-      pendingFinalDeliveryAttemptCount: undefined,
-      pendingFinalDeliveryContext: undefined,
-      restartRecoveryDeliveryContext: undefined,
-      restartRecoveryDeliveryRunId: undefined,
-    },
-  });
-  log.warn(
-    `dead-lettered pending final delivery for ${params.sessionKey} after ${params.attemptCount}/${params.maxAttempts} restart recovery attempts`,
-  );
-}
 
 export function loadExpectedRestartRecoveryTarget(params: {
   expected: ExpectedRestartRecoveryTarget;
@@ -248,27 +173,6 @@ export async function recoverStore(params: {
     if (shouldSkipMainRecovery(entry, sessionKey)) {
       result.skipped++;
       continue;
-    }
-    if (entry.pendingFinalDelivery || entry.pendingFinalDeliveryText) {
-      const pendingAttempts = normalizeAttemptCount(entry.pendingFinalDeliveryAttemptCount);
-      if (pendingAttempts >= DEFAULT_PENDING_FINAL_DELIVERY_MAX_RECOVERY_ATTEMPTS) {
-        await deadLetterPendingFinalDelivery({
-          attemptCount: pendingAttempts,
-          maxAttempts: DEFAULT_PENDING_FINAL_DELIVERY_MAX_RECOVERY_ATTEMPTS,
-          storePath: params.storePath,
-          sessionKey,
-          entry,
-        });
-        result.skipped++;
-        continue;
-      }
-      if (isPendingFinalDeliveryRecoveryBackoffActive({ entry, nowMs: Date.now() })) {
-        log.info(
-          `pending final delivery restart recovery backoff active for ${sessionKey} after ${pendingAttempts}/${DEFAULT_PENDING_FINAL_DELIVERY_MAX_RECOVERY_ATTEMPTS} attempts`,
-        );
-        result.skipped++;
-        continue;
-      }
     }
     if (resolveSessionWorkStartError(sessionKey, entry)) {
       result.skipped++;

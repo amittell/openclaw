@@ -18,7 +18,15 @@ describe("collectGatewayHealthSnapshot plugin state", () => {
   beforeAll(async () => {
     vi.doMock("../config/config.js", () => ({
       getRuntimeConfig: () => testConfig,
+      getRuntimeConfigSnapshotMetadata: () => null,
+      getRuntimeConfigSourceSnapshot: () => testConfig,
+      hashRuntimeConfigValue: () => "test-config-hash",
       loadConfig: () => testConfig,
+      readSourceConfigSnapshot: async () => ({
+        exists: true,
+        valid: true,
+        sourceConfig: testConfig,
+      }),
     }));
     vi.doMock("../config/sessions/paths.js", () => ({
       resolveStorePath: () => "/tmp/sessions.json",

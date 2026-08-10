@@ -30,10 +30,7 @@ import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import { buildNonSensitiveProbeFailure, resolveHealthAccountContext } from "./account-context.js";
 import { buildDeliveryQueueHealthSummary } from "./delivery-queue.js";
-import {
-  buildRuntimeConfigHealthSummary,
-  readRuntimeHealthConfigState,
-} from "./runtime-config.js";
+import { buildRuntimeConfigHealthSummary, readRuntimeHealthConfigState } from "./runtime-config.js";
 import type {
   AgentHealthSummary,
   ChannelAccountHealthSummary,

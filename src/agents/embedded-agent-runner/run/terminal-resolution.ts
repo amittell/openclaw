@@ -425,9 +425,9 @@ export async function resolveEmbeddedRunTerminal(input: {
     silentStopAssistantText &&
     attempt.didDeliverSourceReplyViaMessageTool !== true &&
     (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
-    !input.terminalAborted &&
-    !input.promptError &&
-    !input.terminalTimedOut &&
+    !terminalAborted &&
+    !promptError &&
+    !terminalTimedOut &&
     !attempt.clientToolCalls &&
     !attempt.yieldDetected &&
     !hasAttemptTerminalState(attempt);

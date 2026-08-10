@@ -1778,56 +1778,6 @@ describe("main-session-restart-recovery", () => {
     expect(store["agent:main:main"]?.restartRecoveryForceSafeTools).toBe(true);
   });
 
-  it("does not back off pending final delivery when the last attempt is in the future", async () => {
-    const sessionsDir = await makeSessionsDir();
-    const now = Date.now();
-    const futureLastAttemptAt = now + 60_000;
-    await writeStore(sessionsDir, {
-      "agent:main:main": {
-        sessionId: "main-session",
-        updatedAt: now - 10_000,
-        status: "running",
-        abortedLastRun: true,
-        pendingFinalDelivery: true,
-        pendingFinalDeliveryText: "clock skew should retry now",
-        pendingFinalDeliveryCreatedAt: now - 60_000,
-        pendingFinalDeliveryLastAttemptAt: futureLastAttemptAt,
-        pendingFinalDeliveryAttemptCount: 2,
-        pendingFinalDeliveryLastError: null,
-        pendingFinalDeliveryContext: {
-          channel: "discord",
-          to: "discord:dm:final",
-          accountId: "main",
-        },
-      },
-    });
-
-    const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
-
-    expect(result).toEqual({ recovered: 1, failed: 0, skipped: 0 });
-    expect(callGateway).toHaveBeenCalledOnce();
-    expect(gatewayParams()).toMatchObject({
-      deliver: true,
-      bestEffortDeliver: true,
-      channel: "discord",
-      to: "discord:dm:final",
-      accountId: "main",
-    });
-
-    const beforeStoreRead = Date.now();
-    const entry = loadSessionEntry({
-      sessionKey: "agent:main:main",
-      storePath: path.join(sessionsDir, "sessions.json"),
-    });
-    expect(entry?.abortedLastRun).toBe(false);
-    expect(entry?.pendingFinalDelivery).toBe(true);
-    expect(entry?.pendingFinalDeliveryText).toBe("clock skew should retry now");
-    expect(entry?.pendingFinalDeliveryAttemptCount).toBe(3);
-    expect(entry?.pendingFinalDeliveryLastError).toBeNull();
-    expect(entry?.pendingFinalDeliveryLastAttemptAt).toBeLessThanOrEqual(beforeStoreRead);
-    expect(entry?.pendingFinalDeliveryLastAttemptAt).toBeLessThan(futureLastAttemptAt);
-  });
-
   it("sanitizes durable pending final delivery payloads before resume prompts", async () => {
     const sessionsDir = await makeSessionsDir();
     const pendingPayload = [

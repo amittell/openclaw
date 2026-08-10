@@ -105,10 +105,15 @@ export async function finalizeCronRun(params: {
   // prevent the configured primary from being retried after it recovers, and
   // persisting its context window would desynchronize status and compaction.
   const isFromFallback =
-    modelUsed !== execution.liveSelection.model ||
-    providerUsed !== execution.liveSelection.provider;
+    modelUsed !== execution.requestedModel || providerUsed !== execution.requestedProvider;
   if (!params.isAborted()) {
-    if (!isFromFallback) {
+    if (isFromFallback) {
+      // The beta.7 executor projects each attempted candidate onto the mutable
+      // session entry. Restore the requested route before the final persist so
+      // a transient fallback does not become the next run's primary.
+      prepared.cronSession.sessionEntry.modelProvider = execution.requestedProvider;
+      prepared.cronSession.sessionEntry.model = execution.requestedModel;
+    } else {
       setSessionRuntimeModel(prepared.cronSession.sessionEntry, {
         provider: providerUsed,
         model: modelUsed,
