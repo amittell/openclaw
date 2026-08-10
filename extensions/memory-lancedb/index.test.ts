@@ -3627,7 +3627,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -3722,7 +3722,7 @@ describe("memory plugin e2e", () => {
           tableDelete,
           registeredTools,
         });
-        memoryPluginUnderTest.register(mockApi as any);
+        registerTestPlugin(memoryPluginUnderTest, mockApi);
 
         const refreshTool = materializeRegisteredTool(
           registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -3850,7 +3850,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -3925,7 +3925,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -4026,7 +4026,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -4135,7 +4135,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -4222,7 +4222,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -4331,7 +4331,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -5369,7 +5369,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -5485,7 +5485,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,
@@ -5586,7 +5586,7 @@ describe("memory plugin e2e", () => {
         tableDelete,
         registeredTools,
       });
-      memoryPluginUnderTest.register(mockApi as any);
+      registerTestPlugin(memoryPluginUnderTest, mockApi);
 
       const refreshTool = materializeRegisteredTool(
         registeredTools.find((t) => t.opts?.name === "memory_refresh")?.tool,

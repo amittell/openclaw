@@ -226,6 +226,8 @@ export type CronExecutionResult = {
   runResult: CronPromptRunResult;
   fallbackProvider: string;
   fallbackModel: string;
+  requestedProvider: string;
+  requestedModel: string;
   runStartedAt: number;
   runEndedAt: number;
   liveSelection: CronLiveSelection;
@@ -293,6 +295,8 @@ function createCronPromptExecutor(params: {
   let runResult: CronPromptRunResult | undefined;
   let fallbackProvider = params.liveSelection.provider;
   let fallbackModel = params.liveSelection.model;
+  let requestedProvider = params.liveSelection.provider;
+  let requestedModel = params.liveSelection.model;
   let runEndedAt = Date.now();
   const fastModeStartedAtMs = Date.now();
   const fastModeAutoProgressState: FastModeAutoProgressState = {
@@ -356,6 +360,8 @@ function createCronPromptExecutor(params: {
     hasNewGeneratedMediaTaskForSessionKey(params.runSessionKey, attemptMediaTaskIds);
 
   const runPrompt = async (promptText: string) => {
+    requestedProvider = params.liveSelection.provider;
+    requestedModel = params.liveSelection.model;
     const userTurnTranscriptRecorder =
       pendingUserTurn?.promptText === promptText
         ? pendingUserTurn.recorder
@@ -773,6 +779,8 @@ function createCronPromptExecutor(params: {
       runResult,
       fallbackProvider,
       fallbackModel,
+      requestedProvider,
+      requestedModel,
       runEndedAt,
       liveSelection: params.liveSelection,
     }),
@@ -928,7 +936,14 @@ export async function executeCronRun(params: {
     }
   }
 
-  let { runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState();
+  let {
+    runResult,
+    fallbackProvider,
+    fallbackModel,
+    requestedProvider,
+    requestedModel,
+    runEndedAt,
+  } = executor.getState();
   if (!runResult) {
     throw new Error("cron isolated run returned no result");
   }
@@ -985,7 +1000,14 @@ export async function executeCronRun(params: {
         "Use tools when needed, including sessions_spawn for parallel subtasks, wait for spawned subagents to finish, then return only the final summary.",
       ].join(" ");
       await executor.runPrompt(continuationPrompt);
-      ({ runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState());
+      ({
+        runResult,
+        fallbackProvider,
+        fallbackModel,
+        requestedProvider,
+        requestedModel,
+        runEndedAt,
+      } = executor.getState());
     }
   }
 
@@ -996,6 +1018,8 @@ export async function executeCronRun(params: {
     runResult,
     fallbackProvider,
     fallbackModel,
+    requestedProvider,
+    requestedModel,
     runStartedAt,
     runEndedAt,
     liveSelection: params.liveSelection,
