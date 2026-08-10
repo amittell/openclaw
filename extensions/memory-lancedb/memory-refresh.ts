@@ -142,7 +142,7 @@ export function registerMemoryRefreshTool(params: {
           };
 
           if (!memoryId) {
-            const vector = await embeddings.embed(text);
+            const vector = await embeddings.embed(agentId, text);
             const results = await db.search(agentId, vector, 3, REFRESH_CONFLICT_MIN_SCORE);
             const matches = results.map((result) => ({
               id: result.entry.id,
@@ -175,7 +175,7 @@ export function registerMemoryRefreshTool(params: {
               details: { operation: "error", error: "not_found", memoryId },
             };
           }
-          const vector = await embeddings.embed(text);
+          const vector = await embeddings.embed(agentId, text);
 
           return withMemoryLock(memoryId, async () => {
             const existing = await db.getById(agentId, memoryId);
