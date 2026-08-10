@@ -4012,7 +4012,8 @@ Update and merge these partial structured summaries.`,
     const declaredToolThreadMemoryText = JSON.stringify(
       await declaredToolThreadMemorySummary.json(),
     );
-    expect(declaredToolThreadMemoryText).toContain("ORBIT-22");
+    expect(declaredToolThreadMemoryText).toContain("NONE");
+    expect(declaredToolThreadMemoryText).not.toContain("ORBIT-22");
     expect(declaredToolThreadMemoryText).not.toContain("sessions_spawn failed");
 
     const memoryFollowup = await expectStreamingResponses(server, {
