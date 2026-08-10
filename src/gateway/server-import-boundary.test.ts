@@ -143,10 +143,7 @@ describe("gateway startup import boundaries", () => {
     const beginHelperStart = serverImpl.indexOf("const beginClosePrelude = async () => {");
     const beginHelperEnd = serverImpl.indexOf("};", beginHelperStart);
     const shutdownMarkStart = serverImpl.indexOf("markGatewayShuttingDown();", beginHelperStart);
-    const preludeAwaitStart = serverImpl.indexOf(
-      "await stopConfigReloaderForClose()",
-      beginHelperStart,
-    );
+    const preludeAwaitStart = serverImpl.indexOf("await Promise.all([", beginHelperStart);
     const postReadyStart = serverImpl.indexOf("scheduleGatewayPostReadyMaintenance({");
     const postReadyEnd = serverImpl.indexOf("});", postReadyStart);
     const postReadyBlock = serverImpl.slice(postReadyStart, postReadyEnd);

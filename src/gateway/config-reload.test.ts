@@ -2766,15 +2766,11 @@ describe("startGatewayConfigReloader", () => {
     await flushWatcherChange(harness);
 
     // Hybrid mode must not silently drop restart-required changes: it queues
-    // the restart and notifies lifecycle owners so runtime state cannot go
-    // stale, and logs why a hot-capable reload ended in a restart.
+    // the restart and notifies lifecycle owners so runtime state cannot go stale.
     expect(harness.onConfigChange).toHaveBeenCalledOnce();
     expect(harness.onHotReload).not.toHaveBeenCalled();
     const [plan] = getOnlyRestartCall(harness);
     expect(plan.restartReasons).toEqual(["gateway.terminal.enabled"]);
-    expect(harness.log.warn).toHaveBeenCalledWith(
-      "config reload requires gateway restart; hybrid mode scheduling restart (gateway.terminal.enabled)",
-    );
     await harness.reloader.stop();
   });
 

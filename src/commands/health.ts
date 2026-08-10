@@ -386,49 +386,6 @@ export async function buildRuntimeConfigHealth(
   return buildRuntimeConfigHealthSummary(state, opts);
 }
 
-const formatDurationParts = (ms: number): string => {
-  if (!Number.isFinite(ms)) {
-    return "unknown";
-  }
-  if (ms < 1000) {
-    return `${Math.max(0, Math.round(ms))}ms`;
-  }
-  const units: Array<{ label: string; size: number }> = [
-    { label: "w", size: 7 * 24 * 60 * 60 * 1000 },
-    { label: "d", size: 24 * 60 * 60 * 1000 },
-    { label: "h", size: 60 * 60 * 1000 },
-    { label: "m", size: 60 * 1000 },
-    { label: "s", size: 1000 },
-  ];
-  let remaining = Math.max(0, Math.floor(ms));
-  const parts: string[] = [];
-  for (const unit of units) {
-    const value = Math.floor(remaining / unit.size);
-    if (value > 0) {
-      parts.push(`${value}${unit.label}`);
-      remaining -= value * unit.size;
-    }
-  }
-  if (parts.length === 0) {
-    return "0s";
-  }
-  return parts.join(" ");
-};
-
-function formatEventLoopHealthLine(summary: HealthSummary): string | null {
-  const eventLoop = summary.eventLoop;
-  if (!eventLoop) {
-    return null;
-  }
-  const state = eventLoop.degraded ? "degraded" : "ok";
-  const reasons = eventLoop.reasons.length > 0 ? ` reasons=${eventLoop.reasons.join(",")}` : "";
-  return `Gateway event loop: ${state}${reasons} max=${Math.round(
-    eventLoop.delayMaxMs,
-  )}ms p99=${Math.round(eventLoop.delayP99Ms)}ms util=${eventLoop.utilization} cpu=${
-    eventLoop.cpuCoreRatio
-  }`;
-}
-
 /** Formats context engine quarantine state for text health output. */
 export function formatContextEngineHealthLine(summary: HealthSummary): string | null {
   const quarantined = summary.contextEngines?.quarantined ?? [];
