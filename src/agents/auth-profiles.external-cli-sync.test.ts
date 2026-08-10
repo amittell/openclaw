@@ -471,6 +471,52 @@ describe("external cli oauth resolution", () => {
     expect(mocks.readCodexCliCredentialsCached).not.toHaveBeenCalled();
   });
 
+  it.each(["absent", "empty"] as const)(
+    "does not fill an %s default slot beside a dead non-target OpenAI profile",
+    (defaultState) => {
+      mocks.readCodexCliCredentialsCached.mockReturnValue(
+        makeOAuthCredential({
+          provider: "openai",
+          access: "codex-cli-access",
+          refresh: "codex-cli-refresh",
+          accountId: "acct-codex",
+        }),
+      );
+      const profiles: AuthProfileStore["profiles"] = {
+        "openai:user@example.com": {
+          ...makeOAuthCredential({
+            provider: "openai",
+            access: "dead-sibling-access",
+            refresh: "dead-sibling-refresh",
+            expires: Date.now() - 5_000,
+            accountId: "acct-sibling",
+          }),
+          refreshDeadAt: Date.now() - 1_000,
+        },
+      };
+      if (defaultState === "empty") {
+        profiles[OPENAI_CODEX_DEFAULT_PROFILE_ID] = {
+          type: "oauth",
+          provider: "openai",
+          access: "",
+          refresh: "",
+          expires: 0,
+        };
+      }
+
+      expect(
+        resolveExternalCliAuthProfiles(
+          { version: 1, profiles },
+          {
+            providerIds: ["openai"],
+            profileIds: [OPENAI_CODEX_DEFAULT_PROFILE_ID],
+          },
+        ),
+      ).toStrictEqual([]);
+      expect(mocks.readCodexCliCredentialsCached).not.toHaveBeenCalled();
+    },
+  );
+
   it("re-seeds a dead-marked codex profile from a different Codex CLI grant", () => {
     mocks.readCodexCliCredentialsCached.mockReturnValue(
       makeOAuthCredential({

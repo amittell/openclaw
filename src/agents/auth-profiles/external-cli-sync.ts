@@ -161,15 +161,14 @@ function hasManagedProviderOAuth(
   store: AuthProfileStore,
   providerConfig: ExternalCliSyncProvider,
 ): boolean {
-  // Dead-marked credentials no longer count as managed: their refresh grant
-  // was permanently rejected, so the bootstrapOnly gate must reopen for a
-  // fresh external CLI login instead of wedging the provider forever.
+  // A tombstone still proves OpenClaw owns that provider profile. The exact
+  // dead target is exempted by the caller; ignoring dead siblings here would
+  // let CLI state seed an unrelated empty slot.
   return Object.values(store.profiles).some(
     (credential) =>
       credential?.type === "oauth" &&
       listExternalCliProviderIds(providerConfig).includes(credential.provider) &&
-      hasInlineOAuthTokenMaterial(credential) &&
-      !isOAuthRefreshDead(credential),
+      hasInlineOAuthTokenMaterial(credential),
   );
 }
 
@@ -337,14 +336,11 @@ function listScopedExternalCliProfileIds(params: {
   const requestedProfileIds = Array.from(options?.profileIds ?? [])
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
-  let scopedProfileIds: string[];
-  if (requestedProfileIds.length > 0) {
-    scopedProfileIds = requestedProfileIds.filter((profileId) =>
-      externalCliProfileIdMatches(providerConfig, profileId, {
-        allowLegacyNamespace: true,
-      }),
-    );
-  } else {
+  const matchingRequestedProfileIds = requestedProfileIds.filter((profileId) =>
+    externalCliProfileIdMatches(providerConfig, profileId, { allowLegacyNamespace: true }),
+  );
+  let scopedProfileIds = matchingRequestedProfileIds;
+  if (scopedProfileIds.length === 0) {
     const existingProfileIds = Object.keys(store.profiles).filter((profileId) =>
       externalCliProfileIdMatches(providerConfig, profileId),
     );
