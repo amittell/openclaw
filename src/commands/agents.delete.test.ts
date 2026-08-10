@@ -59,7 +59,8 @@ vi.mock("../gateway/call.js", () => ({
   isGatewayTransportError: gatewayMocks.isGatewayTransportError,
 }));
 
-vi.mock("../infra/fs-safe.js", () => ({
+vi.mock("../infra/fs-safe.js", async () => ({
+  ...(await vi.importActual<typeof import("../infra/fs-safe.js")>("../infra/fs-safe.js")),
   movePathToTrash: fsSafeMocks.movePathToTrash,
 }));
 

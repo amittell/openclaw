@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { replaceSessionEntry } from "./session-accessor.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
-import { UNGROUNDED_MEDIA_PLACEHOLDER, redactUngroundedMediaRefs } from "./transcript-grounding.js";
+import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { readRecentUserAssistantTextForSession } from "./transcript.js";
+
+const UNGROUNDED_MEDIA_PLACEHOLDER = "[unverified media reference removed]";
 
 describe("redactUngroundedMediaRefs", () => {
   const mediaDir = "/managed/state/media";
