@@ -1,6 +1,3 @@
-import { appendFile, chmod, mkdir, open, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
 import {
   resolveAgentConfig,
   resolveDefaultAgentId as resolveConfiguredDefaultAgentId,
@@ -50,6 +47,7 @@ import {
   resolveAutoCaptureStartIndex,
   shouldCapture,
 } from "./memory-policy.js";
+import { registerMemoryRefreshTool, withMemoryLock } from "./memory-refresh.js";
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),
@@ -77,86 +75,6 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
 
-// Minimum similarity score for memory_refresh's conflict-preview search.
-// Mirrors the default minScore on MemoryDB.search so the preview only flags
-// entries that share meaningful similarity with the new text; lower values
-// (e.g. memory_recall's liberal 0.1) surface tangentially-related rows that
-// are poor replacement targets.
-const REFRESH_CONFLICT_MIN_SCORE = 0.5;
-
-// Per-memoryId mutex: serializes concurrent replace/delete calls on the same
-// ID so a memory_refresh delete/insert never interleaves with memory_forget.
-// Ids are globally-unique UUIDs, so raw-id keys cannot collide across agents.
-const memoryLocks = new Map<string, Promise<void>>();
-
-function finiteVectorFromArrayLike(value: ArrayLike<unknown>): number[] | null {
-  const vector: number[] = [];
-  for (const item of Array.from(value)) {
-    if (typeof item !== "number" || !Number.isFinite(item)) {
-      return null;
-    }
-    vector.push(item);
-  }
-  return vector;
-}
-
-function normalizeStoredMemoryVector(value: unknown): number[] {
-  if (Array.isArray(value)) {
-    return finiteVectorFromArrayLike(value) ?? [];
-  }
-  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    return finiteVectorFromArrayLike(value as unknown as ArrayLike<unknown>) ?? [];
-  }
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      const parsedVector = normalizeStoredMemoryVector(parsed);
-      if (parsedVector.length > 0) {
-        return parsedVector;
-      }
-    } catch {}
-    return [];
-  }
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-  const record = value as Record<string, unknown>;
-  const toArray = record.toArray;
-  if (typeof toArray === "function") {
-    try {
-      const vector = normalizeStoredMemoryVector(toArray.call(value));
-      if (vector.length > 0) {
-        return vector;
-      }
-    } catch {}
-  }
-  for (const key of ["values", "data", "vector", "embedding"] as const) {
-    if (key in record) {
-      const vector = normalizeStoredMemoryVector(record[key]);
-      if (vector.length > 0) {
-        return vector;
-      }
-    }
-  }
-  if (typeof record.length === "number") {
-    return finiteVectorFromArrayLike(record as unknown as ArrayLike<unknown>) ?? [];
-  }
-  return [];
-}
-
-function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number[]): number | null {
-  const previousVector = normalizeStoredMemoryVector(existingVector);
-  if (previousVector.length === 0 || previousVector.length !== nextVector.length) {
-    return null;
-  }
-  let l2sq = 0;
-  for (let index = 0; index < previousVector.length; index += 1) {
-    const diff = (previousVector[index] ?? 0) - (nextVector[index] ?? 0);
-    l2sq += diff * diff;
-  }
-  return 1 / (1 + Math.sqrt(l2sq));
-}
-
 // Heartbeat turns are machine-generated keepalives, not user conversation:
 // injecting recalled memories into them wastes an embed on the prompt-build
 // hot path and pollutes the heartbeat prompt with unrelated context.
@@ -169,23 +87,6 @@ function isHeartbeatHookContext(ctx: unknown): boolean {
     return true;
   }
   return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
-}
-
-function withMemoryLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const prev = memoryLocks.get(id) ?? Promise.resolve();
-  let resolveLock!: () => void;
-  const next = new Promise<void>((r) => {
-    resolveLock = r;
-  });
-  memoryLocks.set(id, next);
-  return prev
-    .then(() => fn())
-    .finally(() => {
-      resolveLock();
-      if (memoryLocks.get(id) === next) {
-        memoryLocks.delete(id);
-      }
-    });
 }
 
 export { normalizeEmbeddingVector, testing } from "./embeddings.js";
@@ -628,236 +529,13 @@ export default definePluginEntry({
       { name: "memory_forget" },
     );
 
-    api.registerTool(
-      (ctx) => {
-        const agentId = resolveEnabledAgentId(
-          ctx.agentId,
-          ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? resolveRuntimeConfig(),
-        );
-        if (!agentId) {
-          return null;
-        }
-        return {
-          name: "memory_refresh",
-          label: "Memory Refresh",
-          description:
-            "Search for existing memories similar to new content, or replace a specific memory by ID. Use for updating facts: call without memoryId to preview similar memories, then call with memoryId to perform a best-effort replace with process-level serialization. The replace path is NOT a storage-level transaction (LanceDB does not expose multi-statement transactions through this code path); it is a process-mutex-serialized delete-then-insert with best-effort rollback on insert failure. The replaced entry keeps its original id so any cached references stay valid.",
-          parameters: Type.Object({
-            text: Type.String({ description: "New memory content (required in execute mode)" }),
-            category: Type.Optional(Type.Enum(MEMORY_CATEGORIES, { type: "string" })),
-            importance: Type.Optional(
-              Type.Number({ description: "Importance 0.0-1.0 (default: inherited or 0.7)" }),
-            ),
-            memoryId: Type.Optional(
-              Type.String({
-                description:
-                  "If provided: best-effort replace of this memory (process-mutex serialized, not a storage-level transaction). If omitted: search-only mode.",
-              }),
-            ),
-          }),
-          async execute(_toolCallId, params) {
-            const { text, category, importance, memoryId } = params as {
-              text: string;
-              category?: MemoryEntry["category"];
-              importance?: number;
-              memoryId?: string;
-            };
-
-            // MODE 1: search-only preview (no memoryId) - embed and rank.
-            if (!memoryId) {
-              const vector = await embeddings.embed(text);
-              const results = await db.search(agentId, vector, 3, REFRESH_CONFLICT_MIN_SCORE);
-              const matches = results.map((r) => ({
-                id: r.entry.id,
-                text: r.entry.text,
-                category: r.entry.category,
-                importance: r.entry.importance,
-                similarity: r.score,
-              }));
-
-              const summaryText =
-                matches.length === 0
-                  ? "No similar memories found."
-                  : `Found ${matches.length} similar memories:\n\n${matches
-                      .map(
-                        (m, i) =>
-                          `${i + 1}. [${m.id.slice(0, 8)}] (${(m.similarity * 100).toFixed(0)}%) ${m.text}`,
-                      )
-                      .join("\n")}`;
-
-              return {
-                content: [{ type: "text", text: summaryText }],
-                details: { operation: "search_only", matches },
-              };
-            }
-
-            // MODE 2: best-effort replace (memoryId provided).
-            //
-            // ATOMICITY: NOT a storage-level transaction - LanceDB's Table API
-            // exposes no multi-statement transactions through this code path,
-            // so the replace is a delete + insert guarded by a per-id mutex.
-            // Serialized in-process; cross-process writers can still race; if
-            // the insert throws after the delete, rollback is best-effort and
-            // the response carries restored_id: null on double failure.
-            //
-            // ID PRESERVATION: the replace passes the existing memoryId to
-            // db.store({ id }) so the new row keeps the original stable
-            // identifier; old_id and new_id are equal on success.
-            //
-            // Pre-check existence BEFORE calling
-            // embeddings.embed() so a typo or stale ID returns without a
-            // wasted embedding call; then embed OUTSIDE the per-id mutex so
-            // the slow remote call does not block other refreshes targeting
-            // the same id.
-            const precheck = await db.getById(agentId, memoryId);
-            if (!precheck) {
-              return {
-                content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
-                details: { operation: "error", error: "not_found", memoryId },
-              };
-            }
-
-            // Embed outside the lock - the remote API call dominates wall time
-            // for replace operations and has no shared state to protect.
-            const vector = await embeddings.embed(text);
-
-            return withMemoryLock(memoryId, async () => {
-              // Re-validate inside the lock: a concurrent forget or another
-              // refresh that started between the precheck and lock acquisition
-              // could have removed the entry. Without this re-check the replace
-              // would resurrect a deleted memory under the same id.
-              const existing = await db.getById(agentId, memoryId);
-              if (!existing) {
-                return {
-                  content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
-                  details: { operation: "error", error: "not_found", memoryId },
-                };
-              }
-
-              // Inherit category and importance from the existing entry when
-              // the caller does not supply them, so a text-only update never
-              // silently resets metadata to defaults.
-              const resolvedCategory = category ?? existing.category;
-              const resolvedImportance = importance ?? existing.importance;
-
-              const oldTextPreview = existing.text.slice(0, 80);
-
-              await db.delete(agentId, memoryId);
-
-              let newEntry: MemoryEntry;
-              let rollbackWarning: string | undefined;
-              let rollbackSucceeded = false;
-
-              try {
-                newEntry = await db.store(
-                  agentId,
-                  {
-                    text,
-                    vector,
-                    importance: resolvedImportance,
-                    category: resolvedCategory,
-                  },
-                  { id: memoryId },
-                );
-              } catch (insertErr) {
-                // Best-effort rollback: restore the original entry under its
-                // original ID so callers are never left holding a stale
-                // reference to a non-existent memory.
-                try {
-                  await db.storeRaw(agentId, existing);
-                  rollbackSucceeded = true;
-                  rollbackWarning = `Insert failed; original restored with original ID ${existing.id}. Insert error: ${String(insertErr)}`;
-                } catch (rollbackErr) {
-                  rollbackWarning = `Insert failed AND rollback failed (DATA LOSS POSSIBLE). Insert: ${String(insertErr)}. Rollback: ${String(rollbackErr)}`;
-                }
-                return {
-                  content: [{ type: "text", text: `Replace failed: ${rollbackWarning}` }],
-                  details: {
-                    operation: "error",
-                    error: "insert_failed",
-                    success: false,
-                    rollbackWarning,
-                    ...(rollbackSucceeded ? { restored_id: existing.id } : { restored_id: null }),
-                  },
-                };
-              }
-
-              // Compute similarity using 1/(1+L2) - the same metric used by
-              // memory_recall and db.search - so audit entries are comparable.
-              // LanceDB may return stored vectors as typed arrays or array-like
-              // wrappers, so normalize before scoring instead of assuming
-              // Array.prototype.reduce exists on the stored value.
-              const similarity = scoreStoredVectorSimilarity(existing.vector, vector);
-
-              // Append to the audit log (metadata only - memory text is
-              // private user data and must never be written to audit logs).
-              // The directory and file are created with restrictive modes so
-              // the audit trail is not world-readable on multi-user hosts
-              // where the process umask is permissive (e.g. 0o022).
-              // State-dir aware: isolated OPENCLAW_STATE_DIR rigs and tests
-              // must not leak audit entries into the operator's real home.
-              // Prefer $OPENCLAW_STATE_DIR, then $HOME, before os.homedir():
-              // libuv's uv_os_homedir() ignores env mutations inside Vitest
-              // worker threads, while both env vars are honored in every
-              // context, so isolated rigs never leak into the real home.
-              const stateDir =
-                process.env.OPENCLAW_STATE_DIR?.trim() ||
-                path.join(process.env.HOME ?? homedir(), ".openclaw");
-              const auditLogPath = path.join(stateDir, "memory", "refresh-audit.jsonl");
-              try {
-                await mkdir(path.dirname(auditLogPath), { recursive: true, mode: 0o700 });
-                const auditEntry = {
-                  ts: Date.now(),
-                  operation: "replaced",
-                  old_id: memoryId,
-                  new_id: newEntry.id,
-                  similarity,
-                };
-                // Detect first-time creation so we can explicitly chmod after
-                // open(). open(path, "a", mode) honors mode only when the file
-                // does not yet exist, so for existing-but-loose files we still
-                // need an explicit chmod to enforce 0o600.
-                let preexisting = true;
-                try {
-                  await stat(auditLogPath);
-                } catch {
-                  preexisting = false;
-                }
-                const handle = await open(auditLogPath, "a", 0o600);
-                try {
-                  await appendFile(handle, `${JSON.stringify(auditEntry)}\n`, "utf8");
-                } finally {
-                  await handle.close();
-                }
-                if (!preexisting) {
-                  // Belt-and-braces: even when open(..., 0o600) created the
-                  // file, some platforms still apply the umask, so re-assert.
-                  await chmod(auditLogPath, 0o600);
-                }
-              } catch (auditErr) {
-                api.logger.warn(`memory-lancedb: audit log write failed: ${String(auditErr)}`);
-              }
-
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: `Replaced memory ${memoryId.slice(0, 8)}… → ${newEntry.id.slice(0, 8)}…\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
-                  },
-                ],
-                details: {
-                  operation: "replaced",
-                  old_id: memoryId,
-                  new_id: newEntry.id,
-                  old_text_preview: oldTextPreview,
-                },
-              };
-            });
-          },
-        };
-      },
-      { name: "memory_refresh" },
-    );
+    registerMemoryRefreshTool({
+      api,
+      db,
+      embeddings,
+      resolveEnabledAgentId,
+      resolveRuntimeConfig,
+    });
 
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, cfg.recallMaxChars);
 
