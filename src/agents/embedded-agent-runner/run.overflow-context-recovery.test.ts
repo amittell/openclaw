@@ -227,6 +227,34 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(mocks.compact).toHaveBeenCalledOnce();
   });
 
+  it("routes Anthropic long-context usage errors through same-model overflow recovery", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    const promptError = new Error(
+      '429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."}}',
+    );
+    const input = makeInput({
+      state,
+      provider: "anthropic",
+      modelId: "claude-opus-4-8",
+      promptError,
+    });
+
+    expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+    expect(mocks.compact).toHaveBeenCalledOnce();
+
+    state.overflowCompactionAttempts = 3;
+    const exhausted = await recoverEmbeddedRunOverflow(input);
+
+    expect(exhausted).toMatchObject({
+      action: "surface",
+      kind: "context_overflow",
+      errorText: expect.stringContaining("Extra usage is required for long context"),
+    });
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining("anthropic/claude-opus-4-8"),
+    );
+  });
+
   it("recovers a canonical zero-output length overflow", async () => {
     const assistantOverflowCandidate = makeAssistantMessage({
       stopReason: "length",
