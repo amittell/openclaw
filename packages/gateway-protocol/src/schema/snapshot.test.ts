@@ -60,4 +60,21 @@ describe("SnapshotSchema", () => {
 
     expect(Value.Check(SnapshotSchema, snapshot)).toBe(true);
   });
+
+  it("accepts runtime config drift health", () => {
+    const snapshot = snapshotWithPresence({ ts: 1 });
+    snapshot.health = {
+      runtimeConfig: {
+        state: "drift",
+        liveSourceFingerprint: "live-hash",
+        diskSourceFingerprint: "disk-hash",
+        liveDefaultModel: "openai/gpt-5.6-sol",
+        diskDefaultModel: "openai/gpt-5.5",
+        driftPaths: ["agents.defaults.model"],
+        message: "Runtime config differs from disk.",
+      },
+    };
+
+    expect(Value.Check(SnapshotSchema, snapshot)).toBe(true);
+  });
 });
