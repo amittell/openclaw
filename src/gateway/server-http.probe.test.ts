@@ -903,6 +903,38 @@ describe("gateway probe endpoints", () => {
     });
   });
 
+  it("makes strict liveness draining-aware without inheriting channel readiness", async () => {
+    let failing = ["gateway-draining"];
+    const getReadiness: ReadinessChecker = () => ({
+      ready: false,
+      failing,
+      uptimeMs: 999,
+    });
+
+    await withGatewayServer({
+      prefix: "probe-healthz-strict-draining",
+      resolvedAuth: AUTH_NONE,
+      overrides: { getReadiness },
+      run: async (server) => {
+        const plain = await sendGatewayRequest(server, { path: "/healthz" });
+        expect(plain.res.statusCode).toBe(200);
+        expect(JSON.parse(plain.getBody())).toEqual({ ok: true, status: "live" });
+
+        const draining = await sendGatewayRequest(server, { path: "/healthz?strict=1" });
+        expect(draining.res.statusCode).toBe(503);
+        expect(JSON.parse(draining.getBody())).toEqual({
+          live: false,
+          phase: "shutting_down",
+        });
+
+        failing = ["discord"];
+        const channelFailure = await sendGatewayRequest(server, { path: "/healthz?strict=1" });
+        expect(channelFailure.res.statusCode).toBe(200);
+        expect(JSON.parse(channelFailure.getBody())).toEqual({ ok: true, status: "live" });
+      },
+    });
+  });
+
   it("serves liveness probes before loading gateway config or resolving auth", async () => {
     const getRuntimeConfig = vi.fn(() => {
       throw new Error("config load blocked");

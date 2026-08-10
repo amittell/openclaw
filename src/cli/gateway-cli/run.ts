@@ -527,7 +527,9 @@ async function probeGatewayHealthz(params: {
       {
         hostname: normalizeGatewayHealthProbeHost(params.host),
         port: params.port,
-        path: "/healthz",
+        // Supervised recovery must distinguish a draining predecessor from a
+        // live owner that should retain the gateway lock.
+        path: "/healthz?strict=1",
         method: "GET",
         timeout: timeoutMs,
         // The probe sends no credentials. Pin the configured certificate below

@@ -56,6 +56,10 @@ function startupProbeBody(result: StartupResult, includeDetails: boolean): strin
   });
 }
 
+function isStrictLiveProbeRequest(req: IncomingMessage): boolean {
+  return new URL(req.url ?? "/", "http://localhost").searchParams.get("strict") === "1";
+}
+
 /** Handles live/ready/startup probe endpoints before normal gateway routing. */
 export async function handleGatewayProbeRequest(
   req: IncomingMessage,
@@ -87,7 +91,21 @@ export async function handleGatewayProbeRequest(
 
   let statusCode: number;
   let body: string;
-  if (status === "ready" && getReadiness) {
+  if (status === "live" && getReadiness && isStrictLiveProbeRequest(req)) {
+    // Internal supervisors opt into draining-aware liveness so a replacement
+    // retries instead of yielding the lock to a predecessor that is exiting.
+    try {
+      const readiness = getReadiness();
+      const draining = readiness.failing.includes("gateway-draining");
+      statusCode = draining ? 503 : 200;
+      body = JSON.stringify(
+        draining ? { live: false, phase: "shutting_down" } : { ok: true, status },
+      );
+    } catch {
+      statusCode = 200;
+      body = JSON.stringify({ ok: true, status });
+    }
+  } else if (status === "ready" && getReadiness) {
     // Readiness details expose subsystem names, so only local direct or authenticated
     // callers receive them; unauthenticated remote probes get the aggregate boolean.
     const includeDetails = await shouldIncludeGatewayProbeDetails({

@@ -171,6 +171,31 @@ describe("supervised gateway lock recovery", () => {
     expect(sleep).toHaveBeenNthCalledWith(3, 2);
   });
 
+  it("retries while a strict probe sees a draining predecessor", async () => {
+    const startLoop = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new GatewayLockError("gateway already running"))
+      .mockResolvedValueOnce();
+    const probeHealth = vi.fn(async () => false);
+    const sleep = vi.fn(async () => {});
+
+    await testing.runGatewayLoopWithSupervisedLockRecovery({
+      startLoop,
+      supervisor: "launchd",
+      port: 18789,
+      healthHost: "127.0.0.1",
+      log: createLogger(),
+      probeHealth,
+      sleep,
+      retryMs: 5,
+      timeoutMs: 12,
+    });
+
+    expect(startLoop).toHaveBeenCalledTimes(2);
+    expect(probeHealth).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(5);
+  });
+
   it("bounds supervised retries for EADDRINUSE lock errors", async () => {
     let now = 0;
     const startLoop = vi.fn(async () => {
@@ -269,6 +294,33 @@ describe("supervised gateway lock recovery", () => {
         }),
       ).resolves.toBe(false);
       expect(Date.now() - startedAt).toBeLessThan(500);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it("opts supervised probes into draining-aware liveness", async () => {
+    let requestUrl: string | undefined;
+    const server = createServer((req, res) => {
+      requestUrl = req.url;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, status: "live" }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected TCP server address");
+      }
+      await expect(
+        testing.probeGatewayHealthz({ host: "127.0.0.1", port: address.port }),
+      ).resolves.toBe(true);
+      expect(requestUrl).toBe("/healthz?strict=1");
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
