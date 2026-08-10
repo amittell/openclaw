@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../config/config.js";
 import { FILE_LOCK_TIMEOUT_ERROR_CODE, resetFileLockStateForTest } from "../../infra/file-lock.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -52,7 +53,10 @@ const {
   buildProviderAuthDoctorHintWithPluginMock,
 } = vi.hoisted(() => ({
   refreshProviderOAuthCredentialWithPluginMock: vi.fn(
-    async (_params?: { context?: unknown }): Promise<OAuthCredential | undefined> => undefined,
+    async (_params?: {
+      config?: OpenClawConfig;
+      context?: unknown;
+    }): Promise<OAuthCredential | undefined> => undefined,
   ),
   formatProviderAuthProfileApiKeyWithPluginMock: vi.fn(() => undefined),
   buildProviderAuthDoctorHintWithPluginMock: vi.fn(async () => undefined),
@@ -73,8 +77,12 @@ vi.mock("../../llm/oauth.js", () => ({
 }));
 
 vi.mock("../../plugins/provider-runtime.runtime.js", () => ({
-  resolveProviderOAuthCredentialWithPlugin: async (params: { credential: OAuthCredential }) => {
+  resolveProviderOAuthCredentialWithPlugin: async (params: {
+    config?: OpenClawConfig;
+    credential: OAuthCredential;
+  }) => {
     const credential = await refreshProviderOAuthCredentialWithPluginMock({
+      config: params.config,
       context: params.credential,
     });
     return credential
@@ -476,6 +484,56 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
         accountId: "acct-rotated",
       },
     );
+  });
+
+  it("keeps configured provider context available during in-lock refresh", async () => {
+    const profileId = "openai:default";
+    const cfg = {
+      auth: {
+        profiles: {
+          [profileId]: { provider: "openai", mode: "oauth" },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://configured-openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    saveAuthProfileStore(createExpiredOauthStore({ profileId, provider: "openai" }), agentDir);
+    refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(async (params) =>
+      params?.config === cfg
+        ? {
+            type: "oauth",
+            provider: "openai",
+            access: "configured-access-token",
+            refresh: "configured-refresh-token",
+            expires: Date.now() + 86_400_000,
+          }
+        : undefined,
+    );
+
+    await expect(
+      resolveApiKeyForProfile({
+        cfg,
+        store: ensureAuthProfileStore(agentDir),
+        profileId,
+        agentDir,
+      }),
+    ).resolves.toMatchObject({
+      apiKey: "configured-access-token",
+      provider: "openai",
+    });
+    expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledWith({
+      config: cfg,
+      context: expect.objectContaining({
+        provider: "openai",
+        type: "oauth",
+      }),
+    });
   });
 
   it("refreshes imported Codex credentials into the canonical auth store without writing back to .codex", async () => {
