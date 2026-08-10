@@ -40,6 +40,11 @@ import {
   classifyNodeWorkspaceTransferPath,
   classifyWorkerGatewayPath,
 } from "./gateway-http-route-contracts.js";
+import {
+  isGatewayShuttingDown,
+  noteShuttingDownProbeResponse,
+  resetShuttingDownProbeResponseLogForTest,
+} from "./gateway-shutdown-state.js";
 import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import {
   finishFailedGatewayHttpResponse,
