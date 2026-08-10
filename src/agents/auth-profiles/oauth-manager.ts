@@ -693,7 +693,10 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               OAUTH_REFRESH_CALL_TIMEOUT_MS,
               async () => {
                 params.attemptedCredentials?.push(credentialToRefresh);
-                const refreshed = await adapter.refreshCredential(credentialToRefresh);
+                const refreshed = await adapter.refreshCredential(credentialToRefresh, {
+                  cfg: params.cfg,
+                  agentDir: params.agentDir,
+                });
                 return refreshed
                   ? ({
                       ...credentialToRefresh,

@@ -58,7 +58,6 @@ import {
 import type { FailoverReason } from "./types.js";
 
 export {
-  isAnthropicLongContextUsageError,
   isContextOverflowError,
   isLikelyContextOverflowError,
   isReasoningConstraintErrorMessage,

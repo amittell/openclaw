@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { getMediaDir } from "../../media/store.js";
 
-export const UNGROUNDED_MEDIA_PLACEHOLDER = "[unverified media reference removed]";
+const UNGROUNDED_MEDIA_PLACEHOLDER = "[unverified media reference removed]";
 
 // Characters that end a path token inside prose. Mirrors how paths are
 // commonly delimited in model output: whitespace, quotes, brackets, and the
