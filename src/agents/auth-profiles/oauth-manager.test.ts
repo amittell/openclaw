@@ -764,6 +764,82 @@ describe("createOAuthManager", () => {
     });
   });
 
+  it("clears a refreshed tombstone after reload without changing a dead sibling", async () => {
+    await withOAuthAgentDirs("oauth-manager-refresh-dead-clear-", async ({ agentDir }) => {
+      const profileId = "openai:user@example.com";
+      const siblingId = "openai:dead-sibling";
+      const deadAt = Date.now() - 5_000;
+      const tombstonedCredential = createCredential({
+        access: "dead-expired-access",
+        refresh: "dead-target-refresh",
+        expires: Date.now() - 60_000,
+        accountId: "acct-target",
+        refreshDeadAt: deadAt,
+      });
+      const deadSibling = createCredential({
+        access: "dead-sibling-access",
+        refresh: "dead-sibling-refresh",
+        expires: Date.now() - 60_000,
+        accountId: "acct-sibling",
+        refreshDeadAt: deadAt - 1_000,
+      });
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: {
+            [profileId]: tombstonedCredential,
+            [siblingId]: deadSibling,
+          },
+        },
+        agentDir,
+        { filterExternalAuthProfiles: false },
+      );
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential: vi.fn(async (credential) => {
+          expect(credential.refreshDeadAt).toBe(deadAt);
+          return {
+            access: "fresh-access",
+            refresh: "fresh-refresh",
+            expires: Date.now() + 60_000,
+          };
+        }),
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      const result = await manager.resolveOAuthAccess({
+        store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+          allowKeychainPrompt: false,
+        }),
+        profileId,
+        credential: tombstonedCredential,
+        agentDir,
+      });
+
+      expect(result?.credential).toMatchObject({
+        access: "fresh-access",
+        refresh: "fresh-refresh",
+      });
+      expect(result?.credential.refreshDeadAt).toBeUndefined();
+
+      clearRuntimeAuthProfileStoreSnapshots();
+      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      expect(persisted.profiles[profileId]).toMatchObject({
+        access: "fresh-access",
+        refresh: "fresh-refresh",
+      });
+      expect((persisted.profiles[profileId] as OAuthCredential).refreshDeadAt).toBeUndefined();
+      expect(persisted.profiles[siblingId]).toMatchObject({
+        access: "dead-sibling-access",
+        refresh: "dead-sibling-refresh",
+        refreshDeadAt: deadAt - 1_000,
+      });
+    });
+  });
+
   it("uses a safe different external CLI grant after forced refresh tombstones local OAuth", async () => {
     await withOAuthAgentDirs("oauth-manager-refresh-dead-reseed-", async ({ agentDir }) => {
       const profileId = "openai-codex:default";

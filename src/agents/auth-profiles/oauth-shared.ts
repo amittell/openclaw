@@ -54,7 +54,7 @@ function hasNewerStoredOAuthCredential(
   return Boolean(
     existing &&
     existing.provider === incoming.provider &&
-    hasUsableStoredOAuthCredential(existing, { now: Date.now() }) &&
+    hasUsableOAuthCredential(existing, { now: Date.now() }) &&
     existingExpires !== undefined &&
     (incomingExpires === undefined || existingExpires > incomingExpires),
   );

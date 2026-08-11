@@ -671,13 +671,18 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               cfg: params.cfg,
               agentDir: params.agentDir,
             });
-            return refreshed
-              ? ({
-                  ...credentialToRefresh,
-                  ...refreshed,
-                  type: "oauth",
-                } satisfies OAuthCredential)
-              : null;
+            if (!refreshed) {
+              return null;
+            }
+            const refreshedCredential = {
+              ...credentialToRefresh,
+              ...refreshed,
+              type: "oauth",
+            } satisfies OAuthCredential;
+            // A successful replacement proves the credential is live. Retaining
+            // the tombstone would let external CLI sync replace healthy auth.
+            delete refreshedCredential.refreshDeadAt;
+            return refreshedCredential;
           },
         );
         if (!refreshedCredentials) {
