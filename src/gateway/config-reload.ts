@@ -848,10 +848,6 @@ export function startGatewayConfigReloader(opts: {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
-    // Every disk or in-process config observation funnels through here, so
-    // this bump is the invalidation signal for downstream single-slot caches
-    // (health runtime-config drift) that must not poll the file themselves.
-    bumpConfigReloadObservedGeneration();
     try {
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
@@ -1078,6 +1074,9 @@ export function startGatewayConfigReloader(opts: {
         opts.log.error(`config reload failed: ${String(err)}`);
       }
     } finally {
+      // Publish only completed observations. Bumping before the snapshot read
+      // could let health cache a transient file state under the final key.
+      bumpConfigReloadObservedGeneration();
       running = false;
       if (pending) {
         pending = false;

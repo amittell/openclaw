@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { prepareConfigRuntimeEnv } from "../config/config-env-vars.js";
 import { fingerprintConfigSnapshotAuthoredConfig } from "../config/config-journal-snapshot.js";
@@ -1740,6 +1741,30 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.onHotReload).not.toHaveBeenCalled();
     expect(harness.onRestart).not.toHaveBeenCalled();
     expect(harness.onConfigCandidateCommitted).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservedGeneration()).toBeGreaterThan(observedGeneration);
+    await harness.reloader.stop();
+  });
+
+  it("advances the observation generation only after the snapshot read completes", async () => {
+    const initialConfig: OpenClawConfig = { gateway: { reload: { mode: "off" } } };
+    const nextConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      ui: { prefs: { themeMode: "dark" } },
+    };
+    const snapshot = createDeferred<ConfigFileSnapshot>();
+    const readSnapshot = vi.fn(() => snapshot.promise);
+    const harness = createReloaderHarness(readSnapshot, { initialConfig });
+    const observedGeneration = getConfigReloadObservedGeneration();
+
+    harness.watcher.emit("change");
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservedGeneration()).toBe(observedGeneration);
+
+    snapshot.resolve(makeSnapshot({ config: nextConfig, hash: "completed-observation" }));
+    await vi.runAllTimersAsync();
+
     expect(getConfigReloadObservedGeneration()).toBeGreaterThan(observedGeneration);
     await harness.reloader.stop();
   });

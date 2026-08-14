@@ -3,10 +3,10 @@
 // observation counter (health drift summaries) do not pull in the full
 // reloader implementation.
 
-// Monotonic count of disk-config observations (watcher snapshot reads and
-// in-process write candidates, applied or not). The reloader is the canonical
-// observer of config-file changes; health keys its single-slot drift cache on
-// this so consumers never re-read openclaw.json independently.
+// Monotonic count of completed disk-config observations (watcher snapshot
+// reads and in-process write candidates, applied or not). The reloader is the
+// canonical observer of config-file changes; health keys its single-slot
+// drift cache on this so consumers never re-read openclaw.json independently.
 let configReloadObservedGeneration = 0;
 
 export function bumpConfigReloadObservedGeneration(): void {
