@@ -201,25 +201,37 @@ export async function refreshGatewayHealthSnapshot(opts?: {
   const generation = state.nextGeneration + 1;
   state.nextGeneration = generation;
   const promise = (async () => {
-    let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
-    try {
-      runtimeSnapshot = opts?.getRuntimeSnapshot?.();
-    } catch {
-      runtimeSnapshot = undefined;
-    }
-    const eventLoop = opts?.getEventLoopHealth?.();
-    const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
-    const collected = await collectGatewayHealthSnapshot({
-      audience,
-      probe: strength === "probe",
-      runtimeSnapshot,
-      ...(eventLoop ? { eventLoop } : {}),
-      ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
-    });
-    let prepared = await preparePublishedHealthSnapshot(collected);
-    while (prepared.configKey !== getRuntimeConfigHealthKey()) {
-      prepared = await preparePublishedHealthSnapshot(collected);
-    }
+    const collectPublishedSnapshot = async () => {
+      while (true) {
+        const configKeyBeforeCollection = getRuntimeConfigHealthKey();
+        let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
+        try {
+          runtimeSnapshot = opts?.getRuntimeSnapshot?.();
+        } catch {
+          runtimeSnapshot = undefined;
+        }
+        const eventLoop = opts?.getEventLoopHealth?.();
+        const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
+        const collected = await collectGatewayHealthSnapshot({
+          audience,
+          probe: strength === "probe",
+          runtimeSnapshot,
+          ...(eventLoop ? { eventLoop } : {}),
+          ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
+        });
+        if (configKeyBeforeCollection !== getRuntimeConfigHealthKey()) {
+          continue;
+        }
+        const prepared = await preparePublishedHealthSnapshot(collected);
+        if (
+          prepared.configKey === configKeyBeforeCollection &&
+          configKeyBeforeCollection === getRuntimeConfigHealthKey()
+        ) {
+          return prepared;
+        }
+      }
+    };
+    const prepared = await collectPublishedSnapshot();
     const { configKey, snapshot: snap } = prepared;
     if (
       strength === "probe" &&

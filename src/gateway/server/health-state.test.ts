@@ -288,7 +288,7 @@ describe("refreshGatewayHealthSnapshot", () => {
     const healthState = await loadHealthState();
     let revisionReads = 0;
     getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({
-      revision: revisionReads++ < 2 ? 11 : 12,
+      revision: revisionReads++ < 4 ? 11 : 12,
     }));
     buildRuntimeConfigHealthMock
       .mockResolvedValueOnce({ state: "drift", driftPaths: ["models"] })
@@ -299,6 +299,38 @@ describe("refreshGatewayHealthSnapshot", () => {
     expect(published.runtimeConfig).toEqual({ state: "ok" });
     expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
     expect(healthState.getHealthCache()).toBe(published);
+  });
+
+  it("recollects the whole snapshot when the runtime revision advances", async () => {
+    const healthState = await loadHealthState();
+    const firstCollection = createDeferred<HealthSummary>();
+    const staleSummary = createHealthSummary();
+    const currentSummary = createHealthSummary();
+    const staleRuntime = { channels: {}, channelAccounts: { stale: {} } };
+    const currentRuntime = { channels: {}, channelAccounts: { current: {} } };
+    let revision = 21;
+    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({ revision }));
+    collectGatewayHealthSnapshotMock
+      .mockImplementationOnce(() => firstCollection.promise)
+      .mockResolvedValueOnce(currentSummary);
+    const getRuntimeSnapshot = vi
+      .fn()
+      .mockReturnValueOnce(staleRuntime)
+      .mockReturnValueOnce(currentRuntime);
+
+    const refresh = healthState.refreshGatewayHealthSnapshot({
+      probe: false,
+      getRuntimeSnapshot,
+    });
+    revision += 1;
+    firstCollection.resolve(staleSummary);
+
+    await expect(refresh).resolves.toBe(currentSummary);
+    expect(collectGatewayHealthSnapshotMock).toHaveBeenCalledTimes(2);
+    expect(healthSnapshotCallArg()?.runtimeSnapshot).toBe(staleRuntime);
+    expect(healthSnapshotCallArg(1)?.runtimeSnapshot).toBe(currentRuntime);
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledOnce();
+    expect(healthState.getHealthCache()).toBe(currentSummary);
   });
 
   it("does not let a post-connect passive refresh absorb an explicit probe", async () => {
