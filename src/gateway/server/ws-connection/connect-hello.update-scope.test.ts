@@ -11,7 +11,7 @@ const {
   listControlUiPluginWidgetKindsMock,
 } = vi.hoisted(() => ({
   emitGatewayAuthSecurityEventMock: vi.fn(),
-  getHealthCacheMock: vi.fn(() => null as ReturnType<() => HelloOk["snapshot"]["health"]>),
+  getHealthCacheMock: vi.fn<() => HelloOk["snapshot"]["health"] | null>(() => null),
   listControlUiPluginTabsMock: vi.fn((_scopes: readonly string[]) => []),
   listControlUiPluginWidgetKindsMock: vi.fn((_scopes: readonly string[]) => []),
   buildGatewaySnapshotMock: vi.fn((opts?: { includeUpdateDetails?: boolean }) => {
