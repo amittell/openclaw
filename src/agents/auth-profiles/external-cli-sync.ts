@@ -475,7 +475,7 @@ export function resolveExternalCliAuthProfiles(
         isOAuthRefreshDead(existingOAuth) &&
         isSameOAuthRefreshGrant(existingOAuth, creds)
       ) {
-        log.debug("skipped external cli bootstrap: same dead refresh grant", {
+        authProfilesLog.debug("skipped external cli bootstrap: same dead refresh grant", {
           profileId,
           provider: providerConfig.provider,
         });
