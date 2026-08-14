@@ -32,6 +32,7 @@ import {
   isSameOAuthRefreshGrant,
   isSafeToAdoptBootstrapOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
+  mergeSuccessfulOAuthRefreshCredential,
   shouldBootstrapFromExternalCliCredential,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
@@ -674,15 +675,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             if (!refreshed) {
               return null;
             }
-            const refreshedCredential = {
-              ...credentialToRefresh,
-              ...refreshed,
-              type: "oauth",
-            } satisfies OAuthCredential;
-            // A successful replacement proves the credential is live. Retaining
-            // the tombstone would let external CLI sync replace healthy auth.
-            delete refreshedCredential.refreshDeadAt;
-            return refreshedCredential;
+            return mergeSuccessfulOAuthRefreshCredential(credentialToRefresh, refreshed);
           },
         );
         if (!refreshedCredentials) {
@@ -907,14 +900,14 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             deadAt: Date.now(),
           });
           if (marked) {
-            log.warn(
+            authProfilesLog.warn(
               "marked stored OAuth credential refresh-dead after permanent refresh failure; external CLI login can re-seed this profile",
               { profileId: params.profileId, provider: params.credential.provider },
             );
           }
         } catch (markError) {
           // Best-effort: the refresh failure below is the actionable signal.
-          log.debug("failed to mark OAuth credential refresh-dead", {
+          authProfilesLog.debug("failed to mark OAuth credential refresh-dead", {
             profileId: params.profileId,
             error: formatErrorMessage(markError),
           });

@@ -26,6 +26,7 @@ import { resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./store.js";
 import type { AuthProfileStore, OAuthCredential } from "./types.js";
 let resolveApiKeyForProfile: typeof import("./oauth.js").resolveApiKeyForProfile;
+let refreshOAuthCredentialForRuntime: typeof import("./oauth.js").refreshOAuthCredentialForRuntime;
 let resolveApiKeyForProviderCore: typeof import("../model-auth.js").resolveApiKeyForProviderCore;
 let hasAvailableAuthForProvider: typeof import("../model-auth.js").hasAvailableAuthForProvider;
 let markAuthProfileSuccess: typeof import("./profiles.js").markAuthProfileSuccess;
@@ -162,7 +163,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
 
   beforeAll(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-refresh-fallback-"));
-    ({ resolveApiKeyForProfile } = await import("./oauth.js"));
+    ({ refreshOAuthCredentialForRuntime, resolveApiKeyForProfile } = await import("./oauth.js"));
     ({ hasAvailableAuthForProvider, resolveApiKeyForProviderCore } =
       await import("../model-auth.js"));
     ({ markAuthProfileSuccess } = await import("./profiles.js"));
@@ -285,6 +286,29 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       }),
     ).rejects.toThrow(/OAuth token refresh failed for anthropic/);
     expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the refresh tombstone after a successful runtime-only refresh", async () => {
+    mockRotatedOpenAICodexRefresh();
+
+    const refreshed = await refreshOAuthCredentialForRuntime({
+      credential: {
+        type: "oauth",
+        provider: "openai",
+        access: "dead-access-token",
+        refresh: "dead-refresh-token",
+        expires: Date.now() - 5_000,
+        refreshDeadAt: Date.now() - 1_000,
+        accountId: "acct-rotated",
+      },
+    });
+
+    expect(refreshed).toMatchObject({
+      access: "rotated-access-token",
+      refresh: "rotated-refresh-token",
+      accountId: "acct-rotated",
+    });
+    expect(refreshed?.refreshDeadAt).toBeUndefined();
   });
 
   it("fails closed when provider refresh returns an unchanged expired credential", async () => {

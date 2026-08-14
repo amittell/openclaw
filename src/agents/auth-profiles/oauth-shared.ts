@@ -11,7 +11,7 @@ import {
   normalizeAuthEmailToken,
   normalizeAuthIdentityToken,
 } from "./oauth-identity.js";
-import type { AuthProfileStore, OAuthCredential } from "./types.js";
+import type { AuthProfileStore, OAuthCredential, OAuthCredentials } from "./types.js";
 
 export { normalizeAuthEmailToken, normalizeAuthIdentityToken } from "./oauth-identity.js";
 
@@ -41,6 +41,22 @@ export function areOAuthCredentialsEquivalent(
     a.accountId === b.accountId &&
     a.idToken === b.idToken
   );
+}
+
+/** Merge provider-returned OAuth fields after a successful refresh. */
+export function mergeSuccessfulOAuthRefreshCredential(
+  credential: OAuthCredential,
+  refreshed: OAuthCredentials,
+): OAuthCredential {
+  const merged = {
+    ...credential,
+    ...refreshed,
+    type: "oauth",
+  } satisfies OAuthCredential;
+  // A successful refresh proves this grant is live. Keeping the tombstone
+  // would let external CLI sync replace the healthy credential on reload.
+  delete merged.refreshDeadAt;
+  return merged;
 }
 
 // Keep newer usable stored credentials over incoming runtime imports to avoid
