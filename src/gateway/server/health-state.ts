@@ -4,7 +4,10 @@ import { resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import { buildRuntimeConfigHealth } from "../../commands/health-runtime-config.js";
 import { createConfigIO, getRuntimeConfig } from "../../config/io.js";
 import { STATE_DIR } from "../../config/paths.js";
-import { getRuntimeConfigAppliedHash } from "../../config/runtime-snapshot.js";
+import {
+  getRuntimeConfigAppliedHash,
+  getRuntimeConfigSnapshotMetadata,
+} from "../../config/runtime-snapshot.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions.js";
 import { listSystemPresence } from "../../infra/system-presence.js";
 import { getUpdateAvailable, getUpdateSchedule } from "../../infra/update-startup.js";
@@ -23,11 +26,11 @@ import type { GatewayEventLoopHealth } from "./event-loop-health.js";
 let presenceVersion = 1;
 let healthVersion = 1;
 let healthCache: HealthSummary | null = null;
-let healthCacheConfigGeneration = -1;
+let healthCacheConfigKey: string | null = null;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 
 type RuntimeConfigHealthResolution = {
-  generation: number;
+  key: string;
   promise: Promise<HealthSummary["runtimeConfig"]>;
 };
 
@@ -110,13 +113,19 @@ export function buildGatewaySnapshot(opts: {
 }
 
 export function getHealthCache(): HealthSummary | null {
-  // A reload observation invalidates the whole published snapshot. Callers may
-  // trigger a fresh publication, but must never mix old drift state with a new
-  // generation or independently re-read the config source.
-  if (healthCache && healthCacheConfigGeneration !== getConfigReloadObservedGeneration()) {
+  // Disk observations and live runtime publication both invalidate the whole
+  // snapshot. Callers must never mix drift state across either boundary or
+  // independently re-read the config source.
+  if (healthCache && healthCacheConfigKey !== getRuntimeConfigHealthKey()) {
     return null;
   }
   return healthCache;
+}
+
+function getRuntimeConfigHealthKey(): string {
+  const observedGeneration = getConfigReloadObservedGeneration();
+  const runtimeRevision = getRuntimeConfigSnapshotMetadata()?.revision ?? -1;
+  return `${observedGeneration}:${runtimeRevision}`;
 }
 
 export function getHealthVersion(): number {
@@ -137,27 +146,27 @@ export function setBroadcastHealthUpdate(fn: ((snap: HealthSummary) => void) | n
 }
 
 async function resolveRuntimeConfigHealth(): Promise<{
-  generation: number;
+  key: string;
   summary: HealthSummary["runtimeConfig"];
 }> {
-  const generation = getConfigReloadObservedGeneration();
-  if (!runtimeConfigHealthResolution || runtimeConfigHealthResolution.generation !== generation) {
+  const key = getRuntimeConfigHealthKey();
+  if (!runtimeConfigHealthResolution || runtimeConfigHealthResolution.key !== key) {
     runtimeConfigHealthResolution = {
-      generation,
+      key,
       // Snapshot-wide health is observable by read-scoped clients, hello, and
       // broadcasts, so it never carries fingerprints or detailed disk errors.
       promise: buildRuntimeConfigHealth(),
     };
   }
   const summary = await runtimeConfigHealthResolution.promise;
-  if (generation !== getConfigReloadObservedGeneration()) {
+  if (key !== getRuntimeConfigHealthKey()) {
     return resolveRuntimeConfigHealth();
   }
-  return { generation, summary };
+  return { key, summary };
 }
 
 async function preparePublishedHealthSnapshot(snapshot: HealthSummary): Promise<{
-  generation: number;
+  configKey: string;
   snapshot: HealthSummary;
 }> {
   const resolved = await resolveRuntimeConfigHealth();
@@ -165,7 +174,7 @@ async function preparePublishedHealthSnapshot(snapshot: HealthSummary): Promise<
   if (resolved.summary) {
     snapshot.runtimeConfig = resolved.summary;
   }
-  return { generation: resolved.generation, snapshot };
+  return { configKey: resolved.key, snapshot };
 }
 
 export async function refreshGatewayHealthSnapshot(opts?: {
@@ -207,8 +216,11 @@ export async function refreshGatewayHealthSnapshot(opts?: {
       ...(eventLoop ? { eventLoop } : {}),
       ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
     });
-    const { generation: configGeneration, snapshot: snap } =
-      await preparePublishedHealthSnapshot(collected);
+    let prepared = await preparePublishedHealthSnapshot(collected);
+    while (prepared.configKey !== getRuntimeConfigHealthKey()) {
+      prepared = await preparePublishedHealthSnapshot(collected);
+    }
+    const { configKey, snapshot: snap } = prepared;
     if (
       strength === "probe" &&
       state.inFlight.passive &&
@@ -223,7 +235,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
     if (!includeSensitive && generation > state.committedGeneration) {
       state.committedGeneration = generation;
       healthCache = snap;
-      healthCacheConfigGeneration = configGeneration;
+      healthCacheConfigKey = configKey;
       healthVersion += 1;
       if (broadcastHealthUpdate) {
         broadcastHealthUpdate(snap);

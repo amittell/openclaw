@@ -28,6 +28,7 @@ import {
 } from "../skills/runtime/refresh-state.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
+import { getConfigReloadObservedGeneration } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   type ChannelKind,
@@ -1732,12 +1733,14 @@ describe("startGatewayConfigReloader", () => {
       makeSnapshot({ config: nextConfig, hash: "mode-off-write" }),
     );
     const harness = createReloaderHarness(readSnapshot, { initialConfig });
+    const observedGeneration = getConfigReloadObservedGeneration();
 
     await flushWatcherChange(harness);
 
     expect(harness.onHotReload).not.toHaveBeenCalled();
     expect(harness.onRestart).not.toHaveBeenCalled();
     expect(harness.onConfigCandidateCommitted).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservedGeneration()).toBeGreaterThan(observedGeneration);
     await harness.reloader.stop();
   });
 

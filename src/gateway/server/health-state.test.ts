@@ -10,6 +10,7 @@ const {
   buildRuntimeConfigHealthMock,
   collectGatewayHealthSnapshotMock,
   getConfigReloadObservedGenerationMock,
+  getRuntimeConfigSnapshotMetadataMock,
   getRuntimeConfigMock,
   getUpdateAvailableMock,
   getUpdateScheduleMock,
@@ -17,6 +18,7 @@ const {
   buildRuntimeConfigHealthMock: vi.fn(),
   collectGatewayHealthSnapshotMock: vi.fn(),
   getConfigReloadObservedGenerationMock: vi.fn(() => 0),
+  getRuntimeConfigSnapshotMetadataMock: vi.fn(() => ({ revision: 0 })),
   getRuntimeConfigMock: vi.fn(),
   getUpdateAvailableMock: vi.fn(),
   getUpdateScheduleMock: vi.fn(),
@@ -28,6 +30,11 @@ vi.mock("../../commands/health-runtime-config.js", () => ({
 
 vi.mock("../config-reload-observed.js", () => ({
   getConfigReloadObservedGeneration: getConfigReloadObservedGenerationMock,
+}));
+
+vi.mock("../../config/runtime-snapshot.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/runtime-snapshot.js")>()),
+  getRuntimeConfigSnapshotMetadata: getRuntimeConfigSnapshotMetadataMock,
 }));
 
 vi.mock("../health/collector.js", () => ({
@@ -93,6 +100,8 @@ async function loadHealthState() {
   buildRuntimeConfigHealthMock.mockResolvedValue(undefined);
   getConfigReloadObservedGenerationMock.mockReset();
   getConfigReloadObservedGenerationMock.mockReturnValue(0);
+  getRuntimeConfigSnapshotMetadataMock.mockReset();
+  getRuntimeConfigSnapshotMetadataMock.mockReturnValue({ revision: 0 });
   getUpdateAvailableMock.mockReset();
   getUpdateAvailableMock.mockReturnValue(null);
   getUpdateScheduleMock.mockReset();
@@ -271,6 +280,23 @@ describe("refreshGatewayHealthSnapshot", () => {
     const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
 
     expect(published.runtimeConfig).toEqual({ state: "drift", driftPaths: ["models"] });
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
+    expect(healthState.getHealthCache()).toBe(published);
+  });
+
+  it("retries publication when the live runtime revision advances before commit", async () => {
+    const healthState = await loadHealthState();
+    let revisionReads = 0;
+    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({
+      revision: revisionReads++ < 2 ? 11 : 12,
+    }));
+    buildRuntimeConfigHealthMock
+      .mockResolvedValueOnce({ state: "drift", driftPaths: ["models"] })
+      .mockResolvedValueOnce({ state: "ok" });
+
+    const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
+
+    expect(published.runtimeConfig).toEqual({ state: "ok" });
     expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
     expect(healthState.getHealthCache()).toBe(published);
   });
