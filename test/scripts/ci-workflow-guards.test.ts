@@ -4383,6 +4383,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(checksFastRun.env.PROTOCOL_MANUAL_BASE_SHA).toBe(
       "${{ steps.protocol_manual_base.outputs.sha }}",
     );
+    expect(checksFastRun.env.PROTOCOL_SINCE_BASE_SHA).toBe(
+      "${{ github.event_name == 'workflow_dispatch' && inputs.target_ref == '' && github.ref_name == 'upgrade-v2026.8.1-beta.1' && 'ff8a3fe9d03eff4a70f5464714c3a389b06bfec8' || needs.preflight.outputs.diff_base_revision }}",
+    );
     expect(releaseGateMerge.run).toContain(
       'gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}"',
     );

@@ -1619,7 +1619,10 @@ jobs:
           GH_TOKEN: ${{ matrix.task == 'max-lines-ratchet' && github.token || '' }}
           OPENCLAW_TEST_PROJECTS_PARALLEL: 3
           PROTOCOL_MANUAL_BASE_SHA: ${{ steps.protocol_manual_base.outputs.sha }}
-          PROTOCOL_SINCE_BASE_SHA: ${{ needs.preflight.outputs.diff_base_revision }}
+          # This frozen fork branch is rooted at the signed beta tag while the fork's
+          # default branch predates the protocol descriptor. Pin only its default
+          # manual dispatch to that release base so the guard compares real trees.
+          PROTOCOL_SINCE_BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref == '' && github.ref_name == 'upgrade-v2026.8.1-beta.1' && 'ff8a3fe9d03eff4a70f5464714c3a389b06bfec8' || needs.preflight.outputs.diff_base_revision }}
           RATCHET_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RATCHET_EVENT_BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
           RATCHET_MANUAL_TARGET_SHA: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.checkout_revision || '' }}
