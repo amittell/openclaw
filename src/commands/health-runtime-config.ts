@@ -138,9 +138,10 @@ export function formatRuntimeConfigHealthLine(summary: HealthSummary): string | 
     return `Runtime config: warning (live gateway differs from disk for ${paths}; restart required or pending${modelDetail})`;
   }
   if (runtimeConfig.state === "unknown") {
-    // Missing or invalid disk config must stay visible in normal text output.
-    const reason = runtimeConfig.message?.trim() || "disk source unavailable";
-    return `Runtime config: warning (unknown disk source: ${reason})`;
+    // Missing runtime or disk sources must stay visible without blaming the
+    // wrong side of the comparison.
+    const reason = runtimeConfig.message?.trim() || "config source unavailable";
+    return `Runtime config: warning (unknown source: ${reason})`;
   }
   return null;
 }

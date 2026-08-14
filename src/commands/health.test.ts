@@ -778,11 +778,7 @@ describe("formatRuntimeConfigHealthLine", () => {
     );
   });
 
-  it("renders the unknown state with the diskReadError message so missing/invalid disk surfaces in text output", () => {
-    // Regression for the ClawSweeper P2 finding on #89526: the formatter
-    // previously returned null for every non-drift state, so the new
-    // unknown-state diagnostic (missing or invalid disk config) was silently
-    // omitted from text `openclaw health` even though JSON showed it.
+  it("renders unknown-state messages with a source-neutral prefix", () => {
     const summary = createHealthSummary({
       channels: {},
       channelOrder: [],
@@ -794,7 +790,12 @@ describe("formatRuntimeConfigHealthLine", () => {
     };
 
     expect(formatRuntimeConfigHealthLine(summary)).toBe(
-      "Runtime config: warning (unknown disk source: Disk config file not found at /tmp/openclaw.json.)",
+      "Runtime config: warning (unknown source: Disk config file not found at /tmp/openclaw.json.)",
+    );
+
+    summary.runtimeConfig.message = "Runtime source config snapshot is unavailable.";
+    expect(formatRuntimeConfigHealthLine(summary)).toBe(
+      "Runtime config: warning (unknown source: Runtime source config snapshot is unavailable.)",
     );
   });
 
@@ -807,7 +808,7 @@ describe("formatRuntimeConfigHealthLine", () => {
     summary.runtimeConfig = { state: "unknown" };
 
     expect(formatRuntimeConfigHealthLine(summary)).toBe(
-      "Runtime config: warning (unknown disk source: disk source unavailable)",
+      "Runtime config: warning (unknown source: config source unavailable)",
     );
   });
 });
