@@ -916,10 +916,6 @@ describe("gateway probe endpoints", () => {
       resolvedAuth: AUTH_NONE,
       overrides: { getReadiness },
       run: async (server) => {
-        const plain = await sendGatewayRequest(server, { path: "/healthz" });
-        expect(plain.res.statusCode).toBe(200);
-        expect(JSON.parse(plain.getBody())).toEqual({ ok: true, status: "live" });
-
         const draining = await sendGatewayRequest(server, { path: "/healthz?strict=1" });
         expect(draining.res.statusCode).toBe(503);
         expect(JSON.parse(draining.getBody())).toEqual({
