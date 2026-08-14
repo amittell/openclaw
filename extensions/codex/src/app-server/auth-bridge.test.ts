@@ -42,6 +42,10 @@ type MockCacheResult = {
   warnings: string[];
 };
 
+const agentRuntimeMocks = vi.hoisted(() => ({
+  resolveApiKeyForProfile: vi.fn(),
+}));
+
 const computerUseServiceMocks = vi.hoisted(() => ({
   ensureCodexComputerUseSharedPluginCache: vi.fn<
     (_params: { forceRefresh?: boolean }) => Promise<MockCacheResult>
@@ -74,7 +78,7 @@ const computerUseServiceMocks = vi.hoisted(() => ({
 const providerRuntimeMocks = vi.hoisted(() => ({
   formatProviderAuthProfileApiKeyWithPlugin: vi.fn(),
   refreshProviderOAuthCredentialWithPlugin: vi.fn(
-    async (params: { provider?: string; context: { refresh: string } }) => {
+    async (params: { provider?: string; config?: unknown; context: { refresh: string } }) => {
       const refreshed = await oauthMocks.refreshOpenAICodexToken(params.context.refresh);
       return refreshed
         ? {
@@ -95,6 +99,7 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
     resolveApiKeyForProfile: async (
       params: Parameters<typeof actual.resolveApiKeyForProfile>[0],
     ) => {
+      agentRuntimeMocks.resolveApiKeyForProfile(params);
       const credential = params.store.profiles[params.profileId];
       if (!credential) {
         return null;
@@ -120,12 +125,13 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
       if (params.forceRefresh || (oauthCredential.expires ?? 0) <= Date.now()) {
         const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
           provider: oauthCredential.provider,
+          config: params.cfg,
           context: oauthCredential,
         });
         if (refreshed?.access) {
           oauthCredential = refreshed as typeof oauthCredential;
           params.store.profiles[params.profileId] = oauthCredential;
-          if (params.agentDir || process.env.OPENCLAW_STATE_DIR) {
+          if (!params.useRuntimeOAuthStore && (params.agentDir || process.env.OPENCLAW_STATE_DIR)) {
             actual.saveAuthProfileStore(params.store, params.agentDir);
           }
         }
@@ -138,21 +144,6 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
         typeof formatted === "string" && formatted ? formatted : oauthCredential.access;
       return apiKey
         ? { apiKey, provider: oauthCredential.provider, email: oauthCredential.email }
-        : null;
-    },
-    refreshOAuthCredentialForRuntime: async (
-      params: Parameters<typeof actual.refreshOAuthCredentialForRuntime>[0],
-    ) => {
-      const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
-        provider: params.credential.provider,
-        context: params.credential,
-      });
-      return refreshed
-        ? {
-            ...params.credential,
-            ...refreshed,
-            type: "oauth" as const,
-          }
         : null;
     },
   };
@@ -188,6 +179,7 @@ vi.mock("./desktop-app-paths.js", async (importOriginal) => {
 afterEach(() => {
   vi.unstubAllEnvs();
   clearRuntimeAuthProfileStoreSnapshots();
+  agentRuntimeMocks.resolveApiKeyForProfile.mockClear();
   oauthMocks.refreshOpenAICodexToken.mockReset();
   providerRuntimeMocks.formatProviderAuthProfileApiKeyWithPlugin.mockReset();
   providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin.mockClear();
@@ -1941,18 +1933,17 @@ describe("bridgeCodexAppServerStartOptions", () => {
     }
   });
 
-  it("serializes concurrent refreshes of the same scoped OAuth profile", async () => {
+  it("routes scoped OAuth refreshes through the canonical resolver with config", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
-    const request = vi.fn(async () => ({ type: "chatgptAuthTokens" }));
-    let resolveRefresh:
-      | ((value: { access: string; refresh: string; expires: number; accountId: string }) => void)
-      | undefined;
-    oauthMocks.refreshOpenAICodexToken.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveRefresh = resolve;
-        }),
-    );
+    const config = {
+      auth: { order: { openai: ["openai:work"] } },
+    };
+    oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
+      access: "scoped-refreshed-access",
+      refresh: "scoped-refreshed-refresh",
+      expires: Date.now() + 60_000,
+      accountId: "scoped-refreshed-account",
+    });
     const authProfileStore: AuthProfileStore = {
       version: 1,
       profiles: {
@@ -1967,49 +1958,89 @@ describe("bridgeCodexAppServerStartOptions", () => {
       },
     };
     try {
-      const first = applyCodexAppServerAuthProfile({
-        client: { request } as never,
-        agentDir,
-        authProfileId: "openai:work",
-        authProfileStore,
+      await expect(
+        refreshCodexAppServerAuthTokens({
+          agentDir,
+          authProfileId: "openai:work",
+          authProfileStore,
+          config,
+        }),
+      ).resolves.toEqual({
+        accessToken: "scoped-refreshed-access",
+        chatgptAccountId: "scoped-refreshed-account",
+        chatgptPlanType: null,
       });
-      const second = applyCodexAppServerAuthProfile({
-        client: { request } as never,
-        agentDir,
-        authProfileId: "openai:work",
-        authProfileStore,
-      });
-      await vi.waitFor(() => expect(oauthMocks.refreshOpenAICodexToken).toHaveBeenCalledTimes(1));
 
-      resolveRefresh?.({
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cfg: config,
+          store: authProfileStore,
+          profileId: "openai:work",
+          forceRefresh: true,
+          useRuntimeOAuthStore: true,
+        }),
+      );
+      expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config,
+          provider: "openai",
+        }),
+      );
+      expect(authProfileStore.profiles["openai:work"]).toMatchObject({
         access: "scoped-refreshed-access",
         refresh: "scoped-refreshed-refresh",
-        expires: Date.now() + 60_000,
-        accountId: "scoped-refreshed-account",
-      });
-      await Promise.all([first, second]);
-
-      expect(oauthMocks.refreshOpenAICodexToken).toHaveBeenCalledTimes(1);
-      expect(request).toHaveBeenCalledTimes(2);
-      expect(request).toHaveBeenNthCalledWith(1, "account/login/start", {
-        type: "chatgptAuthTokens",
-        accessToken: "scoped-refreshed-access",
-        chatgptAccountId: "scoped-refreshed-account",
-        chatgptPlanType: null,
-      });
-      expect(request).toHaveBeenNthCalledWith(2, "account/login/start", {
-        type: "chatgptAuthTokens",
-        accessToken: "scoped-refreshed-access",
-        chatgptAccountId: "scoped-refreshed-account",
-        chatgptPlanType: null,
       });
     } finally {
-      resolveRefresh?.({
-        access: "cleanup-access",
-        refresh: "cleanup-refresh",
-        expires: Date.now() + 60_000,
-        accountId: "cleanup-account",
+      await fs.rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes persisted OAuth refreshes through the canonical resolver with config", async () => {
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
+    const config = {
+      auth: { order: { openai: ["openai:work"] } },
+    };
+    oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
+      access: "persisted-refreshed-access",
+      refresh: "persisted-refreshed-refresh",
+      expires: Date.now() + 60_000,
+      accountId: "persisted-account",
+    });
+    try {
+      upsertAuthProfile({
+        agentDir,
+        profileId: "openai:work",
+        credential: {
+          type: "oauth",
+          provider: "openai",
+          access: "persisted-access",
+          refresh: "persisted-refresh",
+          expires: Date.now() - 60_000,
+          accountId: "persisted-account",
+        },
       });
+
+      await refreshCodexAppServerAuthTokens({
+        agentDir,
+        authProfileId: "openai:work",
+        config,
+      });
+
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cfg: config,
+          profileId: "openai:work",
+          forceRefresh: true,
+          useRuntimeOAuthStore: false,
+        }),
+      );
+      expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config,
+          provider: "openai",
+        }),
+      );
+    } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
     }
   });
@@ -2421,6 +2452,9 @@ describe("bridgeCodexAppServerStartOptions", () => {
     const agentDir = path.join(root, "agent");
     const codexHome = path.join(root, "codex-cli");
     const authProfileStorePath = path.join(agentDir, "auth-profiles.json");
+    const config = {
+      auth: { order: { openai: ["openai:default"] } },
+    };
     vi.stubEnv("CODEX_HOME", codexHome);
     oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
       access: "fresh-cli-access-token",
@@ -2431,7 +2465,7 @@ describe("bridgeCodexAppServerStartOptions", () => {
     try {
       await writeCodexCliAuthFile(codexHome);
 
-      await expect(refreshCodexAppServerAuthTokens({ agentDir })).resolves.toEqual({
+      await expect(refreshCodexAppServerAuthTokens({ agentDir, config })).resolves.toEqual({
         accessToken: "fresh-cli-access-token",
         chatgptAccountId: "account-cli-refreshed",
         chatgptPlanType: null,
@@ -2439,6 +2473,20 @@ describe("bridgeCodexAppServerStartOptions", () => {
 
       await expectPathMissing(authProfileStorePath);
       expect(oauthMocks.refreshOpenAICodexToken).toHaveBeenCalledWith("cli-refresh-token");
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cfg: config,
+          profileId: "openai:default",
+          forceRefresh: true,
+          useRuntimeOAuthStore: true,
+        }),
+      );
+      expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config,
+          provider: "openai",
+        }),
+      );
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

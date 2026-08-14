@@ -934,7 +934,7 @@ describe("createEmbeddedRunAuthController", () => {
       const harness = createMutableAuthControllerHarness();
       const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
 
-      mocks.getApiKeyForModel.mockResolvedValue({
+      mocks.getApiKeyForModelCore.mockResolvedValue({
         apiKey: "source-api-key",
         mode: "api-key",
         profileId: "default",
@@ -996,7 +996,7 @@ describe("createEmbeddedRunAuthController", () => {
       const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
       const staleRefresh = createDeferred<{ apiKey: string; expiresAt: number }>();
 
-      mocks.getApiKeyForModel.mockResolvedValue({
+      mocks.getApiKeyForModelCore.mockResolvedValue({
         apiKey: "source-api-key",
         mode: "api-key",
         profileId: "default",
@@ -1071,7 +1071,7 @@ describe("createEmbeddedRunAuthController", () => {
     try {
       const harness = createMutableAuthControllerHarness();
       const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
-      mocks.getApiKeyForModel.mockResolvedValue({
+      mocks.getApiKeyForModelCore.mockResolvedValue({
         apiKey: "source-api-key",
         mode: "api-key",
         profileId: "default",

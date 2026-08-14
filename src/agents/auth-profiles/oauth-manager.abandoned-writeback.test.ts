@@ -9,11 +9,8 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { withEnvAsync } from "../../test-utils/env.js";
 import { testing as externalAuthTesting } from "./external-auth.test-support.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
-import {
-  clearRuntimeAuthProfileStoreSnapshots,
-  ensureAuthProfileStoreWithoutExternalProfiles,
-  saveAuthProfileStore,
-} from "./store.js";
+import { clearRuntimeAuthProfileStoreSnapshots } from "./runtime-snapshots.js";
+import { ensureAuthProfileStoreWithoutExternalProfiles, saveAuthProfileStore } from "./store.js";
 import type { OAuthCredential, OAuthCredentials } from "./types.js";
 
 // Shrink the in-lock deadline so a real-timer test can observe an abandoned
@@ -83,7 +80,9 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
             }),
         )
         .mockImplementationOnce(async (credential) => {
-          expect(credential.refresh).toBe("expired-refresh");
+          // The abandoned owner must durably retain its successful rotation
+          // before the queued successor begins.
+          expect(credential.refresh).toBe("rotated-refresh");
           return {
             access: "successor-access",
             refresh: "successor-refresh",
@@ -124,8 +123,8 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
       // rotating-token provider while the abandoned call still owns the lock.
       expect(refreshCredential).toHaveBeenCalledTimes(1);
 
-      // Let the abandoned continuation settle. Its tokens are discarded, the
-      // lock releases, and only then may the successor rotate the stored token.
+      // Let the abandoned continuation settle. Its rotated tokens are stored
+      // before the lock releases, so the successor uses the winning rotation.
       resolveRefresh?.({
         access: "rotated-access",
         refresh: "rotated-refresh",
@@ -155,6 +154,90 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
         access: "successor-access",
         refresh: "successor-refresh",
       });
+    });
+  });
+
+  it("retains and serializes late refreshes in a runtime-only supplied store", async () => {
+    await withOAuthAgentDirs("oauth-manager-runtime-writeback-", async ({ agentDir }) => {
+      const profileId = "openai:scoped";
+      const staleCredential: OAuthCredential = {
+        type: "oauth",
+        provider: "openai",
+        access: "scoped-expired-access",
+        refresh: "scoped-expired-refresh",
+        expires: Date.now() - 60_000,
+      };
+      const store = { version: 1 as const, profiles: { [profileId]: staleCredential } };
+      let resolveRefresh: ((value: OAuthCredentials) => void) | undefined;
+      const refreshCredential = vi
+        .fn<(credential: OAuthCredential) => Promise<OAuthCredentials>>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<OAuthCredentials>((resolve) => {
+              resolveRefresh = resolve;
+            }),
+        )
+        .mockImplementationOnce(async (credential) => {
+          expect(credential.refresh).toBe("scoped-rotated-refresh");
+          return {
+            access: "scoped-successor-access",
+            refresh: "scoped-successor-refresh",
+            expires: Date.now() + 60_000,
+          };
+        });
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential,
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      await expect(
+        manager.resolveOAuthAccess({
+          store,
+          profileId,
+          credential: staleCredential,
+          agentDir,
+          useRuntimeStore: true,
+        }),
+      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+
+      const successor = manager.resolveOAuthAccess({
+        store,
+        profileId,
+        credential: staleCredential,
+        agentDir,
+        useRuntimeStore: true,
+      });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+      });
+      expect(refreshCredential).toHaveBeenCalledTimes(1);
+
+      resolveRefresh?.({
+        access: "scoped-rotated-access",
+        refresh: "scoped-rotated-refresh",
+        expires: Date.now() + 60_000,
+      });
+      await expect(successor).resolves.toMatchObject({
+        apiKey: "scoped-successor-access",
+      });
+      expect(store.profiles[profileId]).toMatchObject({
+        access: "scoped-successor-access",
+        refresh: "scoped-successor-refresh",
+      });
+
+      clearRuntimeAuthProfileStoreSnapshots();
+      expect(
+        ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+          allowKeychainPrompt: false,
+        }).profiles[profileId],
+      ).toBeUndefined();
+      expect(
+        ensureAuthProfileStoreWithoutExternalProfiles(undefined, {
+          allowKeychainPrompt: false,
+        }).profiles[profileId],
+      ).toBeUndefined();
     });
   });
 });

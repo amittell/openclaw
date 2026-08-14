@@ -183,6 +183,8 @@ type ResolveApiKeyForProfileParams = {
   agentDir?: string;
   forceRefresh?: boolean;
   allowProfileFallback?: boolean;
+  /** Refresh and replace this in-memory profile without persisting or mirroring it. */
+  useRuntimeOAuthStore?: boolean;
 };
 
 type SecretDefaults = NonNullable<OpenClawConfig["secrets"]>["defaults"];
@@ -282,6 +284,7 @@ async function tryResolveOAuthProfile(
     agentDir: params.agentDir,
     cfg,
     forceRefresh: params.forceRefresh,
+    useRuntimeStore: params.useRuntimeOAuthStore,
   });
   if (!resolved) {
     return null;
@@ -494,6 +497,7 @@ export async function resolveApiKeyForProfile(
       credential: cred,
       cfg,
       forceRefresh: params.forceRefresh,
+      useRuntimeStore: params.useRuntimeOAuthStore,
     });
     if (!resolved) {
       return null;
@@ -567,6 +571,7 @@ export async function resolveApiKeyForProfile(
           profileId: fallbackProfileId,
           agentDir: params.agentDir,
           forceRefresh: params.forceRefresh,
+          useRuntimeOAuthStore: params.useRuntimeOAuthStore,
         });
         if (fallbackResolved) {
           return fallbackResolved;

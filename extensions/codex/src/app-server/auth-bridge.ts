@@ -11,7 +11,6 @@ import {
   ensureAuthProfileStore,
   findPersistedAuthProfileCredential,
   loadAuthProfileStoreForSecretsRuntime,
-  refreshOAuthCredentialForRuntime,
   resolveAuthProfileOrder,
   resolveProviderIdForAuth,
   resolveApiKeyForProfile,
@@ -21,10 +20,7 @@ import {
   type AuthProfileStore,
   type OAuthCredential,
 } from "openclaw/plugin-sdk/agent-runtime";
-import {
-  hasUsableOAuthCredential,
-  resolveOpenAICodexAuthIdentity,
-} from "openclaw/plugin-sdk/provider-auth";
+import { resolveOpenAICodexAuthIdentity } from "openclaw/plugin-sdk/provider-auth";
 import { readSecretFile } from "openclaw/plugin-sdk/secret-file";
 import {
   resolveCodexAppServerHomeDir,
@@ -85,10 +81,6 @@ const activeComputerUseArtifactReconciliations = new Map<
 >();
 type AuthProfileOrderConfig = Parameters<typeof resolveAuthProfileOrder>[0]["cfg"];
 export type CodexAppServerAuthRequirement = "api-key" | "subscription";
-const scopedOAuthRefreshQueues = new WeakMap<
-  AuthProfileStore,
-  Map<string, Promise<OAuthCredential>>
->();
 
 export async function bridgeCodexAppServerStartOptions(params: {
   startOptions: CodexAppServerStartOptions;
@@ -440,14 +432,24 @@ export async function resolveCodexAppServerAuthAccountCacheKey(params: {
     return undefined;
   }
   if (credential.type === "api_key") {
-    const resolved = await resolveApiKeyForProfile({ store, profileId, agentDir });
+    const resolved = await resolveApiKeyForProfile({
+      cfg: params.config,
+      store,
+      profileId,
+      agentDir,
+    });
     const apiKey = resolved?.apiKey?.trim();
     return apiKey
       ? `${resolveChatgptAccountId(profileId, credential)}:${fingerprintApiKeyAuthProfileCacheKey(apiKey)}`
       : resolveChatgptAccountId(profileId, credential);
   }
   if (credential.type === "token") {
-    const resolved = await resolveApiKeyForProfile({ store, profileId, agentDir });
+    const resolved = await resolveApiKeyForProfile({
+      cfg: params.config,
+      store,
+      profileId,
+      agentDir,
+    });
     const accessToken = resolved?.apiKey?.trim();
     return accessToken
       ? `${resolveChatgptAccountId(profileId, credential)}:${fingerprintTokenAuthProfileCacheKey(accessToken)}`
@@ -1113,6 +1115,7 @@ async function resolveLoginParamsForCredential(
   // reject opaque provider credentials.
   if (credential.type === "api_key") {
     const resolved = await resolveApiKeyForProfile({
+      cfg: params.config,
       store: params.preferStoreCredential
         ? params.store
         : ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false }),
@@ -1124,6 +1127,7 @@ async function resolveLoginParamsForCredential(
   }
   if (credential.type === "token") {
     const resolved = await resolveApiKeyForProfile({
+      cfg: params.config,
       store: params.preferStoreCredential
         ? params.store
         : ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false }),
@@ -1192,37 +1196,17 @@ async function resolveOAuthCredentialForCodexAppServer(
     isCodexAppServerAuthProvider(persistedCredential.provider)
       ? persistedCredential
       : undefined;
-  const ownerCredential = store.profiles[profileId];
-  const overlaidOAuthCredential =
-    ownerCredential?.type === "oauth" && isCodexAppServerAuthProvider(ownerCredential.provider)
-      ? ownerCredential
-      : undefined;
-  if (useScopedCredential && overlaidOAuthCredential) {
-    return await resolveScopedOAuthCredential({
-      store,
-      profileId,
-      credential: overlaidOAuthCredential,
-      forceRefresh: params.forceRefresh,
-    });
-  }
-  if (params.forceRefresh && !persistedOAuthCredential && overlaidOAuthCredential) {
-    const refreshedRuntimeCredential = await refreshOAuthCredentialForRuntime({
-      credential: overlaidOAuthCredential,
-    });
-    if (!refreshedRuntimeCredential?.access?.trim()) {
-      throw new Error(`Codex app-server auth profile "${profileId}" could not refresh.`);
-    }
-    store.profiles[profileId] = refreshedRuntimeCredential;
-    return refreshedRuntimeCredential;
-  }
+  const useRuntimeOAuthStore = useScopedCredential || !persistedOAuthCredential;
   const resolved = await resolveApiKeyForProfile({
+    cfg: params.config,
     store,
     profileId,
     agentDir: ownerAgentDir,
-    forceRefresh: params.forceRefresh && Boolean(persistedOAuthCredential),
+    forceRefresh: params.forceRefresh,
+    useRuntimeOAuthStore,
   });
-  const refreshed = useScopedCredential
-    ? undefined
+  const refreshed = useRuntimeOAuthStore
+    ? store.profiles[profileId]
     : loadAuthProfileStoreForSecretsRuntime(ownerAgentDir).profiles[profileId];
   const refreshedOAuthCredential =
     refreshed?.type === "oauth" && isCodexAppServerAuthProvider(refreshed.provider)
@@ -1277,52 +1261,6 @@ function hasMatchingOAuthIdentity(persisted: OAuthCredential, supplied: OAuthCre
   const persistedEmail = persisted.email?.trim().toLowerCase();
   const suppliedEmail = supplied.email?.trim().toLowerCase();
   return Boolean(persistedEmail && suppliedEmail && persistedEmail === suppliedEmail);
-}
-
-async function resolveScopedOAuthCredential(params: {
-  store: AuthProfileStore;
-  profileId: string;
-  credential: OAuthCredential;
-  forceRefresh: boolean;
-}): Promise<OAuthCredential> {
-  const existingRefresh = scopedOAuthRefreshQueues.get(params.store)?.get(params.profileId);
-  if (existingRefresh) {
-    return await existingRefresh;
-  }
-  if (!params.forceRefresh && hasUsableOAuthCredential(params.credential)) {
-    return params.credential;
-  }
-
-  const storeRefreshes = scopedOAuthRefreshQueues.get(params.store) ?? new Map();
-  scopedOAuthRefreshQueues.set(params.store, storeRefreshes);
-  const refresh = (async () => {
-    const current = params.store.profiles[params.profileId];
-    const credential = current?.type === "oauth" ? current : params.credential;
-    if (!params.forceRefresh && hasUsableOAuthCredential(credential)) {
-      return credential;
-    }
-    const refreshed = await refreshOAuthCredentialForRuntime({ credential });
-    if (!refreshed?.access?.trim()) {
-      throw new Error(`Codex app-server auth profile "${params.profileId}" could not refresh.`);
-    }
-    if (!isDeepStrictEqual(params.store.profiles[params.profileId], credential)) {
-      throw new Error(
-        `Codex app-server auth profile "${params.profileId}" changed while refreshing.`,
-      );
-    }
-    params.store.profiles[params.profileId] = refreshed;
-    return refreshed;
-  })();
-  storeRefreshes.set(params.profileId, refresh);
-  try {
-    return await refresh;
-  } finally {
-    // Scoped stores are process-local; serialize their rotating refresh token
-    // and release the queue entry with the refresh that owns it.
-    if (storeRefreshes.get(params.profileId) === refresh) {
-      storeRefreshes.delete(params.profileId);
-    }
-  }
 }
 
 // Runtime consumes canonical auth state; doctor owns retired profile-id migration.
