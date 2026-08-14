@@ -32,6 +32,9 @@ export type PluginHealthSummary = Omit<ProtocolPlugin, "unavailable"> & {
   >;
 };
 
+/** Live-vs-disk runtime config drift diagnostic surfaced by `openclaw health`. */
+export type RuntimeConfigHealthSummary = NonNullable<ProtocolHealth["runtimeConfig"]>;
+
 /** Full gateway health payload consumed by `openclaw health`. */
 export type HealthSummary = ProtocolHealth & {
   ok: true;

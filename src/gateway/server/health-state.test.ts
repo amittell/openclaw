@@ -7,15 +7,27 @@ import type { HealthSummary } from "../health/types.js";
  * Health-state cache tests covering coalescing, sensitive probes, and broadcasts.
  */
 const {
+  buildRuntimeConfigHealthMock,
   collectGatewayHealthSnapshotMock,
+  getConfigReloadObservedGenerationMock,
   getRuntimeConfigMock,
   getUpdateAvailableMock,
   getUpdateScheduleMock,
 } = vi.hoisted(() => ({
+  buildRuntimeConfigHealthMock: vi.fn(),
   collectGatewayHealthSnapshotMock: vi.fn(),
+  getConfigReloadObservedGenerationMock: vi.fn(() => 0),
   getRuntimeConfigMock: vi.fn(),
   getUpdateAvailableMock: vi.fn(),
   getUpdateScheduleMock: vi.fn(),
+}));
+
+vi.mock("../../commands/health-runtime-config.js", () => ({
+  buildRuntimeConfigHealth: buildRuntimeConfigHealthMock,
+}));
+
+vi.mock("../config-reload-observed.js", () => ({
+  getConfigReloadObservedGeneration: getConfigReloadObservedGenerationMock,
 }));
 
 vi.mock("../health/collector.js", () => ({
@@ -77,6 +89,10 @@ async function loadHealthState() {
   vi.resetModules();
   collectGatewayHealthSnapshotMock.mockReset();
   collectGatewayHealthSnapshotMock.mockResolvedValue(createHealthSummary());
+  buildRuntimeConfigHealthMock.mockReset();
+  buildRuntimeConfigHealthMock.mockResolvedValue(undefined);
+  getConfigReloadObservedGenerationMock.mockReset();
+  getConfigReloadObservedGenerationMock.mockReturnValue(0);
   getUpdateAvailableMock.mockReset();
   getUpdateAvailableMock.mockReturnValue(null);
   getUpdateScheduleMock.mockReset();
@@ -179,6 +195,84 @@ describe("buildGatewaySnapshot update metadata", () => {
 describe("refreshGatewayHealthSnapshot", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("publishes one redacted runtime-config diagnostic to cache and broadcasts", async () => {
+    const healthState = await loadHealthState();
+    const broadcast = vi.fn();
+    buildRuntimeConfigHealthMock.mockResolvedValue({
+      state: "drift",
+      driftPaths: ["agents.defaults.model"],
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      diskDefaultModel: "openai/gpt-5.6-terra",
+    });
+    healthState.setBroadcastHealthUpdate(broadcast);
+
+    const published = await healthState.refreshGatewayHealthSnapshot({ probe: false });
+
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledOnce();
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledWith();
+    expect(published.runtimeConfig).toEqual({
+      state: "drift",
+      driftPaths: ["agents.defaults.model"],
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      diskDefaultModel: "openai/gpt-5.6-terra",
+    });
+    expect(healthState.getHealthCache()).toBe(published);
+    expect(broadcast).toHaveBeenCalledWith(published);
+    expect(JSON.stringify(published)).not.toContain("Fingerprint");
+  });
+
+  it("invalidates stale cache generations and recomputes once before publication", async () => {
+    const healthState = await loadHealthState();
+    const broadcast = vi.fn();
+    let generation = 7;
+    collectGatewayHealthSnapshotMock
+      .mockResolvedValueOnce(createHealthSummary())
+      .mockResolvedValueOnce(createHealthSummary());
+    getConfigReloadObservedGenerationMock.mockImplementation(() => generation);
+    buildRuntimeConfigHealthMock.mockResolvedValueOnce({ state: "ok" }).mockResolvedValueOnce({
+      state: "unknown",
+      message: "Disk config source snapshot is unavailable.",
+    });
+    healthState.setBroadcastHealthUpdate(broadcast);
+
+    const first = await healthState.refreshGatewayHealthSnapshot({ probe: false });
+    expect(first.runtimeConfig).toEqual({ state: "ok" });
+    expect(healthState.getHealthCache()).toBe(first);
+
+    generation += 1;
+    expect(healthState.getHealthCache()).toBeNull();
+
+    const second = await healthState.refreshGatewayHealthSnapshot({ probe: false });
+    expect(second.runtimeConfig).toEqual({
+      state: "unknown",
+      message: "Disk config source snapshot is unavailable.",
+    });
+    expect(healthState.getHealthCache()).toBe(second);
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
+    expect(broadcast.mock.calls.map(([snapshot]) => snapshot.runtimeConfig)).toEqual([
+      { state: "ok" },
+      { state: "unknown", message: "Disk config source snapshot is unavailable." },
+    ]);
+  });
+
+  it("retries publication when the observed generation advances during computation", async () => {
+    const healthState = await loadHealthState();
+    let generation = 11;
+    getConfigReloadObservedGenerationMock.mockImplementation(() => generation);
+    buildRuntimeConfigHealthMock
+      .mockImplementationOnce(async () => {
+        generation += 1;
+        return { state: "ok" };
+      })
+      .mockResolvedValueOnce({ state: "drift", driftPaths: ["models"] });
+
+    const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
+
+    expect(published.runtimeConfig).toEqual({ state: "drift", driftPaths: ["models"] });
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
+    expect(healthState.getHealthCache()).toBe(published);
   });
 
   it("does not let a post-connect passive refresh absorb an explicit probe", async () => {

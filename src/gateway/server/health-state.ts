@@ -1,6 +1,7 @@
 // Gateway health state builds snapshots, caches health probes, and broadcasts health/presence version changes.
 import type { Snapshot } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
+import { buildRuntimeConfigHealth } from "../../commands/health-runtime-config.js";
 import { createConfigIO, getRuntimeConfig } from "../../config/io.js";
 import { STATE_DIR } from "../../config/paths.js";
 import { getRuntimeConfigAppliedHash } from "../../config/runtime-snapshot.js";
@@ -10,6 +11,7 @@ import { getUpdateAvailable, getUpdateSchedule } from "../../infra/update-startu
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { resolveGatewayAgentSelectionState } from "../agent-list.js";
 import { resolveGatewayAuth } from "../auth.js";
+import { getConfigReloadObservedGeneration } from "../config-reload-observed.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { GatewayConfigRevisionProjector } from "../config-revision-token.js";
 import { projectUpdateAvailable } from "../events.js";
@@ -21,7 +23,15 @@ import type { GatewayEventLoopHealth } from "./event-loop-health.js";
 let presenceVersion = 1;
 let healthVersion = 1;
 let healthCache: HealthSummary | null = null;
+let healthCacheConfigGeneration = -1;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
+
+type RuntimeConfigHealthResolution = {
+  generation: number;
+  promise: Promise<HealthSummary["runtimeConfig"]>;
+};
+
+let runtimeConfigHealthResolution: RuntimeConfigHealthResolution | null = null;
 
 type HealthAudience = "public" | "admin";
 type HealthRefreshStrength = "passive" | "probe";
@@ -100,6 +110,12 @@ export function buildGatewaySnapshot(opts: {
 }
 
 export function getHealthCache(): HealthSummary | null {
+  // A reload observation invalidates the whole published snapshot. Callers may
+  // trigger a fresh publication, but must never mix old drift state with a new
+  // generation or independently re-read the config source.
+  if (healthCache && healthCacheConfigGeneration !== getConfigReloadObservedGeneration()) {
+    return null;
+  }
   return healthCache;
 }
 
@@ -118,6 +134,38 @@ export function getPresenceVersion(): number {
 
 export function setBroadcastHealthUpdate(fn: ((snap: HealthSummary) => void) | null) {
   broadcastHealthUpdate = fn;
+}
+
+async function resolveRuntimeConfigHealth(): Promise<{
+  generation: number;
+  summary: HealthSummary["runtimeConfig"];
+}> {
+  const generation = getConfigReloadObservedGeneration();
+  if (!runtimeConfigHealthResolution || runtimeConfigHealthResolution.generation !== generation) {
+    runtimeConfigHealthResolution = {
+      generation,
+      // Snapshot-wide health is observable by read-scoped clients, hello, and
+      // broadcasts, so it never carries fingerprints or detailed disk errors.
+      promise: buildRuntimeConfigHealth(),
+    };
+  }
+  const summary = await runtimeConfigHealthResolution.promise;
+  if (generation !== getConfigReloadObservedGeneration()) {
+    return resolveRuntimeConfigHealth();
+  }
+  return { generation, summary };
+}
+
+async function preparePublishedHealthSnapshot(snapshot: HealthSummary): Promise<{
+  generation: number;
+  snapshot: HealthSummary;
+}> {
+  const resolved = await resolveRuntimeConfigHealth();
+  delete snapshot.runtimeConfig;
+  if (resolved.summary) {
+    snapshot.runtimeConfig = resolved.summary;
+  }
+  return { generation: resolved.generation, snapshot };
 }
 
 export async function refreshGatewayHealthSnapshot(opts?: {
@@ -152,13 +200,15 @@ export async function refreshGatewayHealthSnapshot(opts?: {
     }
     const eventLoop = opts?.getEventLoopHealth?.();
     const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
-    const snap = await collectGatewayHealthSnapshot({
+    const collected = await collectGatewayHealthSnapshot({
       audience,
       probe: strength === "probe",
       runtimeSnapshot,
       ...(eventLoop ? { eventLoop } : {}),
       ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
     });
+    const { generation: configGeneration, snapshot: snap } =
+      await preparePublishedHealthSnapshot(collected);
     if (
       strength === "probe" &&
       state.inFlight.passive &&
@@ -173,6 +223,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
     if (!includeSensitive && generation > state.committedGeneration) {
       state.committedGeneration = generation;
       healthCache = snap;
+      healthCacheConfigGeneration = configGeneration;
       healthVersion += 1;
       if (broadcastHealthUpdate) {
         broadcastHealthUpdate(snap);

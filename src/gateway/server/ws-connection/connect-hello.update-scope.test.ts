@@ -6,10 +6,12 @@ import type { HelloOk } from "../../../../packages/gateway-protocol/src/index.js
 const {
   buildGatewaySnapshotMock,
   emitGatewayAuthSecurityEventMock,
+  getHealthCacheMock,
   listControlUiPluginTabsMock,
   listControlUiPluginWidgetKindsMock,
 } = vi.hoisted(() => ({
   emitGatewayAuthSecurityEventMock: vi.fn(),
+  getHealthCacheMock: vi.fn(() => null as ReturnType<() => HelloOk["snapshot"]["health"]>),
   listControlUiPluginTabsMock: vi.fn((_scopes: readonly string[]) => []),
   listControlUiPluginWidgetKindsMock: vi.fn((_scopes: readonly string[]) => []),
   buildGatewaySnapshotMock: vi.fn((opts?: { includeUpdateDetails?: boolean }) => {
@@ -54,7 +56,7 @@ const {
 
 vi.mock("../health-state.js", () => ({
   buildGatewaySnapshot: buildGatewaySnapshotMock,
-  getHealthCache: vi.fn(() => null),
+  getHealthCache: getHealthCacheMock,
   getHealthVersion: vi.fn(() => 1),
 }));
 
@@ -148,6 +150,46 @@ function expectRedactedHelloSnapshot(context: ReturnType<typeof makeContext>) {
 describe("sendGatewayHello update detail scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getHealthCacheMock.mockReturnValue(null);
+  });
+
+  it("includes the shared redacted health publication in hello", async () => {
+    getHealthCacheMock.mockReturnValue({
+      ok: true,
+      ts: 1,
+      durationMs: 1,
+      channels: {},
+      channelOrder: [],
+      channelLabels: {},
+      heartbeatSeconds: 0,
+      defaultAgentId: "main",
+      agents: [],
+      sessions: { path: "sessions.db", count: 0, recent: [] },
+      runtimeConfig: {
+        state: "drift",
+        driftPaths: ["gateway.auth"],
+        message: "Live gateway runtime config differs from disk; restart is required.",
+      },
+    });
+    const context = makeContext("operator", ["operator.admin"]);
+
+    await sendGatewayHello(
+      context as never,
+      makeState("operator", ["operator.admin"]) as never,
+      {},
+    );
+
+    expect(helloSnapshot(context)?.health.runtimeConfig).toEqual({
+      state: "drift",
+      driftPaths: ["gateway.auth"],
+      message: "Live gateway runtime config differs from disk; restart is required.",
+    });
+    expect(helloSnapshot(context)?.health.runtimeConfig).not.toHaveProperty(
+      "liveSourceFingerprint",
+    );
+    expect(helloSnapshot(context)?.health.runtimeConfig).not.toHaveProperty(
+      "diskSourceFingerprint",
+    );
   });
 
   it.each([

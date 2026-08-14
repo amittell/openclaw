@@ -88,6 +88,35 @@ describe("SnapshotSchema", () => {
     expect(Value.Check(SnapshotSchema, snapshot)).toBe(true);
   });
 
+  it("validates runtime-config health diagnostics", () => {
+    const snapshot = {
+      ...snapshotWithPresence({ ts: 1 }),
+      health: {
+        runtimeConfig: {
+          state: "drift",
+          liveDefaultModel: "openai/gpt-5.6-sol",
+          diskDefaultModel: "openai/gpt-5.6-terra",
+          driftPaths: ["agents.defaults.model"],
+          message: "Runtime config differs from disk.",
+        },
+      },
+    };
+
+    expect(Value.Check(SnapshotSchema, snapshot)).toBe(true);
+    expect(
+      Value.Check(SnapshotSchema, {
+        ...snapshot,
+        health: { runtimeConfig: { state: "stale" } },
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(SnapshotSchema, {
+        ...snapshot,
+        health: { runtimeConfig: { state: "ok", liveSourceFingerprint: "private" } },
+      }),
+    ).toBe(false);
+  });
+
   it("accepts additive update availability and schedule state", () => {
     const snapshot = {
       ...snapshotWithPresence({ ts: 1 }),
