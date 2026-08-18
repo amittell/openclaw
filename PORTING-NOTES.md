@@ -1,0 +1,20 @@
+# PORTING NOTES — upgrade-v2026.8.1-beta.2
+
+Port of the 79-commit carried stack (tip of `upgrade-v2026.8.1-beta.1`,
+7a6c5f29b6d5) onto the `v2026.8.1-beta.2` tag (8f382a202ff).
+
+## Drops
+
+- **7f5f2430c5dd** `test(auth): drop 6.11-era legacy auth.json inline-migration test` — no-op in the beta.2 dry run (already covered upstream); dropped.
+- **cb188a7fc5ad** `fix(rebase): repair two ratchet failures the type lanes could not see` — no-op in the beta.2 dry run (already covered upstream); dropped.
+- **5be1dc40be2** `fix(gateway): cap pending final delivery recovery` — semantically superseded upstream. Upstream #121969 (merged 2026-08-11, inside beta.2) deleted `src/agents/main-session-restart-dispatch.ts` + the flat `pendingFinalDelivery*` SessionEntry fields (retired at the storage layer by `src/config/sessions/store-entry-shape.ts`) and re-architected restart recovery around `src/agents/main-session-recovery/*` with bounded `mainRestartRecovery.chargedAttempts` (cap `MAX_RECOVERY_RETRIES`, exhausted → durable tombstone + notice) and pending final deliveries owned by the durable outbound delivery queue (`src/infra/outbound/delivery-queue-recovery.ts`: `maxRetries` budget → dead-letter to `failed/`). Replacement: upstream #121969 + delivery-queue retry budgeting.
+
+## Adaptations (semantic ports, not textual merges)
+
+- **d932d757295** `fix(gateway): ignore future pending final retry timestamps` — the original patch targeted the flat `pendingFinalDeliveryLastAttemptAt` backoff in the deleted `main-session-restart-recovery-store.ts`. Intent (future-dated pending final retry timestamps are ignored, not read as infinite backoff) re-anchored onto `isDeliveryRecoveryRetryEligible` in `src/infra/delivery-recovery.shared.ts`, the beta.2 home of pending final delivery retry timing; test added to `src/infra/delivery-recovery.shared.test.ts`.
+- **fe503cffa39** `fix(agent): treat Anthropic long-context usage errors as context overflow` — upstream #121341 consolidated failover classification into `src/agents/failover/`; the classifier was re-anchored onto `isLikelyContextOverflowError` there. Because upstream #61608 lists "extra usage is required (for long context requests)" as a billing pattern, the check runs BEFORE the billing/rate-limit exclusions to win the classification race (otherwise the 429 would be classified billing and never compact+retry).
+- **882bf436c4a** `docs+style: document compact+retry recovery path` — code portion already present in the ported classifier; only docs applied.
+- **31f41ecfa5a** `fix(gateway): fail fast on missing local probe auth` — merged with upstream's new device-token scoping (sshTunnel/explicit/remote targets) and the renamed probe-auth surface resolver; `status.gather.ts` probes `probeUrl` (upstream moved it out of `gateway.probeUrl`).
+- **b7d17d696dc** `feat(memory-lancedb): fallbackBaseUrl embedding failover` — upstream moved memory-lancedb `uiHints` into `openclaw.plugin.json`; the new `embedding.fallbackBaseUrl` hint lands there, config.ts keeps the functional plumbing only.
+- **2db692785ad** `fix(agents): port #93952 auth-deadlock stack` — adapted to beta.2 `authProfilesLog` (constants export after collision burn #121768/#121893), `hasUsableOAuthCredential` from `./credential-state.js`, `asDateTimestampMs` from `@openclaw/normalization-core`, and upstream #123298 shared auth store seam (`resolveSharedAuthStorePath` for undefined ownerAgentDir). Functional content verified identical (delta vs beta.2 base contains only the in-lock deadline + abandoned write-back discard stack).
+- **f30c33242f8** / **29b9a9bc24e** / **73697c24e23** / **c77b4bca1d0** / **7a6c5f29b6d** — rebase-hygiene commits; re-derived against the new base instead of ported verbatim (see entries below as they occur).

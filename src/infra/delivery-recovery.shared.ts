@@ -90,7 +90,10 @@ export function isDeliveryRecoveryRetryEligible(
     typeof lastAttemptAt === "number" && Number.isFinite(lastAttemptAt) && lastAttemptAt > 0
       ? lastAttemptAt
       : entry.enqueuedAt;
-  const remainingBackoffMs = baseAttemptAt + backoff - now;
+  // A clock skew / future timestamp would otherwise read as an infinite backoff
+  // and strand the delivery; treat it as not backed off.
+  const elapsedMs = now - baseAttemptAt;
+  const remainingBackoffMs = elapsedMs < 0 ? 0 : Math.max(0, baseAttemptAt + backoff - now);
   return remainingBackoffMs > 0 ? { eligible: false, remainingBackoffMs } : { eligible: true };
 }
 

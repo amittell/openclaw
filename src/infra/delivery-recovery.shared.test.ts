@@ -167,6 +167,14 @@ describe("shared durable delivery recovery coordinator", () => {
         now,
       ),
     ).toEqual({ eligible: false, remainingBackoffMs: 3_000 });
+    // A clock skew / future lastAttemptAt must not read as an infinite backoff
+    // and strand the delivery; it is treated as not backed off.
+    expect(
+      isDeliveryRecoveryRetryEligible(
+        { ...createEntry("skew", now - 60_000), retryCount: 2, lastAttemptAt: now + 60_000 },
+        now,
+      ),
+    ).toEqual({ eligible: true });
   });
 
   it("normalizes recovery deadlines without widening negative or invalid budgets", () => {
