@@ -17,4 +17,23 @@ describe("isLikelyContextOverflowError", () => {
       ),
     ).toBe(false);
   });
+
+  it("treats Anthropic long-context 429 as context overflow (not rate limit)", () => {
+    // Anthropic returns HTTP 429 for this message, but it is semantically a context
+    // overflow — the session is too large. It should route to compact+retry, not
+    // model fallback.
+    expect(isLikelyContextOverflowError("Extra usage is required for long context requests.")).toBe(
+      true,
+    );
+    expect(isLikelyContextOverflowError("extra usage is required for long context requests")).toBe(
+      true,
+    );
+    expect(
+      isLikelyContextOverflowError(
+        "429 Extra usage is required for long context requests. Please contact support.",
+      ),
+    ).toBe(true);
+    // Standard rate limit messages must still be excluded
+    expect(isLikelyContextOverflowError("Rate limit exceeded")).toBe(false);
+  });
 });
