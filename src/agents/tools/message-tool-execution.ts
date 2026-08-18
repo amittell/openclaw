@@ -34,6 +34,7 @@ import type {
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
 import { resolveActionDeliveryTargetAlias } from "../../infra/outbound/message-action-spec.js";
 import { shouldApplyCrossContextMarker } from "../../infra/outbound/outbound-policy.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { getPreparedMessageToolCatalog } from "../../plugins/prepared-message-tool-catalog.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
@@ -164,6 +165,7 @@ const recentPollVoteBySession = new Map<
 // near-identical text in one run, double-posting the channel. Keyed per run
 // (session fallback) and route-checked like the poll-vote echo above; TTL +
 // bounded list so a long-lived gateway cannot accumulate state.
+const messageToolLog = createSubsystemLogger("message-tool");
 const DUPLICATE_SEND_TTL_MS = 10 * 60 * 1000;
 const DUPLICATE_SEND_MAX_TRACKED_PER_RUN = 8;
 // Both directions must be within 2x length so a short earlier send can never
@@ -540,14 +542,13 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       const duplicateSendKey = options?.runId?.trim() || undefined;
       // Text-only guard: a media send with a repeated caption is a distinct
       // deliverable and must never be suppressed.
-      const duplicateSendHasMedia =
-        [
-          readToolStringParam(params, "media"),
-          readToolStringParam(params, "mediaUrl"),
-          readToolStringParam(params, "path"),
-          readToolStringParam(params, "filePath"),
-          readToolStringParam(params, "fileUrl"),
-        ].some((value) => value !== undefined);
+      const duplicateSendHasMedia = [
+        readToolStringParam(params, "media"),
+        readToolStringParam(params, "mediaUrl"),
+        readToolStringParam(params, "path"),
+        readToolStringParam(params, "filePath"),
+        readToolStringParam(params, "fileUrl"),
+      ].some((value) => value !== undefined);
       const duplicateSendText =
         action === "send" && !duplicateSendHasMedia
           ? (readToolStringParam(params, "text") ??
@@ -566,6 +567,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
             )
             .map((sent) => sent.normalized);
           if (isMessagingToolDuplicateNormalized(normalized, priorOnRoute)) {
+            // Observability: the suppression verdict only reaches the model;
+            // this warn line is the sole operator-visible signal the guard fired.
+            messageToolLog.warn(
+              `duplicate_send suppressed: near-duplicate outbound message blocked for run=${duplicateSendKey}`,
+            );
             return jsonResult({
               status: "suppressed",
               reason: "duplicate_send",
