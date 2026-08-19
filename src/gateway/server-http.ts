@@ -21,8 +21,6 @@ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
-
-import { isGatewayShuttingDown } from "./server-close.js";
 import {
   CONTROL_UI_CATALOG_ICON_PATH_PREFIX,
   CONTROL_UI_PLUGIN_ICON_PATH_PREFIX,
@@ -40,11 +38,7 @@ import {
   classifyNodeWorkspaceTransferPath,
   classifyWorkerGatewayPath,
 } from "./gateway-http-route-contracts.js";
-import {
-  isGatewayShuttingDown,
-  noteShuttingDownProbeResponse,
-  resetShuttingDownProbeResponseLogForTest,
-} from "./gateway-shutdown-state.js";
+import { resetShuttingDownProbeResponseLogForTest as resetGatewayHealthzShuttingDownLogForTest } from "./gateway-shutdown-state.js";
 import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import {
   finishFailedGatewayHttpResponse,
@@ -53,6 +47,7 @@ import {
 } from "./http-common.js";
 import { resolveRequestClientIp } from "./net.js";
 import { normalizePluginNodeCapabilityScopedUrl } from "./plugin-node-capability.js";
+import { isGatewayShuttingDown } from "./server-close.js";
 import {
   getCachedPluginGatewayAuthBypassPaths,
   shouldEnforceDefaultPluginGatewayAuth,
@@ -60,9 +55,6 @@ import {
   type ResolvePluginNodeCapabilityRoute,
 } from "./server-http-plugin-auth.js";
 import { handleGatewayProbeRequest } from "./server-http-probes.js";
-import {
-  resetShuttingDownProbeResponseLogForTest as resetGatewayHealthzShuttingDownLogForTest,
-} from "./gateway-shutdown-state.js";
 // Re-export for source compatibility; backing impl now lives in
 // `gateway-shutdown-state.ts` so the per-cycle reset happens at the
 // state-transition site (markGatewayShuttingDown / resetGatewayShuttingDownState).

@@ -16,8 +16,6 @@ import {
 } from "../process/gateway-work-admission.js";
 import { resolveRuntimeServiceVersion } from "../version.js";
 import type { ChannelManager } from "./server-channels.js";
-import { markGatewayShuttingDown, resetGatewayShuttingDownForTest } from "./server-close.js";
-import { resetGatewayHealthzShuttingDownLogForTest } from "./server-http.js";
 import {
   AUTH_TOKEN,
   AUTH_NONE,
@@ -1090,6 +1088,4 @@ describe("gateway probe endpoints", () => {
       },
     });
   });
-
-
 });
