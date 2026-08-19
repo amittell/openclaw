@@ -16,6 +16,7 @@ import {
   OAUTH_REFRESH_LOCK_OPTIONS,
   authProfilesLog,
 } from "./constants.js";
+import { hasUsableOAuthCredential } from "./credential-state.js";
 import { shouldMirrorRefreshedOAuthCredential } from "./oauth-identity.js";
 import {
   OAuthRefreshFailureError,
@@ -35,7 +36,6 @@ import {
   shouldBootstrapFromExternalCliCredential,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
-import { hasUsableOAuthCredential } from "./credential-state.js";
 import { resolveSharedAuthStorePath } from "./path-resolve.js";
 import { resolveOAuthRefreshLockPath } from "./paths.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
@@ -293,10 +293,13 @@ export function resolveEffectiveOAuthCredentialCore(params: {
     return params.credential;
   }
   if (!isSafeToAdoptBootstrapOAuthIdentity(params.credential, imported)) {
-    authProfilesLog.warn("refused external oauth bootstrap credential: identity mismatch or missing binding", {
-      profileId: params.profileId,
-      provider: params.credential.provider,
-    });
+    authProfilesLog.warn(
+      "refused external oauth bootstrap credential: identity mismatch or missing binding",
+      {
+        profileId: params.profileId,
+        provider: params.credential.provider,
+      },
+    );
     return params.credential;
   }
   const shouldBootstrap = shouldBootstrapFromExternalCliCredential({
@@ -409,9 +412,12 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           });
           if (!decision.shouldMirror) {
             if (decision.reason === "identity-mismatch-or-regression") {
-              authProfilesLog.warn("refused to mirror OAuth credential: identity mismatch or regression", {
-                profileId: params.profileId,
-              });
+              authProfilesLog.warn(
+                "refused to mirror OAuth credential: identity mismatch or regression",
+                {
+                  profileId: params.profileId,
+                },
+              );
             }
             return false;
           }
@@ -568,11 +574,14 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               if (sectionOwnership.state === "owned") {
                 return true;
               }
-              authProfilesLog.debug("discarded abandoned OAuth refresh write-back after in-lock deadline", {
-                profileId: params.profileId,
-                provider: params.provider,
-                step,
-              });
+              authProfilesLog.debug(
+                "discarded abandoned OAuth refresh write-back after in-lock deadline",
+                {
+                  profileId: params.profileId,
+                  provider: params.provider,
+                  step,
+                },
+              );
               return false;
             };
             const store = loadStoredOAuthRefreshStore(ownerAgentDir);
@@ -604,11 +613,14 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
                   isSafeToAdoptMainStoreOAuthIdentity(cred, mainCred)
                 ) {
                   store.profiles[params.profileId] = { ...mainCred };
-                  authProfilesLog.info("adopted fresh OAuth credential from main store (under refresh lock)", {
-                    profileId: params.profileId,
-                    agentDir: params.agentDir,
-                    expires: new Date(mainCred.expires).toISOString(),
-                  });
+                  authProfilesLog.info(
+                    "adopted fresh OAuth credential from main store (under refresh lock)",
+                    {
+                      profileId: params.profileId,
+                      agentDir: params.agentDir,
+                      expires: new Date(mainCred.expires).toISOString(),
+                    },
+                  );
                   return {
                     apiKey: await adapter.buildApiKey(mainCred.provider, mainCred, {
                       cfg: params.cfg,
@@ -631,10 +643,13 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
                   );
                 }
               } catch (err) {
-                authProfilesLog.debug("inside-lock main-store adoption failed; proceeding to refresh", {
-                  profileId: params.profileId,
-                  error: formatErrorMessage(err),
-                });
+                authProfilesLog.debug(
+                  "inside-lock main-store adoption failed; proceeding to refresh",
+                  {
+                    profileId: params.profileId,
+                    error: formatErrorMessage(err),
+                  },
+                );
               }
             }
 
@@ -645,10 +660,13 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             });
             if (externallyManaged) {
               if (externallyManaged.provider !== cred.provider) {
-                authProfilesLog.warn("refused external oauth bootstrap credential: provider mismatch", {
-                  profileId: params.profileId,
-                  provider: cred.provider,
-                });
+                authProfilesLog.warn(
+                  "refused external oauth bootstrap credential: provider mismatch",
+                  {
+                    profileId: params.profileId,
+                    provider: cred.provider,
+                  },
+                );
               } else if (!isSafeToAdoptBootstrapOAuthIdentity(cred, externallyManaged)) {
                 authProfilesLog.warn(
                   "refused external oauth bootstrap credential: identity mismatch or missing binding",
@@ -971,3 +989,4 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     resetRefreshQueuesForTest,
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
