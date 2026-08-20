@@ -826,7 +826,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         agentDir: params.agentDir,
         credential: params.credential,
       }) ?? params.credential;
-    const effectiveCredential = resolveEffectiveOAuthCredential({
+    const effectiveCredential = resolveEffectiveOAuthCredentialCore({
       store: params.store,
       profileId: params.profileId,
       credential: adoptedCredential,
