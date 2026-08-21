@@ -221,4 +221,94 @@ describe("memory-lancedb config", () => {
       });
     }).toThrow("dreaming config must be an object");
   });
+
+  it("accepts valid embedding timeoutMs and maxRetries in runtime parsing and the manifest schema", () => {
+    const parsed = memoryConfigSchema.parse({
+      embedding: {
+        apiKey: "sk-test",
+        timeoutMs: 15_000,
+        maxRetries: 3,
+      },
+    });
+    expect(parsed.embedding.timeoutMs).toBe(15_000);
+    expect(parsed.embedding.maxRetries).toBe(3);
+
+    const result = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      cacheKey: "memory-lancedb.manifest.timeout-retries",
+      value: {
+        embedding: {
+          apiKey: "sk-test",
+          timeoutMs: 10_000,
+          maxRetries: 2,
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts boundary values for embedding timeoutMs and maxRetries", () => {
+    const low = memoryConfigSchema.parse({
+      embedding: { apiKey: "sk-test", timeoutMs: 1000, maxRetries: 0 },
+    });
+    expect(low.embedding.timeoutMs).toBe(1000);
+    expect(low.embedding.maxRetries).toBe(0);
+
+    const high = memoryConfigSchema.parse({
+      embedding: { apiKey: "sk-test", timeoutMs: 60_000, maxRetries: 5 },
+    });
+    expect(high.embedding.timeoutMs).toBe(60_000);
+    expect(high.embedding.maxRetries).toBe(5);
+  });
+
+  it("falls back to undefined for out-of-bounds or non-finite timeoutMs", () => {
+    for (const timeoutMs of [500, 120_000, Number.NaN, Infinity, -1000, "10000", null]) {
+      const parsed = memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test", timeoutMs: timeoutMs as number },
+      });
+      expect(parsed.embedding.timeoutMs).toBeUndefined();
+    }
+  });
+
+  it("falls back to undefined for out-of-bounds, non-integer, or non-finite maxRetries", () => {
+    for (const maxRetries of [-1, 10, 2.5, Number.NaN, Infinity, "3", null]) {
+      const parsed = memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test", maxRetries: maxRetries as number },
+      });
+      expect(parsed.embedding.maxRetries).toBeUndefined();
+    }
+  });
+
+  it("rejects out-of-range embedding timeoutMs and maxRetries in the manifest schema", () => {
+    expect(
+      validateJsonSchemaValue({
+        schema: manifest.configSchema,
+        cacheKey: "memory-lancedb.manifest.timeout-oob",
+        value: {
+          embedding: { apiKey: "sk-test", timeoutMs: 500 },
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateJsonSchemaValue({
+        schema: manifest.configSchema,
+        cacheKey: "memory-lancedb.manifest.retries-oob",
+        value: {
+          embedding: { apiKey: "sk-test", maxRetries: 10 },
+        },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("keeps embedding timeoutMs and maxRetries manifest-owned in uiHints", () => {
+    expect(manifest.uiHints?.["embedding.timeoutMs"]).toMatchObject({
+      label: "Timeout (ms)",
+      advanced: true,
+    });
+    expect(manifest.uiHints?.["embedding.maxRetries"]).toMatchObject({
+      label: "Max Retries",
+      advanced: true,
+    });
+    expect(memoryConfigSchema).not.toHaveProperty("uiHints");
+  });
 });

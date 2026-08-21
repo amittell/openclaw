@@ -14,6 +14,11 @@ export type MemoryConfig = {
     // failover; see OpenAiCompatibleEmbeddings).
     fallbackBaseUrl?: string;
     dimensions?: number;
+    // Operator-tunable embedding request bounds. Out-of-bounds or non-finite
+    // input silently falls back to undefined (OpenAI SDK defaults) rather than
+    // throwing, so a bad config value cannot take the plugin down.
+    timeoutMs?: number;
+    maxRetries?: number;
   };
   dreaming?: Record<string, unknown>;
   dbPath?: string;
@@ -44,7 +49,39 @@ const EMBEDDING_CONFIG_KEYS = [
   "baseUrl",
   "fallbackBaseUrl",
   "dimensions",
+  "timeoutMs",
+  "maxRetries",
 ] as const;
+
+const EMBEDDING_TIMEOUT_MS_MIN = 1_000;
+const EMBEDDING_TIMEOUT_MS_MAX = 60_000;
+const EMBEDDING_MAX_RETRIES_MIN = 0;
+const EMBEDDING_MAX_RETRIES_MAX = 5;
+
+// Out-of-bounds / non-finite values fall back to undefined (SDK defaults);
+// only well-formed numbers in range survive.
+function resolveEmbeddingTimeoutMs(embedding: Record<string, unknown>): number | undefined {
+  const value =
+    typeof embedding.timeoutMs === "number" ? parseFiniteNumber(embedding.timeoutMs) : undefined;
+  if (value === undefined || value < EMBEDDING_TIMEOUT_MS_MIN || value > EMBEDDING_TIMEOUT_MS_MAX) {
+    return undefined;
+  }
+  return value;
+}
+
+function resolveEmbeddingMaxRetries(embedding: Record<string, unknown>): number | undefined {
+  const value =
+    typeof embedding.maxRetries === "number" ? parseFiniteNumber(embedding.maxRetries) : undefined;
+  if (
+    value === undefined ||
+    !Number.isInteger(value) ||
+    value < EMBEDDING_MAX_RETRIES_MIN ||
+    value > EMBEDDING_MAX_RETRIES_MAX
+  ) {
+    return undefined;
+  }
+  return value;
+}
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -150,6 +187,8 @@ export const memoryConfigSchema = {
 
     const dimensions = resolveEmbeddingDimensions(embedding);
     const model = resolveEmbeddingModel(embedding, dimensions);
+    const timeoutMs = resolveEmbeddingTimeoutMs(embedding);
+    const maxRetries = resolveEmbeddingMaxRetries(embedding);
     const provider = typeof embedding.provider === "string" ? embedding.provider.trim() : "openai";
     if (!provider) {
       throw new Error("embedding.provider must not be empty");
@@ -230,6 +269,8 @@ export const memoryConfigSchema = {
             ? resolveEnvVars(embedding.fallbackBaseUrl)
             : undefined,
         dimensions,
+        timeoutMs,
+        maxRetries,
       },
       dreaming,
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
