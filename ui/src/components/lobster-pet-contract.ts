@@ -137,7 +137,10 @@ export function resolveLobsterRunOutcome(
 ): LobsterRunOutcome {
   let latest: { at: number; outcome: LobsterRunOutcome } | null = null;
   for (const row of sessions ?? []) {
-    if (!row.status || row.status === "running") {
+    // "paused" is a suspended (non-terminal) run like "running": it has not
+    // produced a final outcome yet, so it must not count toward the pet's
+    // last-run outcome.
+    if (!row.status || row.status === "running" || row.status === "paused") {
       continue;
     }
     // endedAt is the run-completion timestamp; activity/updated stamps also

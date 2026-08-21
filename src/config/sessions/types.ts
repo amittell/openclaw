@@ -429,6 +429,12 @@ type SessionEntryCore = SessionRestartRecoveryState &
     runtimeMs?: number;
     /** Final persisted subagent run status, used after in-memory run archival. */
     status?: SessionRunStatus;
+    /**
+     * Set when the latest run ended via a `sessions_yield` tool call. The session
+     * is awaiting a queued continuation rather than fully complete; consumers
+     * such as restart-recovery should leave it alone until a fresh run starts.
+     */
+    pauseReason?: "sessions_yield";
     /** Compact user-facing reason for the latest failed or timed-out run. */
     lastRunError?: string;
     /**
@@ -610,7 +616,7 @@ export interface InternalSessionEntry extends InternalSessionEntryCore {}
 
 export function isTerminalSessionStatus(
   status: unknown,
-): status is Exclude<NonNullable<SessionEntry["status"]>, "running"> {
+): status is Exclude<NonNullable<SessionEntry["status"]>, "running" | "paused"> {
   return status === "done" || status === "failed" || status === "killed" || status === "timeout";
 }
 

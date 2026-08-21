@@ -91,24 +91,13 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
   private clients = new Map<string, Promise<OpenAiEmbeddingClient>>();
   private endpointDownUntil = new Map<string, number>();
   private readonly baseUrls: (string | undefined)[];
-  // Operator-tunable request bounds from config. Applied to embedding requests
-  // that carry no per-call timeout budget (which then takes precedence, with
-  // maxRetries 0 so per-call budgets are never doubled by SDK retries); unset
-  // config keeps the OpenAI SDK defaults so slow-but-working endpoints do not
-  // silently start failing.
-  private readonly configuredTimeoutMs: number | undefined;
-  private readonly configuredMaxRetries: number | undefined;
 
   constructor(
     private apiKey: string,
     private model: string,
     baseUrls: (string | undefined)[],
     private dimensions?: number,
-    configuredTimeoutMs?: number,
-    configuredMaxRetries?: number,
   ) {
-    this.configuredTimeoutMs = configuredTimeoutMs;
-    this.configuredMaxRetries = configuredMaxRetries;
     // Keep the primary first; drop empty fallbacks but always retain one slot so
     // the default (no baseUrl) path is unchanged.
     const cleaned = baseUrls.filter((url, index) => index === 0 || (url && url.length > 0));
@@ -227,19 +216,11 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     // omitted, then decodes the response. Several compatible providers either
     // reject encoding_format or always return float arrays, so use the generic
     // transport and normalize the response ourselves.
-    const perCallOptions = timeoutMs
-      ? { timeout: timeoutMs, maxRetries: 0 }
-      : {
-          ...(this.configuredTimeoutMs !== undefined ? { timeout: this.configuredTimeoutMs } : {}),
-          ...(this.configuredMaxRetries !== undefined
-            ? { maxRetries: this.configuredMaxRetries }
-            : {}),
-        };
     return await (
       await this.clientFor(baseUrl)
     ).post<EmbeddingCreateResponse>("/embeddings", {
       body: params,
-      ...perCallOptions,
+      ...(timeoutMs ? { timeout: timeoutMs, maxRetries: 0 } : {}),
     });
   }
 }
@@ -629,17 +610,9 @@ export const testing = {
 } as const;
 
 export function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings {
-  const { provider, model, dimensions, apiKey, baseUrl, fallbackBaseUrl, timeoutMs, maxRetries } =
-    cfg.embedding;
+  const { provider, model, dimensions, apiKey, baseUrl, fallbackBaseUrl } = cfg.embedding;
   if (provider === "openai" && apiKey) {
-    return new OpenAiCompatibleEmbeddings(
-      apiKey,
-      model,
-      [baseUrl, fallbackBaseUrl],
-      dimensions,
-      timeoutMs,
-      maxRetries,
-    );
+    return new OpenAiCompatibleEmbeddings(apiKey, model, [baseUrl, fallbackBaseUrl], dimensions);
   }
   return new ProviderAdapterEmbeddings(api, cfg.embedding);
 }

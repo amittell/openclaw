@@ -230,6 +230,7 @@ const SESSION_RUN_STATUS_LABELS = {
   failed: "sessionsView.statusFailed",
   killed: "sessionsView.statusKilled",
   timeout: "sessionsView.statusTimeout",
+  paused: "sessionsView.statusPaused",
 } as const satisfies Record<SessionRunStatus, string>;
 
 function formatSessionRunStatus(status: SessionRunStatus): string {
@@ -237,8 +238,13 @@ function formatSessionRunStatus(status: SessionRunStatus): string {
 }
 
 function renderSessionStatusBadge(row: GatewaySessionRow) {
-  const active = isSessionRunActive(row);
-  const idle = row.hasActiveRun === false && (!row.status || row.status === "running");
+  // Paused (sessions_yield) sessions are nonterminal but not actively running.
+  // Render them with the explicit Paused label and the idle tone instead of
+  // the live badge, which would misrepresent the yielded run as still
+  // streaming output.
+  const paused = row.status === "paused";
+  const active = !paused && isSessionRunActive(row);
+  const idle = paused || (row.hasActiveRun === false && (!row.status || row.status === "running"));
   const label = active
     ? t("sessionsView.statusLive")
     : idle

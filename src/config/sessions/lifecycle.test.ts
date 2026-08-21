@@ -11,6 +11,7 @@ import {
   hasTerminalMainSessionTranscriptNewerThanRegistry,
   hasTerminalMainSessionTranscriptNewerThanRegistrySync,
   resolveSessionLifecycleTimestamps,
+  resolveTerminalMainSessionTranscriptRegistryCheck,
 } from "./lifecycle.js";
 import {
   appendTranscriptEvent,
@@ -197,5 +198,41 @@ describe("terminal main session transcript freshness", () => {
 
     expect(check(nonMain.entry, nonMain.sessionKey)).toBe(false);
     expect(check(refreshedRegistry, newerRegistry.sessionKey)).toBe(false);
+  });
+});
+
+describe("resolveTerminalMainSessionTranscriptRegistryCheck paused sessions", () => {
+  const pausedEntry = (overrides: Partial<SessionEntry>): SessionEntry => ({
+    sessionId: "paused-session-id",
+    sessionFile: "paused.jsonl",
+    updatedAt: 1_000_700,
+    startedAt: 900_000,
+    status: "paused",
+    pauseReason: "sessions_yield",
+    ...overrides,
+  });
+
+  it("skips paused main sessions even when endedAt is present so the queued continuation is not falsely terminated", () => {
+    // A yielded paused main session carries a positive `endedAt` from the
+    // sessions_yield event, but its queued continuation is still pending.
+    const check = resolveTerminalMainSessionTranscriptRegistryCheck({
+      entry: pausedEntry({ endedAt: 1_000_500 }),
+      sessionScope: "per-sender",
+      sessionKey: "agent:main:main",
+      agentId: "main",
+      mainKey: "main",
+    });
+    expect(check).toBeUndefined();
+  });
+
+  it("skips paused main sessions even when no endedAt is present", () => {
+    const check = resolveTerminalMainSessionTranscriptRegistryCheck({
+      entry: pausedEntry({}),
+      sessionScope: "per-sender",
+      sessionKey: "agent:main:main",
+      agentId: "main",
+      mainKey: "main",
+    });
+    expect(check).toBeUndefined();
   });
 });

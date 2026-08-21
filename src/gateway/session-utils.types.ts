@@ -146,6 +146,8 @@ export type GatewaySessionRow = {
   status?: SessionRunStatus;
   /** Compact user-facing reason for the latest failed or timed-out run. */
   lastRunError?: string;
+  /** Why a paused session is waiting; sessions_yield means a yielded main run holds a queued continuation. */
+  pauseReason?: SessionRow["pauseReason"];
   hasActiveRun?: boolean;
   activeRunIds?: string[];
   /** Active transcript-branch leaf for history rendered from this row. */
