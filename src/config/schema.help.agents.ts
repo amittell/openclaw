@@ -174,6 +174,8 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
     'How embedded OpenClaw handles workspace-local `.openclaw/settings.json`: "sanitize" (default) strips shellPath/shellCommandPrefix, "ignore" disables project settings entirely, and "trusted" applies project settings as-is.',
   "agents.defaults.embeddedAgent.executionContract":
     'Embedded OpenClaw execution contract: "default" keeps the standard runner behavior, while "strict-agentic" enables structured plan tracking and non-visible turn recovery for supported OpenAI/OpenAI Codex GPT-5-family runs.',
+  "agents.defaults.embeddedAgent.overloadBackoffMaxMs":
+    "Maximum backoff delay in milliseconds before retrying after an API overloaded_error during auth profile failover (default: 30000). Lower values rotate profiles faster but risk exhausting the retry budget under sustained load; set 0 to disable the pre-failover backoff.",
   "agents.entries.*.embeddedAgent":
     "Optional per-agent embedded OpenClaw overrides. Use this to opt specific agents into stricter GPT-5 execution behavior without changing the global default.",
   "agents.entries.*.embeddedAgent.executionContract":

@@ -637,6 +637,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.embeddedAgent.projectSettingsPolicy":
     "Embedded OpenClaw Project Settings Policy",
   "agents.defaults.embeddedAgent.executionContract": "Embedded OpenClaw Execution Contract",
+  "agents.defaults.embeddedAgent.overloadBackoffMaxMs": "Embedded OpenClaw Overload Backoff Max Ms",
   "agents.entries.*.embeddedAgent": "Agent Embedded OpenClaw",
   "agents.entries.*.embeddedAgent.executionContract": "Agent Embedded OpenClaw Execution Contract",
   "agents.defaults.heartbeat.directPolicy": "Heartbeat Direct Policy",

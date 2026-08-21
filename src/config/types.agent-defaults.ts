@@ -211,7 +211,9 @@ export type AgentDefaultsConfig = {
   contextPruning?: AgentContextPruningConfig;
   /** Compaction tuning and pre-compaction memory flush behavior. */
   compaction?: AgentCompactionConfig;
-  /** Embedded OpenClaw runner hardening and compatibility controls. */
+  /**
+   * Embedded OpenClaw runner hardening and compatibility controls.
+   */
   embeddedAgent?: {
     /**
      * How embedded OpenClaw should trust workspace-local `.openclaw/settings.json`.
@@ -226,6 +228,14 @@ export type AgentDefaultsConfig = {
      * - strict-agentic: enable structured plan tracking and non-visible turn recovery on supported GPT-5 runs
      */
     executionContract?: EmbeddedAgentExecutionContract;
+    /**
+     * Maximum backoff delay in milliseconds before rotating to the next auth profile
+     * after an API overloaded_error. Defaults to 30000 (30 seconds).
+     * Higher values preserve the retry budget under sustained load;
+     * lower values rotate faster but risk exhausting retries sooner.
+     * Set 0 to disable pre-failover overload backoff.
+     */
+    overloadBackoffMaxMs?: number;
   };
   /** Default thinking level when no /think directive is present. */
   thinkingDefault?: AgentThinkingLevel;
