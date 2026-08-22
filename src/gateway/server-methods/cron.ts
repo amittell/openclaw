@@ -1074,8 +1074,12 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     const callerScope = readCronCallerScope(client);
     const job = await context.cron.readJob(jobId);
+    if (!job) {
+      // Idempotent delete: a second, racing remove of an already-gone job is a no-op success.
+      respond(true, { removed: false, reason: "already-gone" }, undefined);
+      return;
+    }
     if (
-      !job ||
       !cronJobMatchesCallerScope({
         job,
         callerScope,
@@ -1107,11 +1111,8 @@ export const cronHandlers: GatewayRequestHandlers = {
       throw error;
     }
     if (!result.removed) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "invalid cron.remove params: id not found"),
-      );
+      // Concurrent-delete race: another caller removed the job between read and remove.
+      respond(true, { removed: false, reason: "already-gone" }, undefined);
       return;
     }
     context.logGateway.info("cron: job removed", { jobId });
