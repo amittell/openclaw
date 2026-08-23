@@ -38,7 +38,7 @@ const MAX_EMPTY_ERROR_RETRIES = 3;
 const MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES = 1;
 
 type EmbeddedRunAssistantFailureOutcome = {
-  action: "retry" | "proceed";
+  action: "retry" | "proceed" | "silent-error-exhausted";
   thinkLevel: ThinkLevel;
   authRetryPending: boolean;
   emptyErrorRetries: number;
@@ -201,6 +201,26 @@ export async function handleEmbeddedAssistantFailure(input: {
   const effectiveFailoverReason = exhaustedUnclassifiedSilentError
     ? ("unknown" as const)
     : assistantFailoverReason;
+
+  // The bounded same-model silent-error retries already proved the model produces
+  // no visible output. With no configured fallback to rotate into, the outer run
+  // loop would otherwise keep re-dispatching whole attempts (continue_normal resets
+  // no per-model budget), so a wedged self-hosted model (e.g. vLLM connection churn)
+  // spins to the ingress 5-min adoption-stall watchdog. Hard-stop the same-model
+  // silent-error path here so the turn terminates with a visible error payload
+  // instead. Reuses MAX_EMPTY_ERROR_RETRIES; no new constant.
+  if (
+    !input.fallbackConfigured &&
+    assistantFailoverReason === null &&
+    replaySafeSilentErrorFailure &&
+    input.emptyErrorRetries >= MAX_EMPTY_ERROR_RETRIES
+  ) {
+    return buildOutcome(input, {
+      action: "silent-error-exhausted",
+      emptyErrorRetries: input.emptyErrorRetries,
+      assistantProfileFailureReason,
+    });
+  }
 
   const failedProfileId = input.authProfileId;
   const logFailoverDecision = createFailoverDecisionLogger({

@@ -519,6 +519,44 @@ export async function runPreparedEmbeddedLoop(
       if (!assistantFailureOutcome.preserveSameModelRateLimitRetryCount) {
         failoverRetryController.resetSameModelRateLimitRetries();
       }
+      if (assistantFailureOutcome.action === "silent-error-exhausted") {
+        // The bounded same-model silent-error retries are exhausted and no model
+        // fallback is configured. Terminate with a visible error payload now
+        // instead of re-dispatching whole attempts until the ingress 5-min
+        // adoption-stall watchdog fires (vLLM connection-churn wedge).
+        const message =
+          "The model did not produce a usable reply after several attempts. " +
+          "Please try again, or use /new to start a fresh session.";
+        log.error(
+          "[silent-error-exhausted] sessionKey=" +
+            (params.sessionKey ?? params.sessionId) +
+            " provider=" +
+            provider +
+            "/" +
+            modelId +
+            " emptyErrorRetries=" +
+            emptyErrorRetries +
+            " - surfacing visible error payload",
+        );
+        return {
+          payloads: [{ text: message, isError: true }],
+          meta: {
+            durationMs: Date.now() - started,
+            agentMeta: buildErrorAgentMeta({
+              sessionId: sessionPromptState.sessionId,
+              sessionFile: sessionPromptState.sessionFile,
+              provider,
+              model: model.id,
+              ...outerContextTokenMeta,
+              usageAccumulator,
+              lastRunPromptUsage,
+            }),
+            livenessState: "blocked",
+            // Terminal, not failover-coercible: a future fallback-configured caller must not silently swallow this.
+            error: { kind: "silent_error_exhausted", message },
+          },
+        };
+      }
       if (assistantFailureOutcome.action === "retry") {
         continue;
       }

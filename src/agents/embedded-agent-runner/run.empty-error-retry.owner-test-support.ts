@@ -128,9 +128,16 @@ describe("silent assistant-error retry owner", () => {
     expect(outcome.action).toBe("proceed");
   });
 
-  it("hands control onward after the three-retry cap", async () => {
+  it("terminates with a visible error payload after the three-retry cap on a single-profile model", async () => {
+    // Blocker: a wedged self-hosted single-profile model that fails with an
+    // unclassifiable error must NOT re-dispatch whole attempts until the ingress
+    // 5-min adoption-stall watchdog. After MAX_EMPTY_ERROR_RETRIES the same-model
+    // silent-error path hard-stops (action "silent-error-exhausted") so the turn
+    // ends in a visible outcome (the run loop converts it to a user-visible error
+    // payload). fallbackConfigured defaults to false in makeInput.
     const outcome = await handleEmbeddedAssistantFailure(makeInput({ emptyErrorRetries: 3 }));
 
-    expect(outcome.action).toBe("proceed");
+    expect(outcome.action).toBe("silent-error-exhausted");
+    expect(outcome.emptyErrorRetries).toBe(3);
   });
 });
