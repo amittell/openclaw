@@ -2,6 +2,7 @@
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  AgentSelectionRequiredError,
   listAgentIds,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -117,11 +118,26 @@ function resolveInputs(params: LoadPreparedModelCatalogParams = {}): {
   activationFull: PreparedModelRuntimeInput;
 } {
   const config = params.config ?? getRuntimeConfig();
-  const explicitOrDefaultAgentId =
-    params.agentId ??
-    (params.agentDir === undefined
-      ? (tryResolveLegacyCompatibilityAgentId(config) ?? resolveDefaultAgentId(config))
-      : undefined);
+  // Unscoped reads (no agentId/agentDir) own the ambient-owner lookup: on an explicit
+  // multi-agent roster with no default, resolveDefaultAgentId throws
+  // AgentSelectionRequiredError (the self-poll regression). Degrade that ambient case to a
+  // no-owner shape the caller already tolerates instead of failing the read. Explicit
+  // per-agent reads keep the intentional AgentSelectionRequiredError contract untouched.
+  // The degradation is semantic: an unscoped read on an explicit roster now implicitly resolves
+  // the ambient main-agent view (normalizeAgentId(undefined) -> main) rather than "no view".
+  // Pass agentId for explicit per-agent scoping.
+  let explicitOrDefaultAgentId: string | undefined = params.agentId;
+  if (explicitOrDefaultAgentId === undefined && params.agentDir === undefined) {
+    try {
+      explicitOrDefaultAgentId =
+        tryResolveLegacyCompatibilityAgentId(config) ?? resolveDefaultAgentId(config);
+    } catch (error) {
+      if (!(error instanceof AgentSelectionRequiredError)) {
+        throw error;
+      }
+      explicitOrDefaultAgentId = undefined;
+    }
+  }
   const agentDir =
     params.agentDir ?? resolveAgentDir(config, explicitOrDefaultAgentId as string, params.env);
   const matchingAgentIds =

@@ -557,4 +557,32 @@ describe("GatewayChatClient", () => {
 
     await expect(client.listCloudWorkerProfiles()).resolves.toEqual([]);
   });
+
+  it("names the owner agent for unscoped model list reads", async () => {
+    const client = new GatewayChatClient({
+      url: "ws://127.0.0.1:18789",
+      token: "test-token",
+    });
+    const request = vi.fn().mockResolvedValue({ models: [] });
+    (client as unknown as { client: { request: typeof request } }).client.request = request;
+
+    await expect(client.listModels({ agentId: "main" })).resolves.toEqual([]);
+    expect(request).toHaveBeenCalledWith("models.list", { agentId: "main" });
+  });
+
+  it("sends no params for a default model list read", async () => {
+    // Unscoped listModels() sends request("models.list", {}); the models.list handler tolerates
+    // the empty params object and degrades to the ambient owner (normalizeAgentId(undefined) ->
+    // main) instead of failing agent selection. This pins that correct unscoped behavior.
+
+    const client = new GatewayChatClient({
+      url: "ws://127.0.0.1:18789",
+      token: "test-token",
+    });
+    const request = vi.fn().mockResolvedValue({ models: [] });
+    (client as unknown as { client: { request: typeof request } }).client.request = request;
+
+    await expect(client.listModels()).resolves.toEqual([]);
+    expect(request).toHaveBeenCalledWith("models.list", {});
+  });
 });

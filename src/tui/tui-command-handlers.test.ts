@@ -2827,5 +2827,25 @@ describe("tui command handlers", () => {
       { coalesceConsecutive: true },
     );
   });
+
+  it("names the selected agent for the /models catalog read on multi-agent rosters", async () => {
+    // Unscoped model reads must name a single owner; multi-agent rosters throw
+    // AgentSelectionRequiredError otherwise (self-poll regression).
+    const listModels = vi
+      .fn()
+      .mockResolvedValue([
+        { provider: "openrouter", id: "openrouter/auto", name: "OpenRouter Auto" },
+      ]);
+    const { handleCommand, openOverlay } = createHarness({
+      listModels,
+      currentAgentId: "voice",
+    });
+
+    await handleCommand("/models");
+
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(listModels).toHaveBeenCalledWith({ agentId: "voice" });
+    expect(openOverlay).toHaveBeenCalled();
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

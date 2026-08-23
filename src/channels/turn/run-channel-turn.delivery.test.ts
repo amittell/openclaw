@@ -218,6 +218,81 @@ function expectDispatched<TDispatchResult>(
 }
 
 describe("channel turn delivery", () => {
+  describe("visible non-outcome fallback (Bug 2)", () => {
+    it("delivers a fallback reply when a user-visible routed turn dispatch errors with no settled payload", async () => {
+      dispatchReplyWithRoutedChannelDispatcherCore.mockRejectedValueOnce(
+        new Error("run retry limit exhausted"),
+      );
+      const deliver = vi.fn(async (payload: ReplyPayload) => {
+        return {
+          messageIds: ["fallback-1"],
+          visibleReplySent: true as const,
+          content: payload.text,
+        };
+      });
+      let dispatchError: unknown;
+      try {
+        await dispatchRoutedChannelTurn({
+          cfg,
+          channel: "telegram",
+          route: { agentId: "main", sessionKey: "agent:main:telegram:peer" },
+          ctxPayload: createCtx({ Surface: "telegram" }),
+          delivery: { deliver },
+        });
+      } catch (error) {
+        dispatchError = error;
+      }
+      expect(dispatchError).toBeInstanceOf(Error);
+      expect(dispatchError).toMatchObject({ message: "run retry limit exhausted" });
+      expect(deliver).toHaveBeenCalledTimes(1);
+      const [payload] = deliver.mock.calls[0] as unknown as [ReplyPayload];
+      expect(payload.text).toContain("I hit a problem handling that message");
+    });
+
+    it("skips the fallback when the agent turn produced a clean result", async () => {
+      dispatchReplyWithRoutedChannelDispatcherCore.mockImplementation(createDispatch());
+      const deliver = vi.fn(async (payload: ReplyPayload) => {
+        return {
+          messageIds: ["final-1"],
+          visibleReplySent: true as const,
+          content: payload.text,
+        };
+      });
+      const result = await dispatchRoutedChannelTurn({
+        cfg,
+        channel: "telegram",
+        route: { agentId: "main", sessionKey: "agent:main:telegram:peer" },
+        ctxPayload: createCtx({ Surface: "telegram" }),
+        delivery: { deliver },
+      });
+      expectDispatched(result);
+      expect(result.dispatchResult.queuedFinal).toBe(true);
+      expect(deliver).toHaveBeenCalledTimes(1);
+      const [payload] = deliver.mock.calls[0] as unknown as [ReplyPayload];
+      expect(payload.text).toBe("reply");
+    });
+
+    it("skips the fallback and preserves the original error for observeOnly turns", async () => {
+      dispatchReplyWithRoutedChannelDispatcherCore.mockRejectedValueOnce(
+        new Error("run retry limit exhausted"),
+      );
+      const deliver = vi.fn(async () => {
+        throw new Error("observeOnly delivery must be impossible");
+      });
+      await expect(
+        dispatchRoutedChannelTurn({
+          cfg,
+          channel: "telegram",
+          admission: { kind: "observeOnly" },
+          route: { agentId: "main", sessionKey: "agent:main:telegram:peer" },
+          ctxPayload: createCtx({ Surface: "telegram", Provider: "heartbeat" }),
+          delivery: { deliver },
+        }),
+      ).rejects.toThrow("run retry limit exhausted");
+      expect(deliver).not.toHaveBeenCalled();
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     recordInboundSessionCore.mockResolvedValue(undefined);
