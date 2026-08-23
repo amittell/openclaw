@@ -59,7 +59,7 @@ function resolveObserveOnlyDispatchResult<TDispatchResult>(
   }) as TDispatchResult;
 }
 
-function isSystemChannelTurn(ctx: FinalizedMsgContext): boolean {
+export function isSystemChannelTurn(ctx: FinalizedMsgContext): boolean {
   return (
     ctx.Provider === "heartbeat" || ctx.Provider === "cron-event" || ctx.Provider === "exec-event"
   );
