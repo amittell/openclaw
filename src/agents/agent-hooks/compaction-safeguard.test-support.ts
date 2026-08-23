@@ -15,6 +15,7 @@ type CompactionSafeguardTestApi = {
   resolveQualityGuardMaxRetries: CallableFunction;
   extractOpaqueIdentifiers: CallableFunction;
   auditSummaryQuality: CallableFunction;
+  buildQualityRetryDefectList: CallableFunction;
   capCompactionSummary: CallableFunction;
   capCompactionSummaryPreservingSuffix: CallableFunction;
   formatFileOperations: CallableFunction;

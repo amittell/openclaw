@@ -111,6 +111,26 @@ export function buildStructuredFallbackSummary(previousSummary: string | undefin
   );
 }
 
+/**
+ * Builds the corrective defect list for quality retries as a plain structured
+ * list: one line per reason, with the detail part (missing sections and
+ * identifiers already passed to the same prompt as summarization input) on its
+ * own line. It intentionally does not cap or escape: the 4000-char untrusted
+ * wrapper truncates identifier-dense defect lists mid-string, leaving the
+ * model with an incomplete defect list it cannot fix.
+ */
+export function buildQualityRetryDefectList(reasons: string[]): string {
+  return reasons
+    .map((reason) => {
+      const index = reason.indexOf(":");
+      if (index < 0) {
+        return reason;
+      }
+      return `${reason.slice(0, index)}:\n${reason.slice(index + 1)}`;
+    })
+    .join("\n");
+}
+
 /** Appends a bounded post-compaction section to an existing summary. */
 export function appendSummarySection(summary: string, section: string): string {
   if (!section) {

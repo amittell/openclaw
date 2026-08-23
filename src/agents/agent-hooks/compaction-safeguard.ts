@@ -49,9 +49,9 @@ import {
   appendSummarySection,
   auditSummaryQuality,
   buildCompactionStructureInstructions,
+  buildQualityRetryDefectList,
   buildStructuredFallbackSummary,
   extractOpaqueIdentifiers,
-  wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
@@ -94,7 +94,8 @@ type CompactionLoss =
   | "suffix-head"
   | "split-turn-head"
   | "split-turn-tail"
-  | "preserved-turn-head";
+  | "preserved-turn-head"
+  | "quality-guard-degraded";
 
 function prependPreviousSummaryForRedistill(params: {
   messages: AgentMessage[];
@@ -887,14 +888,16 @@ function formatContextSegments(messages: AgentMessage[]): string[] {
 }
 
 function formatBoundedContextSection(params: {
-  messages: AgentMessage[];
+  messages?: AgentMessage[];
+  text?: string;
   heading: string;
   maxChars: number;
   truncatedMarker: string;
   truncatedLoss: CompactionLoss;
   onTruncated?: () => void;
 }): ContextSection {
-  const segments = formatContextSegments(params.messages);
+  const segments =
+    params.text !== undefined ? [params.text] : formatContextSegments(params.messages ?? []);
   if (segments.length === 0) {
     return { text: "", segmentStarts: [] };
   }
@@ -957,6 +960,17 @@ function buildSplitTurnContextSection(
 ): ContextSection {
   return formatBoundedContextSection({
     messages,
+    heading: "**Turn Context (split turn):**\n",
+    maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
+    truncatedMarker: SPLIT_TURN_TRUNCATED_MARKER,
+    truncatedLoss: "split-turn-head",
+    onTruncated,
+  });
+}
+
+function splitTurnSectionFromString(text: string, onTruncated?: () => void): ContextSection {
+  return formatBoundedContextSection({
+    text,
     heading: "**Turn Context (split turn):**\n",
     maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
     truncatedMarker: SPLIT_TURN_TRUNCATED_MARKER,
@@ -1435,7 +1449,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           producerLosses,
         );
 
-        const canRegenerate =
+        const canRetry =
           messagesToSummarize.length > 0 ||
           (preparation.isSplitTurn && turnPrefixMessages.length > 0);
         if (!qualityGuardEnabled) {
@@ -1451,33 +1465,53 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         if (quality.ok) {
           return compactionResult(finalized.summary);
         }
-        if (!canRegenerate || attempt >= totalAttempts - 1) {
+        // No retry left: instead of cancelling (which leaves a context-full
+        // session permanently uncompactionable), fall back to the re-distilled
+        // previous summary so compaction proceeds in a degraded state.
+        if (attempt >= totalAttempts - 1 || !canRetry) {
           const reasonCodes = [
             ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
           ];
+          // Final quality attempt failed (or no retry is possible): fall back
+          // to the re-distilled previous summary so the session can still
+          // compact instead of cancelling and leaving a context-full session
+          // permanently uncompactionable.
           log.warn(
-            "Compaction safeguard: finalized summary failed quality checks; " +
+            "Compaction safeguard: final quality attempt failed; using degraded " +
+              "fallback summary; reasonCode=quality_guard_degraded_fallback " +
               `reasonCodes=${reasonCodes.join(",")} reasonCount=${quality.reasons.length}`,
           );
-          setCompactionSafeguardCancelReason(
-            ctx.sessionManager,
-            "Compaction safeguard finalized summary failed quality checks.",
+          const fallbackSplitTurnLosses = new Set<CompactionLoss>();
+          const fallbackProducerLosses = new Set<CompactionLoss>(["quality-guard-degraded"]);
+          const fallbackFinalized = await finalizeSummaryText(
+            buildStructuredFallbackSummary(effectivePreviousSummary),
+            {
+              splitTurnSection: splitTurnSectionLocal
+                ? splitTurnSectionFromString(splitTurnSectionLocal, () => {
+                    fallbackSplitTurnLosses.add("split-turn-head");
+                  })
+                : undefined,
+              preservedTurnsSection: preservedTurnsSectionLocal,
+            },
+            fallbackProducerLosses,
           );
-          return { cancel: true };
+          for (const loss of fallbackSplitTurnLosses) {
+            fallbackProducerLosses.add(loss);
+          }
+          return compactionResult(fallbackFinalized.summary);
         }
-        const reasons = quality.reasons.join(", ");
+        const defectList = buildQualityRetryDefectList(quality.reasons);
         const qualityFeedbackInstruction =
           identifierPolicy === "strict"
             ? "Fix all issues and include every required section with exact identifiers preserved."
             : "Fix all issues and include every required section while following the configured identifier policy.";
         const budgetInstruction = `Keep the complete summary body within ${finalized.bodyBudget} UTF-16 code units so the finalized artifact remains valid after required suffixes.`;
-        const qualityFeedbackReasons = wrapUntrustedInstructionBlock(
-          "Quality check feedback",
-          `Previous summary failed quality checks (${reasons}).`,
-        );
-        currentInstructions = qualityFeedbackReasons
-          ? `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
-          : `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}`;
+        // The defect list is a plain structured list of session-derived
+        // sections/identifiers already present in the summarization input. It is
+        // intentionally NOT routed through wrapUntrustedInstructionBlock: that
+        // wrapper hard-caps text at 4000 chars and truncates identifier-dense
+        // defect lists mid-string, so the retry receives an incomplete list.
+        currentInstructions = `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}\n\nPrevious summary failed the quality audit with these defects (fix every line):\n${defectList}`;
       }
 
       throw new Error("Compaction safeguard exhausted summary attempts without a decision.");
@@ -1516,6 +1550,7 @@ const testing = {
   resolveQualityGuardMaxRetries,
   extractOpaqueIdentifiers,
   auditSummaryQuality,
+  buildQualityRetryDefectList,
   capCompactionSummary,
   capCompactionSummaryPreservingSuffix,
   formatFileOperations,
