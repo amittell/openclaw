@@ -208,7 +208,7 @@ export function isPermanentOAuthRefreshFailure(error: unknown): boolean {
         return PERMANENT_OAUTH_REFRESH_FAILURE_REASONS.has(reason);
       }
     }
-    candidate = (candidate as { cause?: unknown }).cause;
+    candidate = "cause" in candidate ? candidate.cause : undefined;
   }
   return false;
 }
