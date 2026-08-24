@@ -110,7 +110,7 @@ afterAll(() => {
   vi.resetModules();
 });
 
-async function readPersistedStore(agentDir: string): Promise<AuthProfileStore> {
+async function readPersistedStore(agentDir?: string): Promise<AuthProfileStore> {
   return readAuthProfileStoreForTest(agentDir);
 }
 
@@ -263,7 +263,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       ttlMs: 0,
     });
     expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledTimes(1);
-    expectPersistedOpenAICodexProfile((await readPersistedStore(agentDir)).profiles[profileId], {
+    expectPersistedOpenAICodexProfile((await readPersistedStore()).profiles[profileId], {
       access: "rotated-access-token",
       refresh: "rotated-refresh-token",
     });
@@ -335,7 +335,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     await expect(second).resolves.toMatchObject({ refresh: "first-rotated-refresh" });
     expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledTimes(1);
     expect(readCodexCliCredentialsCachedMock).toHaveBeenCalledTimes(1);
-    expectPersistedOpenAICodexProfile((await readPersistedStore(agentDir)).profiles[profileId], {
+    expectPersistedOpenAICodexProfile((await readPersistedStore()).profiles[profileId], {
       refresh: "first-rotated-refresh",
     });
     expect((await readPersistedStore(firstAgentDir)).profiles[profileId]).toBeUndefined();
