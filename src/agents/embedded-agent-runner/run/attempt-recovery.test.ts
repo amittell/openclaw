@@ -18,7 +18,14 @@ import {
   type TransportDropScenario,
 } from "./attempt-recovery.test-support.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
+import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
+
+// Pass-through spy: the other cases here keep the real overflow recovery.
+vi.mock("./overflow-context-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./overflow-context-recovery.js")>();
+  return { ...actual, recoverEmbeddedRunOverflow: vi.fn(actual.recoverEmbeddedRunOverflow) };
+});
 
 vi.mock("../../../infra/backoff.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../infra/backoff.js")>()),
@@ -713,7 +720,9 @@ describe("recoverEmbeddedRunAttempt", () => {
     });
   });
 
-  it("bypasses prompt failover for an operation-scoped compaction failure", async () => {
+  it("carries provider ownership while bypassing failover for a compaction failure", async () => {
+    vi.mocked(recoverEmbeddedRunOverflow).mockClear();
+    const providerOwner = { id: "openai" };
     const promptFailover = vi.fn(async () => {
       throw new Error("prompt failover must not run");
     });
@@ -775,6 +784,7 @@ describe("recoverEmbeddedRunAttempt", () => {
           outerContextTokenMeta: {},
           lastProfileId: "profile-1",
           pluginHarnessOwnsTransport: false,
+          providerRuntimeHandle: { plugin: providerOwner },
         }),
       },
       normalizedAttempt: {
@@ -807,6 +817,9 @@ describe("recoverEmbeddedRunAttempt", () => {
 
     expect(recovery).toEqual({ action: "proceed" });
     expect(promptFailover).not.toHaveBeenCalled();
+    expect(recoverEmbeddedRunOverflow).toHaveBeenCalledWith(
+      expect.objectContaining({ providerOwner }),
+    );
     expect(failoverRetryController.advanceAuthProfile).not.toHaveBeenCalled();
     expect(failoverRetryController.advanceRateLimitAuthProfile).not.toHaveBeenCalled();
     expect(failoverRetryController.maybeMarkAuthProfileFailure).not.toHaveBeenCalled();

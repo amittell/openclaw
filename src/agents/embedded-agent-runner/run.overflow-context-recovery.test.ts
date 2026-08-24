@@ -679,6 +679,29 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledWith(1);
   });
 
+  it("routes an owned Anthropic long-context response into compact and retry", async () => {
+    const input = makeInput({
+      promptError: new Error(
+        '429 {"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."}}',
+      ),
+      modelSelection: {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        authProfileIdSource: "auto",
+      },
+      providerOwner: {
+        id: "anthropic",
+        classifyFailoverReason: ({ errorMessage }) =>
+          errorMessage.includes("Extra usage is required for long context requests")
+            ? "context_overflow"
+            : undefined,
+      },
+    });
+
+    expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+    expect(mocks.compact).toHaveBeenCalledOnce();
+  });
+
   it("leaves overflow recovery to a transport-owning harness", async () => {
     const result = await recoverEmbeddedRunOverflow(
       makeInput({ genericCompactionRecoveryAllowed: false }),

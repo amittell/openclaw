@@ -69,6 +69,7 @@ const buildOpenAICompatibleProviderCatalog = createLazyRuntimeMethod(
 );
 
 const PROVIDER_ID = "anthropic";
+const ANTHROPIC_LONG_CONTEXT_USAGE_RE = /\bextra usage is required for long context requests\b/i;
 
 // Anthropic-native error descriptors stay with the Anthropic provider hook.
 function classifyAnthropicFailoverDescriptor(value: string | undefined) {
@@ -863,8 +864,11 @@ export function buildAnthropicProvider(): ProviderPlugin {
       (!isAnthropicMandatoryClaude5Model(modelId) ||
         normalizeLowercaseStringOrEmpty(provider) === PROVIDER_ID),
     resolveReasoningOutputMode: () => "native",
-    classifyFailoverReason: ({ code, errorType }) =>
-      classifyAnthropicFailoverDescriptor(errorType) ?? classifyAnthropicFailoverDescriptor(code),
+    classifyFailoverReason: ({ code, errorMessage, errorType }) =>
+      ANTHROPIC_LONG_CONTEXT_USAGE_RE.test(errorMessage)
+        ? "context_overflow"
+        : (classifyAnthropicFailoverDescriptor(errorType) ??
+          classifyAnthropicFailoverDescriptor(code)),
     resolveThinkingProfile,
     wrapStreamFn: wrapAnthropicProviderStream,
     resolveFastModeSupport,

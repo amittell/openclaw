@@ -11,6 +11,7 @@ import {
   isLikelyContextOverflowError,
   isProviderRequestSizeCeilingError,
 } from "../../embedded-agent-helpers.js";
+import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import type { FailoverClassification } from "../../failover/signal.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { classifyCompactionReason } from "../compact-reasons.js";
@@ -79,6 +80,7 @@ export async function recoverEmbeddedRunOverflow(
     attemptCompactionCount: number;
     prepareCurrentTranscriptRetry: () => void;
     markOwnedTranscriptRetry: () => void;
+    providerOwner?: PreparedProviderFailoverOwner;
   },
 ): Promise<EmbeddedRunOverflowRecoveryOutcome> {
   const assistant = input.assistantOverflowCandidate?.message;
@@ -88,7 +90,7 @@ export async function recoverEmbeddedRunOverflow(
       ? (() => {
           if (input.promptError) {
             const errorText = formatErrorMessage(input.promptError);
-            if (isLikelyContextOverflowError(errorText)) {
+            if (isLikelyContextOverflowError(errorText, input.providerOwner)) {
               return { text: errorText, source: "promptError" as const };
             }
             // A non-overflow prompt failure must not inherit a stale assistant
@@ -117,7 +119,10 @@ export async function recoverEmbeddedRunOverflow(
           if (assistant?.stopReason === "length") {
             return null;
           }
-          if (input.assistantErrorText && isLikelyContextOverflowError(input.assistantErrorText)) {
+          if (
+            input.assistantErrorText &&
+            isLikelyContextOverflowError(input.assistantErrorText, input.providerOwner)
+          ) {
             return { text: input.assistantErrorText, source: "assistantError" as const };
           }
           return null;
