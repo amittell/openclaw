@@ -89,22 +89,21 @@ export async function handleGatewayProbeRequest(
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
 
+  let strictDraining = false;
+  if (status === "live" && getStartup && isStrictLiveProbeRequest(req)) {
+    // Startup lifecycle owns drain state; readiness only projects it with channel health.
+    try {
+      strictDraining = getStartup().status === "draining";
+    } catch {
+      // Liveness remains fail-open unless the lifecycle owner confirms draining.
+    }
+  }
+
   let statusCode: number;
   let body: string;
-  if (status === "live" && getReadiness && isStrictLiveProbeRequest(req)) {
-    // Internal supervisors opt into draining-aware liveness so a replacement
-    // retries instead of yielding the lock to a predecessor that is exiting.
-    try {
-      const readiness = getReadiness();
-      const draining = readiness.failing.includes("gateway-draining");
-      statusCode = draining ? 503 : 200;
-      body = JSON.stringify(
-        draining ? { live: false, phase: "shutting_down" } : { ok: true, status },
-      );
-    } catch {
-      statusCode = 200;
-      body = JSON.stringify({ ok: true, status });
-    }
+  if (strictDraining) {
+    statusCode = 503;
+    body = JSON.stringify({ live: false, phase: "shutting_down" });
   } else if (status === "ready" && getReadiness) {
     // Readiness details expose subsystem names, so only local direct or authenticated
     // callers receive them; unauthenticated remote probes get the aggregate boolean.
