@@ -1807,6 +1807,64 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
+  it("reports secret provider selection only after its source observation completes", async () => {
+    const providers = {
+      primary: { source: "env" as const },
+      secondary: { source: "env" as const },
+    };
+    const initialConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      secrets: { defaults: { env: "primary" }, providers },
+    };
+    const nextConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      secrets: { defaults: { env: "secondary" }, providers },
+    };
+    const snapshot = createDeferred<ConfigFileSnapshot>();
+    const readSnapshot = vi.fn(() => snapshot.promise);
+    const harness = createReloaderHarness(readSnapshot, { initialConfig });
+    const observedGeneration = getConfigReloadObservation().generation;
+
+    harness.watcher.emit("change");
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservation().generation).toBe(observedGeneration);
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: initialConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: getConfigReloadObservation().sourceConfig,
+      }),
+    ).toEqual({
+      state: "ok",
+      liveDefaultModel: null,
+      observedDefaultModel: null,
+    });
+
+    snapshot.resolve(makeSnapshot({ config: nextConfig, hash: "completed-secret-observation" }));
+    await vi.runAllTimersAsync();
+
+    const observation = getConfigReloadObservation();
+    expect(observation.generation).toBeGreaterThan(observedGeneration);
+    expect(observation.sourceConfig).toEqual(nextConfig);
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: initialConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: observation.sourceConfig,
+      }),
+    ).toEqual({
+      state: "drift",
+      liveDefaultModel: null,
+      observedDefaultModel: null,
+      driftPaths: ["secrets"],
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.",
+    });
+    await harness.reloader.stop();
+  });
+
   it("publishes only the newest source when a watcher supersedes an active read", async () => {
     const initialConfig: OpenClawConfig = {
       gateway: { reload: { mode: "off" } },

@@ -13,7 +13,7 @@ const RUNTIME_CONFIG_DRIFT_PATHS = [
   "gateway.auth",
   "auth.profiles",
   "auth.order",
-  "secrets.providers",
+  "secrets",
 ] as const;
 
 type RuntimeConfigDriftState = {
