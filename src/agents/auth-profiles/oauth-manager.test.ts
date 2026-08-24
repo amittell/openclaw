@@ -717,51 +717,58 @@ describe("createOAuthManager", () => {
     });
   });
 
-  it("tombstones the stored credential after a permanent refresh failure", async () => {
-    await withOAuthAgentDirs("oauth-manager-refresh-dead-mark-", async ({ agentDir }) => {
-      const profileId = "openai:user@example.com";
-      const managedCredential = createCredential({
-        access: "dead-expired-access",
-        refresh: "dead-refresh",
-        expires: Date.now() - 60_000,
-        email: "user@example.com",
-        accountId: "acct-123",
-      });
-      saveAuthProfileStore({ version: 1, profiles: { [profileId]: managedCredential } }, agentDir, {
-        filterExternalAuthProfiles: false,
-      });
-      const manager = createOAuthManager({
-        buildApiKey: async (_provider, credential) => credential.access,
-        refreshCredential: vi.fn(async () => {
-          throw new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}');
-        }),
-        readBootstrapCredential: () => null,
-        isRefreshTokenReusedError: () => false,
-      });
-
-      await expect(
-        manager.resolveOAuthAccess({
-          store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-            allowKeychainPrompt: false,
+  it("tombstones an inherited shared credential after a permanent refresh failure", async () => {
+    await withOAuthAgentDirs(
+      "oauth-manager-refresh-dead-mark-",
+      async ({ mainAgentDir, agentDir }) => {
+        const profileId = "openai:user@example.com";
+        const managedCredential = createCredential({
+          access: "dead-expired-access",
+          refresh: "dead-refresh",
+          expires: Date.now() - 60_000,
+          email: "user@example.com",
+          accountId: "acct-123",
+        });
+        saveAuthProfileStore(
+          { version: 1, profiles: { [profileId]: managedCredential } },
+          mainAgentDir,
+          { filterExternalAuthProfiles: false },
+        );
+        const manager = createOAuthManager({
+          buildApiKey: async (_provider, credential) => credential.access,
+          refreshCredential: vi.fn(async () => {
+            throw new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}');
           }),
-          profileId,
-          credential: managedCredential,
-          agentDir,
-        }),
-      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+          readBootstrapCredential: () => null,
+          isRefreshTokenReusedError: () => false,
+        });
 
-      clearRuntimeAuthProfileStoreSnapshots();
-      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-        allowKeychainPrompt: false,
-      });
-      // The tombstone must survive a disk round-trip or the re-seed gate
-      // closes again on the next auth store load.
-      expect(persisted.profiles[profileId]).toMatchObject({
-        type: "oauth",
-        refresh: "dead-refresh",
-        refreshDeadAt: expect.any(Number),
-      });
-    });
+        await expect(
+          manager.resolveOAuthAccess({
+            store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+              allowKeychainPrompt: false,
+            }),
+            profileId,
+            credential: managedCredential,
+            agentDir,
+          }),
+        ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+
+        clearRuntimeAuthProfileStoreSnapshots();
+        for (const ownerDir of [mainAgentDir, agentDir]) {
+          const persisted = ensureAuthProfileStoreWithoutExternalProfiles(ownerDir, {
+            allowKeychainPrompt: false,
+          });
+          // The shared-owner tombstone must survive a disk round-trip and be
+          // inherited by agents or the re-seed gate closes again on reload.
+          expect(persisted.profiles[profileId]).toMatchObject({
+            type: "oauth",
+            refresh: "dead-refresh",
+            refreshDeadAt: expect.any(Number),
+          });
+        }
+      },
+    );
   });
 
   it("clears a refreshed tombstone after reload without changing a dead sibling", async () => {
