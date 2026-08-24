@@ -7,6 +7,7 @@ import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
+import { buildRuntimeConfigHealth } from "../commands/health-runtime-config.js";
 import { prepareConfigRuntimeEnv } from "../config/config-env-vars.js";
 import { fingerprintConfigSnapshotAuthoredConfig } from "../config/config-journal-snapshot.js";
 import type {
@@ -1751,10 +1752,14 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("advances the observation generation only after the snapshot read completes", async () => {
-    const initialConfig: OpenClawConfig = { gateway: { reload: { mode: "off" } } };
+  it("keeps health on the prior completed observation until the snapshot read completes", async () => {
+    const initialConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: "openai/gpt-5.6-sol" } },
+    };
     const nextConfig: OpenClawConfig = {
       gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: "openai/gpt-5.6-terra" } },
       ui: { prefs: { themeMode: "dark" } },
     };
     const snapshot = createDeferred<ConfigFileSnapshot>();
@@ -1767,6 +1772,17 @@ describe("startGatewayConfigReloader", () => {
 
     expect(readSnapshot).toHaveBeenCalledOnce();
     expect(getConfigReloadObservation().generation).toBe(observedGeneration);
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: initialConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: getConfigReloadObservation().sourceConfig,
+      }),
+    ).toEqual({
+      state: "ok",
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      observedDefaultModel: "openai/gpt-5.6-sol",
+    });
 
     snapshot.resolve(makeSnapshot({ config: nextConfig, hash: "completed-observation" }));
     await vi.runAllTimersAsync();
@@ -1774,6 +1790,20 @@ describe("startGatewayConfigReloader", () => {
     const observation = getConfigReloadObservation();
     expect(observation.generation).toBeGreaterThan(observedGeneration);
     expect(observation.sourceConfig).toEqual(nextConfig);
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: initialConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: observation.sourceConfig,
+      }),
+    ).toEqual({
+      state: "drift",
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      observedDefaultModel: "openai/gpt-5.6-terra",
+      driftPaths: ["agents.defaults.model"],
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.",
+    });
     await harness.reloader.stop();
   });
 

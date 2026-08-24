@@ -759,7 +759,7 @@ describe("formatRuntimeConfigHealthLine", () => {
     expect(formatRuntimeConfigHealthLine(summary)).toBeNull();
   });
 
-  it("renders the drift warning with paths and live/disk model labels", () => {
+  it("renders the drift warning with paths and live/observed model labels", () => {
     const summary = createHealthSummary({
       channels: {},
       channelOrder: [],
@@ -769,12 +769,12 @@ describe("formatRuntimeConfigHealthLine", () => {
       state: "drift",
       driftPaths: ["gateway.auth"],
       liveDefaultModel: "openai/gpt-5.5",
-      diskDefaultModel: "openai/gpt-5.5",
-      message: "Live gateway runtime config differs from disk.",
+      observedDefaultModel: "openai/gpt-5.5",
+      message: "Live gateway runtime config differs from the latest completed reload observation.",
     };
 
     expect(formatRuntimeConfigHealthLine(summary)).toBe(
-      "Runtime config: warning (live gateway differs from disk for gateway.auth; restart required or pending; live=openai/gpt-5.5 disk=openai/gpt-5.5)",
+      "Runtime config: warning (live gateway differs from latest completed reload observation for gateway.auth; restart required or pending; live=openai/gpt-5.5 observed=openai/gpt-5.5)",
     );
   });
 
@@ -786,11 +786,11 @@ describe("formatRuntimeConfigHealthLine", () => {
     });
     summary.runtimeConfig = {
       state: "unknown",
-      message: "Disk config file not found at /tmp/openclaw.json.",
+      message: "Latest completed reload source observation is unavailable.",
     };
 
     expect(formatRuntimeConfigHealthLine(summary)).toBe(
-      "Runtime config: warning (unknown source: Disk config file not found at /tmp/openclaw.json.)",
+      "Runtime config: warning (unknown source: Latest completed reload source observation is unavailable.)",
     );
 
     summary.runtimeConfig.message = "Runtime source config snapshot is unavailable.";

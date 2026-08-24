@@ -1,4 +1,4 @@
-/** Detects and renders drift between the live Gateway config and its disk source. */
+/** Detects and renders drift between live Gateway config and its completed source observation. */
 import { isDeepStrictEqual } from "node:util";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { getConfigValueAtPath } from "../config/config-paths.js";
@@ -41,14 +41,14 @@ function resolveDefaultModelLabel(config: OpenClawConfig): string | null {
 
 function listRuntimeConfigDriftPaths(params: {
   liveSourceConfig: OpenClawConfig;
-  diskSourceConfig: OpenClawConfig;
+  observedSourceConfig: OpenClawConfig;
 }): string[] {
   const driftPaths: string[] = [];
   for (const path of RUNTIME_CONFIG_DRIFT_PATHS) {
     const segments = path.split(".");
     const liveValue = getConfigValueAtPath({ ...params.liveSourceConfig }, segments);
-    const diskValue = getConfigValueAtPath({ ...params.diskSourceConfig }, segments);
-    if (!isDeepStrictEqual(liveValue, diskValue)) {
+    const observedValue = getConfigValueAtPath({ ...params.observedSourceConfig }, segments);
+    if (!isDeepStrictEqual(liveValue, observedValue)) {
       driftPaths.push(path);
     }
   }
@@ -71,24 +71,24 @@ function buildRuntimeConfigHealthSummary(
     return {
       state: "unknown",
       liveDefaultModel: resolveDefaultModelLabel(liveSourceConfig),
-      message: "Disk config source snapshot is unavailable.",
+      message: "Latest completed reload source observation is unavailable.",
     };
   }
   const driftPaths = listRuntimeConfigDriftPaths({
     liveSourceConfig,
-    diskSourceConfig: state.observedSourceConfig,
+    observedSourceConfig: state.observedSourceConfig,
   });
   const liveDefaultModel = resolveDefaultModelLabel(liveSourceConfig);
-  const diskDefaultModel = resolveDefaultModelLabel(state.observedSourceConfig);
+  const observedDefaultModel = resolveDefaultModelLabel(state.observedSourceConfig);
   return {
     state: driftPaths.length > 0 ? "drift" : "ok",
     liveDefaultModel,
-    diskDefaultModel,
+    observedDefaultModel,
     ...(driftPaths.length > 0
       ? {
           driftPaths,
           message:
-            "Live gateway runtime config differs from disk for model/provider/auth paths; restart is required or pending.",
+            "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.",
         }
       : {}),
   };
@@ -105,15 +105,15 @@ export function formatRuntimeConfigHealthLine(summary: HealthSummary): string | 
       ? runtimeConfig.driftPaths.join(", ")
       : "model/provider/auth config";
     const modelDetail =
-      runtimeConfig.liveDefaultModel || runtimeConfig.diskDefaultModel
-        ? `; live=${runtimeConfig.liveDefaultModel ?? "unknown"} disk=${
-            runtimeConfig.diskDefaultModel ?? "unknown"
+      runtimeConfig.liveDefaultModel || runtimeConfig.observedDefaultModel
+        ? `; live=${runtimeConfig.liveDefaultModel ?? "unknown"} observed=${
+            runtimeConfig.observedDefaultModel ?? "unknown"
           }`
         : "";
-    return `Runtime config: warning (live gateway differs from disk for ${paths}; restart required or pending${modelDetail})`;
+    return `Runtime config: warning (live gateway differs from latest completed reload observation for ${paths}; restart required or pending${modelDetail})`;
   }
   if (runtimeConfig.state === "unknown") {
-    // Missing runtime or disk sources must stay visible without blaming the
+    // Missing runtime or observed sources must stay visible without blaming the
     // wrong side of the comparison.
     const reason = runtimeConfig.message?.trim() || "config source unavailable";
     return `Runtime config: warning (unknown source: ${reason})`;

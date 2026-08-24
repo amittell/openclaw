@@ -47,7 +47,7 @@ The `runtimeConfig` object in JSON output compares the configuration loaded by t
 | `drift`   | The loaded and latest observed values differ. Restart the Gateway, then run `openclaw health --json` again to confirm. |
 | `unknown` | The Gateway cannot compare the loaded and latest observed sources. Validate the config and inspect Gateway logs first. |
 
-Gateway health snapshots are shared by health RPC, connection hello, and health broadcasts. The `runtimeConfig` diagnostic therefore never includes config fingerprints or detailed disk-read errors that could reveal paths or parse excerpts, including for admin-scoped clients.
+Gateway health snapshots are shared by health RPC, connection hello, and health broadcasts. The `runtimeConfig` diagnostic therefore never includes config fingerprints or detailed source-observation errors that could reveal paths or parse excerpts, including for admin-scoped clients.
 
 For recovery commands and log guidance, see [Gateway troubleshooting](/gateway/troubleshooting).
 

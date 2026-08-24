@@ -95,9 +95,9 @@ describe("SnapshotSchema", () => {
         runtimeConfig: {
           state: "drift",
           liveDefaultModel: "openai/gpt-5.6-sol",
-          diskDefaultModel: "openai/gpt-5.6-terra",
+          observedDefaultModel: "openai/gpt-5.6-terra",
           driftPaths: ["agents.defaults.model"],
-          message: "Runtime config differs from disk.",
+          message: "Runtime config differs from the latest completed reload observation.",
         },
       },
     };
@@ -113,6 +113,12 @@ describe("SnapshotSchema", () => {
       Value.Check(SnapshotSchema, {
         ...snapshot,
         health: { runtimeConfig: { state: "ok", liveSourceFingerprint: "private" } },
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(SnapshotSchema, {
+        ...snapshot,
+        health: { runtimeConfig: { state: "ok", diskDefaultModel: "legacy" } },
       }),
     ).toBe(false);
   });

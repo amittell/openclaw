@@ -218,7 +218,7 @@ describe("refreshGatewayHealthSnapshot", () => {
       state: "drift",
       driftPaths: ["agents.defaults.model"],
       liveDefaultModel: "openai/gpt-5.6-sol",
-      diskDefaultModel: "openai/gpt-5.6-terra",
+      observedDefaultModel: "openai/gpt-5.6-terra",
     });
     healthState.setBroadcastHealthUpdate(broadcast);
 
@@ -234,7 +234,7 @@ describe("refreshGatewayHealthSnapshot", () => {
       state: "drift",
       driftPaths: ["agents.defaults.model"],
       liveDefaultModel: "openai/gpt-5.6-sol",
-      diskDefaultModel: "openai/gpt-5.6-terra",
+      observedDefaultModel: "openai/gpt-5.6-terra",
     });
     expect(healthState.getHealthCache()).toBe(published);
     expect(broadcast).toHaveBeenCalledWith(published);

@@ -185,7 +185,7 @@ const HealthSnapshotSchema = closedObject({
     closedObject({
       state: Type.Union([Type.Literal("ok"), Type.Literal("drift"), Type.Literal("unknown")]),
       liveDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-      diskDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      observedDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       driftPaths: Type.Optional(Type.Array(Type.String())),
       message: Type.Optional(Type.String()),
     }),

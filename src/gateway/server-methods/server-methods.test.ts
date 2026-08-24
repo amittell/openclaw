@@ -5173,7 +5173,8 @@ describe("gateway healthHandlers.health cache freshness", () => {
       runtimeConfig: {
         state: "drift",
         driftPaths: ["gateway.auth"],
-        message: "Live gateway runtime config differs from disk; restart is required.",
+        message:
+          "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
       },
     });
 

@@ -30,10 +30,10 @@ describe("buildRuntimeConfigHealth drift", () => {
     expect(runtimeConfig).toEqual({
       state: "drift",
       liveDefaultModel: "openai/gpt-5.6-sol",
-      diskDefaultModel: "openai/gpt-5.6-terra",
+      observedDefaultModel: "openai/gpt-5.6-terra",
       driftPaths: ["agents.defaults.model"],
       message:
-        "Live gateway runtime config differs from disk for model/provider/auth paths; restart is required or pending.",
+        "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.",
     });
   });
 
@@ -76,7 +76,7 @@ describe("buildRuntimeConfigHealth drift", () => {
     expect(runtimeConfig).toEqual({
       state: "unknown",
       liveDefaultModel: "openai/gpt-5.6-sol",
-      message: "Disk config source snapshot is unavailable.",
+      message: "Latest completed reload source observation is unavailable.",
     });
     expect(JSON.stringify(runtimeConfig)).not.toContain("/tmp/openclaw.json");
   });

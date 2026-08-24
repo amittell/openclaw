@@ -189,7 +189,8 @@ describe("sendGatewayHello update detail scope", () => {
       runtimeConfig: {
         state: "drift",
         driftPaths: ["gateway.auth"],
-        message: "Live gateway runtime config differs from disk; restart is required.",
+        message:
+          "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
       },
     });
     const context = makeContext("operator", ["operator.admin"]);
@@ -203,13 +204,14 @@ describe("sendGatewayHello update detail scope", () => {
     expect(helloSnapshot(context)?.health.runtimeConfig).toEqual({
       state: "drift",
       driftPaths: ["gateway.auth"],
-      message: "Live gateway runtime config differs from disk; restart is required.",
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
     expect(helloSnapshot(context)?.health.runtimeConfig).not.toHaveProperty(
       "liveSourceFingerprint",
     );
     expect(helloSnapshot(context)?.health.runtimeConfig).not.toHaveProperty(
-      "diskSourceFingerprint",
+      "observedSourceFingerprint",
     );
     expect(getHealthCacheMock.mock.invocationCallOrder[0]).toBeLessThan(
       context.sendFrame.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
@@ -223,7 +225,8 @@ describe("sendGatewayHello update detail scope", () => {
     readCurrentRuntimeConfigHealthMock.mockReturnValue({
       state: "drift",
       driftPaths: ["agents.entries"],
-      message: "Live gateway runtime config differs from disk; restart is required.",
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
     const context = makeContext("operator", ["operator.read"]);
 
@@ -232,7 +235,8 @@ describe("sendGatewayHello update detail scope", () => {
     expect(helloSnapshot(context)?.health.runtimeConfig).toEqual({
       state: "drift",
       driftPaths: ["agents.entries"],
-      message: "Live gateway runtime config differs from disk; restart is required.",
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
     expect(getHealthCacheMock.mock.invocationCallOrder[0]).toBeLessThan(
       readCurrentRuntimeConfigHealthMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
@@ -287,7 +291,8 @@ describe("sendGatewayHello update detail scope", () => {
     readCurrentRuntimeConfigHealthMock.mockReturnValue({
       state: "drift",
       driftPaths: ["agents.entries"],
-      message: "Live gateway runtime config differs from disk; restart is required.",
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
     releaseRedemption?.();
     await hello;
@@ -296,7 +301,8 @@ describe("sendGatewayHello update detail scope", () => {
       runtimeConfig: {
         state: "drift",
         driftPaths: ["agents.entries"],
-        message: "Live gateway runtime config differs from disk; restart is required.",
+        message:
+          "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
       },
     });
     expect(helloSnapshot(context)?.health).not.toMatchObject(oldHealth);
