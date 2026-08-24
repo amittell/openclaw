@@ -1,18 +1,24 @@
-// Leaf state for the config hot-reload watcher's disk observations.
-// Kept separate from config-reload.ts so consumers that only need the
-// observation counter (health drift summaries) do not pull in the full
-// reloader implementation.
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 
-// Monotonic count of completed disk-config observations (watcher snapshot
-// reads and in-process write candidates, applied or not). The reloader is the
-// canonical observer of config-file changes; health keys its single-slot
-// drift cache on this so consumers never re-read openclaw.json independently.
-let configReloadObservedGeneration = 0;
+export type ConfigReloadObservation = Readonly<{
+  generation: number;
+  sourceConfig: OpenClawConfig | null;
+}>;
 
-export function bumpConfigReloadObservedGeneration(): void {
-  configReloadObservedGeneration += 1;
+// The reloader owns config-source reads. Publish one immutable record so health
+// cannot combine a generation from one transaction with source from another.
+let configReloadObservation: ConfigReloadObservation = {
+  generation: 0,
+  sourceConfig: null,
+};
+
+export function publishConfigReloadObservation(sourceConfig: OpenClawConfig | null): void {
+  configReloadObservation = {
+    generation: configReloadObservation.generation + 1,
+    sourceConfig,
+  };
 }
 
-export function getConfigReloadObservedGeneration(): number {
-  return configReloadObservedGeneration;
+export function getConfigReloadObservation(): ConfigReloadObservation {
+  return configReloadObservation;
 }

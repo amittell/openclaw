@@ -1,5 +1,7 @@
 /** Detects and renders drift between the live Gateway config and its disk source. */
+import { isDeepStrictEqual } from "node:util";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { getConfigValueAtPath } from "../config/config-paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HealthSummary, RuntimeConfigHealthSummary } from "../gateway/health/types.js";
 
@@ -15,38 +17,10 @@ const RUNTIME_CONFIG_DRIFT_PATHS = [
 ] as const;
 
 type RuntimeConfigDriftState = {
-  sourceConfig: OpenClawConfig | null;
-  hasMetadata: boolean;
-  diskSourceConfig: OpenClawConfig | null;
+  liveSourceConfig: OpenClawConfig | null;
+  hasLiveSnapshot: boolean;
+  observedSourceConfig: OpenClawConfig | null;
 };
-
-const loadConfigRuntime = async () => await import("../config/config.js");
-
-function stableHealthValueStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableHealthValueStringify(entry)).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).toSorted();
-  return `{${keys
-    .map((key) => `${JSON.stringify(key)}:${stableHealthValueStringify(record[key])}`)
-    .join(",")}}`;
-}
-
-function readConfigPathValue(config: OpenClawConfig, path: string): unknown {
-  let current: unknown = config;
-  for (const part of path.split(".")) {
-    const record = asNullableRecord(current);
-    if (!record || !Object.hasOwn(record, part)) {
-      return undefined;
-    }
-    current = record[part];
-  }
-  return current;
-}
 
 function readPrimaryModelLabel(value: unknown): string | null {
   if (typeof value === "string" && value.trim()) {
@@ -71,9 +45,10 @@ function listRuntimeConfigDriftPaths(params: {
 }): string[] {
   const driftPaths: string[] = [];
   for (const path of RUNTIME_CONFIG_DRIFT_PATHS) {
-    const liveValue = readConfigPathValue(params.liveSourceConfig, path);
-    const diskValue = readConfigPathValue(params.diskSourceConfig, path);
-    if (stableHealthValueStringify(liveValue) !== stableHealthValueStringify(diskValue)) {
+    const segments = path.split(".");
+    const liveValue = getConfigValueAtPath({ ...params.liveSourceConfig }, segments);
+    const diskValue = getConfigValueAtPath({ ...params.diskSourceConfig }, segments);
+    if (!isDeepStrictEqual(liveValue, diskValue)) {
       driftPaths.push(path);
     }
   }
@@ -83,16 +58,16 @@ function listRuntimeConfigDriftPaths(params: {
 function buildRuntimeConfigHealthSummary(
   state: RuntimeConfigDriftState,
 ): RuntimeConfigHealthSummary | undefined {
-  const liveSourceConfig = state.sourceConfig;
+  const liveSourceConfig = state.liveSourceConfig;
   if (!liveSourceConfig) {
-    return state.hasMetadata
+    return state.hasLiveSnapshot
       ? {
           state: "unknown",
           message: "Runtime source config snapshot is unavailable.",
         }
       : undefined;
   }
-  if (!state.diskSourceConfig) {
+  if (!state.observedSourceConfig) {
     return {
       state: "unknown",
       liveDefaultModel: resolveDefaultModelLabel(liveSourceConfig),
@@ -101,10 +76,10 @@ function buildRuntimeConfigHealthSummary(
   }
   const driftPaths = listRuntimeConfigDriftPaths({
     liveSourceConfig,
-    diskSourceConfig: state.diskSourceConfig,
+    diskSourceConfig: state.observedSourceConfig,
   });
   const liveDefaultModel = resolveDefaultModelLabel(liveSourceConfig);
-  const diskDefaultModel = resolveDefaultModelLabel(state.diskSourceConfig);
+  const diskDefaultModel = resolveDefaultModelLabel(state.observedSourceConfig);
   return {
     state: driftPaths.length > 0 ? "drift" : "ok",
     liveDefaultModel,
@@ -146,34 +121,9 @@ export function formatRuntimeConfigHealthLine(summary: HealthSummary): string | 
   return null;
 }
 
-async function readRuntimeConfigDriftState(): Promise<RuntimeConfigDriftState> {
-  const configRuntime = await loadConfigRuntime();
-  const sourceConfig = configRuntime.getRuntimeConfigSourceSnapshot();
-  const hasMetadata = configRuntime.getRuntimeConfigSnapshotMetadata() !== null;
-  // No live source means there is no comparison. Non-Gateway processes must
-  // not turn this diagnostic into another disk-config polling path.
-  if (!sourceConfig) {
-    return { sourceConfig, hasMetadata, diskSourceConfig: null };
-  }
-  let diskSourceConfig: OpenClawConfig | null = null;
-  // Missing or invalid disk config is unknown, not an empty config drift.
-  try {
-    const snapshot = await configRuntime.readSourceConfigSnapshot();
-    if (snapshot.exists && snapshot.valid) {
-      diskSourceConfig = snapshot.sourceConfig as OpenClawConfig;
-    }
-  } catch {
-    diskSourceConfig = null;
-  }
-  return {
-    sourceConfig,
-    hasMetadata,
-    diskSourceConfig,
-  };
-}
-
 /** Builds the runtime-config diagnostic attached to Gateway health snapshots. */
-export async function buildRuntimeConfigHealth(): Promise<RuntimeConfigHealthSummary | undefined> {
-  const state = await readRuntimeConfigDriftState();
+export function buildRuntimeConfigHealth(
+  state: RuntimeConfigDriftState,
+): RuntimeConfigHealthSummary | undefined {
   return buildRuntimeConfigHealthSummary(state);
 }

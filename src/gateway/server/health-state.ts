@@ -6,6 +6,7 @@ import { createConfigIO, getRuntimeConfig } from "../../config/io.js";
 import { STATE_DIR } from "../../config/paths.js";
 import {
   getRuntimeConfigAppliedHash,
+  getRuntimeConfigSourceSnapshot,
   getRuntimeConfigSnapshotMetadata,
 } from "../../config/runtime-snapshot.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions.js";
@@ -14,7 +15,10 @@ import { getUpdateAvailable, getUpdateSchedule } from "../../infra/update-startu
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { resolveGatewayAgentSelectionState } from "../agent-list.js";
 import { resolveGatewayAuth } from "../auth.js";
-import { getConfigReloadObservedGeneration } from "../config-reload-observed.js";
+import {
+  getConfigReloadObservation,
+  type ConfigReloadObservation,
+} from "../config-reload-observed.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { GatewayConfigRevisionProjector } from "../config-revision-token.js";
 import { projectUpdateAvailable } from "../events.js";
@@ -29,12 +33,12 @@ let healthCache: HealthSummary | null = null;
 let healthCacheConfigKey: string | null = null;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 
-type RuntimeConfigHealthResolution = {
+type RuntimeConfigHealthContext = {
   key: string;
-  promise: Promise<HealthSummary["runtimeConfig"]>;
+  observation: ConfigReloadObservation;
+  liveSourceConfig: ReturnType<typeof getRuntimeConfigSourceSnapshot>;
+  hasLiveSnapshot: boolean;
 };
-
-let runtimeConfigHealthResolution: RuntimeConfigHealthResolution | null = null;
 
 type HealthAudience = "public" | "admin";
 type HealthRefreshStrength = "passive" | "probe";
@@ -116,16 +120,21 @@ export function getHealthCache(): HealthSummary | null {
   // Disk observations and live runtime publication both invalidate the whole
   // snapshot. Callers must never mix drift state across either boundary or
   // independently re-read the config source.
-  if (healthCache && healthCacheConfigKey !== getRuntimeConfigHealthKey()) {
+  if (healthCache && healthCacheConfigKey !== readRuntimeConfigHealthContext().key) {
     return null;
   }
   return healthCache;
 }
 
-function getRuntimeConfigHealthKey(): string {
-  const observedGeneration = getConfigReloadObservedGeneration();
-  const runtimeRevision = getRuntimeConfigSnapshotMetadata()?.revision ?? -1;
-  return `${observedGeneration}:${runtimeRevision}`;
+function readRuntimeConfigHealthContext(): RuntimeConfigHealthContext {
+  const observation = getConfigReloadObservation();
+  const metadata = getRuntimeConfigSnapshotMetadata();
+  return {
+    key: `${observation.generation}:${metadata?.revision ?? -1}`,
+    observation,
+    liveSourceConfig: getRuntimeConfigSourceSnapshot(),
+    hasLiveSnapshot: metadata !== null,
+  };
 }
 
 export function getHealthVersion(): number {
@@ -145,36 +154,25 @@ export function setBroadcastHealthUpdate(fn: ((snap: HealthSummary) => void) | n
   broadcastHealthUpdate = fn;
 }
 
-async function resolveRuntimeConfigHealth(): Promise<{
-  key: string;
-  summary: HealthSummary["runtimeConfig"];
-}> {
-  const key = getRuntimeConfigHealthKey();
-  if (!runtimeConfigHealthResolution || runtimeConfigHealthResolution.key !== key) {
-    runtimeConfigHealthResolution = {
-      key,
-      // Snapshot-wide health is observable by read-scoped clients, hello, and
-      // broadcasts, so it never carries fingerprints or detailed disk errors.
-      promise: buildRuntimeConfigHealth(),
-    };
-  }
-  const summary = await runtimeConfigHealthResolution.promise;
-  if (key !== getRuntimeConfigHealthKey()) {
-    return resolveRuntimeConfigHealth();
-  }
-  return { key, summary };
-}
-
-async function preparePublishedHealthSnapshot(snapshot: HealthSummary): Promise<{
+function preparePublishedHealthSnapshot(
+  snapshot: HealthSummary,
+  context: RuntimeConfigHealthContext,
+): {
   configKey: string;
   snapshot: HealthSummary;
-}> {
-  const resolved = await resolveRuntimeConfigHealth();
+} {
+  // Snapshot-wide health is observable by read-scoped clients, hello, and
+  // broadcasts, so it receives only source configs and emits redacted facts.
+  const summary = buildRuntimeConfigHealth({
+    liveSourceConfig: context.liveSourceConfig,
+    hasLiveSnapshot: context.hasLiveSnapshot,
+    observedSourceConfig: context.observation.sourceConfig,
+  });
   delete snapshot.runtimeConfig;
-  if (resolved.summary) {
-    snapshot.runtimeConfig = resolved.summary;
+  if (summary) {
+    snapshot.runtimeConfig = summary;
   }
-  return { configKey: resolved.key, snapshot };
+  return { configKey: context.key, snapshot };
 }
 
 export async function refreshGatewayHealthSnapshot(opts?: {
@@ -203,7 +201,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
   const promise = (async () => {
     const collectPublishedSnapshot = async () => {
       while (true) {
-        const configKeyBeforeCollection = getRuntimeConfigHealthKey();
+        const contextBeforeCollection = readRuntimeConfigHealthContext();
         let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
         try {
           runtimeSnapshot = opts?.getRuntimeSnapshot?.();
@@ -219,13 +217,14 @@ export async function refreshGatewayHealthSnapshot(opts?: {
           ...(eventLoop ? { eventLoop } : {}),
           ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
         });
-        if (configKeyBeforeCollection !== getRuntimeConfigHealthKey()) {
+        const contextAfterCollection = readRuntimeConfigHealthContext();
+        if (contextBeforeCollection.key !== contextAfterCollection.key) {
           continue;
         }
-        const prepared = await preparePublishedHealthSnapshot(collected);
+        const prepared = preparePublishedHealthSnapshot(collected, contextAfterCollection);
         if (
-          prepared.configKey === configKeyBeforeCollection &&
-          configKeyBeforeCollection === getRuntimeConfigHealthKey()
+          prepared.configKey === contextBeforeCollection.key &&
+          contextBeforeCollection.key === readRuntimeConfigHealthContext().key
         ) {
           return prepared;
         }

@@ -32,7 +32,7 @@ import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-l
 import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
-import { bumpConfigReloadObservedGeneration } from "./config-reload-observed.js";
+import { publishConfigReloadObservation } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   isNoopGatewayReloadPlan,
@@ -374,6 +374,9 @@ export function startGatewayConfigReloader(opts: {
   if (opts.initialSnapshotRawHash !== null && opts.initialSnapshotValid) {
     updateAcceptedSnapshot(opts.initialSnapshotRawHash, opts.initialAuthoredConfig);
   }
+  publishConfigReloadObservation(
+    opts.initialSnapshotRawHash !== null && opts.initialSnapshotValid ? initialSourceConfig : null,
+  );
   let currentPluginInstallRecords =
     opts.initialPluginInstallRecords ?? loadInstalledPluginIndexInstallRecordsSync();
   const readPluginInstallRecords =
@@ -844,6 +847,7 @@ export function startGatewayConfigReloader(opts: {
       return;
     }
     running = true;
+    let observedSourceConfig: OpenClawConfig | null = null;
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -851,6 +855,7 @@ export function startGatewayConfigReloader(opts: {
     try {
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
+        observedSourceConfig = pendingWrite.compareConfig;
         pendingInProcessConfig = null;
         activeInProcessConfig = pendingWrite;
         missingConfigRetries = 0;
@@ -894,6 +899,7 @@ export function startGatewayConfigReloader(opts: {
       const intentCandidate = watcherIntentCandidate;
       const intentCandidateCameFromPendingWrite = watcherIntentCameFromPendingWrite;
       const snapshot = await opts.readSnapshot(currentRuntimeEnvSourceConfig);
+      observedSourceConfig = snapshot.exists && snapshot.valid ? snapshot.sourceConfig : null;
       if (configWriteEpoch !== transactionEpoch) {
         throw new GatewayConfigReloadSupersededError();
       }
@@ -1074,9 +1080,9 @@ export function startGatewayConfigReloader(opts: {
         opts.log.error(`config reload failed: ${String(err)}`);
       }
     } finally {
-      // Publish only completed observations. Bumping before the snapshot read
-      // could let health cache a transient file state under the final key.
-      bumpConfigReloadObservedGeneration();
+      // Publish only after this transaction finishes so health compares the
+      // exact accepted or rejected candidate under the matching generation.
+      publishConfigReloadObservation(observedSourceConfig);
       running = false;
       if (pending) {
         pending = false;

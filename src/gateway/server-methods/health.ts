@@ -106,11 +106,11 @@ function cachedHealthDiffersFromRuntime(
 }
 
 /** Merges cheap live runtime facts into a cached health summary before responding. */
-async function mergeCachedHealthRuntimeState(params: {
+function mergeCachedHealthRuntimeState(params: {
   cached: HealthSummary;
   eventLoop?: HealthSummary["eventLoop"];
   configReloadHotReloadStatus?: GatewayHotReloadStatus;
-}): Promise<HealthSummary> {
+}): HealthSummary {
   const {
     contextEngines: _cachedContextEngines,
     deliveryQueues: _cachedDeliveryQueues,
@@ -162,7 +162,7 @@ export const healthHandlers: GatewayRequestHandlers = {
     ) {
       respond(
         true,
-        await mergeCachedHealthRuntimeState({
+        mergeCachedHealthRuntimeState({
           cached,
           eventLoop: context.getEventLoopHealth?.(),
           configReloadHotReloadStatus: context.getConfigReloaderHotReloadStatus?.(),

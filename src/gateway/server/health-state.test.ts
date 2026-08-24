@@ -9,7 +9,8 @@ import type { HealthSummary } from "../health/types.js";
 const {
   buildRuntimeConfigHealthMock,
   collectGatewayHealthSnapshotMock,
-  getConfigReloadObservedGenerationMock,
+  getConfigReloadObservationMock,
+  getRuntimeConfigSourceSnapshotMock,
   getRuntimeConfigSnapshotMetadataMock,
   getRuntimeConfigMock,
   getUpdateAvailableMock,
@@ -17,7 +18,8 @@ const {
 } = vi.hoisted(() => ({
   buildRuntimeConfigHealthMock: vi.fn(),
   collectGatewayHealthSnapshotMock: vi.fn(),
-  getConfigReloadObservedGenerationMock: vi.fn(() => 0),
+  getConfigReloadObservationMock: vi.fn(() => ({ generation: 0, sourceConfig: null })),
+  getRuntimeConfigSourceSnapshotMock: vi.fn(() => null),
   getRuntimeConfigSnapshotMetadataMock: vi.fn(() => ({ revision: 0 })),
   getRuntimeConfigMock: vi.fn(),
   getUpdateAvailableMock: vi.fn(),
@@ -29,11 +31,13 @@ vi.mock("../../commands/health-runtime-config.js", () => ({
 }));
 
 vi.mock("../config-reload-observed.js", () => ({
-  getConfigReloadObservedGeneration: getConfigReloadObservedGenerationMock,
+  getConfigReloadObservation: getConfigReloadObservationMock,
 }));
 
 vi.mock("../../config/runtime-snapshot.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/runtime-snapshot.js")>()),
+  getRuntimeConfigAppliedHash: () => "internal-applied-hash",
+  getRuntimeConfigSourceSnapshot: getRuntimeConfigSourceSnapshotMock,
   getRuntimeConfigSnapshotMetadata: getRuntimeConfigSnapshotMetadataMock,
 }));
 
@@ -44,11 +48,6 @@ vi.mock("../health/collector.js", () => ({
 vi.mock("../../config/io.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/io.js")>()),
   getRuntimeConfig: getRuntimeConfigMock,
-}));
-
-vi.mock("../../config/runtime-snapshot.js", () => ({
-  getRuntimeConfigAppliedHash: () => "internal-applied-hash",
-  getRuntimeConfigSourceSnapshot: () => null,
 }));
 
 vi.mock("../../infra/update-startup.js", () => ({
@@ -97,9 +96,11 @@ async function loadHealthState() {
   collectGatewayHealthSnapshotMock.mockReset();
   collectGatewayHealthSnapshotMock.mockResolvedValue(createHealthSummary());
   buildRuntimeConfigHealthMock.mockReset();
-  buildRuntimeConfigHealthMock.mockResolvedValue(undefined);
-  getConfigReloadObservedGenerationMock.mockReset();
-  getConfigReloadObservedGenerationMock.mockReturnValue(0);
+  buildRuntimeConfigHealthMock.mockReturnValue(undefined);
+  getConfigReloadObservationMock.mockReset();
+  getConfigReloadObservationMock.mockReturnValue({ generation: 0, sourceConfig: null });
+  getRuntimeConfigSourceSnapshotMock.mockReset();
+  getRuntimeConfigSourceSnapshotMock.mockReturnValue(null);
   getRuntimeConfigSnapshotMetadataMock.mockReset();
   getRuntimeConfigSnapshotMetadataMock.mockReturnValue({ revision: 0 });
   getUpdateAvailableMock.mockReset();
@@ -209,7 +210,7 @@ describe("refreshGatewayHealthSnapshot", () => {
   it("publishes one redacted runtime-config diagnostic to cache and broadcasts", async () => {
     const healthState = await loadHealthState();
     const broadcast = vi.fn();
-    buildRuntimeConfigHealthMock.mockResolvedValue({
+    buildRuntimeConfigHealthMock.mockReturnValue({
       state: "drift",
       driftPaths: ["agents.defaults.model"],
       liveDefaultModel: "openai/gpt-5.6-sol",
@@ -220,7 +221,11 @@ describe("refreshGatewayHealthSnapshot", () => {
     const published = await healthState.refreshGatewayHealthSnapshot({ probe: false });
 
     expect(buildRuntimeConfigHealthMock).toHaveBeenCalledOnce();
-    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledWith();
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledWith({
+      liveSourceConfig: null,
+      hasLiveSnapshot: true,
+      observedSourceConfig: null,
+    });
     expect(published.runtimeConfig).toEqual({
       state: "drift",
       driftPaths: ["agents.defaults.model"],
@@ -232,6 +237,26 @@ describe("refreshGatewayHealthSnapshot", () => {
     expect(JSON.stringify(published)).not.toContain("Fingerprint");
   });
 
+  it("builds config health from the reloader's completed source observation", async () => {
+    const healthState = await loadHealthState();
+    const liveSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-sol" } } };
+    const observedSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-terra" } } };
+    getRuntimeConfigSourceSnapshotMock.mockReturnValue(liveSourceConfig);
+    getConfigReloadObservationMock.mockReturnValue({
+      generation: 7,
+      sourceConfig: observedSourceConfig,
+    });
+    buildRuntimeConfigHealthMock.mockReturnValue({ state: "drift" });
+
+    await healthState.refreshGatewayHealthSnapshot({ probe: false });
+
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledWith({
+      liveSourceConfig,
+      hasLiveSnapshot: true,
+      observedSourceConfig,
+    });
+  });
+
   it("invalidates stale cache generations and recomputes once before publication", async () => {
     const healthState = await loadHealthState();
     const broadcast = vi.fn();
@@ -239,8 +264,11 @@ describe("refreshGatewayHealthSnapshot", () => {
     collectGatewayHealthSnapshotMock
       .mockResolvedValueOnce(createHealthSummary())
       .mockResolvedValueOnce(createHealthSummary());
-    getConfigReloadObservedGenerationMock.mockImplementation(() => generation);
-    buildRuntimeConfigHealthMock.mockResolvedValueOnce({ state: "ok" }).mockResolvedValueOnce({
+    getConfigReloadObservationMock.mockImplementation(() => ({
+      generation,
+      sourceConfig: null,
+    }));
+    buildRuntimeConfigHealthMock.mockReturnValueOnce({ state: "ok" }).mockReturnValueOnce({
       state: "unknown",
       message: "Disk config source snapshot is unavailable.",
     });
@@ -268,31 +296,37 @@ describe("refreshGatewayHealthSnapshot", () => {
 
   it("retries publication when the observed generation advances during computation", async () => {
     const healthState = await loadHealthState();
-    let generation = 11;
-    getConfigReloadObservedGenerationMock.mockImplementation(() => generation);
+    const firstSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-sol" } } };
+    const latestSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-terra" } } };
+    let observation = { generation: 11, sourceConfig: firstSourceConfig };
+    getConfigReloadObservationMock.mockImplementation(() => observation);
     buildRuntimeConfigHealthMock
-      .mockImplementationOnce(async () => {
-        generation += 1;
+      .mockImplementationOnce(() => {
+        observation = { generation: 12, sourceConfig: latestSourceConfig };
         return { state: "ok" };
       })
-      .mockResolvedValueOnce({ state: "drift", driftPaths: ["models"] });
+      .mockReturnValueOnce({ state: "drift", driftPaths: ["models"] });
 
     const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
 
     expect(published.runtimeConfig).toEqual({ state: "drift", driftPaths: ["models"] });
     expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
+    expect(
+      buildRuntimeConfigHealthMock.mock.calls.map(([input]) => input.observedSourceConfig),
+    ).toEqual([firstSourceConfig, latestSourceConfig]);
     expect(healthState.getHealthCache()).toBe(published);
   });
 
   it("retries publication when the live runtime revision advances before commit", async () => {
     const healthState = await loadHealthState();
-    let revisionReads = 0;
-    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({
-      revision: revisionReads++ < 4 ? 11 : 12,
-    }));
+    let revision = 11;
+    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({ revision }));
     buildRuntimeConfigHealthMock
-      .mockResolvedValueOnce({ state: "drift", driftPaths: ["models"] })
-      .mockResolvedValueOnce({ state: "ok" });
+      .mockImplementationOnce(() => {
+        revision += 1;
+        return { state: "drift", driftPaths: ["models"] };
+      })
+      .mockReturnValueOnce({ state: "ok" });
 
     const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
 

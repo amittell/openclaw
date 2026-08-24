@@ -29,7 +29,7 @@ import {
 } from "../skills/runtime/refresh-state.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
-import { getConfigReloadObservedGeneration } from "./config-reload-observed.js";
+import { getConfigReloadObservation } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   type ChannelKind,
@@ -1679,6 +1679,7 @@ describe("startGatewayConfigReloader", () => {
       const onConfigCandidateObserved = vi.fn();
       const readSnapshot = vi.fn(async () => snapshot);
       const harness = createReloaderHarness(readSnapshot, { onConfigCandidateObserved });
+      const observedGeneration = getConfigReloadObservation().generation;
 
       harness.watcher.emit("change");
 
@@ -1687,6 +1688,9 @@ describe("startGatewayConfigReloader", () => {
 
       await vi.runAllTimersAsync();
       expect(harness.onConfigAccepted).not.toHaveBeenCalled();
+      const observation = getConfigReloadObservation();
+      expect(observation.generation).toBeGreaterThan(observedGeneration);
+      expect(observation.sourceConfig).toBeNull();
       await harness.reloader.stop();
     },
   );
@@ -1724,24 +1728,26 @@ describe("startGatewayConfigReloader", () => {
 
   it("notifies change listeners when reload mode off skips the runtime apply", async () => {
     const initialConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "off" } },
+      gateway: { reload: { mode: "off" }, auth: { mode: "token", token: "test-old" } },
     };
     const nextConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "off" } },
-      ui: { prefs: { themeMode: "light" } },
+      gateway: { reload: { mode: "off" }, auth: { mode: "token", token: "test-new" } },
     };
     const readSnapshot = vi.fn(async () =>
       makeSnapshot({ config: nextConfig, hash: "mode-off-write" }),
     );
     const harness = createReloaderHarness(readSnapshot, { initialConfig });
-    const observedGeneration = getConfigReloadObservedGeneration();
+    const observedGeneration = getConfigReloadObservation().generation;
+    expect(getConfigReloadObservation().sourceConfig).toEqual(initialConfig);
 
     await flushWatcherChange(harness);
 
     expect(harness.onHotReload).not.toHaveBeenCalled();
     expect(harness.onRestart).not.toHaveBeenCalled();
     expect(harness.onConfigCandidateCommitted).toHaveBeenCalledOnce();
-    expect(getConfigReloadObservedGeneration()).toBeGreaterThan(observedGeneration);
+    const observation = getConfigReloadObservation();
+    expect(observation.generation).toBeGreaterThan(observedGeneration);
+    expect(observation.sourceConfig).toEqual(nextConfig);
     await harness.reloader.stop();
   });
 
@@ -1754,18 +1760,20 @@ describe("startGatewayConfigReloader", () => {
     const snapshot = createDeferred<ConfigFileSnapshot>();
     const readSnapshot = vi.fn(() => snapshot.promise);
     const harness = createReloaderHarness(readSnapshot, { initialConfig });
-    const observedGeneration = getConfigReloadObservedGeneration();
+    const observedGeneration = getConfigReloadObservation().generation;
 
     harness.watcher.emit("change");
     await vi.runOnlyPendingTimersAsync();
 
     expect(readSnapshot).toHaveBeenCalledOnce();
-    expect(getConfigReloadObservedGeneration()).toBe(observedGeneration);
+    expect(getConfigReloadObservation().generation).toBe(observedGeneration);
 
     snapshot.resolve(makeSnapshot({ config: nextConfig, hash: "completed-observation" }));
     await vi.runAllTimersAsync();
 
-    expect(getConfigReloadObservedGeneration()).toBeGreaterThan(observedGeneration);
+    const observation = getConfigReloadObservation();
+    expect(observation.generation).toBeGreaterThan(observedGeneration);
+    expect(observation.sourceConfig).toEqual(nextConfig);
     await harness.reloader.stop();
   });
 
@@ -3583,10 +3591,11 @@ describe("startGatewayConfigReloader", () => {
       .mockResolvedValueOnce(makeZeroDebounceHookSnapshot("internal-restart"));
     const harness = createReloaderHarness(readSnapshot);
 
-    harness.emitWrite({
+    const write = {
       ...makeZeroDebounceHookWrite("internal-restart"),
       afterWrite: { mode: "restart", reason: "plugin runtime contract changed" },
-    });
+    } satisfies ConfigWriteNotification;
+    harness.emitWrite(write);
     await vi.runOnlyPendingTimersAsync();
 
     expect(harness.onHotReload).not.toHaveBeenCalled();
@@ -3597,6 +3606,7 @@ describe("startGatewayConfigReloader", () => {
       gateway: { reload: {} },
       hooks: { enabled: true },
     });
+    expect(getConfigReloadObservation().sourceConfig).toEqual(write.sourceConfig);
 
     await harness.reloader.stop();
   });
