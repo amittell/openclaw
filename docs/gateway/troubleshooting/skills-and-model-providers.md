@@ -64,8 +64,9 @@ openclaw config get agents.defaults.models
 Look for:
 
 - Selected Anthropic model has a native 1M context window (Opus 5, Sonnet 5, Mythos 5, Fable 5.1, Fable 5, Opus 4.6/4.7/4.8, Sonnet 4.6), or the model config still carries legacy `params.context1m: true`.
-- The response contains the exact long-context sentence above. Other 429
-  responses remain ordinary rate limits.
+- The response contains the exact long-context sentence above. Nonmatching 429
+  responses retain their normal classification, including billing or ordinary
+  rate limiting.
 - Whether the failure persists after OpenClaw compacts the active session.
 
 When Anthropic returns this exact body, OpenClaw treats it as the provider's
