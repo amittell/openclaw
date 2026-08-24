@@ -246,7 +246,7 @@ describe("sendGatewayHello update detail scope", () => {
   });
 
   it("finalizes config health after awaited bootstrap bookkeeping", async () => {
-    const oldHealth = {
+    const oldHealth: HelloOk["snapshot"]["health"] = {
       ok: true,
       ts: 1,
       durationMs: 1,
