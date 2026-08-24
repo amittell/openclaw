@@ -21,7 +21,11 @@ import {
   type AuthProfileStore,
   type OAuthCredential,
 } from "openclaw/plugin-sdk/agent-runtime";
-import { resolveOpenAICodexAuthIdentity } from "openclaw/plugin-sdk/provider-auth";
+import {
+  hasUsableOAuthCredential,
+  resolveOpenAICodexAuthIdentity,
+} from "openclaw/plugin-sdk/provider-auth";
+import { refreshCodexCliOAuthCredentialForRuntime } from "openclaw/plugin-sdk/provider-auth-runtime";
 import { readSecretFile } from "openclaw/plugin-sdk/secret-file";
 import {
   resolveCodexAppServerHomeDir,
@@ -82,6 +86,10 @@ const activeComputerUseArtifactReconciliations = new Map<
 >();
 type AuthProfileOrderConfig = Parameters<typeof resolveAuthProfileOrder>[0]["cfg"];
 export type CodexAppServerAuthRequirement = "api-key" | "subscription";
+const scopedOAuthRefreshQueues = new WeakMap<
+  AuthProfileStore,
+  Map<string, Promise<OAuthCredential>>
+>();
 
 export async function bridgeCodexAppServerStartOptions(params: {
   startOptions: CodexAppServerStartOptions;
@@ -1197,30 +1205,56 @@ async function resolveOAuthCredentialForCodexAppServer(
     isCodexAppServerAuthProvider(persistedCredential.provider)
       ? persistedCredential
       : undefined;
-  if (useScopedCredential || !persistedOAuthCredential) {
-    const runtimeCredential = store.profiles[profileId];
-    const refreshedRuntimeCredential =
-      runtimeCredential?.type === "oauth"
-        ? await refreshOAuthCredentialForRuntime({
-            store,
-            profileId,
-            credential: runtimeCredential,
-            cfg: params.config,
-            agentDir: ownerAgentDir,
-            forceRefresh: params.forceRefresh,
-          })
-        : undefined;
+  const ownerCredential = store.profiles[profileId];
+  const overlaidOAuthCredential =
+    ownerCredential?.type === "oauth" && isCodexAppServerAuthProvider(ownerCredential.provider)
+      ? ownerCredential
+      : undefined;
+  if (
+    !persistedOAuthCredential &&
+    overlaidOAuthCredential &&
+    store.runtimeExternalCliProfileIds?.includes(profileId)
+  ) {
+    if (!params.forceRefresh) {
+      // Native Codex remains the read owner until app-server rejects the
+      // bearer and asks for refresh; only that boundary can promote rotation.
+      return overlaidOAuthCredential;
+    }
+    const managedCredential = await refreshCodexCliOAuthCredentialForRuntime({
+      store,
+      profileId,
+      agentDir: ownerAgentDir,
+      cfg: params.config,
+      forceRefresh: params.forceRefresh,
+    });
+    if (!managedCredential?.access?.trim()) {
+      throw new Error(`Codex app-server auth profile "${profileId}" could not refresh.`);
+    }
+    return managedCredential;
+  }
+  if (useScopedCredential && overlaidOAuthCredential) {
+    return await resolveScopedOAuthCredential({
+      store,
+      profileId,
+      credential: overlaidOAuthCredential,
+      forceRefresh: params.forceRefresh,
+    });
+  }
+  if (params.forceRefresh && !persistedOAuthCredential && overlaidOAuthCredential) {
+    const refreshedRuntimeCredential = await refreshOAuthCredentialForRuntime({
+      credential: overlaidOAuthCredential,
+    });
     if (!refreshedRuntimeCredential?.access?.trim()) {
       throw new Error(`Codex app-server auth profile "${profileId}" could not refresh.`);
     }
-    if (isDeepStrictEqual(params.store.profiles[profileId], credential)) {
-      params.store.profiles[profileId] = refreshedRuntimeCredential;
-    }
+    store.profiles[profileId] = refreshedRuntimeCredential;
     return refreshedRuntimeCredential;
   }
   const resolved = await resolveApiKeyForProfile({
     cfg: params.config,
-    store,
+    // Carry the prepared caller's rejected bearer into the locked manager.
+    // The manager rereads SQLite and deduplicates a concurrent rotation.
+    store: params.forceRefresh && params.preferStoreCredential ? params.store : store,
     profileId,
     agentDir: ownerAgentDir,
     forceRefresh: params.forceRefresh,
@@ -1251,6 +1285,16 @@ function shouldUseScopedOAuthCredential(params: {
   suppliedCredential: OAuthCredential;
   config?: AuthProfileOrderConfig;
 }): boolean {
+  if (
+    params.store.runtimeExternalCliProfileIds?.includes(params.profileId) &&
+    params.persistedCredential?.type === "oauth" &&
+    resolveProviderIdForAuth(params.persistedCredential.provider, { config: params.config }) ===
+      resolveProviderIdForAuth(params.suppliedCredential.provider, { config: params.config })
+  ) {
+    // A first native Codex rotation may have promoted while this prepared
+    // store was detached. SQLite owns the profile from that point forward.
+    return false;
+  }
   if (!params.store.runtimePersistedProfileIds?.includes(params.profileId)) {
     return true;
   }
@@ -1279,6 +1323,52 @@ function hasMatchingOAuthIdentity(persisted: OAuthCredential, supplied: OAuthCre
   const persistedEmail = persisted.email?.trim().toLowerCase();
   const suppliedEmail = supplied.email?.trim().toLowerCase();
   return Boolean(persistedEmail && suppliedEmail && persistedEmail === suppliedEmail);
+}
+
+async function resolveScopedOAuthCredential(params: {
+  store: AuthProfileStore;
+  profileId: string;
+  credential: OAuthCredential;
+  forceRefresh: boolean;
+}): Promise<OAuthCredential> {
+  const existingRefresh = scopedOAuthRefreshQueues.get(params.store)?.get(params.profileId);
+  if (existingRefresh) {
+    return await existingRefresh;
+  }
+  if (!params.forceRefresh && hasUsableOAuthCredential(params.credential)) {
+    return params.credential;
+  }
+
+  const storeRefreshes = scopedOAuthRefreshQueues.get(params.store) ?? new Map();
+  scopedOAuthRefreshQueues.set(params.store, storeRefreshes);
+  const refresh = (async () => {
+    const current = params.store.profiles[params.profileId];
+    const credential = current?.type === "oauth" ? current : params.credential;
+    if (!params.forceRefresh && hasUsableOAuthCredential(credential)) {
+      return credential;
+    }
+    const refreshed = await refreshOAuthCredentialForRuntime({ credential });
+    if (!refreshed?.access?.trim()) {
+      throw new Error(`Codex app-server auth profile "${params.profileId}" could not refresh.`);
+    }
+    if (!isDeepStrictEqual(params.store.profiles[params.profileId], credential)) {
+      throw new Error(
+        `Codex app-server auth profile "${params.profileId}" changed while refreshing.`,
+      );
+    }
+    params.store.profiles[params.profileId] = refreshed;
+    return refreshed;
+  })();
+  storeRefreshes.set(params.profileId, refresh);
+  try {
+    return await refresh;
+  } finally {
+    // Scoped stores are process-local; serialize their rotating refresh token
+    // and release the queue entry with the refresh that owns it.
+    if (storeRefreshes.get(params.profileId) === refresh) {
+      storeRefreshes.delete(params.profileId);
+    }
+  }
 }
 
 // Runtime consumes canonical auth state; doctor owns retired profile-id migration.

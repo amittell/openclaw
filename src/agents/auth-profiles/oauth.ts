@@ -28,7 +28,11 @@ import {
 } from "../../secrets/runtime-degraded-state.js";
 import { normalizeOptionalSecretInput } from "../../utils/normalize-secret-input.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
-import { authProfilesLog, CLAUDE_CLI_PROFILE_ID } from "./constants.js";
+import {
+  authProfilesLog,
+  CLAUDE_CLI_PROFILE_ID,
+  OPENAI_CODEX_DEFAULT_PROFILE_ID,
+} from "./constants.js";
 import {
   evaluateStoredCredentialEligibility,
   resolveTokenExpiryState,
@@ -47,6 +51,7 @@ import {
 } from "./runtime-snapshots.js";
 import {
   loadAuthProfileStoreForSecretsRuntime,
+  loadAuthProfileStoreWithoutExternalProfiles,
   resolvePersistedAuthProfileOwnerAgentDir,
 } from "./store.js";
 import type { AuthProfileCredential, AuthProfileStore, OAuthCredential } from "./types.js";
@@ -214,21 +219,24 @@ async function refreshOAuthCredential(
   return result?.newCredentials ?? null;
 }
 
-/** Refresh one runtime-owned OAuth profile without persisting or mirroring it. */
+/**
+ * Refresh one caller-scoped OAuth credential without persistence or mirroring.
+ * This shipped direct contract stays process-local; internal persisted Codex
+ * callers use the manager-owned path below. A future SDK major can reconsider
+ * the split after native source-owner writeback has an upstream contract.
+ */
 export async function refreshOAuthCredentialForRuntime(params: {
-  store: AuthProfileStore;
-  profileId: string;
   credential: OAuthCredential;
   cfg?: OpenClawConfig;
-  agentDir?: string;
-  forceRefresh?: boolean;
 }): Promise<OAuthCredential | null> {
-  const resolved = await oauthManager.resolveOAuthAccess({
-    ...params,
-    forceRefresh: params.forceRefresh ?? true,
-    useRuntimeStore: true,
-  });
-  return resolved?.credential ?? null;
+  const refreshed = await refreshOAuthCredential(params.credential, { cfg: params.cfg });
+  return refreshed
+    ? {
+        ...params.credential,
+        ...refreshed,
+        type: "oauth",
+      }
+    : null;
 }
 
 const oauthManager = createOAuthManager({
@@ -240,8 +248,79 @@ const oauthManager = createOAuthManager({
       profileId,
       credential,
     }),
+  readAuthoritativeBootstrapCredential: ({ store, profileId, credential }) =>
+    readExternalCliBootstrapCredential({
+      store,
+      profileId,
+      credential,
+      allowInlineOAuthTokenMaterial: true,
+      allowKeychainPrompt: false,
+      fresh: true,
+    }),
   isRefreshTokenReusedError,
 });
+
+/**
+ * Refresh a proven external-CLI runtime profile under the canonical OAuth
+ * manager. The first changed rotation is inserted into SQLite atomically;
+ * unchanged CLI credentials remain runtime-only and the CLI source is read-only.
+ */
+export async function refreshCodexCliOAuthCredentialForRuntime(params: {
+  store: AuthProfileStore;
+  profileId: string;
+  agentDir?: string;
+  cfg?: OpenClawConfig;
+  forceRefresh?: boolean;
+}): Promise<OAuthCredential | null> {
+  if (
+    params.profileId !== OPENAI_CODEX_DEFAULT_PROFILE_ID ||
+    !params.store.runtimeExternalCliProfileIds?.includes(params.profileId)
+  ) {
+    return null;
+  }
+  const credential = params.store.profiles[params.profileId];
+  if (!credential || credential.type !== "oauth") {
+    return null;
+  }
+  const resolved = await oauthManager.resolveOAuthAccess({
+    store: params.store,
+    profileId: params.profileId,
+    credential,
+    agentDir: params.agentDir,
+    cfg: params.cfg,
+    forceRefresh: params.forceRefresh,
+    externalCliCredential: credential,
+  });
+  if (!resolved) {
+    return null;
+  }
+  params.store.profiles[params.profileId] = resolved.credential;
+
+  // The store transaction publishes runtime snapshots after commit. Align
+  // this caller's prepared clone with the same canonical SQLite row.
+  const managed = loadAuthProfileStoreWithoutExternalProfiles(params.agentDir).profiles[
+    params.profileId
+  ];
+  if (managed?.type === "oauth" && isDeepStrictEqual(managed, resolved.credential)) {
+    params.store.profiles[params.profileId] = managed;
+    params.store.runtimeExternalProfileIds = params.store.runtimeExternalProfileIds?.filter(
+      (profileId) => profileId !== params.profileId,
+    );
+    if (params.store.runtimeExternalProfileIds?.length === 0) {
+      params.store.runtimeExternalProfileIds = undefined;
+    }
+    params.store.runtimeExternalCliProfileIds = params.store.runtimeExternalCliProfileIds?.filter(
+      (profileId) => profileId !== params.profileId,
+    );
+    if (params.store.runtimeExternalCliProfileIds?.length === 0) {
+      params.store.runtimeExternalCliProfileIds = undefined;
+    }
+    params.store.runtimePersistedProfileIds = [
+      ...new Set([...(params.store.runtimePersistedProfileIds ?? []), params.profileId]),
+    ].toSorted();
+  }
+  return resolved.credential;
+}
 
 /** Clear in-process OAuth refresh queues between isolated tests. */
 function resetOAuthRefreshQueuesForTest(): void {

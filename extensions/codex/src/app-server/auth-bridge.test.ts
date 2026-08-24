@@ -43,6 +43,7 @@ type MockCacheResult = {
 };
 
 const agentRuntimeMocks = vi.hoisted(() => ({
+  refreshCodexCliOAuthCredentialForRuntime: vi.fn(),
   refreshOAuthCredentialForRuntime: vi.fn(),
   resolveApiKeyForProfile: vi.fn(),
 }));
@@ -101,24 +102,18 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
       params: Parameters<typeof actual.refreshOAuthCredentialForRuntime>[0],
     ) => {
       agentRuntimeMocks.refreshOAuthCredentialForRuntime(params);
-      if (
-        params.forceRefresh === false &&
-        params.credential.expires > Date.now() &&
-        params.credential.access.trim()
-      ) {
-        return params.credential;
-      }
       const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
         provider: params.credential.provider,
         config: params.cfg,
         context: params.credential,
       });
-      if (!refreshed?.access) {
-        return null;
-      }
-      const oauthCredential = refreshed as typeof params.credential;
-      params.store.profiles[params.profileId] = oauthCredential;
-      return oauthCredential;
+      return refreshed
+        ? {
+            ...params.credential,
+            ...refreshed,
+            type: "oauth" as const,
+          }
+        : null;
     },
     resolveApiKeyForProfile: async (
       params: Parameters<typeof actual.resolveApiKeyForProfile>[0],
@@ -145,8 +140,22 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
       if (credential.type !== "oauth") {
         return null;
       }
-      let oauthCredential = credential;
-      if (params.forceRefresh || (oauthCredential.expires ?? 0) <= Date.now()) {
+      const canonicalStore = actual.loadAuthProfileStoreWithoutExternalProfiles(params.agentDir);
+      const canonical = canonicalStore.profiles[params.profileId];
+      let oauthCredential =
+        canonical?.type === "oauth" && canonical.provider === credential.provider
+          ? canonical
+          : credential;
+      const anotherCallerReplacedRejectedBearer = Boolean(
+        params.forceRefresh &&
+        oauthCredential.access.trim() &&
+        oauthCredential.expires > Date.now() + 5 * 60_000 &&
+        oauthCredential.access !== credential.access,
+      );
+      if (
+        !anotherCallerReplacedRejectedBearer &&
+        (params.forceRefresh || (oauthCredential.expires ?? 0) <= Date.now())
+      ) {
         const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
           provider: oauthCredential.provider,
           config: params.cfg,
@@ -154,9 +163,9 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
         });
         if (refreshed?.access) {
           oauthCredential = refreshed as typeof oauthCredential;
-          params.store.profiles[params.profileId] = oauthCredential;
-          if (params.agentDir || process.env.OPENCLAW_STATE_DIR) {
-            actual.saveAuthProfileStore(params.store, params.agentDir);
+          if (canonical?.type === "oauth") {
+            canonicalStore.profiles[params.profileId] = oauthCredential;
+            actual.saveAuthProfileStore(canonicalStore, params.agentDir);
           }
         }
       }
@@ -169,6 +178,35 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
       return apiKey
         ? { apiKey, provider: oauthCredential.provider, email: oauthCredential.email }
         : null;
+    },
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/provider-auth-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/provider-auth-runtime")>();
+  return {
+    ...actual,
+    refreshCodexCliOAuthCredentialForRuntime: async (
+      params: Parameters<typeof actual.refreshCodexCliOAuthCredentialForRuntime>[0],
+    ) => {
+      agentRuntimeMocks.refreshCodexCliOAuthCredentialForRuntime(params);
+      const credential = params.store.profiles[params.profileId];
+      if (!credential || credential.type !== "oauth") {
+        return null;
+      }
+      const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
+        provider: credential.provider,
+        config: params.cfg,
+        context: credential,
+      });
+      if (!refreshed) {
+        return null;
+      }
+      const managed = { ...credential, ...refreshed, type: "oauth" as const };
+      params.store.profiles[params.profileId] = managed;
+      const { saveAuthProfileStore } = await import("openclaw/plugin-sdk/agent-runtime");
+      saveAuthProfileStore(params.store, params.agentDir);
+      return managed;
     },
   };
 });
@@ -203,6 +241,7 @@ vi.mock("./desktop-app-paths.js", async (importOriginal) => {
 afterEach(() => {
   vi.unstubAllEnvs();
   clearRuntimeAuthProfileStoreSnapshots();
+  agentRuntimeMocks.refreshCodexCliOAuthCredentialForRuntime.mockClear();
   agentRuntimeMocks.refreshOAuthCredentialForRuntime.mockClear();
   agentRuntimeMocks.resolveApiKeyForProfile.mockClear();
   oauthMocks.refreshOpenAICodexToken.mockReset();
@@ -1610,19 +1649,14 @@ describe("bridgeCodexAppServerStartOptions", () => {
     }
   });
 
-  it("keeps a prepared persisted store aligned across rotating refresh tokens", async () => {
+  it("routes distinct remote-exec prepared clones through persisted rotation ownership", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
-    oauthMocks.refreshOpenAICodexToken
-      .mockResolvedValueOnce({
-        access: "first-rotated-access",
-        refresh: "first-rotated-refresh",
-        expires: Date.now() + 60_000,
-      })
-      .mockResolvedValueOnce({
-        access: "second-rotated-access",
-        refresh: "second-rotated-refresh",
-        expires: Date.now() + 60_000,
-      });
+    oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
+      access: "first-rotated-access",
+      refresh: "first-rotated-refresh",
+      expires: Date.now() + 10 * 60_000,
+      accountId: "remote-exec-account",
+    });
     try {
       upsertAuthProfile({
         agentDir,
@@ -1632,31 +1666,43 @@ describe("bridgeCodexAppServerStartOptions", () => {
           provider: "openai",
           access: "initial-access",
           refresh: "initial-refresh",
-          expires: Date.now() + 60_000,
-          accountId: "rotating-account",
+          expires: Date.now() + 10 * 60_000,
+          accountId: "remote-exec-account",
         },
       });
-      const authProfileStore = loadAuthProfileStoreForSecretsRuntime(agentDir);
+      const preparedSnapshot = loadAuthProfileStoreForSecretsRuntime(agentDir);
+      // Remote-exec workers receive detached prepared stores. Snapshot
+      // publication in this process cannot update either caller's copy.
+      const firstPreparedStore = structuredClone(preparedSnapshot);
+      const secondPreparedStore = structuredClone(preparedSnapshot);
+      expect(secondPreparedStore).not.toBe(firstPreparedStore);
 
       await refreshCodexAppServerAuthTokens({
         agentDir,
         authProfileId: "openai:work",
-        authProfileStore,
+        authProfileStore: firstPreparedStore,
       });
       await refreshCodexAppServerAuthTokens({
         agentDir,
         authProfileId: "openai:work",
-        authProfileStore,
+        authProfileStore: secondPreparedStore,
       });
 
-      expect(oauthMocks.refreshOpenAICodexToken.mock.calls).toEqual([
-        ["initial-refresh"],
-        ["first-rotated-refresh"],
-      ]);
-      expect(authProfileStore.profiles["openai:work"]).toMatchObject({
-        access: "second-rotated-access",
-        refresh: "second-rotated-refresh",
+      expect(oauthMocks.refreshOpenAICodexToken.mock.calls).toEqual([["initial-refresh"]]);
+      expect(firstPreparedStore.profiles["openai:work"]).toMatchObject({
+        access: "first-rotated-access",
+        refresh: "first-rotated-refresh",
       });
+      expect(secondPreparedStore.profiles["openai:work"]).toMatchObject({
+        access: "first-rotated-access",
+        refresh: "first-rotated-refresh",
+      });
+      expect(loadAuthProfileStoreForSecretsRuntime(agentDir).profiles["openai:work"]).toMatchObject(
+        {
+          access: "first-rotated-access",
+          refresh: "first-rotated-refresh",
+        },
+      );
     } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
     }
@@ -1953,67 +1999,6 @@ describe("bridgeCodexAppServerStartOptions", () => {
           accountId: "account-b",
         },
       );
-    } finally {
-      await fs.rm(agentDir, { recursive: true, force: true });
-    }
-  });
-
-  it("routes scoped OAuth refreshes through the canonical resolver with config", async () => {
-    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
-    const config = {
-      auth: { order: { openai: ["openai:work"] } },
-    };
-    oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
-      access: "scoped-refreshed-access",
-      refresh: "scoped-refreshed-refresh",
-      expires: Date.now() + 60_000,
-      accountId: "scoped-refreshed-account",
-    });
-    const authProfileStore: AuthProfileStore = {
-      version: 1,
-      profiles: {
-        "openai:work": {
-          type: "oauth",
-          provider: "openai",
-          access: "scoped-expired-access",
-          refresh: "scoped-refresh",
-          expires: Date.now() - 60_000,
-          accountId: "scoped-account",
-        },
-      },
-    };
-    try {
-      await expect(
-        refreshCodexAppServerAuthTokens({
-          agentDir,
-          authProfileId: "openai:work",
-          authProfileStore,
-          config,
-        }),
-      ).resolves.toEqual({
-        accessToken: "scoped-refreshed-access",
-        chatgptAccountId: "scoped-refreshed-account",
-        chatgptPlanType: null,
-      });
-
-      expect(agentRuntimeMocks.refreshOAuthCredentialForRuntime).toHaveBeenCalledWith(
-        expect.objectContaining({
-          cfg: config,
-          store: authProfileStore,
-          profileId: "openai:work",
-        }),
-      );
-      expect(agentRuntimeMocks.resolveApiKeyForProfile).not.toHaveBeenCalled();
-      expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
-        expect.objectContaining({
-          config,
-          provider: "openai",
-        }),
-      );
-      expect(authProfileStore.profiles["openai:work"]).toMatchObject({
-        access: "scoped-refreshed-access",
-        refresh: "scoped-refreshed-refresh",
-      });
     } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
     }
@@ -2470,14 +2455,11 @@ describe("bridgeCodexAppServerStartOptions", () => {
     }
   });
 
-  it("answers refresh from native Codex CLI OAuth without persisting an OpenClaw profile", async () => {
+  it("promotes the first native Codex CLI OAuth rotation into OpenClaw storage", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
     const agentDir = path.join(root, "agent");
     const codexHome = path.join(root, "codex-cli");
     const authProfileStorePath = path.join(agentDir, "auth-profiles.json");
-    const config = {
-      auth: { order: { openai: ["openai:default"] } },
-    };
     vi.stubEnv("CODEX_HOME", codexHome);
     oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
       access: "fresh-cli-access-token",
@@ -2488,7 +2470,7 @@ describe("bridgeCodexAppServerStartOptions", () => {
     try {
       await writeCodexCliAuthFile(codexHome);
 
-      await expect(refreshCodexAppServerAuthTokens({ agentDir, config })).resolves.toEqual({
+      await expect(refreshCodexAppServerAuthTokens({ agentDir })).resolves.toEqual({
         accessToken: "fresh-cli-access-token",
         chatgptAccountId: "account-cli-refreshed",
         chatgptPlanType: null,
@@ -2496,19 +2478,61 @@ describe("bridgeCodexAppServerStartOptions", () => {
 
       await expectPathMissing(authProfileStorePath);
       expect(oauthMocks.refreshOpenAICodexToken).toHaveBeenCalledWith("cli-refresh-token");
-      expect(agentRuntimeMocks.refreshOAuthCredentialForRuntime).toHaveBeenCalledWith(
+      expect(agentRuntimeMocks.refreshCodexCliOAuthCredentialForRuntime).toHaveBeenCalledWith(
         expect.objectContaining({
-          cfg: config,
           profileId: "openai:default",
+          forceRefresh: true,
         }),
       );
+      expect(
+        loadAuthProfileStoreForSecretsRuntime(agentDir).profiles["openai:default"],
+      ).toMatchObject({
+        access: "fresh-cli-access-token",
+        refresh: "fresh-cli-refresh-token",
+      });
+      expect(agentRuntimeMocks.refreshOAuthCredentialForRuntime).not.toHaveBeenCalled();
       expect(agentRuntimeMocks.resolveApiKeyForProfile).not.toHaveBeenCalled();
-      expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
-        expect.objectContaining({
-          config,
-          provider: "openai",
-        }),
-      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("routes a detached native Codex snapshot to the already-promoted SQLite rotation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
+    const agentDir = path.join(root, "agent");
+    const codexHome = path.join(root, "codex-cli");
+    vi.stubEnv("CODEX_HOME", codexHome);
+    oauthMocks.refreshOpenAICodexToken.mockResolvedValueOnce({
+      access: "promoted-cli-access-token",
+      refresh: "promoted-cli-refresh-token",
+      expires: Date.now() + 10 * 60_000,
+      accountId: "account-cli-refreshed",
+    });
+    try {
+      await writeCodexCliAuthFile(codexHome);
+      const prepared = resolveCodexAppServerAuthProfileStore({ agentDir });
+      const firstPreparedStore = structuredClone(prepared);
+      const secondPreparedStore = structuredClone(prepared);
+
+      await expect(
+        refreshCodexAppServerAuthTokens({ agentDir, authProfileStore: firstPreparedStore }),
+      ).resolves.toMatchObject({ accessToken: "promoted-cli-access-token" });
+      await expect(
+        refreshCodexAppServerAuthTokens({ agentDir, authProfileStore: secondPreparedStore }),
+      ).resolves.toMatchObject({ accessToken: "promoted-cli-access-token" });
+
+      expect(oauthMocks.refreshOpenAICodexToken.mock.calls).toEqual([["cli-refresh-token"]]);
+      expect(firstPreparedStore.profiles["openai:default"]).toMatchObject({
+        access: "promoted-cli-access-token",
+      });
+      expect(secondPreparedStore.profiles["openai:default"]).toMatchObject({
+        access: "promoted-cli-access-token",
+      });
+      expect(
+        loadAuthProfileStoreForSecretsRuntime(agentDir).profiles["openai:default"],
+      ).toMatchObject({ access: "promoted-cli-access-token" });
+      expect(agentRuntimeMocks.refreshCodexCliOAuthCredentialForRuntime).toHaveBeenCalledTimes(1);
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

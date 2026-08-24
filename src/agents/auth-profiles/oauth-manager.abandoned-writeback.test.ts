@@ -78,17 +78,7 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
             new Promise<OAuthCredentials>((resolve) => {
               resolveRefresh = resolve;
             }),
-        )
-        .mockImplementationOnce(async (credential) => {
-          // The abandoned owner must durably retain its successful rotation
-          // before the queued successor begins.
-          expect(credential.refresh).toBe("rotated-refresh");
-          return {
-            access: "successor-access",
-            refresh: "successor-refresh",
-            expires: Date.now() + 60_000,
-          };
-        });
+        );
       const manager = createOAuthManager({
         buildApiKey: async (_provider, credential) => credential.access,
         refreshCredential,
@@ -96,11 +86,12 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
         isRefreshTokenReusedError: () => false,
       });
 
+      const firstPreparedStore = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
       await expect(
         manager.resolveOAuthAccess({
-          store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-            allowKeychainPrompt: false,
-          }),
+          store: firstPreparedStore,
           profileId,
           credential: staleCredential,
           agentDir,
@@ -108,13 +99,19 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
       ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
       expect(refreshCredential).toHaveBeenCalledTimes(1);
 
+      clearRuntimeAuthProfileStoreSnapshots();
+      const secondPreparedStore = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      expect(secondPreparedStore).not.toBe(firstPreparedStore);
+      // Prepared/remote-exec clients can hold distinct snapshots or live in
+      // distinct processes. SQLite plus the file lock owns their handoff.
       const successor = manager.resolveOAuthAccess({
-        store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-          allowKeychainPrompt: false,
-        }),
+        store: secondPreparedStore,
         profileId,
         credential: staleCredential,
         agentDir,
+        forceRefresh: true,
       });
       await new Promise((resolve) => {
         setTimeout(resolve, 100);
@@ -128,116 +125,32 @@ describe("abandoned in-lock OAuth refresh write-back", () => {
       resolveRefresh?.({
         access: "rotated-access",
         refresh: "rotated-refresh",
-        expires: Date.now() + 60_000,
+        expires: Date.now() + 10 * 60_000,
       });
       await expect(successor).resolves.toMatchObject({
-        apiKey: "successor-access",
+        apiKey: "rotated-access",
         credential: {
-          access: "successor-access",
-          refresh: "successor-refresh",
+          access: "rotated-access",
+          refresh: "rotated-refresh",
         },
       });
-      expect(refreshCredential).toHaveBeenCalledTimes(2);
+      expect(refreshCredential).toHaveBeenCalledTimes(1);
 
       clearRuntimeAuthProfileStoreSnapshots();
       const subStore = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
         allowKeychainPrompt: false,
       });
       expect(subStore.profiles[profileId]).toMatchObject({
-        access: "successor-access",
-        refresh: "successor-refresh",
+        access: "rotated-access",
+        refresh: "rotated-refresh",
       });
       const mainStore = ensureAuthProfileStoreWithoutExternalProfiles(undefined, {
         allowKeychainPrompt: false,
       });
       expect(mainStore.profiles[profileId]).toMatchObject({
-        access: "successor-access",
-        refresh: "successor-refresh",
+        access: "rotated-access",
+        refresh: "rotated-refresh",
       });
-    });
-  });
-
-  it("retains and serializes late refreshes in a runtime-only supplied store", async () => {
-    await withOAuthAgentDirs("oauth-manager-runtime-writeback-", async ({ agentDir }) => {
-      const profileId = "openai:scoped";
-      const staleCredential: OAuthCredential = {
-        type: "oauth",
-        provider: "openai",
-        access: "scoped-expired-access",
-        refresh: "scoped-expired-refresh",
-        expires: Date.now() - 60_000,
-      };
-      const store = { version: 1 as const, profiles: { [profileId]: staleCredential } };
-      let resolveRefresh: ((value: OAuthCredentials) => void) | undefined;
-      const refreshCredential = vi
-        .fn<(credential: OAuthCredential) => Promise<OAuthCredentials>>()
-        .mockImplementationOnce(
-          () =>
-            new Promise<OAuthCredentials>((resolve) => {
-              resolveRefresh = resolve;
-            }),
-        )
-        .mockImplementationOnce(async (credential) => {
-          expect(credential.refresh).toBe("scoped-rotated-refresh");
-          return {
-            access: "scoped-successor-access",
-            refresh: "scoped-successor-refresh",
-            expires: Date.now() + 60_000,
-          };
-        });
-      const manager = createOAuthManager({
-        buildApiKey: async (_provider, credential) => credential.access,
-        refreshCredential,
-        readBootstrapCredential: () => null,
-        isRefreshTokenReusedError: () => false,
-      });
-
-      await expect(
-        manager.resolveOAuthAccess({
-          store,
-          profileId,
-          credential: staleCredential,
-          agentDir,
-          useRuntimeStore: true,
-        }),
-      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
-
-      const successor = manager.resolveOAuthAccess({
-        store,
-        profileId,
-        credential: staleCredential,
-        agentDir,
-        useRuntimeStore: true,
-      });
-      await new Promise((resolve) => {
-        setTimeout(resolve, 100);
-      });
-      expect(refreshCredential).toHaveBeenCalledTimes(1);
-
-      resolveRefresh?.({
-        access: "scoped-rotated-access",
-        refresh: "scoped-rotated-refresh",
-        expires: Date.now() + 60_000,
-      });
-      await expect(successor).resolves.toMatchObject({
-        apiKey: "scoped-successor-access",
-      });
-      expect(store.profiles[profileId]).toMatchObject({
-        access: "scoped-successor-access",
-        refresh: "scoped-successor-refresh",
-      });
-
-      clearRuntimeAuthProfileStoreSnapshots();
-      expect(
-        ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-          allowKeychainPrompt: false,
-        }).profiles[profileId],
-      ).toBeUndefined();
-      expect(
-        ensureAuthProfileStoreWithoutExternalProfiles(undefined, {
-          allowKeychainPrompt: false,
-        }).profiles[profileId],
-      ).toBeUndefined();
     });
   });
 });

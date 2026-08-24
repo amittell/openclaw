@@ -57,6 +57,11 @@ type OAuthManagerAdapter = {
     profileId: string;
     credential: OAuthCredential;
   }) => OAuthCredential | null;
+  readAuthoritativeBootstrapCredential?: (params: {
+    store: AuthProfileStore;
+    profileId: string;
+    credential: OAuthCredential;
+  }) => OAuthCredential | null;
   isRefreshTokenReusedError: (error: unknown) => boolean;
 };
 
@@ -149,6 +154,17 @@ function hasOAuthCredentialChanged(
     previous.access !== current.access ||
     previous.refresh !== current.refresh ||
     previous.expires !== current.expires
+  );
+}
+
+function isSafeExternalOAuthPromotion(
+  existing: OAuthCredential,
+  incoming: OAuthCredential,
+): boolean {
+  return (
+    existing.provider === incoming.provider &&
+    (areOAuthCredentialsEquivalent(existing, incoming) ||
+      hasMatchingOAuthIdentity(existing, incoming))
   );
 }
 
@@ -503,6 +519,58 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     return result !== null && saved;
   }
 
+  async function promoteExternalOAuthCredentialWithStoreLock(params: {
+    agentDir?: string;
+    profileId: string;
+    source: OAuthCredential;
+    refreshed: OAuthCredential;
+  }): Promise<OAuthCredential | null> {
+    let resolved: OAuthCredential | null = null;
+    const result = await updateAuthProfileStoreWithLock({
+      agentDir: params.agentDir,
+      updater: (store) => {
+        const existing = store.profiles[params.profileId];
+        if (existing) {
+          if (
+            existing.type === "oauth" &&
+            existing.provider === params.refreshed.provider &&
+            (areOAuthCredentialsEquivalent(existing, params.source) ||
+              hasMatchingOAuthIdentity(existing, params.refreshed))
+          ) {
+            // Rotation already happened upstream. A same-identity CAS loser
+            // must commit the winning token or the token family is bricked.
+            store.profiles[params.profileId] = { ...params.refreshed };
+            resolved = params.refreshed;
+            return true;
+          }
+          if (
+            existing.type === "oauth" &&
+            hasUsableOAuthCredential(existing) &&
+            existing.provider === params.source.provider
+          ) {
+            // A different-identity relog won the race. Never overwrite it;
+            // adopt only a credential that can satisfy the current request.
+            resolved = existing;
+          }
+          return false;
+        }
+        if (!isSafeExternalOAuthPromotion(params.source, params.refreshed)) {
+          return false;
+        }
+        if (!hasOAuthCredentialChanged(params.source, params.refreshed)) {
+          // A provider may report success without rotating. Return it to the
+          // caller, but do not turn unchanged native state into SQLite state.
+          resolved = params.refreshed;
+          return false;
+        }
+        store.profiles[params.profileId] = { ...params.refreshed };
+        resolved = params.refreshed;
+        return true;
+      },
+    });
+    return result === null ? null : resolved;
+  }
+
   async function resolveOAuthCredentialAfterPersistMiss(params: {
     agentDir?: string;
     profileId: string;
@@ -533,24 +601,50 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     return result === null ? null : adopted;
   }
 
+  async function resolveChangedUsableCredential(params: {
+    forceRefresh?: boolean;
+    attempted: OAuthCredential;
+    candidate: OAuthCredential;
+    agentDir?: string;
+    cfg?: OpenClawConfig;
+  }): Promise<ResolvedOAuthAccess | null> {
+    if (
+      !params.forceRefresh ||
+      params.candidate.provider !== params.attempted.provider ||
+      !hasUsableOAuthCredential(params.candidate)
+    ) {
+      return null;
+    }
+    const [attemptedApiKey, candidateApiKey] = await Promise.all([
+      adapter.buildApiKey(params.attempted.provider, params.attempted, {
+        cfg: params.cfg,
+        agentDir: params.agentDir,
+      }),
+      adapter.buildApiKey(params.candidate.provider, params.candidate, {
+        cfg: params.cfg,
+        agentDir: params.agentDir,
+      }),
+    ]);
+    if (attemptedApiKey === candidateApiKey) {
+      return null;
+    }
+    return { apiKey: candidateApiKey, credential: params.candidate };
+  }
+
   async function doRefreshOAuthTokenWithLock(params: {
-    store: AuthProfileStore;
     profileId: string;
     provider: string;
+    callerCredential: OAuthCredential;
     agentDir?: string;
     cfg?: OpenClawConfig;
     forceRefresh?: boolean;
-    useRuntimeStore?: boolean;
     attemptedCredentials?: OAuthCredential[];
+    externalCliCredential?: OAuthCredential;
   }): Promise<ResolvedOAuthAccess | null> {
-    const ownerAgentDir = params.useRuntimeStore
-      ? undefined
-      : resolvePersistedAuthProfileOwnerAgentDir(params);
-    const authPath = params.useRuntimeStore
-      ? undefined
-      : ownerAgentDir
-        ? resolveAuthProfileDatabasePath(ownerAgentDir)
-        : resolveSharedAuthStorePath();
+    const ownerAgentDir = resolvePersistedAuthProfileOwnerAgentDir(params);
+    const authPath = ownerAgentDir
+      ? resolveAuthProfileDatabasePath(ownerAgentDir)
+      : resolveSharedAuthStorePath();
     const globalRefreshLockPath = resolveOAuthRefreshLockPath(params.provider, params.profileId);
 
     try {
@@ -564,11 +658,60 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           // A deadline returns control to the caller but retains the file lock
           // until this body settles. The owner completes safe writeback before
           // releasing the rotating token, even after the caller has left.
-          const store = params.useRuntimeStore
-            ? params.store
-            : loadStoredOAuthRefreshStore(ownerAgentDir);
-          const cred = store.profiles[params.profileId];
-          if (!cred || cred.type !== "oauth") {
+          const store = loadStoredOAuthRefreshStore(ownerAgentDir);
+          const storedCredential = store.profiles[params.profileId];
+          if (storedCredential && storedCredential.type !== "oauth") {
+            return null;
+          }
+          const changedStoredCredential = storedCredential
+            ? await resolveChangedUsableCredential({
+                forceRefresh: params.forceRefresh,
+                attempted: params.callerCredential,
+                candidate: storedCredential,
+                agentDir: params.agentDir,
+                cfg: params.cfg,
+              })
+            : null;
+          if (changedStoredCredential) {
+            // The caller rejected an older prepared snapshot. Another owner
+            // already rotated it, so reuse SQLite instead of rotating again.
+            return changedStoredCredential;
+          }
+          let cred = storedCredential;
+          let promotingExternalCliCredential = false;
+          if (!cred && params.externalCliCredential) {
+            const authoritative = adapter.readAuthoritativeBootstrapCredential?.({
+              store,
+              profileId: params.profileId,
+              credential: params.externalCliCredential,
+            });
+            if (
+              !authoritative ||
+              authoritative.provider !== params.externalCliCredential.provider
+            ) {
+              return null;
+            }
+            const changedAuthoritativeCredential = await resolveChangedUsableCredential({
+              forceRefresh: params.forceRefresh,
+              attempted: params.callerCredential,
+              candidate: authoritative,
+              agentDir: params.agentDir,
+              cfg: params.cfg,
+            });
+            if (changedAuthoritativeCredential) {
+              // Native Codex was refreshed or re-logged after this prepared
+              // snapshot. Return the reread source without claiming SQLite.
+              return changedAuthoritativeCredential;
+            }
+            if (!isSafeExternalOAuthPromotion(params.externalCliCredential, authoritative)) {
+              return null;
+            }
+            // The fresh CLI read occurs under the global refresh lock. Only
+            // this exact native identity may seed SQLite after rotation.
+            cred = authoritative;
+            promotingExternalCliCredential = true;
+          }
+          if (!cred) {
             return null;
           }
           let credentialToRefresh = cred;
@@ -583,7 +726,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             };
           }
 
-          if (!params.useRuntimeStore && params.agentDir) {
+          if (params.agentDir) {
             try {
               const mainStore = loadStoredOAuthRefreshStore(undefined);
               const mainCred = mainStore.profiles[params.profileId];
@@ -635,11 +778,13 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             }
           }
 
-          const externallyManaged = adapter.readBootstrapCredential({
-            store,
-            profileId: params.profileId,
-            credential: cred,
-          });
+          const externallyManaged = promotingExternalCliCredential
+            ? null
+            : adapter.readBootstrapCredential({
+                store,
+                profileId: params.profileId,
+                credential: cred,
+              });
           if (externallyManaged) {
             if (externallyManaged.provider !== cred.provider) {
               authProfilesLog.warn(
@@ -663,14 +808,12 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
                 !areOAuthCredentialsEquivalent(cred, externallyManaged)
               ) {
                 store.profiles[params.profileId] = { ...externallyManaged };
-                if (!params.useRuntimeStore) {
-                  await saveOAuthCredentialWithStoreLock({
-                    agentDir: ownerAgentDir,
-                    profileId: params.profileId,
-                    expected: cred,
-                    credential: externallyManaged,
-                  });
-                }
+                await saveOAuthCredentialWithStoreLock({
+                  agentDir: ownerAgentDir,
+                  profileId: params.profileId,
+                  expected: cred,
+                  credential: externallyManaged,
+                });
               }
               credentialToRefresh = externallyManaged;
               if (!params.forceRefresh && hasUsableOAuthCredential(externallyManaged)) {
@@ -709,22 +852,23 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           if (!refreshedCredentials) {
             return null;
           }
-          if (params.useRuntimeStore) {
-            const current = store.profiles[params.profileId];
-            if (
-              current?.type !== "oauth" ||
-              (!areOAuthCredentialsEquivalent(current, credentialToRefresh) &&
-                !areOAuthCredentialsEquivalent(current, cred))
-            ) {
-              throw new Error(`OAuth profile "${params.profileId}" changed while refreshing`);
+          if (promotingExternalCliCredential) {
+            const promoted = await promoteExternalOAuthCredentialWithStoreLock({
+              agentDir: ownerAgentDir,
+              profileId: params.profileId,
+              source: credentialToRefresh,
+              refreshed: refreshedCredentials,
+            });
+            if (!promoted) {
+              return null;
             }
-            store.profiles[params.profileId] = refreshedCredentials;
+            store.profiles[params.profileId] = promoted;
             return {
-              apiKey: await adapter.buildApiKey(cred.provider, refreshedCredentials, {
+              apiKey: await adapter.buildApiKey(promoted.provider, promoted, {
                 cfg: params.cfg,
                 agentDir: params.agentDir,
               }),
-              credential: refreshedCredentials,
+              credential: promoted,
             };
           }
           store.profiles[params.profileId] = refreshedCredentials;
@@ -788,14 +932,14 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
   }
 
   async function refreshOAuthTokenWithLock(params: {
-    store: AuthProfileStore;
     profileId: string;
     provider: string;
+    callerCredential: OAuthCredential;
     agentDir?: string;
     cfg?: OpenClawConfig;
     forceRefresh?: boolean;
-    useRuntimeStore?: boolean;
     attemptedCredentials?: OAuthCredential[];
+    externalCliCredential?: OAuthCredential;
   }): Promise<ResolvedOAuthAccess | null> {
     const key = refreshQueueKey(params.provider, params.profileId);
     return await refreshQueue.enqueue(key, () => doRefreshOAuthTokenWithLock(params));
@@ -808,16 +952,15 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     agentDir?: string;
     cfg?: OpenClawConfig;
     forceRefresh?: boolean;
-    useRuntimeStore?: boolean;
+    externalCliCredential?: OAuthCredential;
   }): Promise<ResolvedOAuthAccess | null> {
-    const adoptedCredential = params.useRuntimeStore
-      ? params.credential
-      : (adoptNewerMainOAuthCredential({
-          store: params.store,
-          profileId: params.profileId,
-          agentDir: params.agentDir,
-          credential: params.credential,
-        }) ?? params.credential);
+    const adoptedCredential =
+      adoptNewerMainOAuthCredential({
+        store: params.store,
+        profileId: params.profileId,
+        agentDir: params.agentDir,
+        credential: params.credential,
+      }) ?? params.credential;
     const effectiveCredential = resolveEffectiveOAuthCredentialCore({
       store: params.store,
       profileId: params.profileId,
@@ -838,20 +981,18 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
 
     try {
       const refreshed = await refreshOAuthTokenWithLock({
-        store: params.store,
         profileId: params.profileId,
         provider: params.credential.provider,
+        callerCredential: params.credential,
         agentDir: params.agentDir,
         cfg: params.cfg,
         forceRefresh: params.forceRefresh,
-        useRuntimeStore: params.useRuntimeStore,
         attemptedCredentials,
+        externalCliCredential: params.externalCliCredential,
       });
       return refreshed;
     } catch (error) {
-      const refreshedStore = params.useRuntimeStore
-        ? params.store
-        : loadStoredOAuthRefreshStore(params.agentDir);
+      const refreshedStore = loadStoredOAuthRefreshStore(params.agentDir);
       const refreshed = refreshedStore.profiles[params.profileId];
       if (
         refreshed?.type === "oauth" &&
@@ -871,7 +1012,6 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         };
       }
       if (
-        !params.useRuntimeStore &&
         adapter.isRefreshTokenReusedError(error) &&
         refreshed?.type === "oauth" &&
         refreshed.provider === params.credential.provider &&
@@ -895,14 +1035,14 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         }
         try {
           const retried = await refreshOAuthTokenWithLock({
-            store: params.store,
             profileId: params.profileId,
             provider: params.credential.provider,
+            callerCredential: params.credential,
             agentDir: params.agentDir,
             cfg: params.cfg,
             forceRefresh: params.forceRefresh,
-            useRuntimeStore: params.useRuntimeStore,
             attemptedCredentials,
+            externalCliCredential: params.externalCliCredential,
           });
           if (retried) {
             return retried;
@@ -912,7 +1052,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           // and final wrapped error path below.
         }
       }
-      if (!params.useRuntimeStore && params.agentDir) {
+      if (params.agentDir) {
         try {
           const mainStore = ensureAuthProfileStoreWithoutExternalProfiles(undefined, {
             allowKeychainPrompt: false,
