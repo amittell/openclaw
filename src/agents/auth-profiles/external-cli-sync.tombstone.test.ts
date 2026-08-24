@@ -362,7 +362,7 @@ describe("external cli permanent-refresh tombstones", () => {
     );
   });
 
-  it("re-seeds a dead codex profile when normalized email identity matches", () => {
+  it("refuses an email-only Codex CLI grant for a dead profile", () => {
     readCodexCliCredentialsCachedMock.mockReturnValue(
       makeOAuthCredential({
         provider: "openai",
@@ -372,28 +372,21 @@ describe("external cli permanent-refresh tombstones", () => {
       }),
     );
 
-    const profiles = resolveExternalCliAuthProfiles(
-      makeStore(OPENAI_CODEX_DEFAULT_PROFILE_ID, {
-        ...makeOAuthCredential({
-          provider: "openai",
-          access: "dead-access",
-          refresh: "dead-refresh",
-          expires: Date.now() - 5_000,
-          email: "User@Example.COM",
+    expect(
+      resolveExternalCliAuthProfiles(
+        makeStore(OPENAI_CODEX_DEFAULT_PROFILE_ID, {
+          ...makeOAuthCredential({
+            provider: "openai",
+            access: "dead-access",
+            refresh: "dead-refresh",
+            expires: Date.now() - 5_000,
+            email: "User@Example.COM",
+          }),
+          refreshDeadAt: Date.now() - 1_000,
         }),
-        refreshDeadAt: Date.now() - 1_000,
-      }),
-      { providerIds: ["openai"] },
-    );
-
-    expectCredentialFields(
-      expectSingleProfileCredential(profiles, OPENAI_CODEX_DEFAULT_PROFILE_ID),
-      {
-        access: "codex-cli-access",
-        refresh: "codex-cli-fresh-refresh",
-        email: " user@example.com ",
-      },
-    );
+        { providerIds: ["openai"] },
+      ),
+    ).toStrictEqual([]);
   });
 
   it("re-seeds a dead codex target without disturbing a healthy OpenAI sibling", () => {

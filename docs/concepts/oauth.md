@@ -54,8 +54,9 @@ To reduce that, OpenClaw treats the auth profile store as a **token sink**:
   refresh token is rejected permanently, OpenClaw retains its fingerprint and
   reports the profile for re-authentication. The narrow Codex CLI recovery
   exception can re-seed that exact rejected profile from a different usable
-  grant only when the stored account ID or normalized email matches. A missing
-  identity, a different account, or the same rejected grant stays blocked and
+  grant only when the stored account ID matches. Email from an external CLI ID
+  token is not identity authority here. A missing account ID, a different
+  account, or the same rejected grant stays blocked and
   requires re-authentication. Before OpenClaw owns OAuth, Codex CLI bootstrap
   can seed an empty `openai:default`-style profile; after that, OpenClaw-owned
   refreshes stay canonical
@@ -190,8 +191,7 @@ Profiles store an `expires` timestamp. At runtime:
   returning external CLI token material. A permanently rejected OpenAI profile
   follows the narrow Codex re-seed exception described in [The token
   sink](#the-token-sink-why-it-exists): only a different usable grant with the
-  same known account ID or normalized email can replace it; all other cases
-  remain blocked.
+  same known account ID can replace it; all other cases remain blocked.
 
 The refresh flow is automatic; you generally do not need to manage tokens manually.
 

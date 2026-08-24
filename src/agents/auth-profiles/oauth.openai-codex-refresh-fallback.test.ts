@@ -988,7 +988,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     ).rejects.toThrow(/OAuth token refresh failed for openai/);
   });
 
-  it("keeps an identity-less tombstone and never sends imported Codex tokens to the provider", async () => {
+  it("keeps an email-only tombstone and never sends imported Codex tokens to the provider", async () => {
     const profileId = "openai:default";
     const deadAt = Date.now() - 1_000;
     saveAuthProfileStore(
@@ -1001,6 +1001,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
             access: "local-access-token",
             refresh: "local-refresh-token",
             expires: Date.now() - 60_000,
+            email: "User@Example.COM",
             refreshDeadAt: deadAt,
           },
         },
@@ -1013,7 +1014,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       access: "codex-cli-access-token",
       refresh: "codex-cli-refresh-token",
       expires: Date.now() + 86_400_000,
-      accountId: "acct-cli",
+      email: " user@example.com ",
     });
     refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(async (params) => {
       const attempted = requireOAuthContext(params?.context);
@@ -1041,6 +1042,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     expect(requireOAuthProfile(persisted, profileId)).toMatchObject({
       access: "local-access-token",
       refresh: "local-refresh-token",
+      email: "User@Example.COM",
       refreshDeadAt: deadAt,
     });
     expect(JSON.stringify(persisted)).not.toContain("codex-cli-access-token");

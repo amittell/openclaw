@@ -18,10 +18,10 @@ import { hasUsableOAuthCredential } from "./credential-state.js";
 import { isSafeToCopyOAuthIdentity } from "./oauth-identity.js";
 import {
   areOAuthCredentialsEquivalent,
-  hasMatchingOAuthIdentity,
   isOAuthRefreshDead,
   isSameOAuthRefreshGrant,
   isSafeToAdoptBootstrapOAuthIdentity,
+  normalizeAuthIdentityToken,
   shouldBootstrapFromExternalCliCredential,
 } from "./oauth-shared.js";
 import type { AuthProfileStore, OAuthCredential } from "./types.js";
@@ -162,13 +162,14 @@ function hasTombstonedExternalCliIdentityContinuity(
   existing: OAuthCredential | undefined,
   imported: OAuthCredential,
 ): boolean {
-  // A permanent failure reopens a previously owned slot, so unlike first
-  // bootstrap it must prove account continuity before external tokens cross.
-  return (
-    existing === undefined ||
-    !isOAuthRefreshDead(existing) ||
-    hasMatchingOAuthIdentity(existing, imported)
-  );
+  if (existing === undefined || !isOAuthRefreshDead(existing)) {
+    return true;
+  }
+  // A permanent failure reopens a previously owned slot. Codex account IDs
+  // are authoritative here; unverified external ID-token email is not.
+  const existingAccountId = normalizeAuthIdentityToken(existing.accountId);
+  const importedAccountId = normalizeAuthIdentityToken(imported.accountId);
+  return existingAccountId !== undefined && existingAccountId === importedAccountId;
 }
 
 function hasManagedProviderOAuth(
