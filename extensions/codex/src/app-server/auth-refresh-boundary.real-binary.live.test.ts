@@ -183,11 +183,19 @@ describeLive("Codex app-server real auth refresh boundary", () => {
             expect(JSON.stringify(result.turn.items)).toContain("LIVE_REFRESH_OK");
             expect(refreshRequests).toBe(1);
             expect(providerRefreshes).toBe(1);
-            expect(store.profiles[profileId].access === accessToken).toBe(true);
-            expect(store.profiles[profileId].refresh === placeholderRefresh).toBe(true);
+            const runtimeProfile = store.profiles[profileId];
+            if (runtimeProfile?.type !== "oauth") {
+              throw new Error("expected runtime OAuth profile after refresh");
+            }
+            expect(runtimeProfile.access === accessToken).toBe(true);
+            expect(runtimeProfile.refresh === placeholderRefresh).toBe(true);
             const persistedStore = loadAuthProfileStoreForSecretsRuntime(agentDir);
-            expect(persistedStore.profiles[profileId].access === accessToken).toBe(true);
-            expect(persistedStore.profiles[profileId].refresh === placeholderRefresh).toBe(true);
+            const persistedProfile = persistedStore.profiles[profileId];
+            if (persistedProfile?.type !== "oauth") {
+              throw new Error("expected persisted OAuth profile after refresh");
+            }
+            expect(persistedProfile.access === accessToken).toBe(true);
+            expect(persistedProfile.refresh === placeholderRefresh).toBe(true);
           } finally {
             await client.closeAndWait();
           }

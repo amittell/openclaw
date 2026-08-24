@@ -1644,6 +1644,7 @@ describe("bridgeCodexAppServerStartOptions", () => {
           accountId: "persisted-account",
         },
       );
+      expect(agentRuntimeMocks.refreshCodexCliOAuthCredentialForRuntime).not.toHaveBeenCalled();
     } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
     }

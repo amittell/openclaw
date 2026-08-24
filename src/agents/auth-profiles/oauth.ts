@@ -54,7 +54,12 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   resolvePersistedAuthProfileOwnerAgentDir,
 } from "./store.js";
-import type { AuthProfileCredential, AuthProfileStore, OAuthCredential } from "./types.js";
+import type {
+  AuthProfileCredential,
+  AuthProfileStore,
+  OAuthCredential,
+  RuntimeAuthProfileStore,
+} from "./types.js";
 
 function listOAuthProviderIds(): string[] {
   if (typeof getOAuthProviders !== "function") {
@@ -272,12 +277,10 @@ export async function refreshCodexCliOAuthCredentialForRuntime(params: {
   cfg?: OpenClawConfig;
   forceRefresh?: boolean;
 }): Promise<OAuthCredential | null> {
-  if (
-    params.profileId !== OPENAI_CODEX_DEFAULT_PROFILE_ID ||
-    !params.store.runtimeExternalCliProfileIds?.includes(params.profileId)
-  ) {
+  if (!isCodexCliOAuthRuntimeProfile({ store: params.store, profileId: params.profileId })) {
     return null;
   }
+  const runtimeStore = params.store as RuntimeAuthProfileStore;
   const credential = params.store.profiles[params.profileId];
   if (!credential || credential.type !== "oauth") {
     return null;
@@ -310,17 +313,29 @@ export async function refreshCodexCliOAuthCredentialForRuntime(params: {
     if (params.store.runtimeExternalProfileIds?.length === 0) {
       params.store.runtimeExternalProfileIds = undefined;
     }
-    params.store.runtimeExternalCliProfileIds = params.store.runtimeExternalCliProfileIds?.filter(
+    runtimeStore.runtimeExternalCliProfileIds = runtimeStore.runtimeExternalCliProfileIds?.filter(
       (profileId) => profileId !== params.profileId,
     );
-    if (params.store.runtimeExternalCliProfileIds?.length === 0) {
-      params.store.runtimeExternalCliProfileIds = undefined;
+    if (runtimeStore.runtimeExternalCliProfileIds?.length === 0) {
+      runtimeStore.runtimeExternalCliProfileIds = undefined;
     }
     params.store.runtimePersistedProfileIds = [
       ...new Set([...(params.store.runtimePersistedProfileIds ?? []), params.profileId]),
     ].toSorted();
   }
   return resolved.credential;
+}
+
+/** Local bundled-runtime guard for the built-in Codex CLI provenance marker. */
+export function isCodexCliOAuthRuntimeProfile(params: {
+  store: AuthProfileStore;
+  profileId: string;
+}): boolean {
+  const store = params.store as RuntimeAuthProfileStore;
+  return (
+    params.profileId === OPENAI_CODEX_DEFAULT_PROFILE_ID &&
+    store.runtimeExternalCliProfileIds?.includes(params.profileId) === true
+  );
 }
 
 /** Clear in-process OAuth refresh queues between isolated tests. */

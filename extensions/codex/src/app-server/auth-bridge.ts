@@ -25,7 +25,10 @@ import {
   hasUsableOAuthCredential,
   resolveOpenAICodexAuthIdentity,
 } from "openclaw/plugin-sdk/provider-auth";
-import { refreshCodexCliOAuthCredentialForRuntime } from "openclaw/plugin-sdk/provider-auth-runtime";
+import {
+  isCodexCliOAuthRuntimeProfile,
+  refreshCodexCliOAuthCredentialForRuntime,
+} from "openclaw/plugin-sdk/provider-auth-runtime";
 import { readSecretFile } from "openclaw/plugin-sdk/secret-file";
 import {
   resolveCodexAppServerHomeDir,
@@ -1213,7 +1216,7 @@ async function resolveOAuthCredentialForCodexAppServer(
   if (
     !persistedOAuthCredential &&
     overlaidOAuthCredential &&
-    store.runtimeExternalCliProfileIds?.includes(profileId)
+    isCodexCliOAuthRuntimeProfile({ store, profileId })
   ) {
     if (!params.forceRefresh) {
       // Native Codex remains the read owner until app-server rejects the
@@ -1286,7 +1289,7 @@ function shouldUseScopedOAuthCredential(params: {
   config?: AuthProfileOrderConfig;
 }): boolean {
   if (
-    params.store.runtimeExternalCliProfileIds?.includes(params.profileId) &&
+    isCodexCliOAuthRuntimeProfile({ store: params.store, profileId: params.profileId }) &&
     params.persistedCredential?.type === "oauth" &&
     resolveProviderIdForAuth(params.persistedCredential.provider, { config: params.config }) ===
       resolveProviderIdForAuth(params.suppliedCredential.provider, { config: params.config })
