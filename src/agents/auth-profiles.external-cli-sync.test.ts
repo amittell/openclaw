@@ -345,6 +345,39 @@ describe("external cli oauth resolution", () => {
     ).toBeNull();
   });
 
+  it("refuses a fresh Codex CLI grant for an identity-less dead target", () => {
+    const deadTarget: OAuthCredential = {
+      ...makeOAuthCredential({
+        provider: "openai",
+        access: "dead-access",
+        refresh: "dead-refresh",
+        expires: Date.now() - 5_000,
+      }),
+      refreshDeadAt: Date.now() - 1_000,
+    };
+    mocks.readCodexCliCredentialsCached.mockReturnValue(
+      makeOAuthCredential({
+        provider: "openai",
+        access: "codex-cli-fresh-access",
+        refresh: "codex-cli-fresh-refresh",
+        accountId: "acct-codex",
+      }),
+    );
+
+    expect(
+      readExternalCliBootstrapCredential({
+        store: makeStore(OPENAI_CODEX_DEFAULT_PROFILE_ID, deadTarget),
+        profileId: OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        credential: deadTarget,
+      }),
+    ).toBeNull();
+    expect(
+      resolveExternalCliAuthProfiles(makeStore(OPENAI_CODEX_DEFAULT_PROFILE_ID, deadTarget), {
+        providerIds: ["openai"],
+      }),
+    ).toStrictEqual([]);
+  });
+
   it("bootstraps the default codex profile from Codex CLI credentials when in scope", () => {
     mocks.readCodexCliCredentialsCached.mockReturnValue(
       makeOAuthCredential({
@@ -548,6 +581,40 @@ describe("external cli oauth resolution", () => {
         access: "codex-cli-access",
         refresh: "codex-cli-fresh-refresh",
         accountId: "acct-codex",
+      },
+    );
+  });
+
+  it("re-seeds a dead codex profile when normalized email identity matches", () => {
+    mocks.readCodexCliCredentialsCached.mockReturnValue(
+      makeOAuthCredential({
+        provider: "openai",
+        access: "codex-cli-access",
+        refresh: "codex-cli-fresh-refresh",
+        email: " user@example.com ",
+      }),
+    );
+
+    const profiles = resolveExternalCliAuthProfiles(
+      makeStore(OPENAI_CODEX_DEFAULT_PROFILE_ID, {
+        ...makeOAuthCredential({
+          provider: "openai",
+          access: "dead-access",
+          refresh: "dead-refresh",
+          expires: Date.now() - 5_000,
+          email: "User@Example.COM",
+        }),
+        refreshDeadAt: Date.now() - 1_000,
+      }),
+      { providerIds: ["openai"] },
+    );
+
+    expectCredentialFields(
+      expectSingleProfileCredential(profiles, OPENAI_CODEX_DEFAULT_PROFILE_ID),
+      {
+        access: "codex-cli-access",
+        refresh: "codex-cli-fresh-refresh",
+        email: " user@example.com ",
       },
     );
   });

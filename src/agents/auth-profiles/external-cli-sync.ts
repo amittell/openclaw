@@ -18,6 +18,7 @@ import { hasUsableOAuthCredential } from "./credential-state.js";
 import { isSafeToCopyOAuthIdentity } from "./oauth-identity.js";
 import {
   areOAuthCredentialsEquivalent,
+  hasMatchingOAuthIdentity,
   isOAuthRefreshDead,
   isSameOAuthRefreshGrant,
   isSafeToAdoptBootstrapOAuthIdentity,
@@ -157,6 +158,15 @@ function hasInlineOAuthTokenMaterial(credential: OAuthCredential): boolean {
   );
 }
 
+function hasTombstonedExternalCliIdentityContinuity(
+  existing: OAuthCredential | undefined,
+  imported: OAuthCredential,
+): boolean {
+  // A permanent failure reopens a previously owned slot, so unlike first
+  // bootstrap it must prove account continuity before external tokens cross.
+  return !isOAuthRefreshDead(existing) || hasMatchingOAuthIdentity(existing, imported);
+}
+
 function hasManagedProviderOAuth(
   store: AuthProfileStore,
   providerConfig: ExternalCliSyncProvider,
@@ -229,6 +239,9 @@ export function readExternalCliBootstrapCredential(params: {
     isOAuthRefreshDead(params.credential) &&
     isSameOAuthRefreshGrant(params.credential, imported)
   ) {
+    return null;
+  }
+  if (imported && !hasTombstonedExternalCliIdentityContinuity(params.credential, imported)) {
     return null;
   }
   if (!imported || !isSafeToUseExternalCliCredential(params.credential, imported)) {
@@ -479,6 +492,16 @@ export function resolveExternalCliAuthProfiles(
           profileId,
           provider: providerConfig.provider,
         });
+        continue;
+      }
+      if (existingOAuth && !hasTombstonedExternalCliIdentityContinuity(existingOAuth, creds)) {
+        authProfilesLog.warn(
+          "refused tombstoned external cli oauth bootstrap: identity continuity missing; re-authenticate the OpenClaw profile or log the CLI into its bound account",
+          {
+            profileId,
+            provider: providerConfig.provider,
+          },
+        );
         continue;
       }
       if (existingOAuth && !isSafeToUseExternalCliCredential(existingOAuth, creds)) {
