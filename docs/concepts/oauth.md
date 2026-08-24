@@ -185,9 +185,13 @@ Profiles store an `expires` timestamp. At runtime:
   token into the secondary agent store
 - externally managed CLI credentials (Claude CLI, narrow Codex CLI bootstrap;
   see [The token sink](#the-token-sink-why-it-exists)) are re-read instead of
-  spending a copied refresh token. If a managed refresh fails, OpenClaw
-  reports the affected profile for re-authentication instead of returning
-  external CLI token material.
+  spending a copied refresh token. If an ordinary or transient managed refresh
+  fails, OpenClaw reports the affected profile for re-authentication instead of
+  returning external CLI token material. A permanently rejected OpenAI profile
+  follows the narrow Codex re-seed exception described in [The token
+  sink](#the-token-sink-why-it-exists): only a different usable grant with the
+  same known account ID or normalized email can replace it; all other cases
+  remain blocked.
 
 The refresh flow is automatic; you generally do not need to manage tokens manually.
 
