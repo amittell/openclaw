@@ -85,8 +85,8 @@ const gatewayLog = createSubsystemLogger("gateway");
 
 const SUPERVISED_GATEWAY_LOCK_RETRY_MS = 5000;
 const SUPERVISED_GATEWAY_LOCK_RETRY_TIMEOUT_MS = 30_000;
-const SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 1000;
-const GATEWAY_HEALTH_PROBE_MAX_RESPONSE_CHARS = 1024;
+const SUPERVISED_GATEWAY_STARTUP_PROBE_TIMEOUT_MS = 1000;
+const GATEWAY_STARTUP_PROBE_MAX_RESPONSE_CHARS = 1024;
 const GATEWAY_SHELL_ENV_CONVERGENCE_MAX_READS = 4;
 
 type Awaitable<T> = T | Promise<T>;
@@ -486,32 +486,32 @@ function resolveGatewayStartupFailureExitCode(err: unknown): number {
     : 1;
 }
 
-function normalizeGatewayHealthProbeHost(host: string): string {
+function normalizeGatewayStartupProbeHost(host: string): string {
   if (host === "0.0.0.0" || host === "::") {
     return "127.0.0.1";
   }
   return host;
 }
 
-function isGatewayHealthzResponse(statusCode: number | undefined, body: string): boolean {
+function isGatewayStartupzResponse(statusCode: number | undefined, body: string): boolean {
   if (statusCode !== 200) {
     return false;
   }
   try {
     const payload = JSON.parse(body) as { ok?: unknown; status?: unknown };
-    return payload.ok === true && payload.status === "live";
+    return payload.ok === true && payload.status === "started";
   } catch {
     return false;
   }
 }
 
-async function probeGatewayHealthz(params: {
+async function probeGatewayStartupz(params: {
   host: string;
   port: number;
   timeoutMs?: number;
   tlsFingerprint?: string;
 }): Promise<boolean> {
-  const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS;
+  const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_STARTUP_PROBE_TIMEOUT_MS;
   return await new Promise<boolean>((resolve) => {
     let settled = false;
     const finish = (healthy: boolean) => {
@@ -525,11 +525,11 @@ async function probeGatewayHealthz(params: {
     const request = params.tlsFingerprint ? httpsRequest : httpRequest;
     const req = request(
       {
-        hostname: normalizeGatewayHealthProbeHost(params.host),
+        hostname: normalizeGatewayStartupProbeHost(params.host),
         port: params.port,
-        // Supervised recovery must distinguish a draining predecessor from a
-        // live owner that should retain the gateway lock.
-        path: "/healthz?strict=1",
+        // Startup owns the predecessor's starting/started/draining lifecycle;
+        // supervised recovery must not infer it from aggregate readiness.
+        path: "/startupz",
         method: "GET",
         timeout: timeoutMs,
         // The probe sends no credentials. Pin the configured certificate below
@@ -551,7 +551,7 @@ async function probeGatewayHealthz(params: {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (chunk: string) => {
-          if (body.length + chunk.length > GATEWAY_HEALTH_PROBE_MAX_RESPONSE_CHARS) {
+          if (body.length + chunk.length > GATEWAY_STARTUP_PROBE_MAX_RESPONSE_CHARS) {
             res.destroy();
             finish(false);
             return;
@@ -559,7 +559,7 @@ async function probeGatewayHealthz(params: {
           body += chunk;
         });
         res.once("end", () => {
-          finish(isGatewayHealthzResponse(res.statusCode, body));
+          finish(isGatewayStartupzResponse(res.statusCode, body));
         });
         res.once("error", () => {
           finish(false);
@@ -581,12 +581,12 @@ async function probeGatewayHealthz(params: {
   });
 }
 
-function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
+function createConfiguredGatewayStartupProbe(cfg: OpenClawConfig) {
   const tlsConfig = cfg.gateway?.tls;
   let tlsFingerprint: string | undefined;
   return async (params: { host: string; port: number }): Promise<boolean> => {
     if (tlsConfig?.enabled !== true) {
-      return await probeGatewayHealthz(params);
+      return await probeGatewayStartupz(params);
     }
     if (!tlsFingerprint) {
       const gatewayTls = await import("../../infra/tls/gateway.js")
@@ -599,7 +599,7 @@ function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
     if (!tlsFingerprint) {
       return false;
     }
-    return await probeGatewayHealthz({ ...params, tlsFingerprint });
+    return await probeGatewayStartupz({ ...params, tlsFingerprint });
   };
 }
 
@@ -611,7 +611,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
   log: GatewayRunLogger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  probeHealth?: (params: { host: string; port: number }) => Promise<boolean>;
+  probeStartup?: (params: { host: string; port: number }) => Promise<boolean>;
   retryMs?: number;
   timeoutMs?: number;
 }) {
@@ -628,7 +628,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
       await new Promise((resolve) => {
         setTimeout(resolve, ms);
       }));
-  const probeHealth = params.probeHealth ?? ((probeParams) => probeGatewayHealthz(probeParams));
+  const probeStartup = params.probeStartup ?? ((probeParams) => probeGatewayStartupz(probeParams));
   const retryMs = params.retryMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_MS;
   const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_TIMEOUT_MS;
   const startedAt = now();
@@ -642,7 +642,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
         throw err;
       }
 
-      if (await probeHealth({ host: params.healthHost, port: params.port })) {
+      if (await probeStartup({ host: params.healthHost, port: params.port })) {
         if (supervisor === "systemd") {
           throw new SupervisedGatewayLockError(
             "gateway already running under systemd; existing gateway is healthy, exiting with code 78 to prevent a systemd Restart=always loop",
@@ -1221,7 +1221,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
       port,
       healthHost,
       log: gatewayLog,
-      probeHealth: createConfiguredGatewayHealthProbe(cfg),
+      probeStartup: createConfiguredGatewayStartupProbe(cfg),
     });
   } catch (err) {
     if (isGatewayLockError(err)) {
@@ -1318,10 +1318,10 @@ export async function runGatewayCommand(
 }
 
 const testing = {
-  createConfiguredGatewayHealthProbe,
-  isGatewayHealthzResponse,
-  normalizeGatewayHealthProbeHost,
-  probeGatewayHealthz,
+  createConfiguredGatewayStartupProbe,
+  isGatewayStartupzResponse,
+  normalizeGatewayStartupProbeHost,
+  probeGatewayStartupz,
   resolveGatewayLockErrorExitCode,
   resolveGatewayStartupFailureExitCode,
   runGatewayLoopWithSupervisedLockRecovery,

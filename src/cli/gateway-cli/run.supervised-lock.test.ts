@@ -59,7 +59,7 @@ describe("supervised gateway lock recovery", () => {
     const startLoop = vi.fn(async () => {
       throw new GatewayLockError("gateway already running");
     });
-    const probeHealth = vi.fn(async () => true);
+    const probeStartup = vi.fn(async () => true);
     const log = createLogger();
 
     await testing.runGatewayLoopWithSupervisedLockRecovery({
@@ -68,11 +68,11 @@ describe("supervised gateway lock recovery", () => {
       port: 18789,
       healthHost: "0.0.0.0",
       log,
-      probeHealth,
+      probeStartup,
     });
 
     expect(startLoop).toHaveBeenCalledTimes(1);
-    expect(probeHealth).toHaveBeenCalledWith({ host: "0.0.0.0", port: 18789 });
+    expect(probeStartup).toHaveBeenCalledWith({ host: "0.0.0.0", port: 18789 });
     expect(log.info).toHaveBeenCalledWith(
       "gateway already running under launchd; existing gateway is healthy, leaving it in control",
     );
@@ -83,7 +83,7 @@ describe("supervised gateway lock recovery", () => {
     const startLoop = vi.fn(async () => {
       throw new GatewayLockError("another gateway instance is already listening");
     });
-    const probeHealth = vi.fn(async () => true);
+    const probeStartup = vi.fn(async () => true);
 
     let failure: unknown;
     try {
@@ -93,7 +93,7 @@ describe("supervised gateway lock recovery", () => {
         port: 18789,
         healthHost: "127.0.0.1",
         log: createLogger(),
-        probeHealth,
+        probeStartup,
       });
     } catch (err) {
       failure = err;
@@ -105,7 +105,7 @@ describe("supervised gateway lock recovery", () => {
       ),
     });
     expect(startLoop).toHaveBeenCalledTimes(1);
-    expect(probeHealth).toHaveBeenCalledWith({ host: "127.0.0.1", port: 18789 });
+    expect(probeStartup).toHaveBeenCalledWith({ host: "127.0.0.1", port: 18789 });
     expect(testing.resolveGatewayLockErrorExitCode(failure)).toBe(78);
   });
 
@@ -116,7 +116,7 @@ describe("supervised gateway lock recovery", () => {
     const startLoop = vi.fn(async () => {
       throw err;
     });
-    const probeHealth = vi.fn(async () => true);
+    const probeStartup = vi.fn(async () => true);
 
     await expect(
       testing.runGatewayLoopWithSupervisedLockRecovery({
@@ -125,12 +125,12 @@ describe("supervised gateway lock recovery", () => {
         port: 18789,
         healthHost: "127.0.0.1",
         log: createLogger(),
-        probeHealth,
+        probeStartup,
       }),
     ).rejects.toBe(err);
 
     expect(startLoop).toHaveBeenCalledTimes(1);
-    expect(probeHealth).not.toHaveBeenCalled();
+    expect(probeStartup).not.toHaveBeenCalled();
   });
 
   it("bounds supervised retries when the existing gateway stays unhealthy", async () => {
@@ -150,7 +150,7 @@ describe("supervised gateway lock recovery", () => {
         port: 18789,
         healthHost: "127.0.0.1",
         log: createLogger(),
-        probeHealth: vi.fn(async () => false),
+        probeStartup: vi.fn(async () => false),
         now: () => now,
         sleep,
         retryMs: 5,
@@ -171,12 +171,12 @@ describe("supervised gateway lock recovery", () => {
     expect(sleep).toHaveBeenNthCalledWith(3, 2);
   });
 
-  it("retries while a strict probe sees a draining predecessor", async () => {
+  it("retries while the startup probe sees a draining predecessor", async () => {
     const startLoop = vi
       .fn<() => Promise<void>>()
       .mockRejectedValueOnce(new GatewayLockError("gateway already running"))
       .mockResolvedValueOnce();
-    const probeHealth = vi.fn(async () => false);
+    const probeStartup = vi.fn(async () => false);
     const sleep = vi.fn(async () => {});
 
     await testing.runGatewayLoopWithSupervisedLockRecovery({
@@ -185,14 +185,14 @@ describe("supervised gateway lock recovery", () => {
       port: 18789,
       healthHost: "127.0.0.1",
       log: createLogger(),
-      probeHealth,
+      probeStartup,
       sleep,
       retryMs: 5,
       timeoutMs: 12,
     });
 
     expect(startLoop).toHaveBeenCalledTimes(2);
-    expect(probeHealth).toHaveBeenCalledOnce();
+    expect(probeStartup).toHaveBeenCalledOnce();
     expect(sleep).toHaveBeenCalledWith(5);
   });
 
@@ -214,7 +214,7 @@ describe("supervised gateway lock recovery", () => {
         port: 18789,
         healthHost: "127.0.0.1",
         log: createLogger(),
-        probeHealth: vi.fn(async () => false),
+        probeStartup: vi.fn(async () => false),
         now: () => now,
         sleep,
         retryMs: 5,
@@ -239,12 +239,12 @@ describe("supervised gateway lock recovery", () => {
 
   it("retries non-mutating TLS fingerprint loads until certificate material is ready", async () => {
     loadGatewayTlsRuntimeMock.mockClear();
-    const probeHealth = testing.createConfiguredGatewayHealthProbe({
+    const probeStartup = testing.createConfiguredGatewayStartupProbe({
       gateway: { tls: { enabled: true, autoGenerate: true } },
     });
 
-    await expect(probeHealth({ host: "127.0.0.1", port: 18789 })).resolves.toBe(false);
-    await expect(probeHealth({ host: "127.0.0.1", port: 18789 })).resolves.toBe(false);
+    await expect(probeStartup({ host: "127.0.0.1", port: 18789 })).resolves.toBe(false);
+    await expect(probeStartup({ host: "127.0.0.1", port: 18789 })).resolves.toBe(false);
 
     expect(loadGatewayTlsRuntimeMock).toHaveBeenCalledTimes(2);
     expect(loadGatewayTlsRuntimeMock).toHaveBeenNthCalledWith(1, {
@@ -257,18 +257,21 @@ describe("supervised gateway lock recovery", () => {
     });
   });
 
-  it("recognizes only the OpenClaw health response", () => {
+  it("recognizes only the OpenClaw started response", () => {
     expect(
-      testing.isGatewayHealthzResponse(200, JSON.stringify({ ok: true, status: "live" })),
+      testing.isGatewayStartupzResponse(200, JSON.stringify({ ok: true, status: "started" })),
     ).toBe(true);
     expect(
-      testing.isGatewayHealthzResponse(200, JSON.stringify({ ok: true, status: "ready" })),
+      testing.isGatewayStartupzResponse(200, JSON.stringify({ ok: true, status: "live" })),
     ).toBe(false);
-    expect(testing.isGatewayHealthzResponse(404, "not found")).toBe(false);
-    expect(testing.isGatewayHealthzResponse(200, "not json")).toBe(false);
+    expect(
+      testing.isGatewayStartupzResponse(503, JSON.stringify({ ok: false, status: "draining" })),
+    ).toBe(false);
+    expect(testing.isGatewayStartupzResponse(404, "not found")).toBe(false);
+    expect(testing.isGatewayStartupzResponse(200, "not json")).toBe(false);
   });
 
-  it("bounds slow health responses with an absolute deadline", async () => {
+  it("bounds slow startup responses with an absolute deadline", async () => {
     const server = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       const interval = setInterval(() => {
@@ -287,7 +290,7 @@ describe("supervised gateway lock recovery", () => {
       }
       const startedAt = Date.now();
       await expect(
-        testing.probeGatewayHealthz({
+        testing.probeGatewayStartupz({
           host: "127.0.0.1",
           port: address.port,
           timeoutMs: 50,
@@ -301,12 +304,12 @@ describe("supervised gateway lock recovery", () => {
     }
   });
 
-  it("opts supervised probes into draining-aware liveness", async () => {
+  it("uses the startup lifecycle probe for supervised recovery", async () => {
     let requestUrl: string | undefined;
     const server = createServer((req, res) => {
       requestUrl = req.url;
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, status: "live" }));
+      res.end(JSON.stringify({ ok: true, status: "started" }));
     });
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => resolve());
@@ -318,9 +321,9 @@ describe("supervised gateway lock recovery", () => {
         throw new Error("expected TCP server address");
       }
       await expect(
-        testing.probeGatewayHealthz({ host: "127.0.0.1", port: address.port }),
+        testing.probeGatewayStartupz({ host: "127.0.0.1", port: address.port }),
       ).resolves.toBe(true);
-      expect(requestUrl).toBe("/healthz?strict=1");
+      expect(requestUrl).toBe("/startupz");
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
@@ -328,9 +331,9 @@ describe("supervised gateway lock recovery", () => {
     }
   });
 
-  it("normalizes wildcard bind hosts for local health probes", () => {
-    expect(testing.normalizeGatewayHealthProbeHost("0.0.0.0")).toBe("127.0.0.1");
-    expect(testing.normalizeGatewayHealthProbeHost("::")).toBe("127.0.0.1");
-    expect(testing.normalizeGatewayHealthProbeHost("127.0.0.1")).toBe("127.0.0.1");
+  it("normalizes wildcard bind hosts for local startup probes", () => {
+    expect(testing.normalizeGatewayStartupProbeHost("0.0.0.0")).toBe("127.0.0.1");
+    expect(testing.normalizeGatewayStartupProbeHost("::")).toBe("127.0.0.1");
+    expect(testing.normalizeGatewayStartupProbeHost("127.0.0.1")).toBe("127.0.0.1");
   });
 });

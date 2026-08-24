@@ -8,12 +8,12 @@ type GatewayRunTestLogger = {
 };
 
 type GatewayRunTestApi = {
-  createConfiguredGatewayHealthProbe(
+  createConfiguredGatewayStartupProbe(
     cfg: OpenClawConfig,
   ): (params: { host: string; port: number }) => Promise<boolean>;
-  isGatewayHealthzResponse(statusCode: number | undefined, body: string): boolean;
-  normalizeGatewayHealthProbeHost(host: string): string;
-  probeGatewayHealthz(params: {
+  isGatewayStartupzResponse(statusCode: number | undefined, body: string): boolean;
+  normalizeGatewayStartupProbeHost(host: string): string;
+  probeGatewayStartupz(params: {
     host: string;
     port: number;
     timeoutMs?: number;
@@ -29,7 +29,7 @@ type GatewayRunTestApi = {
     log: GatewayRunTestLogger;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
-    probeHealth?: (params: { host: string; port: number }) => Promise<boolean>;
+    probeStartup?: (params: { host: string; port: number }) => Promise<boolean>;
     retryMs?: number;
     timeoutMs?: number;
   }): Promise<void>;
@@ -42,17 +42,17 @@ function getTestApi(): GatewayRunTestApi {
 }
 
 export const testing: GatewayRunTestApi = {
-  createConfiguredGatewayHealthProbe(cfg) {
-    return getTestApi().createConfiguredGatewayHealthProbe(cfg);
+  createConfiguredGatewayStartupProbe(cfg) {
+    return getTestApi().createConfiguredGatewayStartupProbe(cfg);
   },
-  isGatewayHealthzResponse(statusCode, body) {
-    return getTestApi().isGatewayHealthzResponse(statusCode, body);
+  isGatewayStartupzResponse(statusCode, body) {
+    return getTestApi().isGatewayStartupzResponse(statusCode, body);
   },
-  normalizeGatewayHealthProbeHost(host) {
-    return getTestApi().normalizeGatewayHealthProbeHost(host);
+  normalizeGatewayStartupProbeHost(host) {
+    return getTestApi().normalizeGatewayStartupProbeHost(host);
   },
-  async probeGatewayHealthz(params) {
-    return await getTestApi().probeGatewayHealthz(params);
+  async probeGatewayStartupz(params) {
+    return await getTestApi().probeGatewayStartupz(params);
   },
   resolveGatewayLockErrorExitCode(err) {
     return getTestApi().resolveGatewayLockErrorExitCode(err);

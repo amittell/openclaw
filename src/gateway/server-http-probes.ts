@@ -56,10 +56,6 @@ function startupProbeBody(result: StartupResult, includeDetails: boolean): strin
   });
 }
 
-function isStrictLiveProbeRequest(req: IncomingMessage): boolean {
-  return new URL(req.url ?? "/", "http://localhost").searchParams.get("strict") === "1";
-}
-
 /** Handles live/ready/startup probe endpoints before normal gateway routing. */
 export async function handleGatewayProbeRequest(
   req: IncomingMessage,
@@ -89,22 +85,9 @@ export async function handleGatewayProbeRequest(
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
 
-  let strictDraining = false;
-  if (status === "live" && getStartup && isStrictLiveProbeRequest(req)) {
-    // Startup lifecycle owns drain state; readiness only projects it with channel health.
-    try {
-      strictDraining = getStartup().status === "draining";
-    } catch {
-      // Liveness remains fail-open unless the lifecycle owner confirms draining.
-    }
-  }
-
   let statusCode: number;
   let body: string;
-  if (strictDraining) {
-    statusCode = 503;
-    body = JSON.stringify({ live: false, phase: "shutting_down" });
-  } else if (status === "ready" && getReadiness) {
+  if (status === "ready" && getReadiness) {
     // Readiness details expose subsystem names, so only local direct or authenticated
     // callers receive them; unauthenticated remote probes get the aggregate boolean.
     const includeDetails = await shouldIncludeGatewayProbeDetails({

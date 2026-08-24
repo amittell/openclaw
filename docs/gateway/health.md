@@ -62,8 +62,6 @@ The Gateway exposes three unauthenticated `GET`/`HEAD` probe pairs:
 | `/startup`, `/startupz` | Startup work is complete and the Gateway is not draining. Channel health is not consulted.                    | Orchestrator startup and traffic admission.                    |
 | `/ready`, `/readyz`     | Startup is complete, the Gateway is not draining, and configured channel accounts pass deep readiness checks. | Operator monitoring that should surface hard channel failures. |
 
-The built-in supervised lock recovery uses `/healthz?strict=1` instead of the baseline liveness response. The strict query returns `503` while the Gateway lifecycle is draining, so a replacement process keeps retrying until the predecessor releases the listener. It does not incorporate channel readiness. Ordinary `/healthz` remains a shallow liveness check for external monitors and other callers.
-
 `/startupz` returns `503` with `status: "starting"` while startup sidecars are pending, `503` with `status: "draining"` during drain, and `200` with `status: "started"` otherwise. Use it for Kubernetes, Fly, Render, and similar traffic admission. A broken Telegram or other channel account can make `/readyz` return `503` without taking a healthy Control UI out of service through `/startupz`.
 
 Remote unauthenticated startup responses contain only `ok` and `status`. Local-direct and authenticated callers also receive `version`, `uptimeMs`, and `pendingReason` while startup is pending. Readiness details follow the same local-or-authenticated gate because they can name failing subsystems.
