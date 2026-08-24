@@ -163,8 +163,9 @@ Look for:
 - Selected Claude CLI model uses its 1M route (Claude 5 uses 1M by default), a
   Claude 4.x CLI model has the explicit 1M context selection, or an older direct
   API model config still carries `params.context1m: true`.
-- The response contains the exact long-context sentence above. Other 429
-  responses remain ordinary rate limits.
+- The response contains the exact long-context sentence above. Nonmatching 429
+  responses retain their normal classification, including billing or ordinary
+  rate limiting.
 - Whether the failure persists after OpenClaw compacts the active session.
 
 When Anthropic returns this exact body, OpenClaw treats it as the provider's
