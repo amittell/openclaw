@@ -427,10 +427,6 @@ describe("createGatewayKernel", () => {
         "gateway.handlers",
         "gateway.config-revision-key",
         "gateway.request-context",
-        "plugins.metadata.scan",
-        "plugins.metadata.freeze",
-        "plugins.metadata.scan",
-        "plugins.metadata.freeze",
       ]);
     } finally {
       try {
