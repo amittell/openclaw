@@ -70,6 +70,7 @@ function createHarness(): MutableAuthControllerHarness {
 function createController(params: {
   harness: MutableAuthControllerHarness;
   setRuntimeApiKey(provider: string, apiKey: string): void;
+  profileCandidates?: string[];
 }) {
   const authStore: AuthProfileStore = { version: 1, profiles: {} };
   return createEmbeddedRunAuthController({
@@ -80,7 +81,7 @@ function createController(params: {
     authStorage: {
       setRuntimeApiKey: (provider, apiKey) => params.setRuntimeApiKey(provider, apiKey),
     },
-    profileCandidates: ["default"],
+    profileCandidates: params.profileCandidates ?? ["default"],
     initialThinkLevel: "medium",
     attemptedThinking: new Set(),
     fallbackConfigured: false,
@@ -242,6 +243,73 @@ describe("createEmbeddedRunAuthController refresh deadlines", () => {
       const rejection = expect(init).rejects.toBeTruthy();
       await vi.advanceTimersByTimeAsync(RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS);
       await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the selected fallback after the timed-out credential read settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
+      const staleCredential = createDeferred<ResolvedProviderAuth>();
+      mocks.getApiKeyForModelCore.mockImplementation(async ({ profileId }) => {
+        if (profileId === "first") {
+          return await staleCredential.promise;
+        }
+        return {
+          apiKey: "backup-source-key",
+          mode: "api-key",
+          profileId: "backup",
+          source: "profile:backup",
+        };
+      });
+      mocks.prepareProviderRuntimeAuth.mockResolvedValue({
+        apiKey: "backup-runtime-key",
+        baseUrl: "https://backup.example.com/v1",
+        request: {
+          auth: { mode: "header", headerName: "x-profile-token", value: "backup-token" },
+        },
+      });
+      const controller = createController({
+        harness,
+        setRuntimeApiKey,
+        profileCandidates: ["first", "backup"],
+      });
+
+      const init = controller.initializeAuthProfile();
+      await vi.advanceTimersByTimeAsync(RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS);
+      await init;
+      expect(harness.lastProfileId).toBe("backup");
+      expect(harness.apiKeyInfo?.profileId).toBe("backup");
+      expect(harness.runtimeAuthState?.profileId).toBe("backup");
+      expect(harness.runtimeModel.baseUrl).toBe("https://backup.example.com/v1");
+      expectProtectedRuntimeValue(
+        harness.runtimeModel.headers?.["x-profile-token"],
+        "backup-token",
+      );
+      expectProtectedRuntimeValue(setRuntimeApiKey.mock.calls.at(-1)?.[1], "backup-runtime-key");
+
+      staleCredential.resolve({
+        apiKey: "stale-source-key",
+        mode: "api-key",
+        profileId: "first",
+        source: "profile:first",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(harness.lastProfileId).toBe("backup");
+      expect(harness.apiKeyInfo?.profileId).toBe("backup");
+      expect(harness.runtimeAuthState?.profileId).toBe("backup");
+      expect(harness.runtimeModel.baseUrl).toBe("https://backup.example.com/v1");
+      expectProtectedRuntimeValue(
+        harness.runtimeModel.headers?.["x-profile-token"],
+        "backup-token",
+      );
+      expectProtectedRuntimeValue(setRuntimeApiKey.mock.calls.at(-1)?.[1], "backup-runtime-key");
+      expect(setRuntimeApiKey).toHaveBeenCalledTimes(1);
+      controller.stopRuntimeAuthRefreshTimer();
     } finally {
       vi.useRealTimers();
     }
