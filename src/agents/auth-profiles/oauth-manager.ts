@@ -12,8 +12,8 @@ import { redactSensitiveText } from "../../logging/redact.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import {
   OAUTH_REFRESH_CALL_TIMEOUT_MS,
-  OAUTH_REFRESH_INLOCK_TIMEOUT_MS,
   OAUTH_REFRESH_LOCK_OPTIONS,
+  OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS,
   authProfilesLog,
 } from "./constants.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
@@ -380,38 +380,49 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     return `${provider}\u0000${profileId}`;
   }
 
-  async function withRetainedRefreshLockDeadline<T>(
-    lockPath: string,
-    sectionLabel: string,
-    fn: (params: {
-      withCallerDeadline: <R>(
-        label: string,
-        timeoutMs: number,
-        operation: () => Promise<R>,
-      ) => Promise<R>;
-    }) => Promise<T>,
-  ): Promise<T> {
+  type OAuthRefreshCallerDeadline = {
+    isAbandoned: () => boolean;
+    race: <T>(operation: Promise<T>) => Promise<T>;
+    withCallerDeadline: <T>(
+      label: string,
+      timeoutMs: number,
+      operation: () => Promise<T>,
+    ) => Promise<T>;
+  };
+
+  function createOAuthRefreshCallerDeadline(params: {
+    label: string;
+    timeoutMs: number;
+  }): OAuthRefreshCallerDeadline {
     let callerAbandoned = false;
     let rejectCallerDeadline: (error: Error) => void = () => undefined;
     const callerDeadline = new Promise<never>((_resolve, reject) => {
       rejectCallerDeadline = reject;
     });
-    const abandonCallerAfter = async <R>(
+    const abandonCaller = (label: string, timeoutMs: number) => {
+      if (callerAbandoned) {
+        return;
+      }
+      callerAbandoned = true;
+      rejectCallerDeadline(
+        new Error(`OAuth refresh call "${label}" exceeded hard timeout (${timeoutMs}ms)`),
+      );
+    };
+    const ownershipTimeout = setTimeout(
+      () => abandonCaller(params.label, params.timeoutMs),
+      params.timeoutMs,
+    );
+    const withCallerDeadline = async <T>(
       label: string,
       timeoutMs: number,
-      operation: () => Promise<R>,
-    ): Promise<R> => {
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      if (callerAbandoned) {
+        throw new Error(`OAuth refresh call "${label}" exceeded caller ownership deadline`);
+      }
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
-        timeoutHandle = setTimeout(() => {
-          if (callerAbandoned) {
-            return;
-          }
-          callerAbandoned = true;
-          rejectCallerDeadline(
-            new Error(`OAuth refresh call "${label}" exceeded hard timeout (${timeoutMs}ms)`),
-          );
-        }, timeoutMs);
+        timeoutHandle = setTimeout(() => abandonCaller(label, timeoutMs), timeoutMs);
         return await operation();
       } finally {
         if (timeoutHandle) {
@@ -419,22 +430,38 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         }
       }
     };
-    const lockedOperation = withFileLock(
-      lockPath,
-      OAUTH_REFRESH_LOCK_OPTIONS,
-      async () =>
-        await abandonCallerAfter(
-          sectionLabel,
-          OAUTH_REFRESH_INLOCK_TIMEOUT_MS,
-          async () =>
-            await fn({
-              withCallerDeadline: abandonCallerAfter,
-            }),
-        ),
-    );
-    // The race only bounds this caller. lockedOperation keeps the lock alive
-    // until the provider hook settles, preventing a second rotating-token use.
-    return await Promise.race([lockedOperation, callerDeadline]);
+    return {
+      isAbandoned: () => callerAbandoned,
+      race: async <T>(operation: Promise<T>): Promise<T> => {
+        try {
+          return await Promise.race([operation, callerDeadline]);
+        } finally {
+          clearTimeout(ownershipTimeout);
+        }
+      },
+      withCallerDeadline,
+    };
+  }
+
+  async function withRetainedRefreshLock<T>(
+    lockPath: string,
+    callerDeadline: OAuthRefreshCallerDeadline,
+    fn: (params: {
+      withCallerDeadline: <R>(
+        label: string,
+        timeoutMs: number,
+        operation: () => Promise<R>,
+      ) => Promise<R>;
+    }) => Promise<T>,
+  ): Promise<T | null> {
+    return await withFileLock(lockPath, OAUTH_REFRESH_LOCK_OPTIONS, async () => {
+      if (callerDeadline.isAbandoned()) {
+        return null;
+      }
+      return await fn({
+        withCallerDeadline: callerDeadline.withCallerDeadline,
+      });
+    });
   }
 
   async function mirrorRefreshedCredentialIntoMainStore(params: {
@@ -640,6 +667,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     forceRefresh?: boolean;
     attemptedCredentials?: OAuthCredential[];
     externalCliCredential?: OAuthCredential;
+    callerDeadline: OAuthRefreshCallerDeadline;
   }): Promise<ResolvedOAuthAccess | null> {
     const ownerAgentDir = resolvePersistedAuthProfileOwnerAgentDir(params);
     const authPath = ownerAgentDir
@@ -648,12 +676,9 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     const globalRefreshLockPath = resolveOAuthRefreshLockPath(params.provider, params.profileId);
 
     try {
-      // Bound the caller's wait for the entire held-lock critical section. The
-      // lock lifetime still follows uncancellable provider work so a timed-out
-      // caller cannot let a successor reuse the same rotating refresh token.
-      return await withRetainedRefreshLockDeadline(
+      return await withRetainedRefreshLock(
         globalRefreshLockPath,
-        `${params.provider} oauth refresh critical section`,
+        params.callerDeadline,
         async ({ withCallerDeadline }) => {
           // A deadline returns control to the caller but retains the file lock
           // until this body settles. The owner completes safe writeback before
@@ -942,7 +967,19 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     externalCliCredential?: OAuthCredential;
   }): Promise<ResolvedOAuthAccess | null> {
     const key = refreshQueueKey(params.provider, params.profileId);
-    return await refreshQueue.enqueue(key, () => doRefreshOAuthTokenWithLock(params));
+    const callerDeadline = createOAuthRefreshCallerDeadline({
+      label: `${params.provider} oauth refresh ownership`,
+      timeoutMs: OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS,
+    });
+    const queuedOperation = refreshQueue.enqueue(key, async () => {
+      if (callerDeadline.isAbandoned()) {
+        return null;
+      }
+      return await doRefreshOAuthTokenWithLock({ ...params, callerDeadline });
+    });
+    // The race bounds this caller from queue admission onward. If provider work
+    // already began, queuedOperation remains the queue tail until safe writeback.
+    return await callerDeadline.race(queuedOperation);
   }
 
   async function resolveOAuthAccess(params: {

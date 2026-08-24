@@ -77,7 +77,9 @@ function createController(params: {
     agentDir: "/tmp/agent",
     workspaceDir: "/tmp/workspace",
     authStore,
-    authStorage: { setRuntimeApiKey: params.setRuntimeApiKey },
+    authStorage: {
+      setRuntimeApiKey: (provider, apiKey) => params.setRuntimeApiKey(provider, apiKey),
+    },
     profileCandidates: ["default"],
     initialThinkLevel: "medium",
     attemptedThinking: new Set(),

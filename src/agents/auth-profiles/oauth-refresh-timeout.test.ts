@@ -6,8 +6,8 @@
 import { describe, expect, it } from "vitest";
 import {
   OAUTH_REFRESH_CALL_TIMEOUT_MS,
-  OAUTH_REFRESH_INLOCK_TIMEOUT_MS,
   OAUTH_REFRESH_LOCK_OPTIONS,
+  OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS,
 } from "./constants.js";
 
 function computeMinimumRetryBudgetMs(): number {
@@ -26,8 +26,8 @@ function computeMinimumRetryBudgetMs(): number {
 }
 
 describe("OAuth refresh caller deadlines (invariants)", () => {
-  it("keeps the provider-call deadline below the whole-section deadline", () => {
-    expect(OAUTH_REFRESH_CALL_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS);
+  it("keeps the provider-call deadline below the ownership deadline", () => {
+    expect(OAUTH_REFRESH_CALL_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS);
   });
 
   it("OAUTH_REFRESH_CALL_TIMEOUT_MS has a reasonable floor for OAuth token exchanges", () => {
@@ -37,10 +37,10 @@ describe("OAuth refresh caller deadlines (invariants)", () => {
     expect(OAUTH_REFRESH_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
   });
 
-  it("keeps the whole-section deadline below the stale metadata window", () => {
+  it("keeps the ownership deadline below the stale metadata window", () => {
     // Live-PID owners are never reclaimed from age alone. This margin keeps
     // incomplete/malformed sidecar classification outside the caller budget.
-    expect(OAUTH_REFRESH_INLOCK_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_LOCK_OPTIONS.stale);
+    expect(OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_LOCK_OPTIONS.stale);
   });
 
   it("OAUTH_REFRESH_LOCK_OPTIONS.stale is well above the slow-refresh ceiling", () => {
@@ -50,9 +50,9 @@ describe("OAuth refresh caller deadlines (invariants)", () => {
     expect(OAUTH_REFRESH_LOCK_OPTIONS.stale).toBeGreaterThan(60_000);
   });
 
-  it("OAUTH_REFRESH_LOCK_OPTIONS retry budget outlasts the whole-section caller deadline", () => {
+  it("OAUTH_REFRESH_LOCK_OPTIONS retry budget outlasts the ownership deadline", () => {
     // The current caller should observe its deadline before a peer waiting on
     // retained ownership reports refresh contention.
-    expect(computeMinimumRetryBudgetMs()).toBeGreaterThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS);
+    expect(computeMinimumRetryBudgetMs()).toBeGreaterThan(OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS);
   });
 });

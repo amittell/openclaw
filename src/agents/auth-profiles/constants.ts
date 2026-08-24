@@ -18,9 +18,9 @@ export const OPENAI_CODEX_DEFAULT_PROFILE_ID = "openai:default";
 export const MINIMAX_CLI_PROFILE_ID = "minimax-portal:minimax-cli";
 
 // Retry budget note: keep the MINIMUM cumulative retry window comfortably
-// above OAUTH_REFRESH_INLOCK_TIMEOUT_MS (the full held-lock ceiling, which is
-// wider than the network-call timeout) so the caller deadline fires before a
-// waiter surfaces refresh_contention. With retries=22 the jitter-free floor is
+// above OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS (the full queue/lock owner ceiling,
+// which is wider than the network-call timeout) so the caller deadline fires
+// before a waiter surfaces refresh_contention. With retries=22 the jitter-free floor is
 // 162.7s (12.7s over the 150s caller deadline): 100+200+...+6400 (attempts
 // 0-6) + 15*10_000 (capped attempts 7-21).
 /** Cross-agent lock policy for shared OAuth refresh operations. */
@@ -41,17 +41,14 @@ export const OAUTH_REFRESH_LOCK_OPTIONS = {
 /** Maximum caller wait for one OAuth refresh call inside the refresh lock. */
 export const OAUTH_REFRESH_CALL_TIMEOUT_MS = 120_000;
 
-// Hard upper bound on the ENTIRE held-lock critical section, not just the
-// network refresh call. The section also runs an in-lock keychain store load
-// (which on darwin can hit securityd) and provider buildApiKey hooks; if either
-// hangs while the cross-agent lock is held, every same-key caller otherwise
-// waits indefinitely. Expiry releases the caller, but the lock remains owned
-// until the uncancellable work settles so no peer can reuse a rotating token.
+// Hard upper bound on queue admission plus the held-lock critical section.
+// Expiry releases a waiting caller before admission; an admitted owner keeps
+// the lock until uncancellable work settles so no peer reuses a rotating token.
 // Sits between the call timeout and the stale metadata window; live-PID locks
 // are never reclaimed from age alone.
-// Invariant: OAUTH_REFRESH_CALL_TIMEOUT_MS < OAUTH_REFRESH_INLOCK_TIMEOUT_MS < OAUTH_REFRESH_LOCK_OPTIONS.stale.
-/** Maximum duration for the full held-lock OAuth refresh critical section. */
-export const OAUTH_REFRESH_INLOCK_TIMEOUT_MS = 150_000;
+// Invariant: OAUTH_REFRESH_CALL_TIMEOUT_MS < OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS < OAUTH_REFRESH_LOCK_OPTIONS.stale.
+/** Maximum caller wait across queue admission and OAuth refresh ownership. */
+export const OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS = 150_000;
 
 /** Freshness window for syncing external CLI auth into auth profiles. */
 export const EXTERNAL_CLI_SYNC_TTL_MS = 15 * 60 * 1000;

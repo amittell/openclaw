@@ -16,12 +16,10 @@ export function clampRuntimeAuthRefreshDelayMs(params: {
   return resolveSafeTimeoutDelayMs(params.refreshAt - params.now, { minMs: params.minDelayMs });
 }
 
-// Hard backstop for a single runtime auth refresh. The worst legitimate case
-// is two serialized in-lock budgets: waiting out a peer's held refresh lock
-// for its full critical section (OAUTH_REFRESH_INLOCK_TIMEOUT_MS, 150s) and
-// then running our own (another 150s) = 300s. 360s keeps 60s of real headroom
-// above that so legitimate contention never misreports as a hard timeout,
-// while any refresh that hangs indefinitely (a provider auth hook,
+// Hard backstop for a runtime auth refresh. Reused-token recovery can run two
+// consecutive caller ownership budgets (2 x 150s). 360s keeps 60s of headroom
+// so recovery never misreports as a hard timeout, while any refresh that hangs
+// indefinitely (a provider auth hook,
 // keychain/lock wait, or token endpoint that never settles) is still forced to
 // reject. Without this backstop the single-flight `refreshInFlight` promise
 // can stay pending forever and every subsequent model turn deadlocks awaiting

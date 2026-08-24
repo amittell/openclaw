@@ -1,6 +1,6 @@
 // Verifies runtime auth refresh timers stay within safe JavaScript timer bounds.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OAUTH_REFRESH_INLOCK_TIMEOUT_MS } from "./auth-profiles/constants.js";
+import { OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS } from "./auth-profiles/constants.js";
 import {
   clampRuntimeAuthRefreshDelayMs,
   RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS,
@@ -73,13 +73,12 @@ describe("withRuntimeAuthRefreshDeadline", () => {
     );
   });
 
-  it("keeps the default hard timeout above two serialized in-lock budgets with headroom", () => {
-    // Worst legitimate case: wait out a peer's full in-lock critical section,
-    // then run our own (2 x OAUTH_REFRESH_INLOCK_TIMEOUT_MS). Explicit headroom
-    // ensures legitimate contention never misreports as a hard timeout.
+  it("keeps the default hard timeout above two ownership budgets with headroom", () => {
+    // A reused-token recovery can run two consecutive manager attempts. Explicit
+    // headroom ensures recovery never misreports as a hard timeout.
     const minHeadroomMs = 30_000;
     expect(RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS).toBeGreaterThan(
-      2 * OAUTH_REFRESH_INLOCK_TIMEOUT_MS + minHeadroomMs,
+      2 * OAUTH_REFRESH_OWNERSHIP_TIMEOUT_MS + minHeadroomMs,
     );
   });
 });
