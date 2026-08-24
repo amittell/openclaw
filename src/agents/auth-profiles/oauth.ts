@@ -45,6 +45,10 @@ import { assertNoOAuthSecretRefPolicyViolations } from "./policy.js";
 import { clearLastGoodProfileWithLock } from "./profiles.js";
 import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
 import {
+  getRuntimeExternalCliProfileIds,
+  setRuntimeExternalCliProfileIds,
+} from "./runtime-external-profile-references.js";
+import {
   getRuntimeAuthProfileStoreSnapshotCore,
   hasRuntimeAuthProfileStoreSnapshot,
   setRuntimeAuthProfileStoreSnapshot,
@@ -54,12 +58,7 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   resolvePersistedAuthProfileOwnerAgentDir,
 } from "./store.js";
-import type {
-  AuthProfileCredential,
-  AuthProfileStore,
-  OAuthCredential,
-  RuntimeAuthProfileStore,
-} from "./types.js";
+import type { AuthProfileCredential, AuthProfileStore, OAuthCredential } from "./types.js";
 
 function listOAuthProviderIds(): string[] {
   if (typeof getOAuthProviders !== "function") {
@@ -280,7 +279,6 @@ export async function refreshCodexCliOAuthCredentialForRuntime(params: {
   if (!isCodexCliOAuthRuntimeProfile({ store: params.store, profileId: params.profileId })) {
     return null;
   }
-  const runtimeStore = params.store as RuntimeAuthProfileStore;
   const credential = params.store.profiles[params.profileId];
   if (!credential || credential.type !== "oauth") {
     return null;
@@ -313,12 +311,12 @@ export async function refreshCodexCliOAuthCredentialForRuntime(params: {
     if (params.store.runtimeExternalProfileIds?.length === 0) {
       params.store.runtimeExternalProfileIds = undefined;
     }
-    runtimeStore.runtimeExternalCliProfileIds = runtimeStore.runtimeExternalCliProfileIds?.filter(
-      (profileId) => profileId !== params.profileId,
+    setRuntimeExternalCliProfileIds(
+      params.store,
+      getRuntimeExternalCliProfileIds(params.store).filter(
+        (profileId) => profileId !== params.profileId,
+      ),
     );
-    if (runtimeStore.runtimeExternalCliProfileIds?.length === 0) {
-      runtimeStore.runtimeExternalCliProfileIds = undefined;
-    }
     params.store.runtimePersistedProfileIds = [
       ...new Set([...(params.store.runtimePersistedProfileIds ?? []), params.profileId]),
     ].toSorted();
@@ -331,10 +329,9 @@ export function isCodexCliOAuthRuntimeProfile(params: {
   store: AuthProfileStore;
   profileId: string;
 }): boolean {
-  const store = params.store as RuntimeAuthProfileStore;
   return (
     params.profileId === OPENAI_CODEX_DEFAULT_PROFILE_ID &&
-    store.runtimeExternalCliProfileIds?.includes(params.profileId) === true
+    getRuntimeExternalCliProfileIds(params.store).includes(params.profileId)
   );
 }
 

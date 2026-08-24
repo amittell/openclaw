@@ -25,7 +25,12 @@ import {
 import { clearRuntimeAuthProfileStoreSnapshots } from "./runtime-snapshots.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./store.js";
-import type { AuthProfileStore, OAuthCredential } from "./types.js";
+import type {
+  AuthProfileCredential,
+  AuthProfileStore,
+  OAuthCredential,
+  RuntimeAuthProfileStore,
+} from "./types.js";
 let resolveApiKeyForProfile: typeof import("./oauth.js").resolveApiKeyForProfile;
 let refreshCodexCliOAuthCredentialForRuntime: typeof import("./oauth.js").refreshCodexCliOAuthCredentialForRuntime;
 let resolveApiKeyForProviderCore: typeof import("../model-auth.js").resolveApiKeyForProviderCore;
@@ -126,7 +131,7 @@ function mockRotatedOpenAICodexRefresh() {
 }
 
 function expectPersistedOpenAICodexProfile(
-  credential: AuthProfileStore["profiles"][string],
+  credential: AuthProfileCredential | undefined,
   metadata: Record<string, unknown> = {},
 ): void {
   expect(credential?.type).toBe("oauth");
@@ -134,6 +139,18 @@ function expectPersistedOpenAICodexProfile(
   for (const [key, value] of Object.entries(metadata)) {
     expect(credential?.[key as keyof typeof credential]).toBe(value);
   }
+}
+
+function createCodexCliRuntimeStore(
+  profileId: string,
+  credential: OAuthCredential,
+): RuntimeAuthProfileStore {
+  return {
+    version: 1,
+    profiles: { [profileId]: credential },
+    runtimeExternalProfileIds: [profileId],
+    runtimeExternalCliProfileIds: [profileId],
+  };
 }
 
 function resolveOpenAICodexProfile(params: { profileId: string; agentDir: string }) {
@@ -223,12 +240,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() - 60_000,
       accountId: "acct-native",
     };
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     const freshNativeCredential = {
       ...nativeCredential,
       // Metadata-only changes do not prove that Codex replaced the bearer
@@ -282,12 +294,8 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() - 60_000,
       accountId: "acct-native",
     };
-    const createPreparedStore = (): AuthProfileStore => ({
-      version: 1,
-      profiles: { [profileId]: { ...nativeCredential } },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    });
+    const createPreparedStore = () =>
+      createCodexCliRuntimeStore(profileId, { ...nativeCredential });
     const firstStore = createPreparedStore();
     const secondStore = createPreparedStore();
     expect(secondStore).not.toBe(firstStore);
@@ -299,12 +307,12 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       fs.mkdir(secondAgentDir, { recursive: true }),
     ]);
     readCodexCliCredentialsCachedMock.mockReturnValue({ ...nativeCredential });
-    let finishFirst: ((credential: OAuthCredential) => void) | undefined;
+    const firstRefresh: { resolve?: (credential: OAuthCredential) => void } = {};
+    const firstRefreshResult = new Promise<OAuthCredential>((resolve) => {
+      firstRefresh.resolve = resolve;
+    });
     refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(
-      async () =>
-        await new Promise<OAuthCredential>((resolve) => {
-          finishFirst = resolve;
-        }),
+      async () => await firstRefreshResult,
     );
 
     const first = refreshCodexCliOAuthCredentialForRuntime({
@@ -322,10 +330,15 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       agentDir: secondAgentDir,
       forceRefresh: true,
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
     expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledTimes(1);
 
-    finishFirst?.({
+    expectDefined(
+      firstRefresh.resolve,
+      "first refresh resolver test invariant",
+    )({
       ...nativeCredential,
       access: "first-rotated-access",
       refresh: "first-rotated-refresh",
@@ -392,12 +405,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() - 60_000,
       accountId: "acct-native",
     };
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     readCodexCliCredentialsCachedMock.mockReturnValue({ ...nativeCredential });
     refreshProviderOAuthCredentialWithPluginMock.mockResolvedValueOnce({ ...nativeCredential });
 
@@ -431,12 +439,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() + 10 * 60_000,
       accountId: "acct-fresh-login",
     };
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     readCodexCliCredentialsCachedMock.mockReturnValue(freshCredential);
 
     await expect(
@@ -476,12 +479,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
 
     await expect(
       refreshCodexCliOAuthCredentialForRuntime({
-        store: {
-          version: 1,
-          profiles: { [profileId]: nativeCredential },
-          runtimeExternalProfileIds: [profileId],
-          runtimeExternalCliProfileIds: [profileId],
-        },
+        store: createCodexCliRuntimeStore(profileId, nativeCredential),
         profileId,
         agentDir,
         forceRefresh: true,
@@ -527,12 +525,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() - 60_000,
       accountId: "acct-native",
     };
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     readCodexCliCredentialsCachedMock.mockReturnValue({ ...nativeCredential });
     refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(async () => {
       saveAuthProfileStore(
@@ -581,12 +574,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       expires: Date.now() - 60_000,
       accountId: "acct-native",
     };
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     readCodexCliCredentialsCachedMock.mockReturnValue({ ...nativeCredential });
     refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(async () => {
       saveAuthProfileStore(
@@ -650,12 +638,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       accountId: "acct-relogin",
     };
     saveAuthProfileStore({ version: 1, profiles: { [profileId]: managedCredential } }, agentDir);
-    const store: AuthProfileStore = {
-      version: 1,
-      profiles: { [profileId]: nativeCredential },
-      runtimeExternalProfileIds: [profileId],
-      runtimeExternalCliProfileIds: [profileId],
-    };
+    const store = createCodexCliRuntimeStore(profileId, nativeCredential);
     await expect(
       refreshCodexCliOAuthCredentialForRuntime({
         store,

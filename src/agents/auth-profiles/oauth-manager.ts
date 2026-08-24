@@ -983,7 +983,9 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
       const refreshed = await refreshOAuthTokenWithLock({
         profileId: params.profileId,
         provider: params.credential.provider,
-        callerCredential: params.credential,
+        // This is the bearer actually selected for the failed attempt. Passing
+        // the pre-adoption worker credential makes unchanged main state look rotated.
+        callerCredential: effectiveCredential,
         agentDir: params.agentDir,
         cfg: params.cfg,
         forceRefresh: params.forceRefresh,
@@ -1037,7 +1039,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           const retried = await refreshOAuthTokenWithLock({
             profileId: params.profileId,
             provider: params.credential.provider,
-            callerCredential: params.credential,
+            callerCredential: effectiveCredential,
             agentDir: params.agentDir,
             cfg: params.cfg,
             forceRefresh: params.forceRefresh,
