@@ -261,40 +261,58 @@ describe("refreshGatewayHealthSnapshot", () => {
     });
   });
 
-  it("invalidates stale cache generations and recomputes once before publication", async () => {
+  it("projects current config for hello while RPC and broadcast await full recollection", async () => {
     const healthState = await loadHealthState();
     const broadcast = vi.fn();
-    let generation = 7;
+    const firstSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-sol" } } };
+    const latestSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-terra" } } };
+    let observation = { generation: 7, sourceConfig: firstSourceConfig };
     collectGatewayHealthSnapshotMock
       .mockResolvedValueOnce(createHealthSummary())
       .mockResolvedValueOnce(createHealthSummary());
-    getConfigReloadObservationMock.mockImplementation(() => ({
-      generation,
-      sourceConfig: null,
-    }));
-    buildRuntimeConfigHealthMock.mockReturnValueOnce({ state: "ok" }).mockReturnValueOnce({
-      state: "unknown",
-      message: "Disk config source snapshot is unavailable.",
-    });
+    getRuntimeConfigSourceSnapshotMock.mockReturnValue(firstSourceConfig);
+    getConfigReloadObservationMock.mockImplementation(() => observation);
+    buildRuntimeConfigHealthMock
+      .mockReturnValueOnce({ state: "ok" })
+      .mockReturnValueOnce({ state: "drift", driftPaths: ["agents.defaults.model"] })
+      .mockReturnValueOnce({ state: "drift", driftPaths: ["agents.defaults.model"] });
     healthState.setBroadcastHealthUpdate(broadcast);
 
     const first = await healthState.refreshGatewayHealthSnapshot({ probe: false });
     expect(first.runtimeConfig).toEqual({ state: "ok" });
     expect(healthState.getHealthCache()).toBe(first);
+    const firstVersion = healthState.getHealthVersion();
 
-    generation += 1;
+    observation = { generation: 8, sourceConfig: latestSourceConfig };
     expect(healthState.getHealthCache()).toBeNull();
-
-    const second = await healthState.refreshGatewayHealthSnapshot({ probe: false });
-    expect(second.runtimeConfig).toEqual({
-      state: "unknown",
-      message: "Disk config source snapshot is unavailable.",
+    expect(healthState.readCurrentRuntimeConfigHealth()).toEqual({
+      state: "drift",
+      driftPaths: ["agents.defaults.model"],
     });
-    expect(healthState.getHealthCache()).toBe(second);
-    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
+    expect(healthState.getHealthCache()).toBeNull();
+    expect(healthState.getHealthVersion()).toBe(firstVersion);
+    expect(collectGatewayHealthSnapshotMock).toHaveBeenCalledOnce();
     expect(broadcast.mock.calls.map(([snapshot]) => snapshot.runtimeConfig)).toEqual([
       { state: "ok" },
-      { state: "unknown", message: "Disk config source snapshot is unavailable." },
+    ]);
+
+    const current = await healthState.refreshGatewayHealthSnapshot({ probe: false });
+    expect(current.runtimeConfig).toEqual({
+      state: "drift",
+      driftPaths: ["agents.defaults.model"],
+    });
+    expect(healthState.getHealthCache()).toBe(current);
+    expect(healthState.getHealthVersion()).toBe(firstVersion + 1);
+    expect(collectGatewayHealthSnapshotMock).toHaveBeenCalledTimes(2);
+    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(3);
+    expect(buildRuntimeConfigHealthMock).toHaveBeenLastCalledWith({
+      liveSourceConfig: firstSourceConfig,
+      hasLiveSnapshot: true,
+      observedSourceConfig: latestSourceConfig,
+    });
+    expect(broadcast.mock.calls.map(([snapshot]) => snapshot.runtimeConfig)).toEqual([
+      { state: "ok" },
+      { state: "drift", driftPaths: ["agents.defaults.model"] },
     ]);
   });
 

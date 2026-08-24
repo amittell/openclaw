@@ -117,9 +117,8 @@ export function buildGatewaySnapshot(opts: {
 }
 
 export function getHealthCache(): HealthSummary | null {
-  // Disk observations and live runtime publication both invalidate the whole
-  // snapshot. Callers must never mix drift state across either boundary or
-  // independently re-read the config source.
+  // Disk observations and live runtime publication invalidate the whole cache;
+  // RPC callers refresh rather than mixing non-config health across revisions.
   if (healthCache && healthCacheConfigKey !== readRuntimeConfigHealthContext().key) {
     return null;
   }
@@ -163,16 +162,42 @@ function preparePublishedHealthSnapshot(
 } {
   // Snapshot-wide health is observable by read-scoped clients, hello, and
   // broadcasts, so it receives only source configs and emits redacted facts.
-  const summary = buildRuntimeConfigHealth({
-    liveSourceConfig: context.liveSourceConfig,
-    hasLiveSnapshot: context.hasLiveSnapshot,
-    observedSourceConfig: context.observation.sourceConfig,
-  });
+  const summary = projectRuntimeConfigHealth(context);
   delete snapshot.runtimeConfig;
   if (summary) {
     snapshot.runtimeConfig = summary;
   }
   return { configKey: context.key, snapshot };
+}
+
+function projectRuntimeConfigHealth(context: RuntimeConfigHealthContext) {
+  return buildRuntimeConfigHealth({
+    liveSourceConfig: context.liveSourceConfig,
+    hasLiveSnapshot: context.hasLiveSnapshot,
+    observedSourceConfig: context.observation.sourceConfig,
+  });
+}
+
+export function readCurrentRuntimeConfigHealth(): HealthSummary["runtimeConfig"] {
+  while (true) {
+    const context = readRuntimeConfigHealthContext();
+    const summary = projectRuntimeConfigHealth(context);
+    // Hello cannot await channel collection, but it can project the exact current
+    // in-memory config facts and let the normal passive refresh publish the full snapshot.
+    if (context.key === readRuntimeConfigHealthContext().key) {
+      return summary;
+    }
+  }
+}
+
+function publishPublicHealthSnapshot(snapshot: HealthSummary, configKey: string): HealthSummary {
+  healthCache = snapshot;
+  healthCacheConfigKey = configKey;
+  healthVersion += 1;
+  if (broadcastHealthUpdate) {
+    broadcastHealthUpdate(snapshot);
+  }
+  return snapshot;
 }
 
 export async function refreshGatewayHealthSnapshot(opts?: {
@@ -245,12 +270,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
     // generation newer than the published cache may advance version/broadcast.
     if (!includeSensitive && generation > state.committedGeneration) {
       state.committedGeneration = generation;
-      healthCache = snap;
-      healthCacheConfigKey = configKey;
-      healthVersion += 1;
-      if (broadcastHealthUpdate) {
-        broadcastHealthUpdate(snap);
-      }
+      publishPublicHealthSnapshot(snap, configKey);
     }
     return snap;
   })().finally(() => {
