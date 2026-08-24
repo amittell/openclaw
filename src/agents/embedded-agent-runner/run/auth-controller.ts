@@ -21,7 +21,6 @@ import {
   type FailoverReason,
 } from "../../embedded-agent-helpers.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
-import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
 import { renderAuthProfileFailoverCopy } from "../../failover/user-copy.js";
 import {
   getApiKeyForModelCore,
@@ -44,7 +43,10 @@ import {
   RuntimeAuthDeadlineError,
   withRuntimeAuthRefreshDeadline,
 } from "../../runtime-auth-refresh.js";
-import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
+import {
+  resolveAuthProfileFailureReason,
+  resolveEmbeddedAuthCooldownProbePolicy,
+} from "./auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 import {
   RUNTIME_AUTH_REFRESH_MARGIN_MS,
@@ -66,48 +68,7 @@ type LogLike = {
   warn(message: string): void;
 };
 
-/** Decides whether one automatic profile may bypass its current cooldown. */
-export function resolveEmbeddedAuthCooldownProbePolicy(params: {
-  authStore: AuthProfileStore;
-  profileCandidates: Array<string | undefined>;
-  lockedProfileId?: string;
-  modelId: string;
-  allowTransientCooldownProbe: boolean;
-}): { probeProfileIds: ReadonlySet<string>; unavailableReason: FailoverReason | null } {
-  const autoProfileCandidates = params.profileCandidates.filter(
-    (candidate): candidate is string =>
-      typeof candidate === "string" && candidate.length > 0 && candidate !== params.lockedProfileId,
-  );
-  const allAutoProfilesInCooldown =
-    autoProfileCandidates.length > 0 &&
-    autoProfileCandidates.every((candidate) =>
-      isProfileInCooldown(params.authStore, candidate, undefined, params.modelId),
-    );
-  const unavailableReason = allAutoProfilesInCooldown
-    ? (resolveProfilesUnavailableReason({
-        store: params.authStore,
-        profileIds: autoProfileCandidates,
-      }) ?? "unknown")
-    : null;
-  const probeProfileIds = new Set<string>();
-  if (
-    params.allowTransientCooldownProbe &&
-    allAutoProfilesInCooldown &&
-    shouldUseTransientCooldownProbeSlot(unavailableReason)
-  ) {
-    for (const candidate of autoProfileCandidates) {
-      const candidateReason =
-        resolveProfilesUnavailableReason({
-          store: params.authStore,
-          profileIds: [candidate],
-        }) ?? "unknown";
-      if (shouldUseTransientCooldownProbeSlot(candidateReason)) {
-        probeProfileIds.add(candidate);
-      }
-    }
-  }
-  return { probeProfileIds, unavailableReason };
-}
+export { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-profile-failure-policy.js";
 
 /**
  * Coordinates auth profile selection, runtime auth preparation/refresh, and
