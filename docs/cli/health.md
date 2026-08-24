@@ -39,13 +39,13 @@ openclaw health --debug
 
 ## Runtime configuration
 
-The `runtimeConfig` object in JSON output compares the configuration loaded by the running Gateway with the current file on disk for model, provider, authentication, and secret-provider paths.
+The `runtimeConfig` object in JSON output compares the configuration loaded by the running Gateway with the reloader's latest completed source observation for model, provider, authentication, and secret-provider paths. It does not read the file directly, so the diagnostic can intentionally lag while watcher debounce or an in-flight reload owns a newer write.
 
-| State     | Meaning                                                                                     |
-| --------- | ------------------------------------------------------------------------------------------- |
-| `ok`      | The loaded and on-disk values match for the monitored paths.                                |
-| `drift`   | The values differ. Restart the Gateway, then run `openclaw health --json` again to confirm. |
-| `unknown` | The Gateway cannot compare the sources. Validate the config and inspect Gateway logs first. |
+| State     | Meaning                                                                                                                |
+| --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `ok`      | The loaded values match the latest completed reload observation for the monitored paths.                               |
+| `drift`   | The loaded and latest observed values differ. Restart the Gateway, then run `openclaw health --json` again to confirm. |
+| `unknown` | The Gateway cannot compare the loaded and latest observed sources. Validate the config and inspect Gateway logs first. |
 
 Gateway health snapshots are shared by health RPC, connection hello, and health broadcasts. The `runtimeConfig` diagnostic therefore never includes config fingerprints or detailed disk-read errors that could reveal paths or parse excerpts, including for admin-scoped clients.
 
