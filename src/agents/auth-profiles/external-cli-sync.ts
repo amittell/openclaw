@@ -164,7 +164,11 @@ function hasTombstonedExternalCliIdentityContinuity(
 ): boolean {
   // A permanent failure reopens a previously owned slot, so unlike first
   // bootstrap it must prove account continuity before external tokens cross.
-  return !isOAuthRefreshDead(existing) || hasMatchingOAuthIdentity(existing, imported);
+  return (
+    existing === undefined ||
+    !isOAuthRefreshDead(existing) ||
+    hasMatchingOAuthIdentity(existing, imported)
+  );
 }
 
 function hasManagedProviderOAuth(
