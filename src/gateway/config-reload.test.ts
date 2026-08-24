@@ -1777,6 +1777,52 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
+  it("publishes only the newest source when a watcher supersedes an active read", async () => {
+    const initialConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: "openai/gpt-5.6-sol" } },
+    };
+    const supersededConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: "openai/gpt-5.6-terra" } },
+    };
+    const newestConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: "openai/gpt-5.6-luna" } },
+    };
+    const supersededRead = createDeferred<ConfigFileSnapshot>();
+    const newestRead = createDeferred<ConfigFileSnapshot>();
+    const readSnapshot = vi
+      .fn<() => Promise<ConfigFileSnapshot>>()
+      .mockImplementationOnce(() => supersededRead.promise)
+      .mockImplementationOnce(() => newestRead.promise);
+    const harness = createReloaderHarness(readSnapshot, { initialConfig });
+    const initialObservation = getConfigReloadObservation();
+
+    harness.watcher.emit("change");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readSnapshot).toHaveBeenCalledOnce();
+
+    harness.watcher.emit("change");
+    supersededRead.resolve(
+      makeSnapshot({ config: supersededConfig, hash: "superseded-observation" }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readSnapshot).toHaveBeenCalledTimes(2);
+
+    const observationAfterSupersededRead = getConfigReloadObservation();
+
+    newestRead.resolve(makeSnapshot({ config: newestConfig, hash: "newest-observation" }));
+    await vi.runAllTimersAsync();
+
+    expect(observationAfterSupersededRead).toEqual(initialObservation);
+    expect(getConfigReloadObservation()).toEqual({
+      generation: initialObservation.generation + 1,
+      sourceConfig: newestConfig,
+    });
+    await harness.reloader.stop();
+  });
+
   it("notifies lifecycle owners when a persisted edit reverts to the current baseline", async () => {
     const initialConfig = makeGatewayPortConfig(18789);
     const readSnapshot = vi.fn(async () =>

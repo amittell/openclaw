@@ -8,7 +8,7 @@ import type { HealthSummary, RuntimeConfigHealthSummary } from "../gateway/healt
 const RUNTIME_CONFIG_DRIFT_PATHS = [
   "agents.defaults.model",
   "agents.defaults.models",
-  "agents.list",
+  "agents.entries",
   "models",
   "gateway.auth",
   "auth.profiles",

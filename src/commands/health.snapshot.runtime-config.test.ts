@@ -51,6 +51,20 @@ describe("buildRuntimeConfigHealth drift", () => {
     expect(runtimeConfig?.driftPaths).toEqual(["auth.profiles"]);
   });
 
+  it("detects per-agent model drift in canonical agent entries", () => {
+    const runtimeConfig = buildHealth({
+      liveSourceConfig: {
+        agents: { entries: { main: { model: "openai/gpt-5.6-sol" } } },
+      },
+      observedSourceConfig: {
+        agents: { entries: { main: { model: "openai/gpt-5.6-terra" } } },
+      },
+    });
+
+    expect(runtimeConfig?.state).toBe("drift");
+    expect(runtimeConfig?.driftPaths).toEqual(["agents.entries"]);
+  });
+
   it("reports a redacted unknown state for a missing or invalid observation", () => {
     const runtimeConfig = buildHealth({
       liveSourceConfig: {

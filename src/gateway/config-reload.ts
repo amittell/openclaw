@@ -847,7 +847,7 @@ export function startGatewayConfigReloader(opts: {
       return;
     }
     running = true;
-    let observedSourceConfig: OpenClawConfig | null = null;
+    let candidateObservation: { epoch: number; sourceConfig: OpenClawConfig | null } | null = null;
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -855,7 +855,10 @@ export function startGatewayConfigReloader(opts: {
     try {
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
-        observedSourceConfig = pendingWrite.compareConfig;
+        candidateObservation = {
+          epoch: pendingWrite.epoch,
+          sourceConfig: pendingWrite.compareConfig,
+        };
         pendingInProcessConfig = null;
         activeInProcessConfig = pendingWrite;
         missingConfigRetries = 0;
@@ -896,10 +899,12 @@ export function startGatewayConfigReloader(opts: {
         return;
       }
       const transactionEpoch = configWriteEpoch;
+      candidateObservation = { epoch: transactionEpoch, sourceConfig: null };
       const intentCandidate = watcherIntentCandidate;
       const intentCandidateCameFromPendingWrite = watcherIntentCameFromPendingWrite;
       const snapshot = await opts.readSnapshot(currentRuntimeEnvSourceConfig);
-      observedSourceConfig = snapshot.exists && snapshot.valid ? snapshot.sourceConfig : null;
+      candidateObservation.sourceConfig =
+        snapshot.exists && snapshot.valid ? snapshot.sourceConfig : null;
       if (configWriteEpoch !== transactionEpoch) {
         throw new GatewayConfigReloadSupersededError();
       }
@@ -1082,7 +1087,10 @@ export function startGatewayConfigReloader(opts: {
     } finally {
       // Publish only after this transaction finishes so health compares the
       // exact accepted or rejected candidate under the matching generation.
-      publishConfigReloadObservation(observedSourceConfig);
+      // A newer write revokes this transaction before its source can escape.
+      if (candidateObservation?.epoch === configWriteEpoch) {
+        publishConfigReloadObservation(candidateObservation.sourceConfig);
+      }
       running = false;
       if (pending) {
         pending = false;
