@@ -11,6 +11,7 @@ import type { AuthProfileFailureReason } from "./types.js";
 
 export type OAuthRefreshFailureReason =
   | "refresh_token_reused"
+  | "refresh_token_expired"
   | "invalid_grant"
   | "sign_in_again"
   | "invalid_refresh_token"
@@ -155,6 +156,9 @@ export function classifyOAuthRefreshFailureReason(
   ) {
     return "refresh_token_reused";
   }
+  if (lower.includes("refresh_token_expired")) {
+    return "refresh_token_expired";
+  }
   if (lower.includes("invalid_grant")) {
     return "invalid_grant";
   }
@@ -186,6 +190,7 @@ export function classifyOAuthRefreshFailureReason(
 // refresh_token_reused is excluded: it signals a rotation race with its own
 // in-store recovery path, not a grant that can never work again.
 const PERMANENT_OAUTH_REFRESH_FAILURE_REASONS: ReadonlySet<OAuthRefreshFailureReason> = new Set([
+  "refresh_token_expired",
   "invalid_grant",
   "invalid_refresh_token",
   "token_invalidated",

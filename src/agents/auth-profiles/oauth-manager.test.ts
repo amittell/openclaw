@@ -865,7 +865,9 @@ describe("createOAuthManager", () => {
       const readBootstrapCredential = vi.fn(() => bootstrapCredential);
       const refreshCredential = vi.fn(async (credential: OAuthCredential) => {
         expect(credential.refresh).toBe("dead-local-refresh");
-        throw new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}');
+        throw new Error(
+          'OpenAI Codex token refresh failed (401): {"error":{"message":"Your refresh token is expired.","code":"refresh_token_expired"}}',
+        );
       });
       const manager = createOAuthManager({
         buildApiKey: async (_provider, credential) => credential.access,

@@ -12,6 +12,7 @@ import {
   buildOAuthRefreshFailureLoginCommand,
   classifyOAuthRefreshFailure,
   classifyOAuthRefreshFailureError,
+  classifyOAuthRefreshFailureReason,
   formatOAuthRefreshFailureLoginCommandMarkdown,
   isPermanentOAuthRefreshFailure,
   OAuthRefreshFailureError,
@@ -80,6 +81,13 @@ describe("buildAuthProfileUnusableHint", () => {
 
 describe("isPermanentOAuthRefreshFailure", () => {
   it("classifies dead-grant refresh failures as permanent, including nested causes", () => {
+    const codexExpiredBody =
+      'OpenAI Codex token refresh failed (401): {"error":{"message":"Your refresh token is expired.","code":"refresh_token_expired"}}';
+    expect(classifyOAuthRefreshFailureReason(codexExpiredBody)).toBe("refresh_token_expired");
+    expect(isPermanentOAuthRefreshFailure(new Error(codexExpiredBody))).toBe(true);
+    expect(
+      isPermanentOAuthRefreshFailure(new Error("wrapper", { cause: new Error(codexExpiredBody) })),
+    ).toBe(true);
     expect(
       isPermanentOAuthRefreshFailure(
         new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}'),

@@ -5,12 +5,20 @@ import type { AuthProfileStore, OAuthCredential } from "./types.js";
 const readCodexCliCredentialsCachedMock = vi.hoisted(() =>
   vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
 );
+const readClaudeCliCredentialsCachedMock = vi.hoisted(() =>
+  vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
+);
+const readMiniMaxCliCredentialsCachedMock = vi.hoisted(() =>
+  vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
+);
 
 vi.mock("../cli-credentials.js", async (importActual) => {
   const actual = await importActual<typeof import("../cli-credentials.js")>();
   return {
     ...actual,
+    readClaudeCliCredentialsCached: readClaudeCliCredentialsCachedMock,
     readCodexCliCredentialsCached: readCodexCliCredentialsCachedMock,
+    readMiniMaxCliCredentialsCached: readMiniMaxCliCredentialsCachedMock,
   };
 });
 
@@ -73,8 +81,54 @@ function expectCredentialFields(
 
 describe("external cli permanent-refresh tombstones", () => {
   beforeEach(() => {
+    readClaudeCliCredentialsCachedMock.mockReset().mockReturnValue(null);
     readCodexCliCredentialsCachedMock.mockReset().mockReturnValue(null);
+    readMiniMaxCliCredentialsCachedMock.mockReset().mockReturnValue(null);
   });
+
+  it.each([
+    {
+      profileId: "anthropic:claude-cli",
+      provider: "claude-cli",
+      importedProvider: "anthropic",
+      reader: readClaudeCliCredentialsCachedMock,
+    },
+    {
+      profileId: "minimax-portal:minimax-cli",
+      provider: "minimax-portal",
+      importedProvider: "minimax-portal",
+      reader: readMiniMaxCliCredentialsCachedMock,
+    },
+  ])(
+    "re-seeds an identity-less dead $provider profile",
+    ({ profileId, provider, importedProvider, reader }) => {
+      const deadCredential: OAuthCredential = {
+        ...makeOAuthCredential({
+          provider,
+          access: "dead-access",
+          refresh: "dead-refresh",
+          expires: Date.now() - 5_000,
+        }),
+        refreshDeadAt: Date.now() - 1_000,
+      };
+      reader.mockReturnValue(
+        makeOAuthCredential({
+          provider: importedProvider,
+          access: "fresh-cli-access",
+          refresh: "fresh-cli-refresh",
+        }),
+      );
+
+      const profiles = resolveExternalCliAuthProfiles(makeStore(profileId, deadCredential), {
+        providerIds: [provider],
+      });
+
+      expectCredentialFields(expectSingleProfileCredential(profiles, profileId), {
+        access: "fresh-cli-access",
+        refresh: "fresh-cli-refresh",
+      });
+    },
+  );
 
   it("reads a fresh Codex CLI grant for a dead target beside a healthy OpenAI sibling", () => {
     const deadTarget: OAuthCredential = {

@@ -245,7 +245,11 @@ export function readExternalCliBootstrapCredential(params: {
   ) {
     return null;
   }
-  if (imported && !hasTombstonedExternalCliIdentityContinuity(params.credential, imported)) {
+  if (
+    imported &&
+    provider.bootstrapOnly &&
+    !hasTombstonedExternalCliIdentityContinuity(params.credential, imported)
+  ) {
     return null;
   }
   if (!imported || !isSafeToUseExternalCliCredential(params.credential, imported)) {
@@ -498,7 +502,11 @@ export function resolveExternalCliAuthProfiles(
         });
         continue;
       }
-      if (existingOAuth && !hasTombstonedExternalCliIdentityContinuity(existingOAuth, creds)) {
+      if (
+        providerConfig.bootstrapOnly &&
+        existingOAuth &&
+        !hasTombstonedExternalCliIdentityContinuity(existingOAuth, creds)
+      ) {
         authProfilesLog.warn(
           "refused tombstoned external cli oauth bootstrap: identity continuity missing; re-authenticate the OpenClaw profile or log the CLI into its bound account",
           {

@@ -211,9 +211,14 @@ function decodeJwtIdentityClaims(token: string): { sub?: string; email?: string 
   }
   try {
     const payloadRaw = Buffer.from(encodedPayload, "base64url").toString("utf8");
-    const payload = JSON.parse(payloadRaw) as { sub?: unknown; email?: unknown };
+    const payload = JSON.parse(payloadRaw) as {
+      sub?: unknown;
+      email?: unknown;
+      "https://api.openai.com/profile"?: { email?: unknown };
+    };
     const sub = typeof payload.sub === "string" && payload.sub ? payload.sub : undefined;
-    const email = typeof payload.email === "string" && payload.email ? payload.email : undefined;
+    const rawEmail = payload.email ?? payload["https://api.openai.com/profile"]?.email;
+    const email = typeof rawEmail === "string" && rawEmail ? rawEmail : undefined;
     return { sub, email };
   } catch {
     return {};
@@ -275,6 +280,8 @@ function parseCodexOauthCredential(
   if (expires === undefined) {
     return null;
   }
+  const idToken = typeof tokens?.id_token === "string" ? tokens.id_token : undefined;
+  const identity = idToken ? decodeJwtIdentityClaims(idToken) : {};
   return {
     type: "oauth",
     provider: "openai" as OAuthProvider,
@@ -282,7 +289,8 @@ function parseCodexOauthCredential(
     refresh: refreshToken,
     expires,
     accountId: typeof tokens?.account_id === "string" ? tokens.account_id : undefined,
-    idToken: typeof tokens?.id_token === "string" ? tokens.id_token : undefined,
+    email: identity.email,
+    idToken,
   };
 }
 
