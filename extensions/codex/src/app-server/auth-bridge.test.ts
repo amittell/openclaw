@@ -43,6 +43,7 @@ type MockCacheResult = {
 };
 
 const agentRuntimeMocks = vi.hoisted(() => ({
+  refreshOAuthCredentialForRuntime: vi.fn(),
   resolveApiKeyForProfile: vi.fn(),
 }));
 
@@ -96,6 +97,29 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/agent-runtime")>();
   return {
     ...actual,
+    refreshOAuthCredentialForRuntime: async (
+      params: Parameters<typeof actual.refreshOAuthCredentialForRuntime>[0],
+    ) => {
+      agentRuntimeMocks.refreshOAuthCredentialForRuntime(params);
+      if (
+        params.forceRefresh === false &&
+        params.credential.expires > Date.now() &&
+        params.credential.access.trim()
+      ) {
+        return params.credential;
+      }
+      const refreshed = await providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin({
+        provider: params.credential.provider,
+        config: params.cfg,
+        context: params.credential,
+      });
+      if (!refreshed?.access) {
+        return null;
+      }
+      const oauthCredential = refreshed as typeof params.credential;
+      params.store.profiles[params.profileId] = oauthCredential;
+      return oauthCredential;
+    },
     resolveApiKeyForProfile: async (
       params: Parameters<typeof actual.resolveApiKeyForProfile>[0],
     ) => {
@@ -131,7 +155,7 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
         if (refreshed?.access) {
           oauthCredential = refreshed as typeof oauthCredential;
           params.store.profiles[params.profileId] = oauthCredential;
-          if (!params.useRuntimeOAuthStore && (params.agentDir || process.env.OPENCLAW_STATE_DIR)) {
+          if (params.agentDir || process.env.OPENCLAW_STATE_DIR) {
             actual.saveAuthProfileStore(params.store, params.agentDir);
           }
         }
@@ -179,6 +203,7 @@ vi.mock("./desktop-app-paths.js", async (importOriginal) => {
 afterEach(() => {
   vi.unstubAllEnvs();
   clearRuntimeAuthProfileStoreSnapshots();
+  agentRuntimeMocks.refreshOAuthCredentialForRuntime.mockClear();
   agentRuntimeMocks.resolveApiKeyForProfile.mockClear();
   oauthMocks.refreshOpenAICodexToken.mockReset();
   providerRuntimeMocks.formatProviderAuthProfileApiKeyWithPlugin.mockReset();
@@ -1971,15 +1996,14 @@ describe("bridgeCodexAppServerStartOptions", () => {
         chatgptPlanType: null,
       });
 
-      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledWith(
+      expect(agentRuntimeMocks.refreshOAuthCredentialForRuntime).toHaveBeenCalledWith(
         expect.objectContaining({
           cfg: config,
           store: authProfileStore,
           profileId: "openai:work",
-          forceRefresh: true,
-          useRuntimeOAuthStore: true,
         }),
       );
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).not.toHaveBeenCalled();
       expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
         expect.objectContaining({
           config,
@@ -2031,7 +2055,6 @@ describe("bridgeCodexAppServerStartOptions", () => {
           cfg: config,
           profileId: "openai:work",
           forceRefresh: true,
-          useRuntimeOAuthStore: false,
         }),
       );
       expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
@@ -2473,14 +2496,13 @@ describe("bridgeCodexAppServerStartOptions", () => {
 
       await expectPathMissing(authProfileStorePath);
       expect(oauthMocks.refreshOpenAICodexToken).toHaveBeenCalledWith("cli-refresh-token");
-      expect(agentRuntimeMocks.resolveApiKeyForProfile).toHaveBeenCalledWith(
+      expect(agentRuntimeMocks.refreshOAuthCredentialForRuntime).toHaveBeenCalledWith(
         expect.objectContaining({
           cfg: config,
           profileId: "openai:default",
-          forceRefresh: true,
-          useRuntimeOAuthStore: true,
         }),
       );
+      expect(agentRuntimeMocks.resolveApiKeyForProfile).not.toHaveBeenCalled();
       expect(providerRuntimeMocks.refreshProviderOAuthCredentialWithPlugin).toHaveBeenCalledWith(
         expect.objectContaining({
           config,

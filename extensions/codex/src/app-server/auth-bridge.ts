@@ -11,6 +11,7 @@ import {
   ensureAuthProfileStore,
   findPersistedAuthProfileCredential,
   loadAuthProfileStoreForSecretsRuntime,
+  refreshOAuthCredentialForRuntime,
   resolveAuthProfileOrder,
   resolveProviderIdForAuth,
   resolveApiKeyForProfile,
@@ -1196,18 +1197,35 @@ async function resolveOAuthCredentialForCodexAppServer(
     isCodexAppServerAuthProvider(persistedCredential.provider)
       ? persistedCredential
       : undefined;
-  const useRuntimeOAuthStore = useScopedCredential || !persistedOAuthCredential;
+  if (useScopedCredential || !persistedOAuthCredential) {
+    const runtimeCredential = store.profiles[profileId];
+    const refreshedRuntimeCredential =
+      runtimeCredential?.type === "oauth"
+        ? await refreshOAuthCredentialForRuntime({
+            store,
+            profileId,
+            credential: runtimeCredential,
+            cfg: params.config,
+            agentDir: ownerAgentDir,
+            forceRefresh: params.forceRefresh,
+          })
+        : undefined;
+    if (!refreshedRuntimeCredential?.access?.trim()) {
+      throw new Error(`Codex app-server auth profile "${profileId}" could not refresh.`);
+    }
+    if (isDeepStrictEqual(params.store.profiles[profileId], credential)) {
+      params.store.profiles[profileId] = refreshedRuntimeCredential;
+    }
+    return refreshedRuntimeCredential;
+  }
   const resolved = await resolveApiKeyForProfile({
     cfg: params.config,
     store,
     profileId,
     agentDir: ownerAgentDir,
     forceRefresh: params.forceRefresh,
-    useRuntimeOAuthStore,
   });
-  const refreshed = useRuntimeOAuthStore
-    ? store.profiles[profileId]
-    : loadAuthProfileStoreForSecretsRuntime(ownerAgentDir).profiles[profileId];
+  const refreshed = loadAuthProfileStoreForSecretsRuntime(ownerAgentDir).profiles[profileId];
   const refreshedOAuthCredential =
     refreshed?.type === "oauth" && isCodexAppServerAuthProvider(refreshed.provider)
       ? refreshed
