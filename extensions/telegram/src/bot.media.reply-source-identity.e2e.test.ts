@@ -3,10 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { setNextSavedMediaPath } from "./bot.media.e2e.test-harness.js";
 import { createBotHandlerWithOptions, mockTelegramPngDownload } from "./bot.media.test-utils.js";
 
-type ReplyPayload = {
-  MediaPaths?: string[];
-};
-
 describe("telegram reply media source identity", () => {
   // Parallel vitest shards can make this suite slower than the standalone run.
   const TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 90_000;
@@ -52,7 +48,11 @@ describe("telegram reply media source identity", () => {
 
         expect(runtimeError).not.toHaveBeenCalled();
         expect(replySpy).toHaveBeenCalledTimes(1);
-        expect((replySpy.mock.calls[0]?.[0] as ReplyPayload).MediaPaths).toEqual([currentPath]);
+        const replyCall = replySpy.mock.calls[0];
+        if (!replyCall) {
+          throw new Error("expected one reply call");
+        }
+        expect(replyCall[0]).toMatchObject({ MediaPaths: [currentPath] });
       } finally {
         fetchSpy.mockRestore();
       }
