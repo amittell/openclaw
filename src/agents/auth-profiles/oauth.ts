@@ -286,7 +286,8 @@ export async function refreshCodexCliOAuthCredentialForRuntime(params: {
     store: params.store,
     profileId: params.profileId,
     credential,
-    agentDir: params.agentDir,
+    // Native Codex is one machine-wide source. Omitting agentDir selects the
+    // one main SQLite owner, not whichever agent requested rotation first.
     cfg: params.cfg,
     forceRefresh: params.forceRefresh,
     externalCliCredential: credential,

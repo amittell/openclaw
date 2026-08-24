@@ -272,7 +272,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     expect(store.runtimePersistedProfileIds).toEqual([profileId]);
   });
 
-  it("hands one promoted rotation to distinct prepared callers before their forced retries", async () => {
+  it("promotes one native rotation for distinct agent owners and prepared callers", async () => {
     const profileId = "openai:default";
     const nativeCredential: OAuthCredential = {
       type: "oauth",
@@ -291,6 +291,13 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     const firstStore = createPreparedStore();
     const secondStore = createPreparedStore();
     expect(secondStore).not.toBe(firstStore);
+    const stateRoot = path.resolve(agentDir, "../../..");
+    const firstAgentDir = path.join(stateRoot, "agents", "worker-a", "agent");
+    const secondAgentDir = path.join(stateRoot, "agents", "worker-b", "agent");
+    await Promise.all([
+      fs.mkdir(firstAgentDir, { recursive: true }),
+      fs.mkdir(secondAgentDir, { recursive: true }),
+    ]);
     readCodexCliCredentialsCachedMock.mockReturnValue({ ...nativeCredential });
     let finishFirst: ((credential: OAuthCredential) => void) | undefined;
     refreshProviderOAuthCredentialWithPluginMock.mockImplementationOnce(
@@ -303,7 +310,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     const first = refreshCodexCliOAuthCredentialForRuntime({
       store: firstStore,
       profileId,
-      agentDir,
+      agentDir: firstAgentDir,
       forceRefresh: true,
     });
     await vi.waitFor(() =>
@@ -312,7 +319,7 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     const second = refreshCodexCliOAuthCredentialForRuntime({
       store: secondStore,
       profileId,
-      agentDir,
+      agentDir: secondAgentDir,
       forceRefresh: true,
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -331,6 +338,8 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     expectPersistedOpenAICodexProfile((await readPersistedStore(agentDir)).profiles[profileId], {
       refresh: "first-rotated-refresh",
     });
+    expect((await readPersistedStore(firstAgentDir)).profiles[profileId]).toBeUndefined();
+    expect((await readPersistedStore(secondAgentDir)).profiles[profileId]).toBeUndefined();
     expect(firstStore.runtimePersistedProfileIds).toEqual([profileId]);
     expect(secondStore.runtimePersistedProfileIds).toEqual([profileId]);
   });
