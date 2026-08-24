@@ -1,6 +1,8 @@
 // Health-state tests cover probe coalescing, sensitive snapshots, and broadcast version behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ConfigReloadObservation } from "../config-reload-observed.js";
 import type { HealthSummary } from "../health/types.js";
 
 /**
@@ -18,8 +20,10 @@ const {
 } = vi.hoisted(() => ({
   buildRuntimeConfigHealthMock: vi.fn(),
   collectGatewayHealthSnapshotMock: vi.fn(),
-  getConfigReloadObservationMock: vi.fn(() => ({ generation: 0, sourceConfig: null })),
-  getRuntimeConfigSourceSnapshotMock: vi.fn(() => null),
+  getConfigReloadObservationMock: vi.fn(
+    (): ConfigReloadObservation => ({ generation: 0, sourceConfig: null }),
+  ),
+  getRuntimeConfigSourceSnapshotMock: vi.fn((): OpenClawConfig | null => null),
   getRuntimeConfigSnapshotMetadataMock: vi.fn(() => ({ revision: 0 })),
   getRuntimeConfigMock: vi.fn(),
   getUpdateAvailableMock: vi.fn(),
