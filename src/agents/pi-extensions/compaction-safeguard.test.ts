@@ -37,6 +37,7 @@ const {
   resolveQualityGuardMaxRetries,
   extractOpaqueIdentifiers,
   auditSummaryQuality,
+  buildQualityRetryDefectList,
   computeAdaptiveChunkRatio,
   isOversizedForSummary,
   readWorkspaceContextForSummary,
@@ -1247,8 +1248,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(result.cancel).not.toBe(true);
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
     const secondCall = mockSummarizeInStages.mock.calls[1]?.[0];
-    expect(secondCall?.customInstructions).toContain("Quality check feedback");
-    expect(secondCall?.customInstructions).toContain("missing_section:## Decisions");
+    expect(secondCall?.customInstructions).toContain("fix every line");
+    expect(secondCall?.customInstructions).toContain("missing_section:\n## Decisions");
   });
 
   it("does not treat preserved latest asks as satisfying overlap checks", async () => {
@@ -1446,6 +1447,207 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).toContain("## Pending user asks");
     expect(summary).toContain("## Exact identifiers");
     expect(summary).toContain("legacy summary without headings");
+  });
+
+  it("returns the first finalized retry that passes the source audit", async () => {
+    mockSummarizeInStages.mockReset();
+    const latestAsk = "report the deployment status";
+    const identifier = "/tmp/compaction-retry.log";
+    const validRetry = [
+      "## Decisions",
+      "Keep current flow.",
+      "## Open TODOs",
+      "None.",
+      "## Constraints/Rules",
+      "Preserve context.",
+      "## Pending user asks",
+      latestAsk,
+      "## Exact identifiers",
+      identifier,
+    ].join("\n");
+    mockSummarizeInStages
+      .mockResolvedValueOnce("invalid first attempt")
+      .mockResolvedValueOnce(validRetry);
+
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model,
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: `${latestAsk} ${identifier}`, timestamp: 1 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        previousSummary: undefined,
+        isSplitTurn: false,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "test-key",
+    });
+    const scenario = result as { cancel?: boolean; compaction?: { summary?: string } };
+
+    expect(scenario.cancel).not.toBe(true);
+    expect(scenario.compaction?.summary).toBe(validRetry);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    const retry = mockSummarizeInStages.mock.calls[1]?.[0];
+    expect(retry?.customInstructions).toContain("fix every line");
+  });
+
+  it("degrades to the previous-summary fallback on final quality failure instead of cancelling", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue("invalid summary missing headings");
+
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model,
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "preserve the pending deployment status", timestamp: 1 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        previousSummary: "legacy summary without headings",
+        isSplitTurn: false,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "test-key",
+    });
+    const scenario = result as { cancel?: boolean; compaction?: { summary?: string } };
+
+    // Final quality attempt failed: the session must still compact via the
+    // re-distilled previous-summary fallback, not cancel.
+    expect(scenario.cancel).not.toBe(true);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(scenario.compaction?.summary).toContain("legacy summary without headings");
+    expect(scenario.compaction?.summary).toContain("## Decisions");
+    expect(scenario.compaction?.summary).toContain("## Exact identifiers");
+  });
+
+  it("degrades to the previous-summary fallback when nothing is regenerable and the audit fails", async () => {
+    mockSummarizeInStages.mockReset();
+
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model,
+      recentTurnsPreserve: 12,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "latest user ask", timestamp: 1 },
+          {
+            role: "assistant",
+            content: "latest assistant reply",
+            timestamp: 2,
+          } as unknown as AgentMessage,
+        ],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        previousSummary: "legacy all-preserved summary",
+        isSplitTurn: false,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "test-key",
+    });
+    const scenario = result as { cancel?: boolean; compaction?: { summary?: string } };
+
+    expect(scenario.cancel).not.toBe(true);
+    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(scenario.compaction?.summary).toContain("legacy all-preserved summary");
+    expect(scenario.compaction?.summary).toContain("## Decisions");
+    expect(scenario.compaction?.summary).toContain("## Exact identifiers");
+  });
+
+  it("sends the full defect list to corrective retries without untrusted-wrapper truncation", () => {
+    // 12 long path/hex identifiers across repeated missing_identifiers reasons:
+    // the joined defect text exceeds the 4000-char untrusted-instruction cap,
+    // so any truncation would drop tail identifiers from the corrective prompt.
+    const sections = [
+      "## Decisions",
+      "## Open TODOs",
+      "## Constraints/Rules",
+      "## Pending user asks",
+      "## Exact identifiers",
+    ];
+    const pathIdentifier =
+      "/var/lib/agents/run-0/artifacts/" + "abcdef0123456789".repeat(4) + ".data";
+    const identifiers = Array.from({ length: 12 }, (_, index) =>
+      index % 2 === 0
+        ? pathIdentifier
+        : `DEADBEEF0123456789ABCDEF${index.toString(16).toUpperCase().padStart(12, "0")}`.padEnd(
+            48,
+            "A",
+          ),
+    );
+    const reasons = [
+      ...sections.map((section) => `missing_section:${section}`),
+      "latest_user_ask_not_reflected:detail-ask",
+      ...Array.from(
+        { length: 50 },
+        (_, index) => `missing_identifiers:${identifiers[index % identifiers.length]}`,
+      ),
+    ];
+    expect(reasons.join(", ").length).toBeGreaterThan(4000);
+    const defectList = buildQualityRetryDefectList(reasons);
+    for (const section of sections) {
+      expect(defectList).toContain(`missing_section:\n${section}`);
+    }
+    expect(defectList).toContain("latest_user_ask_not_reflected:\ndetail-ask");
+    for (const identifier of identifiers) {
+      expect(defectList).toContain(identifier);
+    }
+    expect(defectList).not.toContain("[truncated");
+  });
+
+  it("keeps operator-provided custom instruction text in the untrusted wrapper", () => {
+    const longOperatorText = "keep the caveat ".repeat(1000);
+    const instructions = buildCompactionStructureInstructions(longOperatorText);
+    expect(instructions).toContain("<untrusted-text>");
+    expect(instructions).not.toContain("&lt;untrusted-text&gt;");
+    expect(instructions).not.toContain(longOperatorText);
+    expect(instructions.length).toBeLessThan(longOperatorText.length + 200);
   });
 });
 

@@ -515,6 +515,26 @@ function appendSummarySection(summary: string, section: string): string {
   return `${summary}${section}`;
 }
 
+/**
+ * Builds the corrective defect list for quality retries as a plain structured
+ * list: one line per reason, with the detail part (missing sections and
+ * identifiers already passed to the same prompt as summarization input) on its
+ * own line. It intentionally does not cap or escape: the 4000-char untrusted
+ * wrapper truncates identifier-dense defect lists mid-string, leaving the
+ * model with an incomplete defect list it cannot fix.
+ */
+function buildQualityRetryDefectList(reasons: string[]): string {
+  return reasons
+    .map((reason) => {
+      const index = reason.indexOf(":");
+      if (index < 0) {
+        return reason;
+      }
+      return `${reason.slice(0, index)}:\n${reason.slice(index + 1)}`;
+    })
+    .join("\n");
+}
+
 function sanitizeExtractedIdentifier(value: string): string {
   return value
     .trim()
@@ -934,21 +954,39 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           identifierPolicy,
         });
         summary = summaryWithPreservedTurns;
-        if (quality.ok || attempt >= totalAttempts - 1) {
+        if (quality.ok) {
           break;
         }
-        const reasons = quality.reasons.join(", ");
+        // No retry left (or nothing regenerable): instead of cancelling (which
+        // leaves a context-full session permanently uncompactionable), fall
+        // back to the structured previous-summary so compaction proceeds in a
+        // degraded state.
+        if (attempt >= totalAttempts - 1 || !canRegenerate) {
+          const reasonCodes = [
+            ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
+          ];
+          log.warn(
+            "Compaction safeguard: final quality attempt failed; using degraded " +
+              "fallback summary; reasonCode=quality_guard_degraded_fallback " +
+              `reasonCodes=${reasonCodes.join(",")} reasonCount=${quality.reasons.length}`,
+          );
+          summary = appendSummarySection(
+            buildStructuredFallbackSummary(effectivePreviousSummary, summarizationInstructions),
+            preservedTurnsSection,
+          );
+          break;
+        }
+        const defectList = buildQualityRetryDefectList(quality.reasons);
         const qualityFeedbackInstruction =
           identifierPolicy === "strict"
             ? "Fix all issues and include every required section with exact identifiers preserved."
             : "Fix all issues and include every required section while following the configured identifier policy.";
-        const qualityFeedbackReasons = wrapUntrustedInstructionBlock(
-          "Quality check feedback",
-          `Previous summary failed quality checks (${reasons}).`,
-        );
-        currentInstructions = qualityFeedbackReasons
-          ? `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n\n${qualityFeedbackReasons}`
-          : `${structuredInstructions}\n\n${qualityFeedbackInstruction}`;
+        // The defect list is a plain structured list of session-derived
+        // sections/identifiers already present in the summarization input. It is
+        // intentionally NOT routed through wrapUntrustedInstructionBlock: that
+        // wrapper hard-caps text at 4000 chars and truncates identifier-dense
+        // defect lists mid-string, so the retry receives an incomplete list.
+        currentInstructions = `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n\nPrevious summary failed the quality audit with these defects (fix every line):\n${defectList}`;
       }
 
       summary = appendSummarySection(summary, toolFailureSection);
@@ -991,6 +1029,7 @@ export const __testing = {
   resolveQualityGuardMaxRetries,
   extractOpaqueIdentifiers,
   auditSummaryQuality,
+  buildQualityRetryDefectList,
   computeAdaptiveChunkRatio,
   isOversizedForSummary,
   readWorkspaceContextForSummary,
