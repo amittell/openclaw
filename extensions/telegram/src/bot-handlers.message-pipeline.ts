@@ -37,6 +37,7 @@ import {
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
   getTelegramSpooledReplayLifecycle,
+  hasTelegramVisibleReplyDelivered,
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
   type TelegramMessageProcessingResult,
@@ -443,7 +444,14 @@ export function createTelegramMessagePipeline({
       }
       const finalization = (async () => {
         const finalized = result;
-        if (result.kind === "completed") {
+        // A retryable failure that ALREADY delivered a reply is not safely
+        // retryable: releasing the guard lets the spool replay a turn that has
+        // spoken, and the user sees the answer twice. Commit the guard instead so
+        // the replay is duplicate-suppressed. Only the guard is committed - the
+        // spool row still follows its own retry/dead-letter policy.
+        const repliedBeforeFailing =
+          result.kind === "failed-retryable" && hasTelegramVisibleReplyDelivered();
+        if (result.kind === "completed" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
           const releaseSettlementHolds = beginSpooledReplaySettlementHolds(

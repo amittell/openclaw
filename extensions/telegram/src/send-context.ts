@@ -12,6 +12,7 @@ import { getOrCreateAccountThrottler } from "./account-throttler.js";
 import { type ResolvedTelegramAccount, resolveTelegramAccount } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
+import { markTelegramVisibleReplyDelivered } from "./bot-processing-outcome.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
 import { resolveTelegramTransport, type TelegramTransport } from "./fetch.js";
 import { rethrowTelegramSendError, shouldRetryTelegramSendError } from "./network-errors.js";
@@ -58,6 +59,10 @@ type TelegramOutboundSuccessLogParams = {
 };
 
 export function logTelegramOutboundSendOk(params: TelegramOutboundSuccessLogParams): void {
+  // Single chokepoint that knows a send actually landed, so it is where the
+  // "this attempt already spoke to the user" fact is recorded. The ingress
+  // settlement reads it to decide whether a retryable failure may replay.
+  markTelegramVisibleReplyDelivered();
   const parts = [
     "telegram outbound send ok",
     `accountId=${params.accountId}`,
