@@ -67,14 +67,33 @@ const TURN_PREFIX_INSTRUCTIONS =
   " early progress, and any details needed to understand the retained suffix.";
 const MAX_TOOL_FAILURES = 8;
 const MAX_TOOL_FAILURE_CHARS = 240;
-const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
+const SUMMARY_FLOOR_CHARS = 16_000;
+// 5% of the context window in tokens at the 4 chars/token estimate
+// (= 16,000 chars at the 200k default window, anchoring today's behavior).
+const SUMMARY_SHARE_OF_WINDOW = 0.0125;
+const SUMMARY_HARD_CAP_CHARS = 128_000;
+// Kept as the small-window floor so existing caps behave exactly as before
+// when the context window resolves to the 200k default (anchor property).
+const MAX_COMPACTION_SUMMARY_CHARS = SUMMARY_FLOOR_CHARS;
 const MAX_FILE_OPS_SECTION_CHARS = 2_000;
 const MAX_FILE_OPS_LIST_CHARS = 900;
 const SUMMARY_TRUNCATED_MARKER = "\n\n[Compaction summary truncated to fit budget]";
 const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to fit budget]\n\n";
 // Split-turn context supplements the generated summary and must not claim its
 // guaranteed half of the final artifact before common finalization runs.
-const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2);
+const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(SUMMARY_FLOOR_CHARS / 2);
+
+/**
+ * Scale the compaction summary budget with the session's context window.
+ * Fixed 16k chars truncates large sessions to a sliver of their history, so
+ * the quality audit (run on the truncated artifact) fails missing sections
+ * and corrective retries cannot recover. The formula anchors to today's
+ * behavior at the 200k default window and scales linearly above it.
+ */
+function resolveCompactionSummaryBudgetChars(contextWindowTokens: number): number {
+  const scaled = Math.floor(contextWindowTokens * SUMMARY_SHARE_OF_WINDOW * 4);
+  return Math.min(Math.max(scaled, SUMMARY_FLOOR_CHARS), SUMMARY_HARD_CAP_CHARS);
+}
 const SPLIT_TURN_TRUNCATED_MARKER = "[Earlier split-turn messages truncated]\n";
 const PRESERVED_TURNS_TRUNCATED_MARKER = "[Earlier preserved messages truncated]\n";
 const DEFAULT_RECENT_TURNS_PRESERVE = 3;
@@ -940,7 +959,10 @@ function formatBoundedContextSection(params: {
   };
 }
 
-function buildPreservedTurnsSection(messages: AgentMessage[]): ContextSection {
+function buildPreservedTurnsSection(
+  messages: AgentMessage[],
+  maxChars = MAX_SPLIT_TURN_CONTEXT_CHARS,
+): ContextSection {
   return formatBoundedContextSection({
     messages,
     heading: "\n\n## Recent turns preserved verbatim",
@@ -957,31 +979,40 @@ function formatPreservedTurnsSection(messages: AgentMessage[]): string {
 function buildSplitTurnContextSection(
   messages: AgentMessage[],
   onTruncated?: () => void,
+  maxChars = MAX_SPLIT_TURN_CONTEXT_CHARS,
 ): ContextSection {
   return formatBoundedContextSection({
     messages,
     heading: "**Turn Context (split turn):**\n",
-    maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
+    maxChars,
     truncatedMarker: SPLIT_TURN_TRUNCATED_MARKER,
     truncatedLoss: "split-turn-head",
     onTruncated,
   });
 }
 
-function splitTurnSectionFromString(text: string, onTruncated?: () => void): ContextSection {
+function splitTurnSectionFromString(
+  text: string,
+  onTruncated?: () => void,
+  maxChars = MAX_SPLIT_TURN_CONTEXT_CHARS,
+): ContextSection {
   return formatBoundedContextSection({
     text,
     heading: "**Turn Context (split turn):**\n",
-    maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
+    maxChars,
     truncatedMarker: SPLIT_TURN_TRUNCATED_MARKER,
     truncatedLoss: "split-turn-head",
     onTruncated,
   });
 }
 
-function formatGeneratedSplitTurnSection(summary: string, onTruncated?: () => void): string {
+function formatGeneratedSplitTurnSection(
+  summary: string,
+  onTruncated?: () => void,
+  maxChars = MAX_SPLIT_TURN_CONTEXT_CHARS,
+): string {
   const heading = "**Turn Context (split turn):**\n\n";
-  const summaryBudget = MAX_SPLIT_TURN_CONTEXT_CHARS - heading.length;
+  const summaryBudget = maxChars - heading.length;
   const cappedSummary = capCompactionSummary(summary, summaryBudget);
   if (cappedSummary.length < summary.length) {
     onTruncated?.();
@@ -1146,6 +1177,15 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       identifierInstructions: runtime?.identifierInstructions,
     };
     const identifierPolicy = runtime?.identifierPolicy ?? "strict";
+    // The resolved summary budget (floor 16k, scaled by context window, hard
+    // capped) and the split-turn/preserved section cap (budget / 2) are both
+    // derived from contextWindowTokens; resolve them once so the provider and
+    // LLM paths share the same values. contextWindowTokens is the same value
+    // the LLM path resolves later (runtime override ?? model window).
+    const summaryBudgetChars = resolveCompactionSummaryBudgetChars(
+      runtime?.contextWindowTokens ?? resolveContextWindowTokens(ctx.model ?? runtime?.model),
+    );
+    const splitTurnContextChars = Math.floor(summaryBudgetChars / 2);
     const providerId = runtime?.provider;
     const turnPrefixMessages = baseTurnPrefixMessages;
     const recentTurnsPreserve = resolveRecentTurnsPreserve(runtime?.recentTurnsPreserve);
@@ -1169,7 +1209,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         fileOpsSummary,
         workspaceContext: await workspaceContextPromise,
       });
-      const finalized = budgetCompactionSummary(body, suffix, MAX_COMPACTION_SUMMARY_CHARS);
+      const finalized = budgetCompactionSummary(body, suffix, summaryBudgetChars);
       const losses = new Set(producerLosses);
       for (const section of Object.values(sections)) {
         if (section?.truncatedLoss) {
@@ -1219,11 +1259,18 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               providerResult,
               {
                 splitTurnSection: preparation.isSplitTurn
-                  ? buildSplitTurnContextSection(turnPrefixMessages, () => {
-                      producerLosses.add("split-turn-head");
-                    })
+                  ? buildSplitTurnContextSection(
+                      turnPrefixMessages,
+                      () => {
+                        producerLosses.add("split-turn-head");
+                      },
+                      splitTurnContextChars,
+                    )
                   : undefined,
-                preservedTurnsSection: buildPreservedTurnsSection(preservedMessages),
+                preservedTurnsSection: buildPreservedTurnsSection(
+                  preservedMessages,
+                  splitTurnContextChars,
+                ),
               },
               producerLosses,
             );
@@ -1370,7 +1417,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         recentTurnsPreserve,
       });
       messagesToSummarize = summaryTargetMessages;
-      const preservedTurnsSectionLocal = buildPreservedTurnsSection(preservedRecentMessages);
+      const preservedTurnsSectionLocal = buildPreservedTurnsSection(
+        preservedRecentMessages,
+        splitTurnContextChars,
+      );
       const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 
       // Use adaptive chunk ratio based on message sizes, reserving headroom for
@@ -1416,9 +1466,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               customInstructions: `${TURN_PREFIX_INSTRUCTIONS}\n\nAdditional requirements:\n\n${currentInstructions}`,
               previousSummary: undefined,
             });
-            splitTurnSectionLocal = formatGeneratedSplitTurnSection(prefixSummary, () => {
-              producerLosses.add("split-turn-tail");
-            });
+            splitTurnSectionLocal = formatGeneratedSplitTurnSection(
+              prefixSummary,
+              () => {
+                producerLosses.add("split-turn-tail");
+              },
+              splitTurnContextChars,
+            );
           }
         } catch (attemptError) {
           if (signal?.aborted) {
@@ -1487,9 +1541,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             buildStructuredFallbackSummary(effectivePreviousSummary),
             {
               splitTurnSection: splitTurnSectionLocal
-                ? splitTurnSectionFromString(splitTurnSectionLocal, () => {
-                    fallbackSplitTurnLosses.add("split-turn-head");
-                  })
+                ? splitTurnSectionFromString(
+                    splitTurnSectionLocal,
+                    () => {
+                      fallbackSplitTurnLosses.add("split-turn-head");
+                    },
+                    splitTurnContextChars,
+                  )
                 : undefined,
               preservedTurnsSection: preservedTurnsSectionLocal,
             },
@@ -1563,6 +1621,10 @@ const testing = {
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
   MAX_COMPACTION_SUMMARY_CHARS,
+  resolveCompactionSummaryBudgetChars,
+  SUMMARY_FLOOR_CHARS,
+  SUMMARY_SHARE_OF_WINDOW,
+  SUMMARY_HARD_CAP_CHARS,
   MAX_FILE_OPS_SECTION_CHARS,
   MAX_FILE_OPS_LIST_CHARS,
   SUMMARY_TRUNCATED_MARKER,

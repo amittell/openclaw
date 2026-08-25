@@ -28,6 +28,10 @@ type CompactionSafeguardTestApi = {
   MIN_CHUNK_RATIO: number;
   SAFETY_MARGIN: number;
   MAX_COMPACTION_SUMMARY_CHARS: number;
+  resolveCompactionSummaryBudgetChars: CallableFunction;
+  SUMMARY_FLOOR_CHARS: number;
+  SUMMARY_SHARE_OF_WINDOW: number;
+  SUMMARY_HARD_CAP_CHARS: number;
   MAX_FILE_OPS_SECTION_CHARS: number;
   MAX_FILE_OPS_LIST_CHARS: number;
   SUMMARY_TRUNCATED_MARKER: string;
