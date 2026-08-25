@@ -1455,15 +1455,22 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           const reasonCodes = [
             ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
           ];
+          // Cancelling here strands the session: the transcript never shrinks, so
+          // every later turn fails preflight and the user is stuck with no way out.
+          // A lossy summary beats an uncompactable session, so degrade to the
+          // structured previous-summary. Genuinely unrecoverable paths (LLM throw,
+          // no model, no API key) still cancel above.
           log.warn(
-            "Compaction safeguard: finalized summary failed quality checks; " +
-              `reasonCodes=${reasonCodes.join(",")} reasonCount=${quality.reasons.length}`,
+            "Compaction safeguard: final quality attempt failed; using degraded fallback summary; " +
+              `reasonCode=quality_guard_degraded_fallback reasonCodes=${reasonCodes.join(",")} ` +
+              `reasonCount=${quality.reasons.length}`,
           );
-          setCompactionSafeguardCancelReason(
-            ctx.sessionManager,
-            "Compaction safeguard finalized summary failed quality checks.",
+          const degraded = await finalizeSummaryText(
+            buildStructuredFallbackSummary(effectivePreviousSummary),
+            { preservedTurnsSection: preservedTurnsSectionLocal },
+            producerLosses,
           );
-          return { cancel: true };
+          return compactionResult(degraded.summary);
         }
         const reasons = quality.reasons.join(", ");
         const qualityFeedbackInstruction =

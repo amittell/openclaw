@@ -2047,7 +2047,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(warning).not.toContain(sensitiveSentinel);
   });
 
-  it("rejects a summary whose finalized bytes fail the quality audit", async () => {
+  it("degrades to a fallback summary when finalized bytes fail the quality audit", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";
     const identifier = "/tmp/compaction-final-audit.log";
@@ -2093,12 +2093,13 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    expect(result).toEqual({ cancel: true });
+    // Both attempts fail the audit, but compaction degrades to a structured
+    // fallback rather than cancelling: cancelling leaves the session permanently
+    // uncompactable, so every later turn dies at preflight with no way out.
+    expect(result).not.toEqual({ cancel: true });
+    expect(result.compaction?.summary).toBeTruthy();
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
-    const reason = consumeCompactionSafeguardCancelReason(sessionManager);
-    expect(reason).toContain("finalized summary failed quality checks");
-    expect(reason).not.toContain(identifier);
-    expect(reason).not.toContain(latestAsk);
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
   });
 
   it("returns the first finalized retry that passes the source audit", async () => {
@@ -2214,7 +2215,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
   });
 
-  it("rejects all-preserved fallback output that truncates source facts", async () => {
+  it("degrades all-preserved fallback output that truncates source facts", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "report deployment status";
     const identifier = "/tmp/all-preserved-truncated.log";
@@ -2234,7 +2235,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    expect(result).toEqual({ cancel: true });
+    // Nothing is regenerable here, so this is the terminal branch. It degrades to a
+    // structured fallback instead of cancelling; see the sibling test above.
+    expect(result).not.toEqual({ cancel: true });
+    expect(result.compaction?.summary).toBeTruthy();
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
     expect(mockAuditSummaryQuality).toHaveBeenCalledTimes(1);
     const auditInput = requireRecord(mockCallArg(mockAuditSummaryQuality));
@@ -2247,10 +2251,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
       ok: false,
       reasons: [`missing_identifiers:${identifier}`, "latest_user_ask_not_reflected"],
     });
-    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBe(
-      "Compaction safeguard finalized summary failed quality checks.",
-    );
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
     const terminalWarnings = compactionLogger.warn.mock.calls.flat().join("\n");
+    expect(terminalWarnings).toContain("quality_guard_degraded_fallback");
     expect(terminalWarnings).toContain(
       "reasonCodes=missing_identifiers,latest_user_ask_not_reflected",
     );
