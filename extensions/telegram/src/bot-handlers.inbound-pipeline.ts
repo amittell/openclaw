@@ -3,6 +3,7 @@ import type { Message } from "grammy/types";
 import type { TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
+import { evaluateTelegramBotPairLoopGuard } from "./bot-handlers.bot-pair-loop.js";
 import type { TelegramHandlerAuthorization } from "./bot-handlers.inbound-authorization.js";
 import { createTelegramInboundProcessing } from "./bot-handlers.inbound-processing.js";
 import type { TelegramInboundProcessing } from "./bot-handlers.inbound-processing.js";
@@ -29,7 +30,7 @@ import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedu
 
 type TelegramMessageHandlerParams = Pick<
   RegisterTelegramHandlerParams,
-  "accountId" | "bot" | "shouldSkipUpdate"
+  "accountId" | "bot" | "shouldSkipUpdate" | "telegramDeps"
 > & {
   opts: Pick<RegisterTelegramHandlerParams["opts"], "botInfo">;
   runtime: Pick<RegisterTelegramHandlerParams["runtime"], "error">;
@@ -58,7 +59,7 @@ interface TelegramInboundHandlers {
 }
 
 function createTelegramInboundHandlers(
-  { accountId, bot, opts, runtime, shouldSkipUpdate }: TelegramMessageHandlerParams,
+  { accountId, bot, opts, runtime, shouldSkipUpdate, telegramDeps }: TelegramMessageHandlerParams,
   messageRuntime: TelegramMessageHandlerRuntime,
   authorizationRuntime: Pick<TelegramHandlerAuthorization, "authorizeInboundMessage">,
   inboundRuntime: Pick<TelegramInboundProcessing, "processInboundMessage">,
@@ -303,6 +304,25 @@ function createTelegramInboundHandlers(
     if (normalizedMsg.from?.id != null && normalizedMsg.from.id === botUserId) {
       return { kind: "ignored" };
     }
+    const botPairGuard = evaluateTelegramBotPairLoopGuard({
+      cfg: telegramDeps.getRuntimeConfig(),
+      accountId,
+      botUserId,
+      msg: normalizedMsg,
+      conversationId: String(normalizedMsg.chat.id),
+      isChannelPost: false,
+      getRuntimeConfig: () => telegramDeps.getRuntimeConfig(),
+    });
+    if (botPairGuard.action === "dropped") {
+      return { kind: "ignored" };
+    }
+    if (botPairGuard.action === "suppressed") {
+      // The pair is in loop cooldown: record against the shared reply-chain
+      // store so the message still lands in context, but skip pipeline entry
+      // (no dispatch, no dedupe claims, no buffer).
+      await recordMessageForReplyChain(normalizedMsg, undefined, botUserId);
+      return { kind: "ignored" };
+    }
     return await handleInboundMessageLike({
       ctxForDedupe: ctx,
       ctx: buildSyntheticContext(ctx, normalizedMsg),
@@ -347,6 +367,27 @@ function createTelegramInboundHandlers(
 
     const chatId = post.chat.id;
     const syntheticMsg = normalizeChannelPostMessage(post);
+    const botUserId = resolveBotUserId(ctx);
+
+    const botPairGuard = evaluateTelegramBotPairLoopGuard({
+      cfg: telegramDeps.getRuntimeConfig(),
+      accountId,
+      botUserId,
+      msg: syntheticMsg,
+      conversationId: String(chatId),
+      isChannelPost: true,
+      getRuntimeConfig: () => telegramDeps.getRuntimeConfig(),
+    });
+    if (botPairGuard.action === "dropped") {
+      return { kind: "ignored" };
+    }
+    if (botPairGuard.action === "suppressed") {
+      // The pair is in loop cooldown: record against the shared reply-chain
+      // store so the message still lands in context, but skip pipeline entry
+      // (no dispatch, no dedupe claims, no buffer).
+      await recordMessageForReplyChain(syntheticMsg, undefined, botUserId);
+      return { kind: "ignored" };
+    }
 
     return await handleInboundMessageLike({
       ctxForDedupe: ctx,
@@ -356,6 +397,7 @@ function createTelegramInboundHandlers(
       chatId,
       isGroup: true,
       isForum: false,
+
       senderId:
         post.sender_chat?.id != null
           ? String(post.sender_chat.id)

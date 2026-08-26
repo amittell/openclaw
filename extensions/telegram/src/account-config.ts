@@ -5,6 +5,7 @@ import {
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/account-core";
 import type { TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
+import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-runtime";
 
 function normalizeAllowFromEntry(value: string | number): string {
   return String(value).trim();
@@ -91,6 +92,21 @@ export function mergeTelegramAccountConfig(
     Array.isArray(account.capabilities) && account.capabilities.length === 0
       ? base.capabilities
       : (account.capabilities ?? base.capabilities);
+  // botLoopProtection layers key by key so an account can override a single
+  // budget knob without inheriting the channel-level block verbatim.
+  const baseLoopProtection = base.botLoopProtection;
+  const accountLoopProtection = account.botLoopProtection;
+  const botLoopProtection =
+    baseLoopProtection || accountLoopProtection
+      ? mergePairLoopGuardConfig(baseLoopProtection, accountLoopProtection)
+      : undefined;
 
-  return { ...base, ...account, allowFrom, capabilities, groups };
+  return {
+    ...base,
+    ...account,
+    allowFrom,
+    capabilities,
+    groups,
+    ...(botLoopProtection !== undefined ? { botLoopProtection } : {}),
+  };
 }
