@@ -51,7 +51,6 @@ import {
   buildCompactionStructureInstructions,
   buildStructuredFallbackSummary,
   extractOpaqueIdentifiers,
-  wrapUntrustedInstructionBlock,
   wrapUntrustedQualityFeedbackBlock,
 } from "./compaction-safeguard-quality.js";
 import {
