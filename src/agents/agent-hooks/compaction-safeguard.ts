@@ -52,6 +52,7 @@ import {
   buildStructuredFallbackSummary,
   extractOpaqueIdentifiers,
   wrapUntrustedInstructionBlock,
+  wrapUntrustedQualityFeedbackBlock,
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
@@ -67,14 +68,35 @@ const TURN_PREFIX_INSTRUCTIONS =
   " early progress, and any details needed to understand the retained suffix.";
 const MAX_TOOL_FAILURES = 8;
 const MAX_TOOL_FAILURE_CHARS = 240;
-const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
+// #723: the compaction summary budget used to be a FIXED 16,000-char ceiling. A
+// ~300k-token session serializes to ~1.1M+ chars, so even a perfect summary was
+// truncated to ~1.5% of the source before finalization; the required tail sections
+// were cut off, auditSummaryQuality failed on the truncated artifact (missing
+// sections), and retries could never repair truncation — compaction was
+// structurally guaranteed to stall at that size.
+//
+// 16,000 is now the FLOOR (legacy behavior), and the budget scales with the
+// model's output budget. Rationale (exact formula, see resolveCompactionSummaryBudgetChars):
+// the summarization model can only emit up to (maxTokens - SUMMARIZATION_OVERHEAD_TOKENS)
+// tokens; any final-artifact budget above what the model can output in UTF-16 code
+// units (max output tokens x SUMMARIZER_CHARS_PER_TOKEN, ~2 chars/token, the lower
+// bound for Latin text) is dead weight that the audit cannot satisfy, and below the
+// floor the legacy small-session behavior is unchanged. Capping at a multiple of the
+// output budget (SUMMARIZER_OUTPUT_BUDGET_RATIO x max output tokens) also keeps the
+// summary re-injectable into the next conversation turn: it never exceeds a small
+// fraction of the context window, so the boundary entry does not itself trip
+// context-length-exceeded on the following preflight.
+const MIN_COMPACTION_SUMMARY_CHARS = 16_000;
+const SUMMARIZER_CHARS_PER_TOKEN = 2;
+const SUMMARIZER_OUTPUT_BUDGET_RATIO = 2;
 const MAX_FILE_OPS_SECTION_CHARS = 2_000;
 const MAX_FILE_OPS_LIST_CHARS = 900;
 const SUMMARY_TRUNCATED_MARKER = "\n\n[Compaction summary truncated to fit budget]";
 const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to fit budget]\n\n";
 // Split-turn context supplements the generated summary and must not claim its
-// guaranteed half of the final artifact before common finalization runs.
-const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2);
+// guaranteed half of the final artifact before common finalization runs. Budgets
+// are resolved per compaction from the model's output budget (#723);
+// MIN_COMPACTION_SUMMARY_CHARS is the floor those resolutions never go below.
 const SPLIT_TURN_TRUNCATED_MARKER = "[Earlier split-turn messages truncated]\n";
 const PRESERVED_TURNS_TRUNCATED_MARKER = "[Earlier preserved messages truncated]\n";
 const DEFAULT_RECENT_TURNS_PRESERVE = 3;
@@ -610,7 +632,7 @@ function formatFileOperations(readFiles: string[], modifiedFiles: string[]): str
     : "";
 }
 
-function capCompactionSummary(summary: string, maxChars = MAX_COMPACTION_SUMMARY_CHARS): string {
+function capCompactionSummary(summary: string, maxChars = MIN_COMPACTION_SUMMARY_CHARS): string {
   if (maxChars <= 0 || summary.length <= maxChars) {
     return summary;
   }
@@ -626,7 +648,7 @@ function capCompactionSummary(summary: string, maxChars = MAX_COMPACTION_SUMMARY
 function capCompactionSummaryPreservingSuffix(
   summaryBody: string,
   suffix: string,
-  maxChars = MAX_COMPACTION_SUMMARY_CHARS,
+  maxChars = MIN_COMPACTION_SUMMARY_CHARS,
 ): string {
   return budgetCompactionSummary(summaryBody, suffix, maxChars).summary;
 }
@@ -714,6 +736,42 @@ function resolveSummaryReserveTokens(
     return requested;
   }
   return Math.max(1, Math.min(requested, Math.floor(modelMaxTokens)));
+}
+
+/**
+ * #723: resolve the compaction summary finalization budget for one compaction.
+ *
+ * Formula:
+ *   maxOutputTokens = max(0, model.maxTokens - SUMMARIZATION_OVERHEAD_TOKENS)   (0 when unknown)
+ *   ceiling         = MIN_COMPACTION_SUMMARY_CHARS + maxOutputTokens
+ *                     * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN
+ *   budget          = clamp(serializedChars, MIN_COMPACTION_SUMMARY_CHARS, ceiling)
+ *                     (floor 16,000; serializedChars is the summarizable session
+ *                     text that the final artifact must stand in for)
+ *
+ * - Small sessions: budget stays at the 16k floor — identical behavior to the
+ *   legacy fixed MAX_COMPACTION_SUMMARY_CHARS.
+ * - Large sessions (~1M+ chars serialized): budget scales up to a multiple of
+ *   what the summarization model can actually emit, so the required tail
+ *   sections survive finalization instead of being truncated and failing
+ *   auditSummaryQuality (missing sections) on every retry.
+ */
+function resolveCompactionSummaryBudgetChars(params: {
+  model: NonNullable<Parameters<typeof summarizeInStages>[0]["model"]>;
+  serializedChars: number;
+}): number {
+  const maxOutputTokens = Math.max(
+    0,
+    Math.floor((params.model.maxTokens ?? 0) - SUMMARIZATION_OVERHEAD_TOKENS),
+  );
+  const ceiling =
+    MIN_COMPACTION_SUMMARY_CHARS +
+    maxOutputTokens * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN;
+  const requested =
+    Number.isFinite(params.serializedChars) && params.serializedChars > 0
+      ? Math.floor(params.serializedChars)
+      : MIN_COMPACTION_SUMMARY_CHARS;
+  return Math.min(Math.max(requested, MIN_COMPACTION_SUMMARY_CHARS), ceiling);
 }
 
 function extractMessageText(message: AgentMessage): string {
@@ -937,37 +995,42 @@ function formatBoundedContextSection(params: {
   };
 }
 
-function buildPreservedTurnsSection(messages: AgentMessage[]): ContextSection {
+function buildPreservedTurnsSection(messages: AgentMessage[], maxChars: number): ContextSection {
   return formatBoundedContextSection({
     messages,
     heading: "\n\n## Recent turns preserved verbatim",
-    maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
+    maxChars,
     truncatedMarker: PRESERVED_TURNS_TRUNCATED_MARKER,
     truncatedLoss: "preserved-turn-head",
   });
 }
 
-function formatPreservedTurnsSection(messages: AgentMessage[]): string {
-  return buildPreservedTurnsSection(messages).text;
+function formatPreservedTurnsSection(messages: AgentMessage[], maxChars: number): string {
+  return buildPreservedTurnsSection(messages, maxChars).text;
 }
 
 function buildSplitTurnContextSection(
   messages: AgentMessage[],
+  maxChars: number,
   onTruncated?: () => void,
 ): ContextSection {
   return formatBoundedContextSection({
     messages,
     heading: "**Turn Context (split turn):**\n",
-    maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
+    maxChars,
     truncatedMarker: SPLIT_TURN_TRUNCATED_MARKER,
     truncatedLoss: "split-turn-head",
     onTruncated,
   });
 }
 
-function formatGeneratedSplitTurnSection(summary: string, onTruncated?: () => void): string {
+function formatGeneratedSplitTurnSection(
+  summary: string,
+  maxChars: number,
+  onTruncated?: () => void,
+): string {
   const heading = "**Turn Context (split turn):**\n\n";
-  const summaryBudget = MAX_SPLIT_TURN_CONTEXT_CHARS - heading.length;
+  const summaryBudget = maxChars - heading.length;
   const cappedSummary = capCompactionSummary(summary, summaryBudget);
   if (cappedSummary.length < summary.length) {
     onTruncated?.();
@@ -1140,6 +1203,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       summarizationInstructions,
     );
     let workspaceContextPromise: Promise<string> | undefined;
+    let summaryBudgetChars = MIN_COMPACTION_SUMMARY_CHARS;
     const finalizeSummaryText = async (
       body: string,
       sections: { splitTurnSection?: ContextSection; preservedTurnsSection?: ContextSection },
@@ -1155,7 +1219,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         fileOpsSummary,
         workspaceContext: await workspaceContextPromise,
       });
-      const finalized = budgetCompactionSummary(body, suffix, MAX_COMPACTION_SUMMARY_CHARS);
+      const finalized = budgetCompactionSummary(body, suffix, summaryBudgetChars);
       const losses = new Set(producerLosses);
       for (const section of Object.values(sections)) {
         if (section?.truncatedLoss) {
@@ -1200,16 +1264,27 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               messages: baseMessagesToSummarize,
               recentTurnsPreserve,
             });
+            // Provider path has no summarization model (the provider produces the body),
+            // so the budget stays at the legacy 16k floor — the output-budget ceiling
+            // only applies to the built-in LLM path (#723).
+            summaryBudgetChars = MIN_COMPACTION_SUMMARY_CHARS;
             const producerLosses = new Set<CompactionLoss>();
             const finalized = await finalizeSummaryText(
               providerResult,
               {
                 splitTurnSection: preparation.isSplitTurn
-                  ? buildSplitTurnContextSection(turnPrefixMessages, () => {
-                      producerLosses.add("split-turn-head");
-                    })
+                  ? buildSplitTurnContextSection(
+                      turnPrefixMessages,
+                      Math.floor(summaryBudgetChars / 2),
+                      () => {
+                        producerLosses.add("split-turn-head");
+                      },
+                    )
                   : undefined,
-                preservedTurnsSection: buildPreservedTurnsSection(preservedMessages),
+                preservedTurnsSection: buildPreservedTurnsSection(
+                  preservedMessages,
+                  Math.floor(summaryBudgetChars / 2),
+                ),
               },
               producerLosses,
             );
@@ -1356,7 +1431,21 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         recentTurnsPreserve,
       });
       messagesToSummarize = summaryTargetMessages;
-      const preservedTurnsSectionLocal = buildPreservedTurnsSection(preservedRecentMessages);
+      // #723: resolve the summary budget BEFORE building bounded suffix sections so
+      // preserved/split-turn context scales with the session instead of a fixed half
+      // of the legacy 16k cap.
+      summaryBudgetChars = resolveCompactionSummaryBudgetChars({
+        model,
+        serializedChars: [...messagesToSummarize, ...turnPrefixMessages].reduce(
+          (total, message) => total + extractMessageText(message).length,
+          0,
+        ),
+      });
+      const splitTurnSectionBudgetChars = Math.floor(summaryBudgetChars / 2);
+      const preservedTurnsSectionLocal = buildPreservedTurnsSection(
+        preservedRecentMessages,
+        splitTurnSectionBudgetChars,
+      );
       const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 
       // Use adaptive chunk ratio based on message sizes, reserving headroom for
@@ -1402,9 +1491,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               customInstructions: `${TURN_PREFIX_INSTRUCTIONS}\n\nAdditional requirements:\n\n${currentInstructions}`,
               previousSummary: undefined,
             });
-            splitTurnSectionLocal = formatGeneratedSplitTurnSection(prefixSummary, () => {
-              producerLosses.add("split-turn-tail");
-            });
+            splitTurnSectionLocal = formatGeneratedSplitTurnSection(
+              prefixSummary,
+              splitTurnSectionBudgetChars,
+              () => {
+                producerLosses.add("split-turn-tail");
+              },
+            );
           }
         } catch (attemptError) {
           if (signal?.aborted) {
@@ -1455,20 +1548,26 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           const reasonCodes = [
             ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
           ];
-          // Cancelling here strands the session: the transcript never shrinks, so
-          // every later turn fails preflight and the user is stuck with no way out.
-          // A lossy summary beats an uncompactable session, so degrade to the
-          // structured previous-summary. Genuinely unrecoverable paths (LLM throw,
-          // no model, no API key) still cancel above.
-          log.warn(
-            "Compaction safeguard: final quality attempt failed; using degraded fallback summary; " +
-              `reasonCode=quality_guard_degraded_fallback reasonCodes=${reasonCodes.join(",")} ` +
-              `reasonCount=${quality.reasons.length}`,
-          );
+          // #722: cancelling on the FINAL failed audit strands a context-heavy
+          // session forever: the transcript never shrinks, so every later turn
+          // hits the context-length-exceeded provider path and the session is
+          // permanently uncompactionable. A degraded structured summary lets
+          // compaction proceed; genuinely unrecoverable paths (LLM throw, no
+          // model, no auth) still cancel above.
           const degraded = await finalizeSummaryText(
             buildStructuredFallbackSummary(effectivePreviousSummary),
-            { preservedTurnsSection: preservedTurnsSectionLocal },
+            {
+              preservedTurnsSection: preservedTurnsSectionLocal,
+            },
             producerLosses,
+          );
+          log.warn(
+            "Compaction safeguard: final quality attempt failed; using degraded fallback summary; " +
+              `reasonCode=quality_guard_degraded_fallback reasonCodes=${reasonCodes.join(
+                ",",
+              )} reasonCount=${quality.reasons.length} producerLosses=${
+                [...producerLosses].join(",") || "none"
+              }`,
           );
           return compactionResult(degraded.summary);
         }
@@ -1478,7 +1577,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             ? "Fix all issues and include every required section with exact identifiers preserved."
             : "Fix all issues and include every required section while following the configured identifier policy.";
         const budgetInstruction = `Keep the complete summary body within ${finalized.bodyBudget} UTF-16 code units so the finalized artifact remains valid after required suffixes.`;
-        const qualityFeedbackReasons = wrapUntrustedInstructionBlock(
+        const qualityFeedbackReasons = wrapUntrustedQualityFeedbackBlock(
           "Quality check feedback",
           `Previous summary failed quality checks (${reasons}).`,
         );
@@ -1523,6 +1622,8 @@ const testing = {
   resolveQualityGuardMaxRetries,
   extractOpaqueIdentifiers,
   auditSummaryQuality,
+  wrapUntrustedQualityFeedbackBlock,
+  resolveCompactionSummaryBudgetChars,
   capCompactionSummary,
   capCompactionSummaryPreservingSuffix,
   formatFileOperations,
@@ -1534,12 +1635,13 @@ const testing = {
   BASE_CHUNK_RATIO,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
-  MAX_COMPACTION_SUMMARY_CHARS,
+  MIN_COMPACTION_SUMMARY_CHARS,
   MAX_FILE_OPS_SECTION_CHARS,
   MAX_FILE_OPS_LIST_CHARS,
   SUMMARY_TRUNCATED_MARKER,
   CONTEXT_TRUNCATED_MARKER,
-  MAX_SPLIT_TURN_CONTEXT_CHARS,
+  SUMMARIZER_OUTPUT_BUDGET_RATIO,
+  SUMMARIZER_CHARS_PER_TOKEN,
 } as const;
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
