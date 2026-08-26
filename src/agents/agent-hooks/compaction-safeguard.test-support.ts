@@ -15,6 +15,8 @@ type CompactionSafeguardTestApi = {
   resolveQualityGuardMaxRetries: CallableFunction;
   extractOpaqueIdentifiers: CallableFunction;
   auditSummaryQuality: CallableFunction;
+  wrapUntrustedQualityFeedbackBlock: CallableFunction;
+  resolveCompactionSummaryBudgetChars: CallableFunction;
   capCompactionSummary: CallableFunction;
   capCompactionSummaryPreservingSuffix: CallableFunction;
   formatFileOperations: CallableFunction;
@@ -26,12 +28,13 @@ type CompactionSafeguardTestApi = {
   BASE_CHUNK_RATIO: number;
   MIN_CHUNK_RATIO: number;
   SAFETY_MARGIN: number;
-  MAX_COMPACTION_SUMMARY_CHARS: number;
+  MIN_COMPACTION_SUMMARY_CHARS: number;
   MAX_FILE_OPS_SECTION_CHARS: number;
   MAX_FILE_OPS_LIST_CHARS: number;
   SUMMARY_TRUNCATED_MARKER: string;
   CONTEXT_TRUNCATED_MARKER: string;
-  MAX_SPLIT_TURN_CONTEXT_CHARS: number;
+  SUMMARIZER_OUTPUT_BUDGET_RATIO: number;
+  SUMMARIZER_CHARS_PER_TOKEN: number;
 };
 
 function getTestApi(): CompactionSafeguardTestApi {

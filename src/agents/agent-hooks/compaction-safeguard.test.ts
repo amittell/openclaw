@@ -27,6 +27,8 @@ import {
 import compactionSafeguardExtension from "./compaction-safeguard.js";
 import { testing } from "./compaction-safeguard.test-support.js";
 
+const { SUMMARIZATION_OVERHEAD_TOKENS } = compactionModule;
+
 const { compactionLogger } = vi.hoisted(() => {
   const logger = {
     subsystem: "compaction-safeguard",
@@ -90,6 +92,8 @@ const {
   resolveQualityGuardMaxRetries,
   extractOpaqueIdentifiers,
   auditSummaryQuality: auditSummaryQualityOwner,
+  wrapUntrustedQualityFeedbackBlock,
+  resolveCompactionSummaryBudgetChars,
   capCompactionSummary,
   capCompactionSummaryPreservingSuffix,
   formatFileOperations,
@@ -99,11 +103,12 @@ const {
   BASE_CHUNK_RATIO,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
-  MAX_COMPACTION_SUMMARY_CHARS,
+  MIN_COMPACTION_SUMMARY_CHARS,
   MAX_FILE_OPS_SECTION_CHARS,
   SUMMARY_TRUNCATED_MARKER,
   CONTEXT_TRUNCATED_MARKER,
-  MAX_SPLIT_TURN_CONTEXT_CHARS,
+  SUMMARIZER_OUTPUT_BUDGET_RATIO,
+  SUMMARIZER_CHARS_PER_TOKEN,
 } = testing;
 
 function auditSummaryQuality(
@@ -515,16 +520,16 @@ describe("compaction-safeguard summary budgets", () => {
   });
 
   it("caps final compaction summary with a truncation marker", () => {
-    const oversized = "x".repeat(MAX_COMPACTION_SUMMARY_CHARS + 500);
+    const oversized = "x".repeat(MIN_COMPACTION_SUMMARY_CHARS + 500);
     const capped = capCompactionSummary(oversized);
 
-    expect(capped.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(capped.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(capped).toContain(SUMMARY_TRUNCATED_MARKER.trim());
     expect(capped.endsWith(SUMMARY_TRUNCATED_MARKER)).toBe(true);
   });
 
   it("keeps compaction summary prefixes UTF-16 safe", () => {
-    const prefixBudget = MAX_COMPACTION_SUMMARY_CHARS - SUMMARY_TRUNCATED_MARKER.length;
+    const prefixBudget = MIN_COMPACTION_SUMMARY_CHARS - SUMMARY_TRUNCATED_MARKER.length;
     const oversized = `${"x".repeat(prefixBudget - 1)}🚀${"z".repeat(
       SUMMARY_TRUNCATED_MARKER.length + 10,
     )}`;
@@ -538,11 +543,11 @@ describe("compaction-safeguard summary budgets", () => {
   it("preserves workspace critical rules suffix when capping", () => {
     const suffix =
       "\n\n<workspace-critical-rules>\n## Session Startup\nRead AGENTS.md\n</workspace-critical-rules>";
-    const body = "x".repeat(MAX_COMPACTION_SUMMARY_CHARS);
+    const body = "x".repeat(MIN_COMPACTION_SUMMARY_CHARS);
 
     const capped = capCompactionSummaryPreservingSuffix(body, suffix);
 
-    expect(capped.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(capped.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(capped).toContain("<workspace-critical-rules>");
     expect(capped).toContain("## Session Startup");
     expect(capped.endsWith(suffix)).toBe(true);
@@ -552,11 +557,11 @@ describe("compaction-safeguard summary budgets", () => {
     const diagnosticSuffix =
       "\n\n## Tool Failures\n- exec: failed\n\n<read-files>\nfoo.ts\n</read-files>\n\n" +
       "<workspace-critical-rules>\n## Session Startup\nRead AGENTS.md\n</workspace-critical-rules>";
-    const body = "x".repeat(MAX_COMPACTION_SUMMARY_CHARS);
+    const body = "x".repeat(MIN_COMPACTION_SUMMARY_CHARS);
 
     const capped = capCompactionSummaryPreservingSuffix(body, diagnosticSuffix);
 
-    expect(capped.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(capped.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(capped).toContain("## Tool Failures");
     expect(capped).toContain("<read-files>");
     expect(capped).toContain("<workspace-critical-rules>");
@@ -605,17 +610,107 @@ describe("compaction-safeguard summary budgets", () => {
       "<workspace-critical-rules>\n## Session Startup\nRead AGENTS.md\n</workspace-critical-rules>";
     const preservedTurns =
       "## Recent turns preserved verbatim\n- User: x\n- Assistant: y\n" +
-      "x".repeat(MAX_COMPACTION_SUMMARY_CHARS);
+      "x".repeat(MIN_COMPACTION_SUMMARY_CHARS);
     const oversizedSuffix = preservedTurns + criticalTail;
 
     const capped = capCompactionSummaryPreservingSuffix("short body", oversizedSuffix);
 
-    expect(capped.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(capped.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(capped).toContain("<workspace-critical-rules>");
     expect(capped).toContain("## Tool Failures");
     expect(capped).toContain("<read-files>");
     expect(capped).toContain("## Session Startup");
   });
+});
+
+it("scales the summary budget with session size and model output limit (#723)", () => {
+  const model = createAnthropicModelFixture({ maxTokens: 32_000 });
+  // Small session: floor is unchanged legacy behavior.
+  expect(resolveCompactionSummaryBudgetChars({ model, serializedChars: 4_000 })).toBe(
+    MIN_COMPACTION_SUMMARY_CHARS,
+  );
+  // No maxTokens metadata: ceiling is the floor itself.
+  expect(
+    resolveCompactionSummaryBudgetChars({
+      model: createAnthropicModelFixture({ maxTokens: undefined }),
+      serializedChars: 1_000_000,
+    }),
+  ).toBe(MIN_COMPACTION_SUMMARY_CHARS);
+  // Large session: budget grows with serialized size, capped at
+  // floor + maxOutputTokens * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN.
+  const largeBudget = resolveCompactionSummaryBudgetChars({
+    model,
+    serializedChars: 1_000_000,
+  });
+  const ceiling =
+    MIN_COMPACTION_SUMMARY_CHARS +
+    (32_000 - SUMMARIZATION_OVERHEAD_TOKENS) *
+      SUMMARIZER_OUTPUT_BUDGET_RATIO *
+      SUMMARIZER_CHARS_PER_TOKEN;
+  expect(largeBudget).toBe(ceiling);
+  expect(largeBudget).toBeGreaterThan(MIN_COMPACTION_SUMMARY_CHARS);
+  // Session smaller than ceiling but larger than floor: budget equals the
+  // session size (every serialized char can be represented in the artifact).
+  expect(resolveCompactionSummaryBudgetChars({ model, serializedChars: 40_000 })).toBe(40_000);
+});
+
+it("lets a ~1M-char session keep required tail sections in the finalized artifact (#723)", async () => {
+  mockSummarizeInStages.mockReset();
+  const latestAsk = "report the deployment status";
+  const identifier = "/tmp/compaction-scaling-audit.log";
+  // Summarizer emits a perfect structured body the size of the session itself:
+  // at the legacy 16k fixed budget the required tail sections would be truncated
+  // and the audit would fail with missing sections on every retry.
+  const perfectBody = [
+    "## Decisions",
+    "x".repeat(20_000),
+    "## Open TODOs",
+    "None.",
+    "## Constraints/Rules",
+    "Preserve exact context.",
+    "## Pending user asks",
+    latestAsk + " deployment rollout status",
+    "## Exact identifiers",
+    identifier,
+  ].join("\n");
+  mockSummarizeInStages.mockResolvedValue(summaryResult(perfectBody));
+
+  const sessionManager = stubSessionManager();
+  setCompactionSafeguardRuntime(sessionManager, {
+    model: createAnthropicModelFixture({ maxTokens: 32_000 }),
+    recentTurnsPreserve: 0,
+    qualityGuardEnabled: true,
+    qualityGuardMaxRetries: 1,
+  });
+  const event = createCompactionEvent({
+    messageText: `session payload ${"x".repeat(1_000_000)} ${latestAsk} ${identifier}`,
+    tokensBefore: 1_500,
+  });
+  (event.preparation as { settings?: { reserveTokens: number }; isSplitTurn?: boolean }).settings =
+    { reserveTokens: 4_000 };
+  (event.preparation as { isSplitTurn?: boolean }).isSplitTurn = false;
+
+  const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+  const summary = expectCompactionResult(result).summary;
+  // All required tail sections survive finalization: the budget scaled with the
+  // model's output budget instead of truncating the artifact to ~1.5% of source.
+  for (const section of [
+    "## Decisions",
+    "## Open TODOs",
+    "## Constraints/Rules",
+    "## Pending user asks",
+    "## Exact identifiers",
+  ]) {
+    expect(summary).toContain(section);
+  }
+  expect(summary).toContain(identifier);
+  // The body's filler line must survive finalization verbatim: no summary
+  // truncation at the scaled budget (the legacy 16k cap cut this away entirely).
+  expect(summary).toContain("x".repeat(20_000));
+  expect(summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
+  // Quality guard passed on the first attempt; no corrective retry needed.
+  expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
 });
 
 describe("computeAdaptiveChunkRatio", () => {
@@ -866,9 +961,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     expect(split.preservedMessages).toHaveLength(2);
     expect(split.summarizableMessages).toHaveLength(2);
-    expect(formatPreservedTurnsSection(split.preservedMessages)).toContain(
-      "## Recent turns preserved verbatim",
-    );
+    expect(
+      formatPreservedTurnsSection(split.preservedMessages, MIN_COMPACTION_SUMMARY_CHARS / 2),
+    ).toContain("## Recent turns preserved verbatim");
   });
 
   it("drops orphaned tool results from preserved assistant turns", () => {
@@ -962,7 +1057,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
       recentTurnsPreserve: 1,
     });
 
-    const section = formatPreservedTurnsSection(split.preservedMessages);
+    const section = formatPreservedTurnsSection(
+      split.preservedMessages,
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    );
     expect(section).toContain("- Tool result (read): recent raw output");
     expect(section).toContain("- User: recent ask");
   });
@@ -1002,9 +1100,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
       recentTurnsPreserve: 1,
     });
 
-    const section = formatPreservedTurnsSection(split.preservedMessages) as string;
+    const section = formatPreservedTurnsSection(
+      split.preservedMessages,
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    ) as string;
 
-    expect(section.length).toBeLessThanOrEqual(MAX_SPLIT_TURN_CONTEXT_CHARS);
+    expect(section.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS / 2);
     expect(section).toContain("[Earlier preserved messages truncated]");
     expect(section).not.toContain("paired-result-00-");
     expect(section).not.toContain("paired-result-29-");
@@ -1014,59 +1115,71 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("formats preserved non-text messages with placeholders", () => {
-    const section = formatPreservedTurnsSection([
-      {
-        role: "user",
-        content: [{ type: "image", data: "abc", mimeType: "image/png" }],
-        timestamp: 1,
-      } as unknown as AgentMessage,
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", id: "call_recent", name: "read", arguments: {} }],
-        timestamp: 2,
-      } as unknown as AgentMessage,
-    ]);
+    const section = formatPreservedTurnsSection(
+      [
+        {
+          role: "user",
+          content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+          timestamp: 1,
+        } as unknown as AgentMessage,
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_recent", name: "read", arguments: {} }],
+          timestamp: 2,
+        } as unknown as AgentMessage,
+      ],
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    );
 
     expect(section).toContain("- User: [non-text content: image]");
     expect(section).toContain("- Assistant: [non-text content: toolCall]");
   });
 
   it("keeps non-text placeholders for mixed-content preserved messages", () => {
-    const section = formatPreservedTurnsSection([
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "caption text" },
-          { type: "image", data: "abc", mimeType: "image/png" },
-        ],
-        timestamp: 1,
-      } as unknown as AgentMessage,
-    ]);
+    const section = formatPreservedTurnsSection(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "caption text" },
+            { type: "image", data: "abc", mimeType: "image/png" },
+          ],
+          timestamp: 1,
+        } as unknown as AgentMessage,
+      ],
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    );
 
     expect(section).toContain("- User: caption text");
     expect(section).toContain("[non-text content: image]");
   });
 
   it("keeps bounded preserved-turn text UTF-16 safe", () => {
-    const section = formatPreservedTurnsSection([
-      {
-        role: "user",
-        content: `${"x".repeat(599)}🚀tail`,
-        timestamp: 1,
-      },
-    ]);
+    const section = formatPreservedTurnsSection(
+      [
+        {
+          role: "user",
+          content: `${"x".repeat(599)}🚀tail`,
+          timestamp: 1,
+        },
+      ],
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    );
 
-    expect(section).toContain(`- User: ${"x".repeat(599)}...`);
+    expect(section).toContain(`${"x".repeat(599)}...`);
   });
 
   it("does not add non-text placeholders for text-only content blocks", () => {
-    const section = formatPreservedTurnsSection([
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "plain text reply" }],
-        timestamp: 1,
-      } as unknown as AgentMessage,
-    ]);
+    const section = formatPreservedTurnsSection(
+      [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "plain text reply" }],
+          timestamp: 1,
+        } as unknown as AgentMessage,
+      ],
+      MIN_COMPACTION_SUMMARY_CHARS / 2,
+    );
 
     expect(section).toContain("- Assistant: plain text reply");
     expect(section).not.toContain("[non-text content]");
@@ -1130,8 +1243,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
           msg.role === "user" && (msg as { content?: unknown }).content === "single user prompt",
       ),
     ).toBe(true);
-    expect(formatPreservedTurnsSection(split.preservedMessages)).toContain("assistant-8");
-    expect(formatPreservedTurnsSection(split.preservedMessages)).not.toContain("assistant-2");
+    expect(
+      formatPreservedTurnsSection(split.preservedMessages, MIN_COMPACTION_SUMMARY_CHARS / 2),
+    ).toContain("assistant-8");
+    expect(
+      formatPreservedTurnsSection(split.preservedMessages, MIN_COMPACTION_SUMMARY_CHARS / 2),
+    ).not.toContain("assistant-2");
   });
 
   it("trim-starts preserved section when history summary is empty", () => {
@@ -1239,6 +1356,98 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(identifiers).toContain("123456");
     expect(identifiers).toContain("https://example.com/a");
     expect(identifiers).toContain("/tmp/x.log");
+  });
+
+  it("keeps the full missing-identifier list in quality audit reasons (#721)", () => {
+    // Twelve identifier-dense items that join to well over the legacy 4000-char
+    // untrusted-instruction cap; a truncated defect list is unrecoverable.
+    // 12 long URLs (~350 chars each): joined defect-list payload ~4.2k chars,
+    // past the legacy 4000-char cap that used to truncate the corrective list.
+    const identifiers = Array.from(
+      { length: 12 },
+      (_, index) =>
+        `https://example.com/paths/segment-${String(index).padStart(2, "0")}/${"artifact-bundle".repeat(24)}.bundle.js.map`,
+    );
+    const summaryText =
+      "## Decisions\nKeep flow.\n## Open TODOs\nNone.\n## Constraints/Rules\nNone.\n## Pending user asks\nStatus.\n## Exact identifiers\n";
+    const reasons = auditSummaryQuality({
+      summary: summaryText,
+      structuralSummary: summaryText,
+      identifiers,
+      latestAsk: "Status",
+    }).reasons;
+    expect(reasons).toHaveLength(1);
+    const missingReason = reasons[0];
+    expect(missingReason.startsWith("missing_identifiers:")).toBe(true);
+    const payload = missingReason.slice("missing_identifiers:".length);
+    expect(payload.length).toBeGreaterThan(4000);
+    for (const identifier of identifiers) {
+      expect(payload).toContain(identifier);
+    }
+  });
+
+  it("sends the complete >4000-char missing-identifiers defect list to the corrective pass (#721)", async () => {
+    mockSummarizeInStages.mockReset();
+    const latestAsk = "report the deployment status";
+    const identifiers = Array.from(
+      { length: 12 },
+      (_, index) =>
+        `https://example.com/paths/segment-${String(index).padStart(2, "0")}/${"artifact-bundle".repeat(24)}.bundle.js.map`,
+    );
+    const failingSummary =
+      "## Decisions\nKeep flow.\n## Open TODOs\nNone.\n## Constraints/Rules\nNone.\n## Pending user asks\n" +
+      latestAsk +
+      "\n## Exact identifiers\nNone.";
+    const validSummary = [
+      "## Decisions",
+      "Keep flow.",
+      "## Open TODOs",
+      "None.",
+      "## Constraints/Rules",
+      "Follow rules.",
+      "## Pending user asks",
+      latestAsk,
+      "## Exact identifiers",
+      identifiers.join(", "),
+    ].join("\n");
+    mockSummarizeInStages
+      .mockResolvedValueOnce(summaryResult(failingSummary))
+      .mockResolvedValueOnce(summaryResult(validSummary));
+
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+    const event = {
+      ...createCompactionEvent({
+        messageText: `${latestAsk} ${identifiers.join(" ")}`,
+        tokensBefore: 1_500,
+      }),
+      preparation: {
+        ...createCompactionEvent({
+          messageText: `${latestAsk} ${identifiers.join(" ")}`,
+          tokensBefore: 1_500,
+        }).preparation,
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: false,
+      },
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    expectCompactionResult(result);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    const retryInstructions = requireRecord(mockCallArg(mockSummarizeInStages, 1))
+      .customInstructions as string;
+    expect(retryInstructions).toContain("Quality check feedback");
+    // The defect list must be COMPLETE: every audited identifier survives the
+    // corrective instruction, not truncated mid-list by the legacy 4000-char cap.
+    for (const identifier of identifiers) {
+      expect(retryInstructions).toContain(identifier);
+    }
   });
 
   it("fails quality audit when required sections are missing", () => {
@@ -2021,7 +2230,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
   it("marks a trimmed built-in body and emits one redacted tail-loss warning", async () => {
     const sensitiveSentinel = "body-secret-never-log";
-    const body = `${sensitiveSentinel}-${"b".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
+    const body = `${sensitiveSentinel}-${"b".repeat(MIN_COMPACTION_SUMMARY_CHARS)}`;
     mockSummarizeInStages.mockReset();
     mockSummarizeInStages.mockResolvedValue(summaryResult(body));
     const sessionManager = stubSessionManager();
@@ -2047,13 +2256,13 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(warning).not.toContain(sensitiveSentinel);
   });
 
-  it("degrades to a fallback summary when finalized bytes fail the quality audit", async () => {
+  it("degrades to a structured fallback summary when the final quality audit fails", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";
     const identifier = "/tmp/compaction-final-audit.log";
     const auditValidBeforeFinalization = [
       "## Decisions",
-      "x".repeat(MAX_COMPACTION_SUMMARY_CHARS),
+      "x".repeat(MIN_COMPACTION_SUMMARY_CHARS),
       "## Open TODOs",
       "None.",
       "## Constraints/Rules",
@@ -2093,13 +2302,23 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    // Both attempts fail the audit, but compaction degrades to a structured
-    // fallback rather than cancelling: cancelling leaves the session permanently
-    // uncompactable, so every later turn dies at preflight with no way out.
-    expect(result).not.toEqual({ cancel: true });
-    expect(result.compaction?.summary).toBeTruthy();
+    // #722: the final failed audit degrades to a structured fallback summary instead of
+    // cancelling. Cancelling strands a context-heavy session permanently: the transcript
+    // never shrinks, so the next turn hits the context-length-exceeded provider path.
+    expect(result.cancel).not.toBe(true);
+    const summary = expectCompactionResult(result).summary;
+    expect(summary).toBeTruthy();
+    expect(summary).toContain("## Decisions");
+    expect(summary).toContain("## Exact identifiers");
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
     expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
+    const terminalWarnings = compactionLogger.warn.mock.calls.flat().join("\n");
+    expect(terminalWarnings).toContain("quality_guard_degraded_fallback");
+    expect(terminalWarnings).toContain(
+      "reasonCodes=missing_section,missing_identifiers,latest_user_ask_not_reflected",
+    );
+    expect(terminalWarnings).not.toContain(identifier);
+    expect(terminalWarnings).not.toContain(latestAsk);
   });
 
   it("returns the first finalized retry that passes the source audit", async () => {
@@ -2235,10 +2454,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    // Nothing is regenerable here, so this is the terminal branch. It degrades to a
-    // structured fallback instead of cancelling; see the sibling test above.
-    expect(result).not.toEqual({ cancel: true });
-    expect(result.compaction?.summary).toBeTruthy();
+    // #722: nothing is regenerable here, so this is the terminal branch. It degrades
+    // to a structured fallback instead of cancelling; see the sibling test above.
+    expect(result.cancel).not.toBe(true);
+    expect(expectCompactionResult(result).summary).toBeTruthy();
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
     expect(mockAuditSummaryQuality).toHaveBeenCalledTimes(1);
     const auditInput = requireRecord(mockCallArg(mockAuditSummaryQuality));
@@ -2450,7 +2669,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
   it("cancels when corrective generation fails after finalized quality rejection", async () => {
     mockSummarizeInStages.mockReset();
-    const oversizedHistorySummary = "history detail ".repeat(MAX_COMPACTION_SUMMARY_CHARS);
+    const oversizedHistorySummary = "history detail ".repeat(MIN_COMPACTION_SUMMARY_CHARS);
     const splitTurnPrefixSummary = "split-turn prefix context that must survive capping";
     const correctiveFailureMarker = "USER_SESSION_TEXT_issue119932_corrective";
     mockSummarizeInStages
@@ -2946,7 +3165,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const summary = expectCompactionResult(result).summary;
     expect(summary).toContain("[Earlier preserved messages truncated]");
-    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(compactionLogger.warn).toHaveBeenCalledOnce();
     const warning = compactionLogger.warn.mock.calls[0]?.join(" ") ?? "";
     expect(warning).toBe(
@@ -2996,7 +3215,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: null });
 
     const summary = expectCompactionResult(result).summary;
-    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(summary).toContain("BODY-START");
     expect(summary).toContain("BODY-MIDDLE");
     expect(summary).toContain("BODY-END");
@@ -3054,7 +3273,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const firstRetainedLine = retainedSuffix.split("\n").find((line) => line.length > 0);
     expect(firstRetainedLine).toMatch(/^- User: raw-prefix-\d{2}-/);
     expect(summary).toContain("raw-prefix-19-");
-    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(summary).toContain("## Recent turns preserved verbatim");
   });
 
@@ -3126,7 +3345,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: null });
 
     const summary = expectCompactionResult(result).summary;
-    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary.length).toBeLessThanOrEqual(MIN_COMPACTION_SUMMARY_CHARS);
     expect(summary).toContain("raw terminal answer survives");
     expect(summary).not.toContain("finalizer-tool-output-");
     expect(summary).not.toContain("- Tool result (read):");
