@@ -7,6 +7,7 @@ import type {
   SessionThreadBindingsConfig,
 } from "./types.base.js";
 import type {
+  ChannelBotInteractionConfig,
   ChannelExecApprovalConfig,
   ChannelExecApprovalTarget,
   ChannelReactionConfig,
@@ -79,7 +80,12 @@ export type TelegramAccountConfig = CommonChannelMessagingConfig<
   string | number,
   TelegramPreviewStreamingConfig
 > &
-  ChannelReactionConfig<"off" | "own" | "all", "off" | "ack" | "minimal" | "extensive", string> & {
+  ChannelReactionConfig<"off" | "own" | "all", "off" | "ack" | "minimal" | "extensive", string> &
+  // Telegram accepts bot-authored messages under `allowBots` and guards the
+  // resulting bot-to-bot pairs with `botLoopProtection`. Both are read by
+  // extensions/telegram/src/bot-handlers.bot-pair-loop.ts, which had to cast to
+  // BotInteractionShape to reach them while this intersection omitted them.
+  ChannelBotInteractionConfig & {
     /** Telegram-native exec approval delivery + approver authorization. */
     execApprovals?: TelegramExecApprovalConfig;
     /** Override native command registration for Telegram (bool or "auto"). */
