@@ -1,10 +1,12 @@
 // Telegram helper module supports config schema behavior.
 import {
+  buildChannelAllowBotsSchema,
   buildChannelConfigSchema,
   buildChannelExecApprovalsSchema,
   buildChannelReactionShape,
   buildCommonChannelAccountShape,
   buildGroupEntrySchema,
+  ChannelBotLoopProtectionSchema,
   ChannelPreviewStreamingConfigSchema,
   ChannelStreamingPreviewSchema,
   DmPolicySchema,
@@ -173,6 +175,14 @@ const TelegramAccountSchemaBase = z
       defaultTo: z.union([z.string(), z.number()]).optional(),
       streaming: TelegramPreviewStreamingConfigSchema.optional(),
     }),
+    // The account schema is .strict(), so until these leaves existed a config
+    // setting channels.telegram.botLoopProtection was REJECTED outright - the
+    // guard read a key the schema refused to accept.
+    // allowMentions: the guard branches on allowBots === "mentions" at
+    // bot-handlers.bot-pair-loop.ts:125,131. A boolean-only leaf would reject a
+    // value the runtime implements.
+    allowBots: buildChannelAllowBotsSchema({ allowMentions: true }),
+    botLoopProtection: ChannelBotLoopProtectionSchema.optional(),
     execApprovals: buildChannelExecApprovalsSchema(z.union([z.string(), z.number()])),
     commands: ProviderCommandsSchema,
     customCommands: z.array(TelegramCustomCommandSchema).optional(),
