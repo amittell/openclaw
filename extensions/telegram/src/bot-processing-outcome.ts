@@ -81,9 +81,9 @@ export function ensureTelegramMessageProcessingResult(
 }
 
 /**
- * Records that this attempt delivered a user-visible reply. Called from the one
- * chokepoint that knows a send actually succeeded; a no-op outside an update
- * frame, so bot-initiated sends (cron, alerts) never set it.
+ * Records that this attempt delivered a user-visible reply, from the durable
+ * send funnel's success log — the point that knows a send actually landed. A
+ * no-op outside an update frame, so sends with no turn in flight never set it.
  */
 export function markTelegramVisibleReplyDelivered(): void {
   const frame = telegramUpdateProcessingFrames.getStore();
@@ -93,12 +93,16 @@ export function markTelegramVisibleReplyDelivered(): void {
 }
 
 /**
- * True when this attempt already replied. Defaults false when no frame is
- * active, which keeps the pre-existing retry behaviour: a false negative costs a
- * duplicate reply, a false positive would drop the user's message entirely.
+ * Binds the fact to the frame owning the caller's dispatch, while that frame is
+ * still the current async context. Settlement is also reached from contexts the
+ * attempt does not own (the reply queue's retained `onAbandoned`, the ingress
+ * drain chain); reading ambiently there resolves whichever update's frame is
+ * current, so it both misses this attempt's own reply and can read another
+ * attempt's reply and drop a message that was never answered.
  */
-export function hasTelegramVisibleReplyDelivered(): boolean {
-  return telegramUpdateProcessingFrames.getStore()?.visibleReplyDelivered === true;
+export function captureTelegramVisibleReplyDelivered(): () => boolean {
+  const frame = telegramUpdateProcessingFrames.getStore();
+  return () => frame?.visibleReplyDelivered === true;
 }
 
 export function recordTelegramMessageProcessingResult(

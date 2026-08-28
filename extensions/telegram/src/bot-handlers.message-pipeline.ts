@@ -33,11 +33,11 @@ import type {
   TelegramMessageContextOptions,
 } from "./bot-message-context.types.js";
 import {
+  captureTelegramVisibleReplyDelivered,
   createTelegramSpooledReplayDeferredParticipant,
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
   getTelegramSpooledReplayLifecycle,
-  hasTelegramVisibleReplyDelivered,
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
   type TelegramMessageProcessingResult,
@@ -416,6 +416,10 @@ export function createTelegramMessagePipeline({
     let dispatchDedupeCommitted = false;
     let spooledReplayFinalResult: TelegramMessageProcessingResult | undefined;
     let spooledReplayFinalization: Promise<TelegramMessageProcessingResult> | undefined;
+    // Settlement below is also invoked from contexts this dispatch does not own
+    // (the reply queue's retained onAbandoned runs on the followup drain chain),
+    // so bind the visible-reply fact here while this attempt's frame is current.
+    const hasDeliveredVisibleReply = captureTelegramVisibleReplyDelivered();
     // Callback-submit retries also set options.spooledReplay without durable ingress.
     // Media aborts retry only when the update frame or a buffered participant owns replay.
     const durableMediaReplay =
@@ -473,7 +477,7 @@ export function createTelegramMessagePipeline({
         // the replay is duplicate-suppressed. Only the guard is committed - the
         // spool row still follows its own retry/dead-letter policy.
         const repliedBeforeFailing =
-          result.kind === "failed-retryable" && hasTelegramVisibleReplyDelivered();
+          result.kind === "failed-retryable" && hasDeliveredVisibleReply();
         if (result.kind === "completed" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
