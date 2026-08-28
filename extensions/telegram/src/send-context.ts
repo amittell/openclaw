@@ -59,9 +59,10 @@ type TelegramOutboundSuccessLogParams = {
 };
 
 export function logTelegramOutboundSendOk(params: TelegramOutboundSuccessLogParams): void {
-  // Single chokepoint that knows a send actually landed, so it is where the
-  // "this attempt already spoke to the user" fact is recorded. The ingress
-  // settlement reads it to decide whether a retryable failure may replay.
+  // The durable funnel's confirmation point, so it is where the "this attempt
+  // already spoke to the user" fact is recorded. The ingress settlement reads it
+  // to decide whether a retryable failure may replay. Note the streaming funnel
+  // (`bot/delivery.send.ts`) confirms sends without recording it.
   markTelegramVisibleReplyDelivered();
   const parts = [
     "telegram outbound send ok",
