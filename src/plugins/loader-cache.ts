@@ -2,10 +2,19 @@ import { resolvePluginLoadCacheContext } from "./loader-load-context.js";
 import type { PluginLoadOptions } from "./loader-types.js";
 import { clearPluginRuntimeArtifactResolutionMemo } from "./plugin-runtime-artifact-resolution.js";
 import { pluginLoaderCacheState } from "./registry-lifecycle.js";
+import type { PluginRegistry } from "./registry-types.js";
 
 /** Registry reuse is off for explicit opt-outs and for raw env-substituted config loads. */
 export function isPluginRegistryCacheEnabled(options: PluginLoadOptions): boolean {
   return options.cache !== false && options.resolveRawConfigEnvVars !== true;
+}
+
+export function setCachedPluginRegistry(cacheKey: string, registry: PluginRegistry): void {
+  pluginLoaderCacheState.set(cacheKey, registry);
+}
+
+export function getReusableCachedPluginRegistry(cacheKey: string): PluginRegistry | undefined {
+  return pluginLoaderCacheState.get(cacheKey);
 }
 
 export function clearPluginRegistryLoadCache(): void {
