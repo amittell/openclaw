@@ -533,6 +533,35 @@ describe("gateway sessions patch", () => {
     expect(entry.thinkingLevel).toBeUndefined();
   });
 
+  test("persists a session temperature override", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, temperature: 0.7 },
+      }),
+    );
+    expect(entry.temperature).toBe(0.7);
+  });
+
+  test("clears temperature when patch sets null", async () => {
+    const store: Record<string, SessionEntry> = {
+      [MAIN_SESSION_KEY]: { temperature: 1.4 } as SessionEntry,
+    };
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, temperature: null },
+      }),
+    );
+    expect(entry.temperature).toBeUndefined();
+  });
+
+  test("rejects out-of-range temperature values", async () => {
+    const result = await runPatch({
+      patch: { key: MAIN_SESSION_KEY, temperature: 3.5 },
+    });
+    expectPatchError(result, "invalid temperature");
+  });
+
   test("persists responseUsage=off (does not clear)", async () => {
     const entry = expectPatchOk(
       await runPatch({

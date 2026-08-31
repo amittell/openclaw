@@ -17,6 +17,7 @@ import {
   extractFastDirective,
   extractReasoningDirective,
   extractStatusDirective,
+  extractTemperatureDirective,
   extractTraceDirective,
   extractThinkDirective,
   extractVerboseDirective,
@@ -26,6 +27,7 @@ import type { QueueDropPolicy } from "./queue/types.js";
 
 const NATIVE_REPLY_DIRECTIVE_COMMANDS = {
   think: true,
+  temperature: true,
   verbose: true,
   trace: true,
   fast: true,
@@ -62,6 +64,10 @@ export type InlineDirectives = {
   thinkLevel?: ThinkLevel;
   rawThinkLevel?: string;
   clearThinkLevel: boolean;
+  hasTemperatureDirective: boolean;
+  temperature?: number;
+  rawTemperature?: string;
+  clearTemperature: boolean;
   hasVerboseDirective: boolean;
   verboseLevel?: VerboseLevel;
   rawVerboseLevel?: string;
@@ -142,6 +148,9 @@ export function parseInlineSessionDirectives(
   const think = parseScopedDirective("think", (value) =>
     extractThinkDirective(value, { strict: nativeCommand === "think" }),
   );
+  const temperature = parseScopedDirective("temperature", (value) =>
+    extractTemperatureDirective(value, { strict: nativeCommand === "temperature" }),
+  );
   const verbose = parseScopedDirective("verbose", (value) =>
     extractVerboseDirective(value, { strict: nativeCommand === "verbose" }),
   );
@@ -187,6 +196,11 @@ export function parseInlineSessionDirectives(
     thinkLevel: think.thinkLevel,
     rawThinkLevel: think.rawLevel,
     clearThinkLevel: think.hasDirective && isSessionDefaultDirectiveValue(think.rawLevel),
+    hasTemperatureDirective: temperature.hasDirective,
+    temperature: temperature.temperature,
+    rawTemperature: temperature.rawTemperature,
+    clearTemperature:
+      temperature.hasDirective && isSessionDefaultDirectiveValue(temperature.rawTemperature),
     hasVerboseDirective: verbose.hasDirective,
     verboseLevel: verbose.verboseLevel,
     rawVerboseLevel: verbose.rawLevel,

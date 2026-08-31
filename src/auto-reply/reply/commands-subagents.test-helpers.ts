@@ -7,6 +7,8 @@ export function createEmptyInlineDirectives(): InlineDirectives {
     cleaned: "",
     hasThinkDirective: false,
     clearThinkLevel: false,
+    hasTemperatureDirective: false,
+    clearTemperature: false,
     hasVerboseDirective: false,
     hasFastDirective: false,
     clearFastMode: false,

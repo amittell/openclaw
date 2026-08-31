@@ -586,6 +586,20 @@ export function buildBuiltinChatCommands(
       ],
       argsMenu: "auto",
     }),
+    defineBuiltinCommand(
+      "temperature",
+      "Set sampling temperature for this session.",
+      "options",
+      "standard",
+      {
+        nativeAliases: ["temp"],
+        args: [
+          defineCommandArgument("value", "Temperature (0–2); omit to show current", {
+            type: "number",
+          }),
+        ],
+      },
+    ),
     defineBuiltinCommand("verbose", "Toggle verbose mode.", "options", "standard", {
       args: [defineCommandArgument("mode", "on, off, or full", { choices: ["on", "off", "full"] })],
     }),
@@ -680,6 +694,7 @@ export function buildBuiltinChatCommands(
 
   registerAlias(commands, "whoami", "/id");
   registerAlias(commands, "think", "/thinking", "/t");
+  registerAlias(commands, "temperature", "/temp");
   registerAlias(commands, "verbose", "/v");
   registerAlias(commands, "reasoning", "/reason");
   registerAlias(commands, "elevated", "/elev");

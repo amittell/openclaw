@@ -442,6 +442,8 @@ type SessionEntryCore = SessionRestartRecoveryState &
     chatType?: SessionChatType;
     contextWindow?: string;
     thinkingLevel?: string;
+    /** Session-level sampling temperature override (0–2); unset uses model/config params. */
+    temperature?: number;
     /**
      * Exact isolated-cron continuation policy. Only hidden `:run:` session rows
      * carry this while detached generated-media work may still wake the run.

@@ -14,6 +14,7 @@ type NativeDirectiveCommand = NonNullable<
 function hasInlineDirective(directives: InlineDirectives): boolean {
   return (
     directives.hasThinkDirective ||
+    directives.hasTemperatureDirective ||
     directives.hasVerboseDirective ||
     directives.hasTraceDirective ||
     directives.hasFastDirective ||

@@ -7,6 +7,7 @@ import {
   normalizeFastMode,
   normalizeElevatedLevel,
   normalizeReasoningLevel,
+  normalizeTemperature,
   normalizeTraceLevel,
   normalizeThinkLevel,
   normalizeVerboseLevel,
@@ -140,6 +141,66 @@ export const extractReasoningDirective = createLevelDirectiveExtractor(
   "reasoningLevel",
   normalizeReasoningLevel,
 );
+
+const TEMPERATURE_DIRECTIVE_PATTERN = compileDirectivePattern(["temperature", "temp"]);
+
+/**
+ * Extracts the numeric /temperature directive. Unlike level directives the
+ * argument is a number (0–2), so the token scan consumes digits, dots, and
+ * minus signs in addition to letters.
+ */
+export function extractTemperatureDirective(
+  body?: string,
+  options?: LevelDirectiveParseOptions,
+): {
+  cleaned: string;
+  temperature?: number;
+  rawTemperature?: string;
+  hasDirective: boolean;
+} {
+  if (!body) {
+    return { cleaned: "", hasDirective: false };
+  }
+  const match = body.match(TEMPERATURE_DIRECTIVE_PATTERN);
+  if (!match || match.index === undefined) {
+    return { cleaned: body.trim(), hasDirective: false };
+  }
+  const start = match.index;
+  let i = match.index + match[0].length;
+  while (i < body.length && /\s/.test(body.charAt(i))) {
+    i += 1;
+  }
+  if (body[i] === ":") {
+    i += 1;
+    while (i < body.length && /\s/.test(body.charAt(i))) {
+      i += 1;
+    }
+  }
+  const argStart = i;
+  while (
+    i < body.length &&
+    (options?.strict ? !/\s/.test(body.charAt(i)) : /[0-9.\-A-Za-z]/.test(body.charAt(i)))
+  ) {
+    i += 1;
+  }
+  const candidate = i > argStart ? body.slice(argStart, i) : undefined;
+  if (
+    candidate !== undefined &&
+    (options?.strict ||
+      normalizeTemperature(candidate) !== undefined ||
+      body.slice(i).trim().length === 0)
+  ) {
+    const cleaned = `${body.slice(0, start)} ${body.slice(i)}`.replace(/\s+/g, " ").trim();
+    return {
+      cleaned,
+      temperature: normalizeTemperature(candidate),
+      rawTemperature: candidate,
+      hasDirective: true,
+    };
+  }
+  const cleaned = `${body.slice(0, start)} ${body.slice(argStart)}`.replace(/\s+/g, " ").trim();
+  return { cleaned, hasDirective: true };
+}
 
 export type { ElevatedLevel, ReasoningLevel, ThinkLevel, TraceLevel, VerboseLevel };
 export { extractExecDirective } from "./exec/directive.js";

@@ -262,6 +262,19 @@ describe("commands registry", () => {
     expect(sideNativeSpec.isAlias).toBe(true);
   });
 
+  it("registers /temperature with a numeric arg and the /temp alias", () => {
+    const temperature = requireChatCommand("temperature");
+    expect(temperature.nativeName).toBe("temperature");
+    expect(temperature.nativeAliases).toEqual(["temp"]);
+    expect(temperature.textAliases).toEqual(["/temperature", "/temp"]);
+    expect(temperature.args?.[0]?.type).toBe("number");
+    expect(requireNativeCommand("temp").key).toBe("temperature");
+    expect(normalizeCommandBody("/TEMP 0.7")).toBe("/temperature 0.7");
+    const tempNativeSpec = requireNativeSpec(listNativeCommandSpecs(), "temp");
+    expect(tempNativeSpec.acceptsArgs).toBe(true);
+    expect(tempNativeSpec.isAlias).toBe(true);
+  });
+
   it("matches text command names case-insensitively without changing args", () => {
     expect(normalizeCommandBody("/STATUS")).toBe("/status");
     expect(normalizeCommandBody("/Model OpenAI-Codex/GPT-5.5")).toBe("/model OpenAI-Codex/GPT-5.5");

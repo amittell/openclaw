@@ -75,6 +75,7 @@ import {
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 import { applySessionsPatchDisplayMetadata } from "./sessions-patch-display-metadata.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
+import { applySessionPatchTemperature } from "./sessions-patch-temperature.js";
 
 function invalid(message: string): { ok: false; error: ErrorShape } {
   return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, message) };
@@ -380,6 +381,11 @@ export async function projectSessionsPatchEntry(params: {
     }
   }
 
+  const temperatureError = applySessionPatchTemperature(next, patch);
+  if (temperatureError) {
+    return invalid(temperatureError);
+  }
+
   if ("toolOverrides" in patch) {
     const raw = patch.toolOverrides;
     if (raw === null) {
@@ -396,8 +402,7 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("verboseLevel" in patch) {
-    const raw = patch.verboseLevel;
-    const parsed = parseVerboseOverride(raw);
+    const parsed = parseVerboseOverride(patch.verboseLevel);
     if (!parsed.ok) {
       return invalid(parsed.error);
     }
@@ -405,8 +410,7 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("traceLevel" in patch) {
-    const raw = patch.traceLevel;
-    const parsed = parseTraceOverride(raw);
+    const parsed = parseTraceOverride(patch.traceLevel);
     if (!parsed.ok) {
       return invalid(parsed.error);
     }
@@ -414,11 +418,10 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("reasoningLevel" in patch) {
-    const raw = patch.reasoningLevel;
-    if (raw === null) {
+    if (patch.reasoningLevel === null) {
       delete next.reasoningLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeReasoningLevel(raw);
+    } else if (patch.reasoningLevel !== undefined) {
+      const normalized = normalizeReasoningLevel(patch.reasoningLevel);
       if (!normalized) {
         return invalid('invalid reasoningLevel (use "on"|"off"|"stream")');
       }
@@ -429,11 +432,10 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("responseUsage" in patch) {
-    const raw = patch.responseUsage;
-    if (raw === null) {
+    if (patch.responseUsage === null) {
       delete next.responseUsage;
-    } else if (raw !== undefined) {
-      const normalized = normalizeUsageDisplay(raw);
+    } else if (patch.responseUsage !== undefined) {
+      const normalized = normalizeUsageDisplay(patch.responseUsage);
       if (!normalized) {
         return invalid('invalid responseUsage (use "off"|"tokens"|"full")');
       }
@@ -442,11 +444,10 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("elevatedLevel" in patch) {
-    const raw = patch.elevatedLevel;
-    if (raw === null) {
+    if (patch.elevatedLevel === null) {
       delete next.elevatedLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeElevatedLevel(raw);
+    } else if (patch.elevatedLevel !== undefined) {
+      const normalized = normalizeElevatedLevel(patch.elevatedLevel);
       if (!normalized) {
         return invalid('invalid elevatedLevel (use "on"|"off"|"ask"|"full")');
       }
