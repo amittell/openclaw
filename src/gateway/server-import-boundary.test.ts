@@ -287,6 +287,12 @@ describe("gateway startup import boundaries", () => {
     const markHelperEnd = serverImpl.indexOf("};", markHelperStart);
     const beginHelperStart = serverImpl.indexOf("const beginClosePrelude = async () => {");
     const beginHelperEnd = serverImpl.indexOf("};", beginHelperStart);
+    const shutdownMarkStart = serverImpl.indexOf("markGatewayShuttingDown();", beginHelperStart);
+    // Anchor on the join itself, not on a bare awaited call: the reloader stop
+    // is `stopConfigReloaderForClose().catch(...)` INSIDE `await Promise.all([`,
+    // so "await stopConfigReloaderForClose()" matches nothing and indexOf
+    // returns -1, making the ordering assertion below unsatisfiable.
+    const preludeAwaitStart = serverImpl.indexOf("await Promise.all([", beginHelperStart);
     const postReadyStart = serverImpl.indexOf("scheduleGatewayPostReadyMaintenance({");
     const postReadyEnd = serverImpl.indexOf("});", postReadyStart);
     const postReadyBlock = serverImpl.slice(postReadyStart, postReadyEnd);
@@ -309,6 +315,8 @@ describe("gateway startup import boundaries", () => {
       "void stopOutboundDeliveryRecoveryForClose();",
     );
     expect(beginHelperStart).toBeGreaterThan(-1);
+    expect(shutdownMarkStart).toBeGreaterThan(beginHelperStart);
+    expect(shutdownMarkStart).toBeLessThan(preludeAwaitStart);
     expect(serverImpl.slice(beginHelperStart, beginHelperEnd)).toContain(
       "markClosePreludeStarted();",
     );

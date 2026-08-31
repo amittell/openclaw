@@ -15,6 +15,7 @@ import {
 } from "../skills/runtime/remote.js";
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-descriptors.js";
 import { disposeNodeConnectionNotifications } from "./node-connection-notifications.js";
 import { clearNodeWakeState } from "./node-wake-state.js";
@@ -412,6 +413,7 @@ export async function prepareGatewayLifecycle(params: {
     return configReloaderStopPromise;
   };
   const beginClosePrelude = async () => {
+    markGatewayShuttingDown();
     fenceSessionSuspensionWritesForGatewayShutdown();
     markClosePreludeStarted();
     // Owners are fenced synchronously above. Join them before any runtime they
@@ -494,6 +496,7 @@ export async function prepareGatewayLifecycle(params: {
       const transport = transportBridge.current();
       await transport?.portalService.closeAll();
       await shutdownRuntime.createGatewayCloseHandler({
+        postShutdownExitWatchdogEnabled: runtime.opts.postShutdownExitWatchdog === true,
         bonjourStop: kernel.swapBonjourStop(null),
         tailscaleCleanup: runtimeState.tailscaleCleanup,
         clearSecretsRuntimeSnapshot: clearSecretsRuntimeSnapshotState,
@@ -559,7 +562,11 @@ export async function prepareGatewayLifecycle(params: {
         { name: "late sidecar cleanup", run: sealAndJoinRegisteredSidecarStops },
         {
           name: "gateway close",
-          run: () => createCloseHandler()({ reason: "gateway startup failed" }),
+          // Nonzero forced-exit status: if this failed-startup cleanup wedges and the
+          // watchdog must kill the process, a failure-only supervisor still relaunches
+          // instead of reading exit 0 as an intentional clean stop.
+          run: () =>
+            createCloseHandler()({ reason: "gateway startup failed", postShutdownExitCode: 1 }),
         },
       ],
       onError: (message) => log.error(message),

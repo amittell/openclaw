@@ -215,6 +215,19 @@ export function resolveTerminalMainSessionTranscriptRegistryCheck(
   if (candidateSessionKey !== configuredMainSessionKey) {
     return undefined;
   }
+  if (params.entry.status === "running") {
+    // A yielded main session stays `running` while carrying a positive
+    // `endedAt` from the sessions_yield event: the lifecycle projection
+    // suppresses the terminal outcome for a yielded-waiting parent but still
+    // records endedAt, which is cleared only when the queued continuation
+    // starts (session-lifecycle-state.test.ts, "keeps an explicitly yielded
+    // parent pending until continuation starts"). Without this, the endedAt
+    // clause below promotes it to terminal and agent dispatch, auto-reply and
+    // session-command callers run transcript freshness/rotation logic while the
+    // continuation is still pending. A row whose status says `running` is
+    // nonterminal by definition; a timestamp must not override that.
+    return undefined;
+  }
   const hasTerminalLifecycle =
     isTerminalSessionStatus(params.entry.status) ||
     resolvePositiveTimestamp(params.entry.endedAt) !== undefined;
