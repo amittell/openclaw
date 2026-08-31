@@ -259,12 +259,14 @@ async function detectManagedWorktreeStateMigration(params: {
   try {
     canonicalRoot = await fs.realpath(rawRoot);
   } catch (error) {
+    // SAFETY: a caught fs.realpath rejection, which node raises as an ErrnoException.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
     try {
       canonicalRoot = path.join(await fs.realpath(params.stateDir), "worktrees");
     } catch (stateDirError) {
+      // SAFETY: a caught fs.realpath rejection, which node raises as an ErrnoException.
       if ((stateDirError as NodeJS.ErrnoException).code === "ENOENT") {
         return { hasLegacy, pathRewrites: [] };
       }
@@ -532,8 +534,9 @@ export async function detectLegacyStateMigrations(params: {
     configuredChannels.map(([channelId, value]) => {
       const channelConfig =
         value && typeof value === "object" && !Array.isArray(value)
-          ? (value as { accounts?: unknown; defaultAccount?: unknown })
+          ? (value as { accounts?: unknown; defaultAccount?: unknown }) // SAFETY: guarded on the same expression by non-null, typeof "object" and not-an-array.
           : undefined;
+      // SAFETY: channelId comes from the configured-channels map, whose keys are channel ids.
       const plugin = getChannelPlugin(channelId as ChannelId);
       const accountIds = [
         ...(plugin?.config.listAccountIds(params.cfg) ?? []),
@@ -576,11 +579,12 @@ export async function detectLegacyStateMigrations(params: {
         }
         const defaultAccount =
           value && typeof value === "object" && !Array.isArray(value)
-            ? (value as { defaultAccount?: unknown }).defaultAccount
+            ? (value as { defaultAccount?: unknown }).defaultAccount // SAFETY: guarded on the same expression by non-null, typeof "object" and not-an-array.
             : undefined;
         if (typeof defaultAccount === "string" && defaultAccount.trim()) {
           return [[channelId, defaultAccount.trim()]];
         }
+        // SAFETY: channelId comes from the configured-channels map, whose keys are channel ids.
         const plugin = getChannelPlugin(channelId as ChannelId);
         if (plugin) {
           const accountId = resolveChannelDefaultAccountId({ plugin, cfg: migrationOwnerConfig });
@@ -1108,6 +1112,7 @@ export async function runLegacyStateMigrations(params: {
 }): Promise<MigrationMessages> {
   const detected = params.detected;
   const env = params.env ?? process.env;
+  // SAFETY: an empty stand-in used only when no config was supplied; every read below is optional.
   const config = params.config ?? ({} as OpenClawConfig);
   const legacySessionSurfaces = params.legacySessionSurfaces;
   const stateSchema = migrateLegacyStateSchema(detected, env);

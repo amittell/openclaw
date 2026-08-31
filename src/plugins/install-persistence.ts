@@ -407,6 +407,7 @@ function resolveReplacedManagedInstallRemoval(params: {
               [params.pluginId]: params.previousInstall,
             },
           },
+          // SAFETY: a synthetic config carrying only plugins.installs, which is all the uninstall path reads.
         } as OpenClawConfig,
         pluginId: params.pluginId,
         deleteFiles: true,

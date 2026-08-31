@@ -110,6 +110,7 @@ function isProvenPreConnectCandidate(candidate: unknown): boolean {
   if (!code || !PRE_CONNECT_ERROR_CODES.has(code) || !candidate || typeof candidate !== "object") {
     return false;
   }
+  // SAFETY: guarded above by the non-null typeof "object" check; a missing syscall reads undefined.
   const syscall = (candidate as { syscall?: unknown }).syscall;
   return syscall === "connect" || syscall === "getaddrinfo";
 }
@@ -146,11 +147,12 @@ export function isProvenDeliveryNotSentError(err: unknown): boolean {
     }
     const nested =
       candidate && typeof candidate === "object"
-        ? nestedErrorCandidates(candidate as Record<string, unknown>)
+        ? nestedErrorCandidates(candidate as Record<string, unknown>) // SAFETY: guarded on the same expression by candidate && typeof candidate === "object".
         : [];
     const isPreConnectAggregateSummary =
       candidate !== null &&
       typeof candidate === "object" &&
+      // SAFETY: guarded on the same expression by non-null and typeof "object" before the errors probe.
       Array.isArray((candidate as { errors?: unknown }).errors) &&
       code !== undefined &&
       PRE_CONNECT_ERROR_CODES.has(code);
@@ -187,7 +189,7 @@ export function computeBackoffMs(retryCount: number): number {
 
 export function getErrnoCode(err: unknown): string | null {
   return err && typeof err === "object" && "code" in err
-    ? String((err as { code?: unknown }).code)
+    ? String((err as { code?: unknown }).code) // SAFETY: guarded on the same expression by non-null, typeof "object" and the "code" in err test.
     : null;
 }
 

@@ -191,22 +191,20 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     return context as { Body?: string; SessionKey?: string };
   }
 
-  function replyOptions(replySpy: ReturnType<typeof vi.fn>): {
+  type ObservedReplyOptions = {
     disableMessageTool?: boolean;
     enableHeartbeatTool?: boolean;
     forceHeartbeatTool?: boolean;
     sourceReplyDeliveryMode?: string;
-  } {
+  };
+
+  function replyOptions(replySpy: ReturnType<typeof vi.fn>): ObservedReplyOptions {
     const options = replyCall(replySpy)[1];
     if (!options || typeof options !== "object") {
       throw new Error("Expected reply options");
     }
-    return options as {
-      disableMessageTool?: boolean;
-      enableHeartbeatTool?: boolean;
-      forceHeartbeatTool?: boolean;
-      sourceReplyDeliveryMode?: string;
-    };
+    // SAFETY: guarded above by non-null and typeof "object"; every field is optional.
+    return options as ObservedReplyOptions;
   }
 
   async function runWithToolResponse(response: HeartbeatToolResponse) {

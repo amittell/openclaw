@@ -253,11 +253,13 @@ export function applyDefaultModelPrimaryUpdate(params: {
   const resolved = params.resolvedTarget ?? resolveDefaultModelPrimaryTarget(params);
   const nextModels = {
     ...params.cfg.agents?.defaults?.models,
+    // SAFETY: spread of the optional defaults.models map, which is keyed by model id.
   } as Record<string, AgentModelEntryConfig>;
   const key = upsertCanonicalModelConfigEntry(nextModels, resolved);
 
   const defaults = params.cfg.agents?.defaults ?? {};
   const existing = toAgentModelListLike(
+    // SAFETY: defaults is indexed by the caller-supplied model field, whose value is an agent model config.
     (defaults as Record<string, unknown>)[params.field] as AgentModelConfig | undefined,
   );
 
