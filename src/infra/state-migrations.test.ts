@@ -2120,6 +2120,49 @@ describe("state migrations", () => {
     await expectMissingPath(path.join(stateDir, "credentials", "chatapp-allowFrom.json"));
   });
 
+  it("migrates the legacy session store for an explicit fixed-store owner", async () => {
+    const root = await createTempDir();
+    const stateDir = path.join(root, ".openclaw");
+    const env = createEnv(stateDir);
+    const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
+    await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
+    await fs.writeFile(
+      legacyStorePath,
+      JSON.stringify({
+        "agent:main:main": { sessionId: "legacy-main", updatedAt: 20 },
+      }),
+      "utf8",
+    );
+    // The owner is deliberately NOT "main": LEGACY_IMPLICIT_AGENT_ID is "main",
+    // so an owner of "main" is also what the fallback produces and the assertion
+    // would pass with the explicit-owner disjunct in
+    // tryResolveDoctorSessionMigrationAgentId removed. "ops" only resolves via
+    // resolveSessionStoreCompatibilityAgentId, so this test fails without it.
+    const cfg = {
+      agents: {
+        ownership: "explicit",
+        defaults: { sessionStore: { agentId: "ops" } },
+        entries: { main: {}, ops: {} },
+      },
+    } satisfies OpenClawConfig;
+
+    const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
+    expect(detected.targetAgentId).toBe("ops");
+    expect(detected.sessions.hasLegacy).toBe(true);
+
+    await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
+
+    // The store relocates under the owner; session keys keep their own agent
+    // segment (see "canonicalizes parsed owners before removing the legacy store").
+    const targetStorePath = path.join(stateDir, "agents", "ops", "sessions", "sessions.json");
+    const store = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
+      string,
+      { sessionId: string }
+    >;
+    expect(store["agent:main:main"]?.sessionId).toBe("legacy-main");
+    await expectMissingPath(legacyStorePath);
+  });
+
   it("canonicalizes parsed owners before removing the legacy store", async () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
