@@ -129,6 +129,20 @@ describe("automatic startup config repair", () => {
     ).toBe(false);
   });
 
+  it("refuses another invalid key reported at the same schema parent", () => {
+    const snapshot = invalidSnapshot({
+      config: {
+        meta: {
+          lastTouchedAt: "2026-08-01T00:00:00.000Z",
+          unrelatedRetiredKey: true,
+        },
+      } as OpenClawConfig,
+      issuePaths: ["meta"],
+    });
+
+    expect(planStartupConfigRepair(snapshot)).toBeNull();
+  });
+
   it("admits a config whose only migration is plugin-owned", () => {
     // Regression: the pre-bootstrap trust check must reach plugin doctor contracts
     // (here the bundled Active Memory retired-QMD removal), not only core migrations.

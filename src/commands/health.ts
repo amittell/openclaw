@@ -42,9 +42,16 @@ import {
   gatewayProbeResultWasRateLimited,
 } from "./gateway-health-auth-diagnostic.js";
 import { formatHealthChannelLines } from "./health-format.js";
+import { formatRuntimeConfigHealthLine } from "./health-runtime-config.js";
 import { logGatewayConnectionDetails } from "./status.gateway-connection.js";
 export { formatHealthChannelLines } from "./health-format.js";
 export type { HealthSummary } from "../gateway/health/types.js";
+// Re-exported so `./health.js` stays the import path for both helpers; the
+// gateway server method imports buildRuntimeConfigHealth from here.
+export {
+  buildRuntimeConfigHealth,
+  formatRuntimeConfigHealthLine,
+} from "./health-runtime-config.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const healthLog = createSubsystemLogger("health");
@@ -420,6 +427,10 @@ export async function healthCommand(
     const configReloadLine = formatConfigReloadHealthLine(summary);
     if (configReloadLine) {
       runtime.log(styleHealthChannelLine(configReloadLine, rich));
+    }
+    const runtimeConfigLine = formatRuntimeConfigHealthLine(summary);
+    if (runtimeConfigLine) {
+      runtime.log(styleHealthChannelLine(runtimeConfigLine, rich));
     }
     for (const plugin of displayPlugins) {
       const channelSummary = summary.channels?.[plugin.id];
