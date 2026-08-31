@@ -2302,7 +2302,6 @@ src/channels/turn/agent-run-terminal-outcome.ts	1
 src/channels/turn/delivery-result.ts	2
 src/channels/turn/execution.ts	2
 src/channels/turn/history-window.ts	1
-src/channels/turn/lifecycle.ts	3
 src/channels/turn/route-dm-scope.ts	1
 src/channels/turn/run-channel-turn.ts	6
 src/claws/add.ts	7
@@ -2479,7 +2478,6 @@ src/commands/doctor-auth-flat-profiles.ts	5
 src/commands/doctor-auth-migration-receipts.ts	3
 src/commands/doctor-auth-profile-config.ts	4
 src/commands/doctor-config-analysis.ts	3
-src/commands/doctor-config-flow.ts	3
 src/commands/doctor-config-preflight.cron.ts	4
 src/commands/doctor-db-bloat.ts	1
 src/commands/doctor-gateway-services.ts	1
@@ -2580,7 +2578,6 @@ src/commands/models/list.probe.ts	2
 src/commands/models/list.registry.ts	3
 src/commands/models/list.rows.ts	3
 src/commands/models/list.status-command.ts	1
-src/commands/models/shared.ts	3
 src/commands/onboard-agent.ts	1
 src/commands/onboard-config.ts	3
 src/commands/onboard-helpers.ts	2
@@ -3095,7 +3092,6 @@ src/infra/delivery-queue-sqlite-bound.ts	3
 src/infra/delivery-queue-sqlite-namespace.ts	3
 src/infra/delivery-queue-sqlite.ts	4
 src/infra/delivery-queue-sqlite.types.ts	1
-src/infra/delivery-recovery.shared.ts	4
 src/infra/device-identity.ts	1
 src/infra/device-pairing-store.ts	6
 src/infra/diagnostic-event-listener-presence.ts	3
@@ -3239,7 +3235,6 @@ src/infra/state-migrations.config-machine-state.ts	1
 src/infra/state-migrations.cron-run-logs.ts	4
 src/infra/state-migrations.debug-proxy.ts	5
 src/infra/state-migrations.device-identity-repair.ts	1
-src/infra/state-migrations.doctor.ts	7
 src/infra/state-migrations.exec-approvals.ts	1
 src/infra/state-migrations.fs.ts	1
 src/infra/state-migrations.legacy-session-store.ts	3
@@ -3491,7 +3486,6 @@ src/plugins/host-hooks.ts	1
 src/plugins/install-managed-npm-state.ts	7
 src/plugins/install-npm-metadata.ts	1
 src/plugins/install-npm-pack.ts	2
-src/plugins/install-persistence.ts	1
 src/plugins/install-record-commit.ts	3
 src/plugins/install-security-scan.runtime.ts	1
 src/plugins/install-transaction.ts	3
