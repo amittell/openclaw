@@ -370,6 +370,7 @@ describe("EmbeddedTuiBackend", () => {
       tokensUsed: 0,
     }));
     loadAgentRuntimePluginRegistryHandleMock.mockReset();
+    buildAllowedModelSetMock.mockReset();
     withPluginRuntimeRegistryScopeMock.mockClear();
     ensureContextWindowCacheLoadedMock.mockReset();
     ensureContextWindowCacheLoadedMock.mockResolvedValue(undefined);
@@ -3764,6 +3765,28 @@ describe("EmbeddedTuiBackend", () => {
     expect(isEmbeddedMode()).toBe(false);
     expect(defaultRuntime.log).toBe(originalRuntimeLog);
     expect(defaultRuntime.error).toBe(originalRuntimeError);
+  });
+
+  it("scopes catalog reads to the requested agents model policy", async () => {
+    // Unscoped listModels reads must keep the per-agent allowed-model policy (agents.list.*.modelPolicy) scoped
+    // instead of widening the catalog to every configured agent on multi-agent rosters.
+    loadGatewayModelCatalogMock.mockReturnValue([
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet", provider: "anthropic" },
+      { id: "gpt-5.4", name: "GPT-5.4", provider: "openai" },
+    ]);
+    getRuntimeConfigMock.mockReturnValue({});
+    // Uses the module-level binding assigned in beforeAll, as every other test
+    // here does; a local re-import shadows it and trips eslint(no-shadow).
+    const backend = new EmbeddedTuiBackend();
+
+    const models = await backend.listModels({ agentId: "main" });
+
+    // listModels must thread the selected agent into the per-agent model policy boundary so the
+    // catalog read stays scoped to that agents allowlist instead of widening across the roster.
+    expect(buildAllowedModelSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "main" }),
+    );
+    expect(models.map((entry) => entry.id)).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

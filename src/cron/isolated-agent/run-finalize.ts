@@ -148,18 +148,29 @@ export async function finalizeCronRun(params: {
         ? prepared.cronSession.sessionEntry.contextTokensSource
         : "resolved";
 
+  // A fallback-served run is transient. Persisting its runtime model would
+  // prevent the configured primary from being retried after it recovers, and
+  // persisting its context window would desynchronize status and compaction.
+  const isFromFallback =
+    modelUsed !== execution.liveSelection.model ||
+    providerUsed !== execution.liveSelection.provider;
   if (!params.isAborted()) {
-    setCronSessionRuntimeModel({
-      entry: prepared.cronSession.sessionEntry,
-      provider: providerUsed,
-      model: modelUsed,
-    });
     setCronSessionAgentHarnessId({
       entry: prepared.cronSession.sessionEntry,
       agentHarnessId,
     });
-    prepared.cronSession.sessionEntry.contextTokens = contextTokens;
-    prepared.cronSession.sessionEntry.contextTokensSource = contextTokensSource;
+    // A fallback model is a transient recovery choice, not the session's durable
+    // runtime model. Persisting it would pin the session to the fallback and its
+    // context budget after recovery, so only a non-fallback run writes them back.
+    if (!isFromFallback) {
+      setCronSessionRuntimeModel({
+        entry: prepared.cronSession.sessionEntry,
+        provider: providerUsed,
+        model: modelUsed,
+      });
+      prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+      prepared.cronSession.sessionEntry.contextTokensSource = contextTokensSource;
+    }
     if (isCliProvider(providerUsed, prepared.cfgWithAgentDefaults)) {
       const cliSessionBinding = finalRunResult.meta?.agentMeta?.cliSessionBinding;
       const cliSessionId = finalRunResult.meta?.agentMeta?.sessionId?.trim();
