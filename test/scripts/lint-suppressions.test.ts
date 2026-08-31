@@ -204,6 +204,7 @@ describe("production lint suppressions", () => {
         "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs|preserve-caught-error|1",
         "src/agents/agent-bundle-mcp-runtime.ts|unicorn/prefer-add-event-listener|1",
         "src/agents/agent-tools.abort.ts|typescript/prefer-promise-reject-errors|1",
+        "src/agents/auth-profiles/sanitize.ts|no-control-regex|2",
         "src/agents/mcp-http-transport.ts|unicorn/prefer-add-event-listener|6",
         // JSON parser causes can quote reflected credentials from authenticated provider responses.
         "src/agents/provider-http-errors.ts|preserve-caught-error|1",
