@@ -127,16 +127,20 @@ function scenarioConfig(scenario: string, options: TestStateOptions = {}) {
         },
       },
       agents: {
+        ownership: "explicit",
         defaults: {
           model: {
             primary: "openai/gpt-5.6-luna",
           },
           contextTokens: 64000,
           skills: ["memory"],
+          authInheritance: { agentId: "main" },
+          heartbeat: { agentId: "main" },
+          sessionStore: { agentId: "main" },
+          systemAgent: { agentId: "main" },
         },
         entries: {
           main: {
-            default: true,
             name: "Main",
             workspace: "~/workspace",
             model: {
@@ -156,6 +160,11 @@ function scenarioConfig(scenario: string, options: TestStateOptions = {}) {
           },
         },
       },
+      bindings: [
+        { agentId: "main", match: { channel: "discord", accountId: "*" } },
+        { agentId: "main", match: { channel: "telegram", accountId: "*" } },
+        { agentId: "main", match: { channel: "whatsapp", accountId: "*" } },
+      ],
       skills: {
         allowBundled: ["memory", "openclaw-testing"],
         limits: {
@@ -176,10 +185,8 @@ function scenarioConfig(scenario: string, options: TestStateOptions = {}) {
         discord: {
           enabled: true,
           token: { source: "env", provider: "default", id: "DISCORD_BOT_TOKEN" },
-          dm: {
-            policy: "allowlist",
-            allowFrom: ["111111111111111111"],
-          },
+          dmPolicy: "allowlist",
+          allowFrom: ["111111111111111111"],
           groupPolicy: "allowlist",
           guilds: {
             "222222222222222222": {
@@ -472,6 +479,7 @@ OPENCLAW_TEST_STATE_JSON
     }
   },
   "agents": {
+    "ownership": "explicit",
     "defaults": {
       "model": {
         "primary": "openai/gpt-5.6-luna"
@@ -479,12 +487,22 @@ OPENCLAW_TEST_STATE_JSON
       "contextTokens": 64000,
       "skills": [
         "memory"
-      ]
+      ],
+      "authInheritance": {
+        "agentId": "main"
+      },
+      "heartbeat": {
+        "agentId": "main"
+      },
+      "sessionStore": {
+        "agentId": "main"
+      },
+      "systemAgent": {
+        "agentId": "main"
+      }
     },
-    "list": [
-      {
-        "id": "main",
-        "default": true,
+    "entries": {
+      "main": {
         "name": "Main",
         "workspace": "~/workspace",
         "model": {
@@ -496,8 +514,7 @@ OPENCLAW_TEST_STATE_JSON
         ],
         "contextTokens": 64000
       },
-      {
-        "id": "ops",
+      "ops": {
         "name": "Ops",
         "workspace": "~/workspace/ops",
         "model": {
@@ -505,8 +522,31 @@ OPENCLAW_TEST_STATE_JSON
         },
         "fastModeDefault": true
       }
-    ]
+    }
   },
+  "bindings": [
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "discord",
+        "accountId": "*"
+      }
+    },
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "telegram",
+        "accountId": "*"
+      }
+    },
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "whatsapp",
+        "accountId": "*"
+      }
+    }
+  ],
   "skills": {
     "allowBundled": [
       "memory",
@@ -545,12 +585,10 @@ OPENCLAW_TEST_STATE_JSON
         "provider": "default",
         "id": "DISCORD_BOT_TOKEN"
       },
-      "dm": {
-        "policy": "allowlist",
-        "allowFrom": [
-          "111111111111111111"
-        ]
-      },
+      "dmPolicy": "allowlist",
+      "allowFrom": [
+        "111111111111111111"
+      ],
       "groupPolicy": "allowlist",
       "guilds": {
         "222222222222222222": {
