@@ -200,6 +200,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
   }
 
   function replyOptions(replySpy: ReturnType<typeof vi.fn>): {
+    disableMessageTool?: boolean;
     enableHeartbeatTool?: boolean;
     forceHeartbeatTool?: boolean;
     sourceReplyDeliveryMode?: string;
@@ -209,6 +210,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       throw new Error("Expected reply options");
     }
     return options as {
+      disableMessageTool?: boolean;
       enableHeartbeatTool?: boolean;
       forceHeartbeatTool?: boolean;
       sourceReplyDeliveryMode?: string;
@@ -297,6 +299,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     }
     expect(result.calledCtx.Body).toContain("heartbeat_respond");
     expect(result.calledCtx.Body).not.toContain("HEARTBEAT_OK");
+    expect(result.calledOpts.disableMessageTool).toBe(true);
     expect(result.calledOpts.enableHeartbeatTool).toBe(true);
     expect(result.calledOpts.forceHeartbeatTool).toBe(true);
     expect(result.calledOpts.sourceReplyDeliveryMode).toBe("message_tool_only");
@@ -1113,6 +1116,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       const calledOpts = replyOptions(replySpy);
       expect(calledCtx.Body).toContain(SILENT_REPLY_TOKEN);
       expect(calledCtx.Body).not.toContain("heartbeat_respond");
+      expect(calledOpts.disableMessageTool).toBe(true);
       expect(calledOpts.enableHeartbeatTool).toBeUndefined();
       expect(calledOpts.forceHeartbeatTool).toBeUndefined();
       expect(calledOpts.sourceReplyDeliveryMode).toBeUndefined();

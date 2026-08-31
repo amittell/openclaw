@@ -625,6 +625,9 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     note,
   });
   const cfg = finalized.cfg;
+  if (legacyDefaultAgentId) {
+    retainLegacyDefaultAgentId(cfg, legacyDefaultAgentId);
+  }
   const shouldWriteConfig = finalized.shouldWriteConfig && !legacyMigrationBlocksWrite;
   const singleTopLevelIncludeWrite =
     shouldWriteConfig &&
