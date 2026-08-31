@@ -11,6 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import {
+  OAUTH_REFRESH_CALL_TIMEOUT_MS,
+  OAUTH_REFRESH_INLOCK_TIMEOUT_MS,
+  OAUTH_REFRESH_LOCK_OPTIONS,
+} from "./constants.js";
 import { testing as externalAuthTesting } from "./external-auth.test-support.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
 import {
@@ -290,6 +295,35 @@ describe("createOAuthManager", () => {
       cfg,
       agentDir: undefined,
     });
+  });
+
+  it("keeps the in-lock critical-section deadline between the call timeout and the stale window", () => {
+    // The held-lock critical section (keychain load + buildApiKey + network
+    // refresh) is now wrapped by withRefreshCallTimeout(OAUTH_REFRESH_INLOCK_TIMEOUT_MS)
+    // so a wedged in-lock op cannot pin the cross-agent lock. The budget must sit
+    // above the network call timeout (so the tighter network budget fires first)
+    // and below the stale window (so a waiter never reclaims the lock while the
+    // owner is still within its allowed runtime). A timing-based behavior test is
+    // impractical here because the surrounding withFileLock uses a real file lock
+    // that does not coordinate with fake timers; the deadline mechanism itself is
+    // covered by withRuntimeAuthRefreshDeadline's tests and the auth-controller
+    // cold-start regression test.
+    expect(OAUTH_REFRESH_CALL_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS);
+    expect(OAUTH_REFRESH_INLOCK_TIMEOUT_MS).toBeLessThan(OAUTH_REFRESH_LOCK_OPTIONS.stale);
+  });
+
+  it("keeps the minimum lock-wait retry budget above the in-lock owner deadline", () => {
+    // A peer waiter uses OAUTH_REFRESH_LOCK_OPTIONS to retry the file lock; if
+    // its guaranteed (jitter-free) cumulative wait can expire before the owner's
+    // full held-lock ceiling (OAUTH_REFRESH_INLOCK_TIMEOUT_MS), the waiter would
+    // surface refresh_contention while the owner is still legitimately in budget.
+    // Randomization only lengthens delays, so the floor is the worst case.
+    const { retries, factor, minTimeout, maxTimeout } = OAUTH_REFRESH_LOCK_OPTIONS.retries;
+    let minBudgetMs = 0;
+    for (let attempt = 0; attempt < retries; attempt++) {
+      minBudgetMs += Math.min(maxTimeout, minTimeout * factor ** attempt);
+    }
+    expect(minBudgetMs).toBeGreaterThan(OAUTH_REFRESH_INLOCK_TIMEOUT_MS + 10_000);
   });
 
   it("does not overlay external auth while checking main-store adoption", async () => {
@@ -714,6 +748,179 @@ describe("createOAuthManager", () => {
           agentDir,
         }),
       ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+    });
+  });
+
+  it("tombstones the stored credential after a permanent refresh failure", async () => {
+    await withOAuthAgentDirs("oauth-manager-refresh-dead-mark-", async ({ agentDir }) => {
+      const profileId = "openai:user@example.com";
+      const managedCredential = createCredential({
+        access: "dead-expired-access",
+        refresh: "dead-refresh",
+        expires: Date.now() - 60_000,
+        email: "user@example.com",
+        accountId: "acct-123",
+      });
+      saveAuthProfileStore({ version: 1, profiles: { [profileId]: managedCredential } }, agentDir, {
+        filterExternalAuthProfiles: false,
+      });
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential: vi.fn(async () => {
+          throw new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}');
+        }),
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      await expect(
+        manager.resolveOAuthAccess({
+          store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+            allowKeychainPrompt: false,
+          }),
+          profileId,
+          credential: managedCredential,
+          agentDir,
+        }),
+      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+
+      clearRuntimeAuthProfileStoreSnapshots();
+      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      // The tombstone must survive a disk round-trip or the re-seed gate
+      // closes again on the next auth store load.
+      expect(persisted.profiles[profileId]).toMatchObject({
+        type: "oauth",
+        refresh: "dead-refresh",
+        refreshDeadAt: expect.any(Number),
+      });
+    });
+  });
+
+  it("uses a safe different external CLI grant after forced refresh tombstones local OAuth", async () => {
+    await withOAuthAgentDirs("oauth-manager-refresh-dead-reseed-", async ({ agentDir }) => {
+      const profileId = "openai-codex:default";
+      const localCredential = createCredential({
+        access: "still-usable-local-access",
+        refresh: "dead-local-refresh",
+        expires: Date.now() + 10 * 60_000,
+        email: "user@example.com",
+        accountId: "acct-123",
+      });
+      saveAuthProfileStore({ version: 1, profiles: { [profileId]: localCredential } }, agentDir, {
+        filterExternalAuthProfiles: false,
+      });
+
+      let bootstrapCredential: OAuthCredential | null = null;
+      const readBootstrapCredential = vi.fn(() => bootstrapCredential);
+      const refreshCredential = vi.fn(async (credential: OAuthCredential) => {
+        expect(credential.refresh).toBe("dead-local-refresh");
+        throw new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}');
+      });
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential,
+        readBootstrapCredential,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      await expect(
+        manager.resolveOAuthAccess({
+          store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+            allowKeychainPrompt: false,
+          }),
+          profileId,
+          credential: localCredential,
+          agentDir,
+          forceRefresh: true,
+        }),
+      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+      expect(refreshCredential).toHaveBeenCalledTimes(1);
+
+      clearRuntimeAuthProfileStoreSnapshots();
+      const reloadedStore = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      const tombstonedCredential = reloadedStore.profiles[profileId];
+      if (tombstonedCredential?.type !== "oauth") {
+        throw new Error("Expected persisted OAuth credential");
+      }
+      expect(tombstonedCredential).toMatchObject({
+        access: "still-usable-local-access",
+        refresh: "dead-local-refresh",
+        refreshDeadAt: expect.any(Number),
+      });
+
+      bootstrapCredential = createCredential({
+        access: "fresh-cli-access",
+        refresh: "fresh-cli-refresh",
+        expires: Date.now() + 10 * 60_000,
+        email: "user@example.com",
+        accountId: "acct-123",
+      });
+      const result = await manager.resolveOAuthAccess({
+        store: reloadedStore,
+        profileId,
+        credential: tombstonedCredential,
+        agentDir,
+      });
+
+      expect(result?.apiKey).toBe("fresh-cli-access");
+      expect(result?.credential).toMatchObject({
+        access: "fresh-cli-access",
+        refresh: "fresh-cli-refresh",
+      });
+      expect(refreshCredential).toHaveBeenCalledTimes(1);
+      expect(readBootstrapCredential).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          credential: expect.objectContaining({ refreshDeadAt: expect.any(Number) }),
+        }),
+      );
+    });
+  });
+
+  it("does not tombstone the stored credential on transient refresh failures", async () => {
+    await withOAuthAgentDirs("oauth-manager-refresh-transient-", async ({ agentDir }) => {
+      const profileId = "openai:user@example.com";
+      const managedCredential = createCredential({
+        access: "transient-expired-access",
+        refresh: "transient-refresh",
+        expires: Date.now() - 60_000,
+        email: "user@example.com",
+        accountId: "acct-123",
+      });
+      saveAuthProfileStore({ version: 1, profiles: { [profileId]: managedCredential } }, agentDir, {
+        filterExternalAuthProfiles: false,
+      });
+      const manager = createOAuthManager({
+        buildApiKey: async (_provider, credential) => credential.access,
+        refreshCredential: vi.fn(async () => {
+          throw new Error("fetch failed: ECONNRESET");
+        }),
+        readBootstrapCredential: () => null,
+        isRefreshTokenReusedError: () => false,
+      });
+
+      await expect(
+        manager.resolveOAuthAccess({
+          store: ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+            allowKeychainPrompt: false,
+          }),
+          profileId,
+          credential: managedCredential,
+          agentDir,
+        }),
+      ).rejects.toBeInstanceOf(OAuthManagerRefreshError);
+
+      clearRuntimeAuthProfileStoreSnapshots();
+      const persisted = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+        allowKeychainPrompt: false,
+      });
+      expect(persisted.profiles[profileId]?.type).toBe("oauth");
+      expect(
+        (persisted.profiles[profileId] as { refreshDeadAt?: number }).refreshDeadAt,
+      ).toBeUndefined();
     });
   });
 

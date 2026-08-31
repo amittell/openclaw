@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isCompactionReplayCheckpoint } from "@openclaw/ai/transports";
-import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { SILENT_REPLY_TOKEN, isSilentReplyText } from "../../../auto-reply/tokens.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import type { AssistantMessage } from "../../../llm/types.js";
@@ -30,7 +30,7 @@ import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolBatchEvidence,
-  resolveSettledToolTerminalContinuationInstruction,
+  SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -49,11 +49,16 @@ import {
   isEmbeddedRunTerminalTimeout,
   type EmbeddedRunTerminalState,
 } from "./terminal-outcome.js";
+import { requiresVisibleTerminalReply } from "./terminal-resolution.settled-turn.js";
 import {
   MAX_BEFORE_AGENT_FINALIZE_REVISIONS,
+  MAX_SILENT_STOP_NUDGES,
   type EmbeddedRunTerminalRetryState,
 } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
+// Re-exported so `./terminal-resolution.js` stays the import path; settled-turn-finalization.ts
+// and terminal-resolution.test.ts import resolveSettledTurnFinalizationRequest from here.
+export { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.settled-turn.js";
 
 const MAX_MISSING_ASSISTANT_RETRIES = 1;
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
@@ -86,90 +91,6 @@ export function createTerminalToolPresentationTracker() {
 type TerminalResolution =
   | { action: "retry" }
   | { action: "complete"; result: EmbeddedAgentRunResult };
-
-function requiresVisibleTerminalReply(runParams: TerminalRunParams): boolean {
-  return (
-    runParams.terminalReplyExpectation === "required" ||
-    (runParams.terminalReplyExpectation == null &&
-      (runParams.trigger == null || runParams.trigger === "user" || runParams.trigger === "manual"))
-  );
-}
-
-export function resolveSettledTurnFinalizationRequest(input: {
-  runParams: TerminalRunParams;
-  attempt: EmbeddedRunAttemptResult;
-  activeErrorContext: { provider: string; model: string };
-  modelApi: Parameters<typeof resolveReasoningOnlyRetryInstruction>[0]["modelApi"];
-  executionContract: Parameters<
-    typeof resolveReasoningOnlyRetryInstruction
-  >[0]["executionContract"];
-  payloadsWithToolMedia: EmbeddedAgentRunResult["payloads"];
-  recoveredFinalAssistantPayloadsAfterPromptTimeout?: EmbeddedAgentRunResult["payloads"];
-  hasTerminalToolPresentation: boolean;
-  terminalState: EmbeddedRunTerminalState;
-  settledTurnFinalizationAvailable: boolean;
-}): string | null {
-  if (!input.settledTurnFinalizationAvailable) {
-    return null;
-  }
-  const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
-  const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
-  const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
-    isCronTrigger: input.runParams.trigger === "cron",
-    payloadCount: input.payloadsWithToolMedia?.length ?? 0,
-    aborted: terminalAborted,
-    timedOut: terminalTimedOut,
-    attempt: input.attempt,
-  });
-  const terminalAssistant = input.attempt.currentAttemptAssistant ?? input.attempt.lastAssistant;
-  // Payload preparation renders an undelivered tool-error fallback before the
-  // model gets its final answer. It must not masquerade as an assistant reply;
-  // exact failed-call settlement is independently proven by the finalizer owner.
-  const hasOnlySyntheticToolErrorPayload = Boolean(
-    terminalAssistant?.stopReason === "toolUse" &&
-    input.attempt.lastToolError &&
-    input.attempt.assistantTexts.every((text) => text.trim().length === 0) &&
-    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
-    input.payloadsWithToolMedia?.every(
-      (payload) =>
-        payload.isError === true &&
-        Object.keys(payload).every((key) => key === "text" || key === "isError"),
-    ),
-  );
-  const payloadCount = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
-    ? input.recoveredFinalAssistantPayloadsAfterPromptTimeout.length
-    : hasOnlySyntheticToolErrorPayload
-      ? 0
-      : input.payloadsWithToolMedia?.length
-        ? input.payloadsWithToolMedia.length
-        : silentToolResultReplyPayload
-          ? 1
-          : 0;
-  const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
-    allowEmptyAssistantReplyAsSilent: input.runParams.allowEmptyAssistantReplyAsSilent,
-    terminalReplyExpectation: input.runParams.terminalReplyExpectation,
-    onlyExplicitSilentReply: false,
-    payloadCount,
-    aborted: terminalAborted,
-    timedOut: terminalTimedOut,
-    attempt: input.attempt,
-  });
-  if (emptyAssistantReplyIsSilent) {
-    return null;
-  }
-  return resolveSettledToolTerminalContinuationInstruction({
-    provider: input.activeErrorContext.provider,
-    modelId: input.activeErrorContext.model,
-    modelApi: input.modelApi,
-    executionContract: input.executionContract,
-    allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
-    payloadCount,
-    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
-    aborted: terminalAborted,
-    timedOut: terminalTimedOut,
-    attempt: input.attempt,
-  });
-}
 
 export async function resolveEmbeddedRunTerminal(input: {
   runParams: TerminalRunParams;
@@ -466,6 +387,36 @@ export async function resolveEmbeddedRunTerminal(input: {
     return { action: "retry" };
   }
 
+  // Silent-stop nudge: under message_tool_only the model can end the turn with
+  // assistant text it never sent through the message tool; the payload builder
+  // suppresses that text, so the user gets no reply at all. Key on the raw
+  // assistant text (payloads are already suppressed here), excluding an
+  // intentional NO_REPLY.
+  const silentStopAssistantText = attempt.assistantTexts.some(
+    (text) => text.trim().length > 0 && !isSilentReplyText(text),
+  );
+  const silentStopDeliveryGap =
+    runParams.sourceReplyDeliveryMode === "message_tool_only" &&
+    silentStopAssistantText &&
+    attempt.didDeliverSourceReplyViaMessageTool !== true &&
+    (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
+    !terminalAborted &&
+    !promptError &&
+    !terminalTimedOut &&
+    !attempt.clientToolCalls &&
+    !attempt.yieldDetected &&
+    !hasAttemptTerminalState(attempt);
+  if (silentStopDeliveryGap && retryState.silentStopNudges < MAX_SILENT_STOP_NUDGES) {
+    retryState.silentStopNudges += 1;
+    input.activateInternalPrompt(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION);
+    log.warn(
+      `silent-stop nudge: undelivered visible text under message_tool_only; ` +
+        `retrying ${retryState.silentStopNudges}/${MAX_SILENT_STOP_NUDGES}: ` +
+        `runId=${runParams.runId} sessionId=${runParams.sessionId}`,
+    );
+    return { action: "retry" };
+  }
+
   return completeEmbeddedRun({
     ...input,
     payloadCount,
@@ -524,7 +475,7 @@ async function completeEmbeddedRun(
       ? "tool_calls"
       : input.attempt.yieldDetected
         ? "end_turn"
-        : (input.attemptAssistant?.stopReason as string | undefined);
+        : (input.attemptAssistant?.stopReason as string | undefined); // SAFETY: the optional chain already yields undefined when no assistant attempt exists; the assertion only widens the provider-specific stopReason literal union to string.
   if (error) {
     input.setTerminalLifecycleMeta({ replayInvalid, livenessState });
     if (input.authProfileId) {

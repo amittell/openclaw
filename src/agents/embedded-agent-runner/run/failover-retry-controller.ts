@@ -1,5 +1,5 @@
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
-import { sleepWithAbort } from "../../../infra/backoff.js";
+import { computeBackoff, sleepWithAbort } from "../../../infra/backoff.js";
 import {
   type AuthProfileFailureReason,
   markAuthProfileFailure,
@@ -20,7 +20,7 @@ import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import {
   MAX_SAME_MODEL_RATE_LIMIT_RETRIES,
   resolveNextSameModelRateLimitRetryCount,
-  resolveOverloadFailoverBackoffMs,
+  resolveOverloadFailoverBackoffPolicy,
   resolveOverloadProfileRotationLimit,
   resolveRateLimitProfileRotationLimit,
   resolveSameModelRateLimitRetryDelayMs,
@@ -60,7 +60,8 @@ export function createEmbeddedRunFailoverRetryController(input: {
     fallbackConfigured,
     profileFailureStore,
   } = input;
-  const overloadFailoverBackoffMs = resolveOverloadFailoverBackoffMs();
+  const overloadBackoffPolicy = resolveOverloadFailoverBackoffPolicy(params.config);
+  let overloadFailoverAttempts = 0;
   const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit();
   const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit();
   let rateLimitProfileRotations = 0;
@@ -219,13 +220,15 @@ export function createEmbeddedRunFailoverRetryController(input: {
         : null;
     },
     maybeBackoffBeforeOverloadFailover: async (reason: FailoverReason | null) => {
-      if (reason !== "overloaded" || overloadFailoverBackoffMs <= 0) {
+      if (reason !== "overloaded" || overloadBackoffPolicy.maxMs <= 0) {
         return;
       }
+      overloadFailoverAttempts += 1;
+      const delayMs = computeBackoff(overloadBackoffPolicy, overloadFailoverAttempts);
       log.warn(
-        `overload backoff before failover for ${provider}/${modelId}: delayMs=${overloadFailoverBackoffMs}`,
+        `overload backoff before failover for ${provider}/${modelId}: attempt=${overloadFailoverAttempts} delayMs=${delayMs}`,
       );
-      await sleepForRetry(overloadFailoverBackoffMs);
+      await sleepForRetry(delayMs);
     },
     maybeRetrySameModelRateLimit: async (retry?: {
       retryAfterSeconds?: number;

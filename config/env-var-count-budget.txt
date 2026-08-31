@@ -2,4 +2,6 @@
 # Ratchet: lower this number when cleanup removes names; never raise it without owner approval.
 # Worker bundle installation no longer injects OPENCLAW_STATE_DIR into a remote npm process.
 # The internal Node-version check no longer contributes a false OPENCLAW_* name.
-500
+# Raised 500 -> 501 for OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS (src/gateway/server-close.ts),
+# the fork's post-shutdown zombie-process guard, carried forward onto v2026.8.1. Owner-approved.
+501

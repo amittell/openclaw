@@ -313,32 +313,6 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     Getting the group chat ID: forward a group message to `@userinfobot` / `@getidsbot`, read `chat.id` from `openclaw logs --follow`, inspect Bot API `getUpdates`, or (once the group is allowed) run `/whoami@<bot_username>`.
 
   </Tab>
-
-  <Tab title="Bot-to-bot messages">
-    Telegram bot-to-bot traffic (available with Telegram's bot-to-bot communication mode) is dropped before pipeline entry by default: `message.from.is_bot` messages never reach the agent unless `allowBots` is enabled for the selected account.
-
-    To accept bot-authored messages, set `channels.telegram.allowBots: true` (channel- or account-level):
-
-```json5
-{
-  channels: {
-    telegram: {
-      allowBots: true,
-      botLoopProtection: {
-        maxEventsPerWindow: 20,
-        windowSeconds: 60,
-        cooldownSeconds: 60,
-      },
-    },
-  },
-}
-```
-
-    Accepted bot messages are recorded against the shared [bot loop protection](/channels/bot-loop-protection) pair guard (`(account, chat, bot pair)`). Once a pair crosses `maxEventsPerWindow` events inside `windowSeconds`, the pair enters a `cooldownSeconds` suppression period and its messages are dropped. Unset budgets inherit `channels.defaults.botLoopProtection` key by key. Channel posts carry a synthetic sender identity, so while their originating bot pair is cooling down, their posts are dropped as loop suppression rather than admitted as new bot traffic.
-
-    Prefer narrow per-account overrides and low `maxEventsPerWindow` values when chaining multiple bots; one-shot bot replies that stay under the budget are unaffected.
-
-  </Tab>
 </Tabs>
 
 ## Runtime behavior
@@ -1035,7 +1009,6 @@ Primary reference: [Configuration reference - Telegram](/gateway/config-channels
 
 - startup/auth: `enabled`, `botToken`, `tokenFile` (must be a regular file; symlinks are rejected), `accounts.*`
 - access control: `dmPolicy`, `allowFrom`, `direct.*.tools`, `direct.*.toolsBySender`, `groupPolicy`, `groupAllowFrom`, `groups`, `groups.*.topics.*`, top-level `bindings[]` (`type: "acp"`)
-- bot-to-bot: `allowBots` (default `false`; drops bot-authored inbound messages before pipeline entry), `botLoopProtection` (shared pair-loop budget; inherits `channels.defaults.botLoopProtection`)
 - group introductions: `joinIntro`, `accounts.*.joinIntro` (default: `true`)
 - topic defaults: `groups.<chatId>.topics."*"` applies to unmatched forum topics; exact topic IDs override it
 - exec approvals: `execApprovals`, `accounts.*.execApprovals`

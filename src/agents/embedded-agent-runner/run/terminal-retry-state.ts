@@ -1,4 +1,7 @@
 export const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 3;
+// Bounded to one continuation per run so a model that refuses to use the
+// message tool cannot ping-pong the terminal loop.
+export const MAX_SILENT_STOP_NUDGES = 1;
 
 export type CodeModeRecoveryCandidate = {
   blockedActionKeys?: readonly string[];
@@ -25,6 +28,7 @@ export type EmbeddedRunTerminalRetryState = {
   compactionContinuationInstruction: string | null;
   beforeFinalizeRevisionAttempts: number;
   codeModeRecovery: CodeModeRecoveryState;
+  silentStopNudges: number;
 };
 
 export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryState {
@@ -36,5 +40,6 @@ export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryS
     compactionContinuationInstruction: null,
     beforeFinalizeRevisionAttempts: 0,
     codeModeRecovery: { kind: "idle" },
+    silentStopNudges: 0,
   };
 }

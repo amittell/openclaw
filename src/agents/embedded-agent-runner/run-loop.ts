@@ -18,12 +18,16 @@ import {
 import { drainPendingContextEngineTurnsBeforeRun } from "../harness/context-engine-turn-attempt.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { normalizeUsage } from "../usage.js";
-import { log } from "./logger.js";
 import {
   createPostCompactionLoopGuard,
   PostCompactionLoopPersistedError,
 } from "./post-compaction-loop-guard.js";
 import { createEmbeddedRunReplayState } from "./replay-state.js";
+import {
+  buildEmbeddedRunSilentErrorExhaustedResult,
+  resolveEmbeddedRunRetryLimitExhaustion,
+  type EmbeddedRunExhaustionContext,
+} from "./run-loop.exhaustion.js";
 import { handleEmbeddedAssistantFailure } from "./run/assistant-failure.js";
 import { prepareAndDispatchEmbeddedRunAttempt } from "./run/attempt-dispatch-preparation.js";
 import { normalizeEmbeddedRunAttempt } from "./run/attempt-normalization.js";
@@ -34,9 +38,8 @@ import { hasCodexAppServerRecoveryRetryBudget } from "./run/codex-app-server-rec
 import { createEmbeddedRunCompactionRuntime } from "./run/compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import type { PreparedEmbeddedRunInput } from "./run/execution-context.js";
-import { resolveRunFailoverDecision } from "./run/failover-policy.js";
 import { createEmbeddedRunFailoverRetryController } from "./run/failover-retry-controller.js";
-import { buildErrorAgentMeta, resolveMaxRunRetryIterations } from "./run/helpers.js";
+import { resolveMaxRunRetryIterations } from "./run/helpers.js";
 import { createIdleTimeoutBreakerState } from "./run/idle-timeout-breaker.js";
 import {
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
@@ -50,7 +53,6 @@ import {
   recordRunRetry,
   type RunRetryBudget,
 } from "./run/retry-budget.js";
-import { handleRetryLimitExhaustion } from "./run/retry-limit.js";
 import { settleEmbeddedRun } from "./run/run-settlement.js";
 import { prepareEmbeddedRunRuntime } from "./run/runtime-preparation.js";
 import { createEmbeddedRunSessionPromptState } from "./run/session-prompt-state.js";
@@ -321,6 +323,27 @@ export async function runPreparedEmbeddedLoop(
     let authRetryPending = false;
     let accumulatedReplayState = createEmbeddedRunReplayState();
     const attemptCarryover = createAttemptCarryover();
+    // Read lazily: every field below is reassigned per attempt or lives behind a
+    // getter, so the exits must observe the values current when they fire.
+    const exhaustionContext: EmbeddedRunExhaustionContext = {
+      runParams: params,
+      provider,
+      modelId,
+      reportedModelId: model.id,
+      fallbackConfigured,
+      startedAtMs: started,
+      readLoopState: () => ({
+        sessionId: sessionPromptState.sessionId,
+        sessionFile: sessionPromptState.sessionFile,
+        modelAttempt: attemptCarryover.modelAttempt,
+        outerContextTokenMeta,
+        usageAccumulator,
+        lastRunPromptUsage,
+        lastProfileId,
+        lastRetryFailoverReason,
+        replayInvalid: accumulatedReplayState.replayInvalid,
+      }),
+    };
     while (true) {
       // Every retry keeps its exact admission; only transcript mutation requires a writer claim.
       abortSignal?.throwIfAborted();
@@ -330,37 +353,7 @@ export async function runPreparedEmbeddedLoop(
       assertAdmittedActive();
       refreshPreparedRuntimeSnapshot();
       if (isRunRetryBudgetExhausted(runRetryBudget)) {
-        const message =
-          `Exceeded retry limit after ${runRetryBudget.attemptsDispatched} attempts ` +
-          `(counted attempts=${runRetryBudget.attemptsCounted}, max=${runRetryBudget.maxAttempts}).`;
-        log.error(
-          `[run-retry-limit] sessionKey=${params.sessionKey ?? params.sessionId} ` +
-            `provider=${provider}/${modelId} attempts=${runRetryBudget.attemptsDispatched} ` +
-            `countedAttempts=${runRetryBudget.attemptsCounted} maxAttempts=${runRetryBudget.maxAttempts}`,
-        );
-        const retryLimitDecision = resolveRunFailoverDecision({
-          stage: "retry_limit",
-          fallbackConfigured,
-          failoverReason: lastRetryFailoverReason,
-        });
-        return handleRetryLimitExhaustion({
-          message,
-          decision: retryLimitDecision,
-          provider,
-          model: modelId,
-          profileId: lastProfileId,
-          durationMs: Date.now() - started,
-          agentMeta: buildErrorAgentMeta({
-            sessionId: sessionPromptState.sessionId,
-            sessionFile: sessionPromptState.sessionFile,
-            ...(attemptCarryover.modelAttempt ?? { provider, model: model.id }),
-            ...outerContextTokenMeta,
-            usageAccumulator,
-            lastRunPromptUsage,
-          }),
-          replayInvalid: accumulatedReplayState.replayInvalid ? true : undefined,
-          livenessState: "blocked",
-        });
+        return resolveEmbeddedRunRetryLimitExhaustion(exhaustionContext, runRetryBudget);
       }
       beginRunAttempt(runRetryBudget);
       const runtimeAuthRetry: boolean = authRetryPending;
@@ -549,6 +542,9 @@ export async function runPreparedEmbeddedLoop(
       lastRetryFailoverReason = assistantFailureOutcome.lastRetryFailoverReason;
       if (!assistantFailureOutcome.preserveSameModelRateLimitRetryCount) {
         failoverRetryController.resetSameModelRateLimitRetries();
+      }
+      if (assistantFailureOutcome.action === "silent-error-exhausted") {
+        return buildEmbeddedRunSilentErrorExhaustedResult(exhaustionContext, emptyErrorRetries);
       }
       if (assistantFailureOutcome.action === "retry") {
         continue;

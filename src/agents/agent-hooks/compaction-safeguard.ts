@@ -125,6 +125,7 @@ function prependPreviousSummaryForRedistill(params: {
         },
       ],
       timestamp: 0,
+      // SAFETY: the literal above supplies role, content blocks and timestamp, which is the AgentMessage shape; the assertion only fixes the union member.
     } as AgentMessage,
     ...params.messages,
   ];
@@ -176,7 +177,9 @@ function collectPreparationRangeMessages(
 
 function readSessionBranch(sessionManager: unknown): CoreSessionTreeEntry[] {
   try {
+    // SAFETY: sessionManager is unknown here; the optional call plus the enclosing try/catch make a missing or throwing getBranch return [] rather than propagate.
     const entries: unknown = (sessionManager as { getBranch?: () => unknown })?.getBranch?.();
+    // SAFETY: Array.isArray on this line proves the value is an array; element shape stays unvalidated and every consumer wraps its use in try/catch.
     return Array.isArray(entries) ? (entries as CoreSessionTreeEntry[]) : [];
   } catch {
     return [];
@@ -185,6 +188,7 @@ function readSessionBranch(sessionManager: unknown): CoreSessionTreeEntry[] {
 
 function projectBranchEntries(entries: CoreSessionTreeEntry[]): AgentMessage[] {
   try {
+    // SAFETY: re-labels core session messages as this module's AgentMessage; the enclosing try/catch returns [] if the projection throws.
     return buildCoreSessionContext(entries).messages as AgentMessage[];
   } catch {
     return [];
@@ -317,6 +321,7 @@ async function resolveModelAuth(
 > {
   let requestAuth: ResolvedRequestAuth;
   try {
+    // SAFETY: the next statement rejects a registry whose getApiKeyAndHeaders is not a function, so the widened shape is validated before it is called.
     const modelRegistry = ctx.modelRegistry as ModelRegistryWithRequestAuthLookup;
     if (typeof modelRegistry.getApiKeyAndHeaders !== "function") {
       throw new Error("model registry auth lookup unavailable");
@@ -356,6 +361,7 @@ function buildCompactionSummaryHeaders(params: {
   if (params.model.provider !== "github-copilot") {
     return params.headers;
   }
+  // SAFETY: bridges this module's message list to the structurally identical messages parameter of buildCopilotDynamicHeaders, which is declared in another package.
   const messages = params.messages as unknown as Parameters<
     typeof buildCopilotDynamicHeaders
   >[0]["messages"];
@@ -393,6 +399,7 @@ function formatToolFailureMeta(details: unknown): string | undefined {
   if (!details || typeof details !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above rejects null and non-objects, so details is a non-null object and each field is read defensively below.
   const record = details as Record<string, unknown>;
   return (
     [
@@ -414,6 +421,7 @@ function collectToolFailures(messages: AgentMessage[]): ToolFailure[] {
     if (message.role !== "toolResult" || !message.isError) {
       continue;
     }
+    // SAFETY: role === toolResult is established above and every asserted field is optional unknown, re-checked before use.
     const toolResult = message as {
       toolCallId?: unknown;
       toolName?: unknown;
@@ -571,6 +579,7 @@ function resolveSummaryReserveTokens(
 }
 
 function extractMessageText(message: AgentMessage): string {
+  // SAFETY: reads an optional content field off a typed message; the result stays unknown and is narrowed by the typeof and Array.isArray checks below.
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") {
     return content.trim();
@@ -579,6 +588,7 @@ function extractMessageText(message: AgentMessage): string {
     ? content
         .flatMap((block) => {
           const text =
+            // SAFETY: the conditional on this line proves block is a non-null object; text stays unknown and is checked with typeof before use.
             block && typeof block === "object" ? (block as { text?: unknown }).text : undefined;
           return typeof text === "string" && text.trim() ? [text.trim()] : [];
         })
@@ -598,6 +608,7 @@ function formatNonTextPlaceholder(content: unknown): string | null {
     if (!block || typeof block !== "object") {
       continue;
     }
+    // SAFETY: the loop guard above skips null and non-objects; type stays unknown and falls back to "unknown" unless it is a non-empty string.
     const typeRaw = (block as { type?: unknown }).type;
     const type = typeof typeRaw === "string" && typeRaw.trim().length > 0 ? typeRaw : "unknown";
     if (type === "text") {
@@ -690,6 +701,7 @@ function formatContextMessage(message: AgentMessage): string | null {
   } else if (message.role === "user") {
     roleLabel = "User";
   } else if (message.role === "toolResult") {
+    // SAFETY: role === toolResult is established on this branch; toolName stays unknown and falls back to "tool" unless it is a non-empty string.
     const toolName = (message as { toolName?: unknown }).toolName;
     const safeToolName = typeof toolName === "string" && toolName.trim() ? toolName : "tool";
     roleLabel = `Tool result (${safeToolName})`;
@@ -698,6 +710,7 @@ function formatContextMessage(message: AgentMessage): string | null {
   }
   const rendered = [
     extractMessageText(message),
+    // SAFETY: reads an optional content field off a typed message; the value stays unknown and formatNonTextPlaceholder validates it.
     formatNonTextPlaceholder((message as { content?: unknown }).content),
   ]
     .filter(Boolean)
@@ -1399,15 +1412,22 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           const reasonCodes = [
             ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
           ];
+          // Cancelling here strands the session: the transcript never shrinks, so
+          // every later turn fails preflight and the user is stuck with no way out.
+          // A lossy summary beats an uncompactable session, so degrade to the
+          // structured previous-summary. Genuinely unrecoverable paths (LLM throw,
+          // no model, no API key) still cancel above.
           log.warn(
-            "Compaction safeguard: finalized summary failed quality checks; " +
-              `reasonCodes=${reasonCodes.join(",")} reasonCount=${quality.reasons.length}`,
+            "Compaction safeguard: final quality attempt failed; using degraded fallback summary; " +
+              `reasonCode=quality_guard_degraded_fallback reasonCodes=${reasonCodes.join(",")} ` +
+              `reasonCount=${quality.reasons.length}`,
           );
-          setCompactionSafeguardCancellation(
-            ctx.sessionManager,
-            "Compaction safeguard finalized summary failed quality checks.",
+          const degraded = await finalizeSummaryText(
+            buildStructuredFallbackSummary(effectivePreviousSummary),
+            { preservedTurnsSection: preservedTurnsSectionLocal },
+            producerLosses,
           );
-          return { cancel: true };
+          return compactionResult(degraded.summary);
         }
         const reasons = quality.reasons.join(", ");
         const qualityFeedbackInstruction =
@@ -1480,6 +1500,7 @@ const testing = {
 } as const;
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.compactionSafeguardTestApi")] =
     testing;
 }

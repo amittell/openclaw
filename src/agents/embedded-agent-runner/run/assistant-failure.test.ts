@@ -792,4 +792,90 @@ describe("handleEmbeddedAssistantFailure", () => {
       }
     }
   });
+
+  it("terminates with a visible error payload after exhausting silent-error retries on a single-profile model", async () => {
+    // Blocker: a wedged self-hosted single-profile model (vLLM connection churn) that
+    // fails with an unclassifiable error must NOT re-dispatch whole attempts until the
+    // ingress 5-min adoption-stall watchdog. After MAX_EMPTY_ERROR_RETRIES the same-model
+    // silent-error path hard-stops (action "silent-error-exhausted") so the turn ends in a
+    // visible outcome. The run loop converts that to a user-visible error payload.
+    const fixture = makeExhaustedCredentialFailureInput();
+    const assistant = buildEmbeddedRunnerAssistant({
+      provider: "vllm",
+      model: "local-model",
+      stopReason: "error",
+      errorMessage: "unknown provider glitch",
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    fixture.input.attempt = attempt;
+    fixture.input.attemptAssistant = assistant;
+    fixture.input.currentAttemptAssistant = assistant;
+    fixture.input.terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
+    fixture.input.fallbackConfigured = false;
+    fixture.input.emptyErrorRetries = 3; // at the cap
+    fixture.input.maybeRefreshRuntimeAuthForAuthError = vi.fn(async () => false);
+    fixture.input.maybeRetrySameModelRateLimit = vi.fn(async () => false);
+    fixture.input.advanceAuthProfile = vi.fn(async () => false);
+    fixture.input.advanceRateLimitAuthProfile = vi.fn(async () => false);
+
+    const outcome = await handleEmbeddedAssistantFailure(fixture.input);
+
+    expect(outcome).toMatchObject({
+      action: "silent-error-exhausted",
+      emptyErrorRetries: 3,
+    });
+    // No profile rotation, no model fallback, no rate-limit retry.
+    expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
+    expect(fixture.input.maybeRetrySameModelRateLimit).not.toHaveBeenCalled();
+    // No failover trace pushed (the turn terminates, not failovers).
+    expect(fixture.traceAttempts).toEqual([]);
+  });
+
+  it("keeps rotating profiles for silent-error exhaustion when a fallback model is configured", async () => {
+    // Regression guard: the hard stop only applies to single-profile models. With a
+    // configured fallback the existing model-fallback path must still recover the
+    // invisible failure.
+    const fixture = makeExhaustedCredentialFailureInput();
+    const assistant = buildEmbeddedRunnerAssistant({
+      provider: "vllm",
+      model: "local-model",
+      stopReason: "error",
+      errorMessage: "unknown provider glitch",
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    fixture.input.attempt = attempt;
+    fixture.input.attemptAssistant = assistant;
+    fixture.input.currentAttemptAssistant = assistant;
+    fixture.input.terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
+    fixture.input.fallbackConfigured = true;
+    fixture.input.emptyErrorRetries = 3; // at the cap
+    fixture.input.advanceAuthProfile = vi.fn(async () => false);
+    fixture.input.advanceRateLimitAuthProfile = vi.fn(async () => false);
+
+    // With a fallback configured the turn does NOT hard-stop; it proceeds to the
+    // model-fallback path, which throws a FailoverError so the outer run loop can
+    // switch to the fallback model. The hard-stop only applies to single-profile
+    // models (fallbackConfigured === false).
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toThrow(
+      "unknown provider glitch",
+    );
+    // Pin the FailoverError class + reason (not just the message string) so a future
+    // refactor cannot silently convert this into a plain Error or a different reason.
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toBeInstanceOf(
+      FailoverError,
+    );
+    const err = await handleEmbeddedAssistantFailure(fixture.input).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FailoverError);
+    expect((err as FailoverError).reason).toBe("unknown");
+  });
 });

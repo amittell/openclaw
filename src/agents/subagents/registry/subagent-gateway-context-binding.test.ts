@@ -41,6 +41,18 @@ describe("subagent Gateway context binding", () => {
     },
   );
 
+  it("rejects separate sibling resolver identities even when they resolve the same context", () => {
+    const first = createSubagentRunRecord({ runId: "run-first" });
+    const second = createSubagentRunRecord({ runId: "run-second" });
+    const context = { owner: "gateway-a" } as never;
+    bindGatewayContextResolver(first, () => context);
+    bindGatewayContextResolver(second, () => context);
+
+    const shared = getSharedGatewayContextResolver([first, second]);
+    expect(shared).toBeTypeOf("function");
+    expect(shared?.()).toBeUndefined();
+  });
+
   it("preserves a shared owner and leaves wholly unbound batches unbound", () => {
     const first = {};
     const second = {};

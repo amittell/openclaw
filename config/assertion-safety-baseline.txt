@@ -786,11 +786,7 @@ extensions/memory-core/src/short-term-promotion.ts	1
 extensions/memory-core/src/standing-intents-tool.ts	5
 extensions/memory-core/src/standing-intents.ts	2
 extensions/memory-core/src/tools.ts	2
-extensions/memory-lancedb/config.ts	4
 extensions/memory-lancedb/doctor-contract-api.ts	1
-extensions/memory-lancedb/embeddings.ts	2
-extensions/memory-lancedb/index.ts	8
-extensions/memory-lancedb/lancedb-store.ts	12
 extensions/memory-lancedb/memory-cli.ts	7
 extensions/memory-wiki/doctor-contract-api.ts	1
 extensions/memory-wiki/index.ts	1
@@ -1057,7 +1053,6 @@ extensions/qa-lab/src/providers/live-config.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-anthropic-wire.ts	3
 extensions/qa-lab/src/providers/mock-openai/mock-openai-assistant-text.ts	3
 extensions/qa-lab/src/providers/mock-openai/mock-openai-contracts.ts	2
-extensions/qa-lab/src/providers/mock-openai/mock-openai-directives.ts	4
 extensions/qa-lab/src/providers/mock-openai/mock-openai-events.ts	4
 extensions/qa-lab/src/providers/mock-openai/mock-openai-input.ts	11
 extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.ts	2
@@ -1225,7 +1220,6 @@ extensions/telegram/src/approval-handler.runtime.ts	2
 extensions/telegram/src/approval-native.ts	1
 extensions/telegram/src/audit-membership-runtime.ts	1
 extensions/telegram/src/audit.ts	1
-extensions/telegram/src/bot-core.ts	1
 extensions/telegram/src/bot-deps.ts	1
 extensions/telegram/src/bot-handlers.callback-router-controls.ts	4
 extensions/telegram/src/bot-handlers.callback-router.ts	1
@@ -1237,7 +1231,6 @@ extensions/telegram/src/bot-handlers.message-context.ts	1
 extensions/telegram/src/bot-info-cache.ts	2
 extensions/telegram/src/bot-info.ts	1
 extensions/telegram/src/bot-message-context.body.ts	1
-extensions/telegram/src/bot-message-context.session.ts	2
 extensions/telegram/src/bot-message-context.ts	3
 extensions/telegram/src/bot-message-dispatch-draft.ts	5
 extensions/telegram/src/bot-message-dispatch-reply.ts	2
@@ -1284,7 +1277,6 @@ extensions/telegram/src/rich-blocks-html-map.ts	1
 extensions/telegram/src/rich-message.ts	2
 extensions/telegram/src/security-audit.ts	7
 extensions/telegram/src/send-actions.ts	2
-extensions/telegram/src/send-context.ts	2
 extensions/telegram/src/send-edit.ts	1
 extensions/telegram/src/send-location.ts	2
 extensions/telegram/src/send-outbound.ts	1
@@ -1642,7 +1634,6 @@ src/agents/agent-bundle-mcp-runtime-shared.ts	2
 src/agents/agent-bundle-mcp-runtime.ts	9
 src/agents/agent-command-restart-recovery.ts	3
 src/agents/agent-command.ts	1
-src/agents/agent-hooks/compaction-safeguard.ts	14
 src/agents/agent-model-discovery.ts	5
 src/agents/agent-project-settings-snapshot.ts	5
 src/agents/agent-run-terminal-delivery.ts	1
@@ -1669,12 +1660,7 @@ src/agents/apply-patch-file-ops.ts	2
 src/agents/apply-patch-targets.ts	1
 src/agents/apply-patch.ts	3
 src/agents/auth-profiles/clone.ts	1
-src/agents/auth-profiles/external-auth.ts	1
-src/agents/auth-profiles/oauth-manager.ts	1
-src/agents/auth-profiles/oauth-refresh-failure.ts	2
 src/agents/auth-profiles/oauth-refresh-lock-errors.ts	1
-src/agents/auth-profiles/oauth.ts	2
-src/agents/auth-profiles/persisted.ts	10
 src/agents/auth-profiles/policy.ts	1
 src/agents/auth-profiles/portability.ts	1
 src/agents/auth-profiles/profiles.ts	1
@@ -1683,7 +1669,6 @@ src/agents/auth-profiles/runtime-snapshots.ts	1
 src/agents/auth-profiles/source-check.ts	1
 src/agents/auth-profiles/sqlite.ts	2
 src/agents/auth-profiles/state.ts	5
-src/agents/auth-profiles/store.ts	1
 src/agents/auth-profiles/usage.ts	4
 src/agents/bash-process-registry.ts	1
 src/agents/bash-tools.exec-approval-followup.ts	5
@@ -1821,15 +1806,12 @@ src/agents/embedded-agent-runner/run/attempt.model-diagnostic-events.ts	6
 src/agents/embedded-agent-runner/run/attempt.model-diagnostic-lifecycle.ts	3
 src/agents/embedded-agent-runner/run/attempt.model-diagnostic-observation.ts	1
 src/agents/embedded-agent-runner/run/attempt.tool-call-argument-repair.ts	11
-src/agents/embedded-agent-runner/run/auth-controller.ts	1
 src/agents/embedded-agent-runner/run/auth-plan.ts	1
 src/agents/embedded-agent-runner/run/auth-profile-success.ts	1
 src/agents/embedded-agent-runner/run/context-recovery-state.ts	2
-src/agents/embedded-agent-runner/run/helpers.ts	3
 src/agents/embedded-agent-runner/run/history-image-prune.ts	8
 src/agents/embedded-agent-runner/run/images.ts	7
 src/agents/embedded-agent-runner/run/incomplete-turn-classification.ts	5
-src/agents/embedded-agent-runner/run/incomplete-turn-recovery.ts	3
 src/agents/embedded-agent-runner/run/incomplete-turn-resolution.ts	3
 src/agents/embedded-agent-runner/run/llm-idle-timeout.ts	3
 src/agents/embedded-agent-runner/run/message-tool-terminal.ts	1
@@ -1844,7 +1826,6 @@ src/agents/embedded-agent-runner/run/session-prompt-state.ts	1
 src/agents/embedded-agent-runner/run/setup.ts	2
 src/agents/embedded-agent-runner/run/stream-wrapper.ts	2
 src/agents/embedded-agent-runner/run/terminal-preparation.ts	2
-src/agents/embedded-agent-runner/run/terminal-resolution.ts	1
 src/agents/embedded-agent-runner/run/tool-activity-heartbeat.ts	2
 src/agents/embedded-agent-runner/runs.ts	2
 src/agents/embedded-agent-runner/session-prompt-state.ts	2
@@ -1872,7 +1853,6 @@ src/agents/embedded-agent-utils.ts	3
 src/agents/exec-auto-reviewer.ts	1
 src/agents/exec-defaults.ts	2
 src/agents/execution-auth-binding.ts	1
-src/agents/failover-error.ts	22
 src/agents/failover/retry-evidence.ts	1
 src/agents/failover/signal-details.ts	1
 src/agents/fallback-skip-cache.ts	1
@@ -1934,7 +1914,6 @@ src/agents/openai-model-routes.ts	2
 src/agents/openclaw-tools.requester-yield.ts	2
 src/agents/plugin-model-catalog.ts	4
 src/agents/plugin-text-transforms.ts	5
-src/agents/prepared-model-catalog.ts	1
 src/agents/prepared-model-catalog.worker.ts	1
 src/agents/prepared-model-runtime.configured.ts	2
 src/agents/prepared-model-runtime.facts.ts	1
@@ -2079,7 +2058,6 @@ src/agents/tools/image-tool.ts	3
 src/agents/tools/in-process-gateway.ts	1
 src/agents/tools/media-generate-tool-actions-shared.ts	1
 src/agents/tools/message-tool-discovery.ts	3
-src/agents/tools/message-tool-execution.ts	3
 src/agents/tools/message-tool-visible-content.ts	9
 src/agents/tools/mobile-ui-tool.ts	5
 src/agents/tools/model-config.helpers.ts	1

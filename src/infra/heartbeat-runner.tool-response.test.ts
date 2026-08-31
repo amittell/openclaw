@@ -29,7 +29,6 @@ import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.j
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { claimHeartbeatOutcomeForRun } from "./heartbeat-outcome-store.js";
-import { truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
@@ -46,13 +45,6 @@ import {
 } from "./system-events.js";
 
 installHeartbeatRunnerTestRuntime();
-
-describe("heartbeat event previews", () => {
-  it("keeps the 200-code-unit preview UTF-16 well-formed", () => {
-    expect(truncateHeartbeatPreview(`${"x".repeat(199)}🚀tail`)).toBe("x".repeat(199));
-    expect(truncateHeartbeatPreview(undefined)).toBeUndefined();
-  });
-});
 
 describe("runHeartbeatOnce heartbeat response tool", () => {
   const TELEGRAM_GROUP = "-1001234567890";

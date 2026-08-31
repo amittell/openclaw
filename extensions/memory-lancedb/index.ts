@@ -12,7 +12,7 @@ import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { isIncognitoSessionKey, normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { asOptionalRecord, asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { Type } from "typebox";
 import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
@@ -46,6 +46,21 @@ import {
   resolveAutoCaptureStartIndex,
   shouldCapture,
 } from "./memory-policy.js";
+import { registerMemoryRefreshTool, withMemoryLock } from "./memory-refresh.js";
+
+// Heartbeat turns are machine-generated keepalives, not user conversation:
+// injecting recalled memories into them wastes an embed on the prompt-build
+// hot path and pollutes the heartbeat prompt with unrelated context.
+function isHeartbeatHookContext(ctx: unknown): boolean {
+  const record = asRecord(ctx);
+  if (!record) {
+    return false;
+  }
+  if (record.trigger === "heartbeat") {
+    return true;
+  }
+  return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
+}
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),
@@ -117,6 +132,7 @@ export default definePluginEntry({
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     const memoryRecallCooldowns = new Map<string, { until: number; error: string }>();
     const resolveRuntimeConfig = (): OpenClawConfig =>
+      // SAFETY: the plugin SDK config accessor returns the live OpenClawConfig through a looser type.
       (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
     const resolveEnabledAgentId = (
       rawAgentId: string | undefined,
@@ -154,9 +170,10 @@ export default definePluginEntry({
     const resolveCurrentHookConfig = () => {
       const runtimePluginConfig = resolveLivePluginConfigObject(
         api.runtime.config?.current
-          ? () => api.runtime.config.current() as OpenClawConfig
+          ? () => api.runtime.config.current() as OpenClawConfig // SAFETY: SDK accessor returns the live config.
           : undefined,
         "memory-lancedb",
+        // SAFETY: api.pluginConfig is the SDK's untyped plugin config bag for this plugin.
         api.pluginConfig as Record<string, unknown>,
       );
       if (!runtimePluginConfig) {
@@ -237,7 +254,9 @@ export default definePluginEntry({
           async execute(_toolCallId, params) {
             // Tool definitions outlive hot config reloads; revalidate before memory I/O.
             assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
+            // SAFETY: the runtime validates params against the typebox schema declared above.
             const rawParams = params as Record<string, unknown>;
+            // SAFETY: query is a required Type.String in the schema above, so the runtime guarantees a string.
             const query = rawParams.query as string;
             const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
 
@@ -378,11 +397,13 @@ export default definePluginEntry({
                 },
               };
             }
+            // SAFETY: the runtime validates params against the typebox schema declared above.
             const { text, category = "other" } = params as {
               text: string;
               category?: MemoryEntry["category"];
             };
             const importance =
+              // SAFETY: the runtime validates params against the typebox schema declared above.
               readFiniteNumberParam(params as Record<string, unknown>, "importance", {
                 min: 0,
                 max: 1,
@@ -464,17 +485,22 @@ export default definePluginEntry({
           }),
           async execute(_toolCallId, params) {
             assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
+            // SAFETY: the runtime validates params against the typebox schema declared above.
             const { query, memoryId } = params as { query?: string; memoryId?: string };
 
             if (memoryId) {
-              const deleted = await db.delete(agentId, memoryId);
-              if (!deleted) {
-                return memoryDeleteFailureResult(memoryId);
-              }
-              return {
-                content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
-                details: { action: "deleted", id: memoryId },
-              };
+              // Acquire per-ID lock so that a concurrent memory_refresh replace
+              // on the same ID cannot race with this delete.
+              return withMemoryLock(memoryId, async () => {
+                const deleted = await db.delete(agentId, memoryId);
+                if (!deleted) {
+                  return memoryDeleteFailureResult(memoryId);
+                }
+                return {
+                  content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
+                  details: { action: "deleted", id: memoryId },
+                };
+              });
             }
 
             if (query) {
@@ -496,15 +522,24 @@ export default definePluginEntry({
 
               const singleResult = results.length === 1 ? results[0] : undefined;
               if (singleResult && singleResult.score > 0.9) {
-                const deleted = await db.delete(agentId, singleResult.entry.id);
-                if (!deleted) {
-                  return memoryDeleteFailureResult(singleResult.entry.id);
-                }
-                const text = formatRecalledMemoryForModel(singleResult.entry.text, recallMaxChars);
-                return {
-                  content: [{ type: "text", text: `Forgotten: "${text}"` }],
-                  details: { action: "deleted", id: singleResult.entry.id },
-                };
+                const targetId = singleResult.entry.id;
+                // Acquire per-ID lock before the auto-delete so that a concurrent
+                // memory_refresh replace cannot interleave its delete/insert
+                // between our search-result selection and the delete.
+                return withMemoryLock(targetId, async () => {
+                  const deleted = await db.delete(agentId, targetId);
+                  if (!deleted) {
+                    return memoryDeleteFailureResult(targetId);
+                  }
+                  const text = formatRecalledMemoryForModel(
+                    singleResult.entry.text,
+                    recallMaxChars,
+                  );
+                  return {
+                    content: [{ type: "text", text: `Forgotten: "${text}"` }],
+                    details: { action: "deleted", id: targetId },
+                  };
+                });
               }
 
               const list = results
@@ -540,19 +575,32 @@ export default definePluginEntry({
       { name: "memory_forget" },
     );
 
+    registerMemoryRefreshTool({
+      api,
+      db,
+      embeddings,
+      resolveEnabledAgentId,
+      resolveRuntimeConfig,
+      resolveCurrentConfig: resolveCurrentHookConfig,
+    });
+
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig);
 
+    const autoRecallHook = createAutoRecallHook({
+      logger: api.logger,
+      db,
+      embeddings,
+      resolveCurrentConfig: resolveCurrentHookConfig,
+      resolveEnabledAgentId,
+      readCooldown: readMemoryRecallCooldown,
+      recordCooldown: recordMemoryRecallCooldown,
+    });
     api.on(
       "before_prompt_build",
-      createAutoRecallHook({
-        logger: api.logger,
-        db,
-        embeddings,
-        resolveCurrentConfig: resolveCurrentHookConfig,
-        resolveEnabledAgentId,
-        readCooldown: readMemoryRecallCooldown,
-        recordCooldown: recordMemoryRecallCooldown,
-      }),
+      // Heartbeat turns build a prompt but are not user turns: recalling there
+      // spends embed latency and prompt budget on a turn nobody reads, and can
+      // trip the recall cooldown that a real turn then inherits.
+      async (event, ctx) => (isHeartbeatHookContext(ctx) ? undefined : autoRecallHook(event, ctx)),
       { requiresToolAuthority: true },
     );
 

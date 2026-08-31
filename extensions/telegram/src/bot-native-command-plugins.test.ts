@@ -1,14 +1,10 @@
-import {
-  createEmptyPluginRegistry,
-  resetPluginRuntimeStateForTest,
-  setActivePluginRegistry,
-} from "openclaw/plugin-sdk/channel-test-helpers";
 // Telegram tests cover bot native commands plugin behavior.
 import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTelegramTopicCommandContext } from "./bot-native-commands.fixture-test-support.js";
+import { registerTelegramNativeCommands } from "./bot-native-commands.js";
 import {
   createCommandBot,
   createNativeCommandTestParams,
@@ -29,16 +25,41 @@ const pluginSessionMocks = vi.hoisted(() => ({
   resolveStorePath: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/session-store-runtime")>(
-    "openclaw/plugin-sdk/session-store-runtime",
-  );
-  return {
-    ...actual,
-    getSessionEntry: pluginSessionMocks.getSessionEntry,
-    resolveStorePath: pluginSessionMocks.resolveStorePath,
-  };
-});
+vi.mock("./bot-native-commands.runtime.js", () => ({
+  ensureConfiguredBindingRouteReady: vi.fn(async () => ({ ok: true })),
+  finalizeInboundContext: vi.fn((ctx: unknown) => ctx),
+  getAgentScopedMediaLocalRoots: vi.fn((_cfg: OpenClawConfig, agentId: string) => [
+    `/tmp/.openclaw/workspace-${agentId}`,
+  ]),
+  getSessionEntry: pluginSessionMocks.getSessionEntry,
+  resolveChunkMode: vi.fn(() => "length"),
+  resolveThreadSessionKeys: vi.fn(
+    ({
+      baseSessionKey,
+      parentSessionKey,
+    }: {
+      baseSessionKey: string;
+      parentSessionKey?: string;
+    }) => ({
+      sessionKey: baseSessionKey,
+      parentSessionKey,
+    }),
+  ),
+}));
+
+vi.mock("openclaw/plugin-sdk/session-store-runtime", () => ({
+  formatSqliteSessionFileMarker: ({
+    agentId,
+    sessionId,
+    storePath,
+  }: {
+    agentId: string;
+    sessionId: string;
+    storePath: string;
+  }) => `sqlite:${agentId}:${sessionId}:${storePath}`,
+  getSessionEntry: pluginSessionMocks.getSessionEntry,
+  resolveStorePath: pluginSessionMocks.resolveStorePath,
+}));
 type CommandBotHarness = ReturnType<typeof createCommandBot>;
 type PlugCommandHarnessParams = {
   botHarness?: CommandBotHarness;
@@ -140,16 +161,11 @@ function replyAt(params: Record<string, unknown>, index = 0) {
   return reply;
 }
 
-resetPluginRuntimeStateForTest();
-setActivePluginRegistry(createEmptyPluginRegistry());
-const { registerTelegramNativeCommands } = await import("./bot-native-commands.js");
-registerTelegramNativeCommands(createNativeCommandTestParams({}));
+afterAll(() => clearPluginCommands());
 
 describe("registerTelegramNativeCommands", () => {
   beforeEach(() => {
     resetNativeCommandMenuMocks();
-    resetPluginRuntimeStateForTest();
-    setActivePluginRegistry(createEmptyPluginRegistry());
     clearPluginCommands();
     pluginCommandHandler.mockReset().mockResolvedValue({ text: "ok" });
     pluginSessionMocks.getSessionEntry.mockReset().mockReturnValue(undefined);

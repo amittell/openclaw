@@ -49,6 +49,7 @@ function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>
   // Agent-level overrides may reference profiles not present at the top level;
   // skipping them would cause those profiles to be treated as stale and wrongly pruned.
   for (const agent of cfg.agents?.list ?? []) {
+    // SAFETY: AgentToolsConfig omits the per-agent media override; the read is optional-chained and guarded below.
     const agentMedia = (agent as { tools?: { media?: MediaToolsConfig } }).tools?.media;
     if (!agentMedia) {
       continue;

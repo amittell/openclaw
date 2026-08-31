@@ -37,6 +37,7 @@ import {
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
   getTelegramSpooledReplayLifecycle,
+  hasTelegramVisibleReplyDelivered,
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
   type TelegramMessageProcessingResult,
@@ -48,6 +49,7 @@ import { resolveTelegramMessageThreadSpec, type TelegramThreadSpec } from "./bot
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import type { TelegramResolvedMedia } from "./message-cache-persistence.js";
+import { isTelegramMessageFromCurrentBot } from "./message-cache.js";
 import type { TelegramCachedMessageNode, TelegramReplyChainEntry } from "./message-cache.js";
 import {
   claimTelegramMessageDispatchReplay,
@@ -321,6 +323,9 @@ export function createTelegramMessagePipeline({
       if (
         replyFileId &&
         hasInboundMedia(node.sourceMessage) &&
+        // Do not re-ingest media from messages sent by this bot (re-derive of
+        // upstream PR #57280; the beta.2 layout has no bot-handlers.buffers/runtime).
+        !isTelegramMessageFromCurrentBot(node.sourceMessage, ctx.me?.id) &&
         (await shouldHydrateMedia(node, index))
       ) {
         try {
@@ -443,7 +448,14 @@ export function createTelegramMessagePipeline({
       }
       const finalization = (async () => {
         const finalized = result;
-        if (result.kind === "completed") {
+        // A retryable failure that ALREADY delivered a reply is not safely
+        // retryable: releasing the guard lets the spool replay a turn that has
+        // spoken, and the user sees the answer twice. Commit the guard instead so
+        // the replay is duplicate-suppressed. Only the guard is committed - the
+        // spool row still follows its own retry/dead-letter policy.
+        const repliedBeforeFailing =
+          result.kind === "failed-retryable" && hasTelegramVisibleReplyDelivered();
+        if (result.kind === "completed" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
           const releaseSettlementHolds = beginSpooledReplaySettlementHolds(
@@ -542,14 +554,18 @@ export function createTelegramMessagePipeline({
       const promptContextMediaByMessageId = new Map<string, TelegramMediaRef>();
       const currentMessageId =
         typeof params.msg.message_id === "number" ? String(params.msg.message_id) : undefined;
+      const mediaPathKeys = new Set<string>();
       for (const [index, media] of params.allMedia.entries()) {
         const messageId = media.sourceMessageId ?? (index === 0 ? currentMessageId : undefined);
         const promptMediaPath = media.path ? resolveTelegramPromptMediaPath(media.path) : undefined;
         if (messageId && promptMediaPath) {
-          promptContextMediaByMessageId.set(messageId, {
-            ...media,
-            path: promptMediaPath,
-          });
+          if (!mediaPathKeys.has(promptMediaPath)) {
+            mediaPathKeys.add(promptMediaPath);
+            promptContextMediaByMessageId.set(messageId, {
+              ...media,
+              path: promptMediaPath,
+            });
+          }
         }
       }
       for (const entry of replyChain) {
@@ -563,6 +579,13 @@ export function createTelegramMessagePipeline({
           entry.mediaKind ??
           (inferredKind && inferredKind !== "unknown" ? inferredKind : "document");
         if (entry.messageId && entry.mediaPath && promptMediaPath) {
+          // One staged file must not be attached twice to a single prompt: the
+          // reply chain can hydrate media that the current message already carries
+          // (same media id, different source message ids).
+          if (mediaPathKeys.has(promptMediaPath)) {
+            continue;
+          }
+          mediaPathKeys.add(promptMediaPath);
           promptContextMediaByMessageId.set(entry.messageId, {
             path: promptMediaPath,
             kind: mediaKind,

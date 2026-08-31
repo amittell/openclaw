@@ -4,7 +4,6 @@
  * credentials, resolves SecretRefs, and maintains runtime store snapshots.
  */
 import { isDeepStrictEqual } from "node:util";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { coerceSecretRef } from "../../config/types.secrets.js";
@@ -36,7 +35,10 @@ import {
 import { formatAuthDoctorHint } from "./doctor.js";
 import { readExternalCliBootstrapCredential } from "./external-cli-sync.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
-import { OAuthRefreshFailureError } from "./oauth-refresh-failure.js";
+import {
+  classifyOAuthRefreshFailureReason,
+  OAuthRefreshFailureError,
+} from "./oauth-refresh-failure.js";
 import { assertNoOAuthSecretRefPolicyViolations } from "./policy.js";
 import { clearLastGoodProfileWithLock } from "./profiles.js";
 import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
@@ -159,6 +161,7 @@ function buildApiKeyProfileResult(params: {
       enumerable: false,
     },
   });
+  // SAFETY: Object.defineProperties above installs profileId/profileType/credential as non-enumerable fields, which TypeScript cannot track on the literal's inferred type.
   return result as ResolveApiKeyForProfileResult;
 }
 
@@ -168,12 +171,9 @@ function extractErrorMessage(error: unknown): string {
 
 /** Detect provider errors caused by single-use OAuth refresh token races. */
 function isRefreshTokenReusedError(error: unknown): boolean {
-  const message = normalizeLowercaseStringOrEmpty(extractErrorMessage(error));
-  return (
-    message.includes("refresh_token_reused") ||
-    message.includes("refresh token has already been used") ||
-    message.includes("already been used to generate a new access token")
-  );
+  // Reuse wording has one owner: the shared refresh-failure classifier. A
+  // divergent copy here is how the race got misclassified as permanent.
+  return classifyOAuthRefreshFailureReason(extractErrorMessage(error)) === "refresh_token_reused";
 }
 
 type ResolveApiKeyForProfileParams = {
@@ -247,6 +247,7 @@ function resetOAuthRefreshQueuesForTest(): void {
 }
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.oauthTestApi")] = {
     isRefreshTokenReusedError,
     resetOAuthRefreshQueuesForTest,

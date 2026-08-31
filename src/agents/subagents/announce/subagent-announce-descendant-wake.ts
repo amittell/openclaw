@@ -158,6 +158,9 @@ export async function runDescendantWake(params: {
     // Persist the wake message as the replacement run's task so that any
     // post-restart redispatch reconstructs the correct prompt.
     task: wakeMessage,
+    ...(params.resolveGatewayContext
+      ? { gatewayContextResolver: params.resolveGatewayContext }
+      : {}),
   });
   if (!replaced) {
     await terminateUnownedWake();

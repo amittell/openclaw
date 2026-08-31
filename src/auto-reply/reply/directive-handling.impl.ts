@@ -25,6 +25,7 @@ import {
   resolveSupportedThinkingLevel,
 } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
+import { buildDirectiveAckParts } from "./directive-handling.ack-parts.js";
 import { applyModelRuntimeDirective } from "./directive-handling.model-runtime.js";
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import { maybeHandleModelDirectiveInfo } from "./directive-handling.model.js";
@@ -35,25 +36,16 @@ import {
   acknowledgeIgnoredSessionDirective,
   applySessionDirectiveFields,
   canPersistSessionDirectiveDefaults,
-  DIRECTIVE_ACK_MESSAGES,
   type IgnoredSessionDirectiveFlag,
-  formatDirectiveAck,
   formatElevatedRuntimeHint,
   formatElevatedUnavailableText,
-  formatInternalExecPersistenceDeniedText,
-  formatInternalVerboseCurrentReplyOnlyText,
-  formatInternalVerbosePersistenceDeniedText,
-  formatModelSelectionScopeAck,
   enqueueModeSwitchEvents,
   persistSessionDirectiveSnapshot,
   rejectSessionDirectiveTransaction,
   resolveDirectiveTouchedSessionFields,
   withOptions,
 } from "./directive-handling.shared.js";
-import {
-  appendTemperatureAck,
-  formatTemperatureDirectiveReply,
-} from "./directive-handling.temperature.js";
+import { formatTemperatureDirectiveReply } from "./directive-handling.temperature.js";
 import { resolveDirectiveRuntimeContext } from "./directive-runtime-context.js";
 import type { ReasoningLevel, ThinkLevel } from "./directives.js";
 import {
@@ -605,118 +597,20 @@ export async function handleDirectiveOnly(
     };
   }
 
-  const parts: string[] = [];
-  if (directives.clearThinkLevel) {
-    parts.push("Thinking level reset to default.");
-  } else if (directives.hasThinkDirective && directives.thinkLevel) {
-    parts.push(
-      directives.thinkLevel === "off"
-        ? "Thinking disabled."
-        : `Thinking level set to ${directives.thinkLevel}.`,
-    );
-  }
-  appendTemperatureAck(directives, parts);
-  if (directives.clearFastMode) {
-    parts.push(formatDirectiveAck("Fast mode reset to default."));
-  } else if (directives.hasFastDirective && directives.fastMode !== undefined) {
-    parts.push(
-      directives.fastMode === "auto"
-        ? formatDirectiveAck("Fast mode set to auto.")
-        : directives.fastMode
-          ? formatDirectiveAck("Fast mode enabled.")
-          : formatDirectiveAck("Fast mode disabled."),
-    );
-  }
-  if (directives.hasVerboseDirective && directives.verboseLevel) {
-    const message = allowPrivilegedPersistence
-      ? DIRECTIVE_ACK_MESSAGES.verbose[directives.verboseLevel]
-      : formatInternalVerboseCurrentReplyOnlyText();
-    parts.push(formatDirectiveAck(message));
-  }
-  if (directives.hasTraceDirective && directives.traceLevel) {
-    parts.push(formatDirectiveAck(DIRECTIVE_ACK_MESSAGES.trace[directives.traceLevel]));
-  }
-  if (directives.hasVerboseDirective && directives.verboseLevel && !allowPrivilegedPersistence) {
-    parts.push(formatDirectiveAck(formatInternalVerbosePersistenceDeniedText()));
-  }
-  if (directives.hasReasoningDirective && directives.reasoningLevel) {
-    parts.push(formatDirectiveAck(DIRECTIVE_ACK_MESSAGES.reasoning[directives.reasoningLevel]));
-  }
-  if (directives.hasElevatedDirective && directives.elevatedLevel) {
-    parts.push(formatDirectiveAck(DIRECTIVE_ACK_MESSAGES.elevated[directives.elevatedLevel]));
-    if (shouldHintDirectRuntime) {
-      parts.push(formatElevatedRuntimeHint());
-    }
-  }
-  if (directives.hasExecDirective && directives.hasExecOptions) {
-    for (const [label, options] of [
-      [
-        allowPrivilegedPersistence && "Exec defaults set",
-        { host: directives.execHost, node: directives.execNode },
-      ],
-      [
-        "Exec policy for this run only",
-        { security: directives.execSecurity, ask: directives.execAsk },
-      ],
-    ] as const) {
-      const execParts = Object.entries(options)
-        .filter(([, value]) => Boolean(value))
-        .map(([key, value]) => `${key}=${value}`);
-      if (execParts.length > 0) {
-        const message = label
-          ? `${label} (${execParts.join(", ")}).`
-          : formatInternalExecPersistenceDeniedText();
-        parts.push(formatDirectiveAck(message));
-      }
-    }
-  }
-  if (modelSelection) {
-    const label = `${modelSelection.provider}/${modelSelection.model}`;
-    const labelWithAlias = modelSelection.alias ? `${modelSelection.alias} (${label})` : label;
-    parts.push(
-      formatModelSelectionScopeAck({
-        isDefault: modelSelection.isDefault,
-        label: labelWithAlias,
-        configuredDefaultUpdate,
-        ...(params.stickyModelSelectionTarget
-          ? { stickyModelSelectionTarget: params.stickyModelSelectionTarget }
-          : {}),
-      }),
-    );
-    if (profileOverride) {
-      parts.push(`Auth profile set to ${profileOverride}.`);
-    }
-    if (modelRuntimeResolution.kind === "clear") {
-      parts.push("Runtime reset to configured policy.");
-    } else if (modelRuntimeResolution.kind === "set") {
-      parts.push(`Runtime set to ${modelRuntimeResolution.runtime} for this session.`);
-    }
-  }
-  // Report the model change before the thinking remap it triggered: the remap is a
-  // consequence of the model switch, so the cause should be announced first.
-  if (
-    !directives.hasThinkDirective &&
-    shouldRemapUnsupportedThinkLevel &&
-    remappedUnsupportedThinkLevel
-  ) {
-    parts.push(
-      `Thinking level set to ${remappedUnsupportedThinkLevel} (${nextThinkLevel} not supported for ${resolvedProvider}/${resolvedModel}).`,
-    );
-  }
-  if (directives.hasQueueDirective && directives.queueMode) {
-    parts.push(formatDirectiveAck(`Queue mode set to ${directives.queueMode}.`));
-  } else if (directives.hasQueueDirective && directives.queueReset) {
-    parts.push(formatDirectiveAck("Queue mode reset to default."));
-  }
-  if (directives.hasQueueDirective && typeof directives.debounceMs === "number") {
-    parts.push(formatDirectiveAck(`Queue debounce set to ${directives.debounceMs}ms.`));
-  }
-  if (directives.hasQueueDirective && typeof directives.cap === "number") {
-    parts.push(formatDirectiveAck(`Queue cap set to ${directives.cap}.`));
-  }
-  if (directives.hasQueueDirective && directives.dropPolicy) {
-    parts.push(formatDirectiveAck(`Queue drop set to ${directives.dropPolicy}.`));
-  }
+  const parts = buildDirectiveAckParts(directives, {
+    allowPrivilegedPersistence,
+    shouldHintDirectRuntime,
+    modelSelection,
+    profileOverride,
+    modelRuntimeResolution,
+    configuredDefaultUpdate,
+    stickyModelSelectionTarget: params.stickyModelSelectionTarget,
+    shouldRemapUnsupportedThinkLevel,
+    remappedUnsupportedThinkLevel,
+    nextThinkLevel,
+    resolvedProvider,
+    resolvedModel,
+  });
   if (fastModeChanged) {
     const nextFastMode = directives.clearFastMode ? fastModeState.mode : sessionEntry.fastMode;
     const nextFastModeText =
