@@ -247,6 +247,69 @@ the failure was only visible because the log carried an explicit
 `BUILD_RC=$?`. Capture the status yourself rather than reading a runner's
 summary line.
 
+## Deploying 8.1 needs THREE prerequisites, and they only surface at runtime
+
+Measured the hard way on rh-bot, which I took down for ~35 minutes doing it.
+A clean build proves the code compiles. It says nothing about whether the
+gateway can START. All three of these failed after a green build:
+
+1. **pnpm major upgrade.** beta.3 pinned `pnpm@11.15.1`; the tag pins
+   `pnpm@12.1.0`. Hosts cannot self-provision it — pnpm v12 ships a native
+   binary that replaces a placeholder in `~/Library/pnpm/.tools/pnpm/12.1.0/bin`,
+   and on an older pnpm that replacement never happens (`ENOEXEC`). Clearing the
+   directory and retrying reproduces it exactly. Fix: `npm i -g pnpm@12.1.0`.
+   rh-bot was on a non-brew pnpm (brew only offers 11.24.0); mac-mini is on
+   10.30.1.
+
+2. **Agent identity migration.** 8.1 adds a migration that requires stopped
+   writers. The gateway refuses to start until it is done:
+
+       OpenClaw startup migrations did not complete cleanly; refusing to report
+       the gateway ready. ... Agent identity migration requires stopped-writer
+       maintenance; stop active agents and run openclaw doctor --fix.
+
+   Procedure: `launchctl bootout` the scheduler and inbox-watcher, run
+   `doctor --fix` (rc=0), restart, then bootstrap them back. **Back up the agent
+   sqlite DBs first** — 1.9G on rh-bot — because the migration may be one-way and
+   a rollback to beta.3 would otherwise have nowhere to go.
+
+3. **LanceDB native binding.** `pnpm install --frozen-lockfile` left
+   `@lancedb/lancedb` installed WITHOUT `@lancedb/lancedb-darwin-arm64`, and the
+   gateway fails with `Cannot find native binding`. `rm -rf node_modules` plus a
+   fresh install fixes it. The binding is a proper optionalDependency of
+   `@lancedb/lancedb@0.37.1` and is in the lockfile, so this is the known
+   optional-dependency resolution problem, not a manifest defect.
+
+**So the procedure is: upgrade pnpm -> checkout -> rm -rf node_modules ->
+pnpm install -> pnpm build -> back up agent DBs -> stop writers ->
+doctor --fix -> start gateway -> bootstrap writers.**
+
+**And validate on a spare port BEFORE touching the live service.** Running
+`dist/index.js gateway --port 18790` surfaces every one of these with zero
+downtime; it is how each was finally diagnosed, and doing it first would have
+avoided the outage entirely. Note it refuses to run if a gateway already owns
+the state directory, which is itself a useful liveness check.
+
+## Instrument failures during that deploy, each of which gave a confident wrong answer
+
+- **`cmd | tail && echo RC=$?` reports `tail`'s status.** This produced
+  `INSTALL_RC=0 BUILD_RC=0` on a host where neither had run — pi-tui was still
+  0.82.1 and `dist` was four days old. Capture the status of the command itself.
+- **Two PID samples of `-` compare equal.** A stability check that reads
+  `launchctl list` twice and compares reported STABLE while the service was
+  absent. Require both samples to be live PIDs before comparing them.
+- **`launchctl list`'s status column is the LAST exit, not current health.** A
+  healthy, serving gateway shows `last=1` from an earlier failed start forever.
+  Read the PID and probe the port.
+- **`rh-bot.lan` stopped resolving mid-deploy** while the host was fine — ssh to
+  `192.168.210.168` worked throughout. A _control_ is what caught it: mac-mini
+  was also unreachable at that moment, and I had not touched its services. But
+  the control was itself a transient false negative — mac-mini answered on the
+  next retry. Retry before concluding anything from a ping.
+- **A path guess produced a clean zero.** `ls node_modules/@lancedb` read empty
+  while an install was mid-flight, which looked like "the fix failed". It was a
+  race. Check whether the writer is still running before reading its output.
+
 ## Not established
 
 - **No full test-suite run.** Individual files were run; the suite as a whole
@@ -270,3 +333,11 @@ summary line.
       mac-mini.lan    8f120b77a7f   the WIP /temperature rescue commit
 
   Neither is an ancestor of this branch, so both are switches, not fast-forwards.
+
+  **rh-bot is now DEPLOYED** on `2801f5f4337` (build id
+  `2026.8.1-2801f5f43371-2026-09-01T00-25-36.127Z`), serving HTTP 200, stable
+  PID across 45s, scheduler and inbox-watcher bootstrapped back. mac-mini is
+  untouched. Its agent-DB backup is at
+  `~/.openclaw/agent-db-backup-20260831-203148` (1.9G) and beta.3
+  (`77549fa3889`) is still present in its object store, so rollback remains
+  available.
