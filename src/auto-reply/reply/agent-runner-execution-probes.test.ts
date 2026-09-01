@@ -813,4 +813,76 @@ describe("executeAgentTurn: primary probe routing", () => {
       authProfileIdSource: "auto",
     });
   });
+
+  const primaryProbePinScenario = (probeAttemptReason?: string) => {
+    const probe = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      fallbackProvider: "google",
+      fallbackModel: "gemini-3-pro",
+    };
+    const sessionKey = "non-durable-primary-probe-failure";
+    const pinnedEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: 1,
+      providerOverride: probe.fallbackProvider,
+      modelOverride: probe.fallbackModel,
+      modelOverrideSource: "auto",
+      modelOverrideFallbackOriginProvider: probe.provider,
+      modelOverrideFallbackOriginModel: probe.model,
+    };
+    const activeSessionStore: Record<string, SessionEntry> = { [sessionKey]: pinnedEntry };
+    const followupRun = createFollowupRun();
+    followupRun.run.sessionKey = sessionKey;
+    followupRun.run.provider = probe.provider;
+    followupRun.run.model = probe.model;
+    followupRun.run.autoFallbackPrimaryProbe = probe;
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      const result = await params.run(
+        probe.fallbackProvider,
+        probe.fallbackModel,
+        initialFallbackAttemptOptions(params),
+      );
+      // Settling on the fallback model makes the runner reconcile that completed
+      // candidate rather than the probe's own selection.
+      return {
+        outcome: "completed",
+        result,
+        provider: probe.fallbackProvider,
+        model: probe.fallbackModel,
+        attempts: [
+          {
+            provider: probe.provider,
+            model: probe.model,
+            error: probeAttemptReason ?? "unknown",
+            reason: probeAttemptReason ?? "unknown",
+          },
+        ],
+      };
+    });
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "fallback answered" }],
+      meta: { agentMeta: { provider: probe.fallbackProvider, model: probe.fallbackModel } },
+    });
+    return { activeSessionStore, followupRun, sessionKey };
+  };
+
+  // Pins the carried behaviour: a run that settles on the fallback model clears
+  // the persisted probe instead of leaving the override pinned to that fallback.
+  it("clears a persisted primary probe pin when the fallback follows a non-durable probe failure", async () => {
+    const { activeSessionStore, followupRun, sessionKey } = primaryProbePinScenario();
+
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams({ followupRun }),
+      sessionKey,
+      activeSessionStore,
+      getActiveSessionEntry: () => activeSessionStore[sessionKey],
+    });
+
+    // A transient blip must not pin the session override to the fallback model.
+    expect(activeSessionStore[sessionKey]?.modelOverride).toBeUndefined();
+    expect(activeSessionStore[sessionKey]?.providerOverride).toBeUndefined();
+    expect(activeSessionStore[sessionKey]?.modelOverrideSource).toBeUndefined();
+  });
 });

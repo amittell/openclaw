@@ -56,6 +56,7 @@ import {
   markOverloadRetryUnsafeToReplay,
   type OverloadRetryState,
 } from "./agent-runner-error-handler.js";
+import { resolveAutoFallbackPrimaryProbeClearSelection } from "./agent-runner-execution-auto-fallback-evidence.js";
 import type {
   AgentTurnCompaction,
   AgentTurnExecutionResult,
@@ -324,9 +325,13 @@ async function executeAgentTurnInternalWithRetryState(
     provider: string;
     model: string;
   }): Promise<void> =>
-    clearRecoveredAutoFallbackPrimaryProbeSelection({
+    await clearRecoveredAutoFallbackPrimaryProbeSelection({
       run: effectiveRun,
-      ...paramsForClear,
+      ...resolveAutoFallbackPrimaryProbeClearSelection({
+        activeProbe: effectiveRun.autoFallbackPrimaryProbe,
+        settled: paramsForClear,
+        attempts: fallbackAttempts,
+      }),
       sessionKey: params.sessionKey,
       activeSessionStore: params.activeSessionStore,
       getActiveSessionEntry: params.getActiveSessionEntry,

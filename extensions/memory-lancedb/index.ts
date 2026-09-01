@@ -594,6 +594,7 @@ export default definePluginEntry({
       resolveEnabledAgentId,
       readCooldown: readMemoryRecallCooldown,
       recordCooldown: recordMemoryRecallCooldown,
+      cooldownMs: DEFAULT_RECALL_COOLDOWN_MS,
     });
     api.on(
       "before_prompt_build",

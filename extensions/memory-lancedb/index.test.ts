@@ -1575,21 +1575,23 @@ describe("memory plugin e2e", () => {
             hookEvent,
             withAllowedMemoryRecallAuthority({ agentId: "main" }),
           );
-          await vi.advanceTimersByTimeAsync(15_000);
+          // Advance exactly the auto-recall budget: at the tool budget (15s) this
+          // would not fire, so the timing itself pins the tighter constant.
+          await vi.advanceTimersByTimeAsync(5_000);
 
           await expect(resultPromise).resolves.toBeUndefined();
           expect(ensureGlobalUndiciEnvProxyDispatcher).toHaveBeenCalledOnce();
           expect(firstMockArg(post as unknown as MockCallSource, "post path")).toBe("/embeddings");
           const postOptions = firstObjectArg(post as unknown as MockCallSource, "post options", 1);
           expect(postOptions.maxRetries).toBe(0);
-          // Auto-recall carries its own budget (auto-recall.ts AUTO_RECALL_TIMEOUT_MS)
-          // separate from the explicit recall tool, and a breach parks recall on the
-          // shared cooldown instead of re-stalling every turn. The shared cooldown is
-          // what this test protects; the budget itself is that module's constant.
-          expect(postOptions.timeout).toBe(15_000);
+          // Auto-recall carries a tighter budget (auto-recall.ts AUTO_RECALL_TIMEOUT_MS)
+          // than the explicit recall tool because it runs on the prompt-build hot path,
+          // and a breach parks recall on the shared cooldown instead of re-stalling
+          // every turn. Both the budget and the cooldown handoff are pinned here.
+          expect(postOptions.timeout).toBe(5_000);
           expect(loadLanceDbModule).not.toHaveBeenCalled();
           expect(logger.warn).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
+            "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
           );
 
           expect(
@@ -1600,7 +1602,7 @@ describe("memory plugin e2e", () => {
           ).toBeUndefined();
           expect(post).toHaveBeenCalledTimes(1);
           expect(logger.debug).toHaveBeenCalledWith(
-            "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 15s",
+            "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 5s",
           );
 
           const recallTool = registeredTool(mockApi.registerTool, "memory_recall");
@@ -1609,7 +1611,7 @@ describe("memory plugin e2e", () => {
             count: 0,
             disabled: true,
             unavailable: true,
-            error: "auto-recall timed out after 15s",
+            error: "auto-recall timed out after 5s",
           });
           expect(post).toHaveBeenCalledTimes(1);
 

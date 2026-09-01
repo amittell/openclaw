@@ -310,6 +310,55 @@ the state directory, which is itself a useful liveness check.
   while an install was mid-flight, which looked like "the fix failed". It was a
   race. Check whether the writer is still running before reading its output.
 
+## Coverage audit against beta.1 and beta.2, and what it found
+
+The carry used beta.2 and beta.3 as sources. **beta.1 was never consulted.** An
+audit compared fork-authored _added declarations_ (not test titles) from beta.1
+and beta.2 against this branch, using the source branch as a positive control:
+
+    beta.1   80 fork commits, 270 declarations   -> 2 candidate gaps
+    beta.2  103 fork commits, 329 declarations   -> 17 raw gaps
+
+Of the 17: **4 were false positives** (`buildSessionSummary` is only an import
+alias; `sessionCache`/`sessionCacheKey`/`cappedTimeout` are upstream-era
+`collector.ts` code the tag superseded -- the fork never modified that file),
+**6 were already-documented deliberate decisions**, and 7 were real. With
+beta.1's 2, nine items were investigated individually.
+
+| item                                       | verdict     | basis                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| auto-reply durable-fallback probe evidence | **CARRIED** | `agent-runner-auto-fallback.ts` blob is byte-identical tag<->HEAD and differs on beta.2 -- upstream never absorbed it                                                                                                                                                                                           |
+| `zombieWarnCount` dedup-latch coverage     | **CARRIED** | added 16:50:41, deleted 16:53:44 inside an unresolved conflict block; collateral of a marker-clearing pass                                                                                                                                                                                                      |
+| auto-recall embed timeout 15s -> 5s        | **CARRIED** | beta.3 _intended_ to carry it (`3e0d2d31d62`, "Lower auto-recall embed timeout 15s->5s") but the hunk failed silently because the code had moved to `auto-recall.ts`                                                                                                                                            |
+| `buildMessageToolOnlyDelivery`             | **CARRIED** | beta.1's tip committed 12.9 min AFTER beta.2's final commit, so beta.2 could not have carried it                                                                                                                                                                                                                |
+| `getShuttingDown`                          | DROP        | deliberate, argued in `1e9289f9635`; a test-only injection seam beta.3 replaced with tests that drive the real `markGatewayShuttingDown()`                                                                                                                                                                      |
+| `sessionRunActive`                         | DROP        | deliberate, argued in `ddad4595279`; `paused` is not in 8.1's `SessionRunStatus` union, so the premise cannot occur                                                                                                                                                                                             |
+| pending-final-delivery attempt cap         | DROP        | upstream absorbed it as a recovery state machine that tombstones with an operator notice. Carrying it would be HARMFUL: `projectCanonicalSessionEntryShape` strips `pendingFinalDeliveryAttemptCount` before persistence, so the cap would read 0 forever -- a safeguard that can never fire but looks like one |
+
+**The structural lesson: beta.3's own ledger audited its drops using fork-added
+TEST TITLES.** Two of the four carried items added no tests, so they were
+invisible to that instrument by construction. An audit keyed on declarations
+found them. Whatever key you choose, state it -- it defines what the audit
+cannot see.
+
+## The `oxlint` figures in this ledger were measured on a stale linter
+
+Earlier revisions reported "5-6 pre-existing errors at the tag"
+(`preserve-caught-error`, `no-control-regex`). That was **oxlint 1.75.0 from
+stale `node_modules`**. The repo pins **1.79.0** at the tag and on this branch,
+and under the pinned version `oxlint src extensions` is **clean, rc=0** --
+controlled with a probe file that correctly reported 3 errors. Sync
+dependencies before quoting any lint figure.
+
+## Known red, pre-existing, not from the carries
+
+`src/agents/embedded-agent-runner/run.prepared-harness-source-delivery.integration.test.ts`
+fails **3 of 11** on a `modeTransitions` mismatch. Measured at clean HEAD with
+the whole working tree stashed, so it predates the coverage-audit carries. Note
+it lives in the `agents` project, NOT `agents-embedded-agent-run` -- pointing the
+wrong config at it prints "No test files found" and exits 1, which reads exactly
+like a test failure.
+
 ## Not established
 
 - **No full test-suite run.** Individual files were run; the suite as a whole

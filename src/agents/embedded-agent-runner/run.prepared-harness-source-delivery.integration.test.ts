@@ -478,12 +478,16 @@ describe("prepared harness source delivery", () => {
       expect(modelVisiblePrompt).toContain(
         "Your replies are automatically sent to this conversation",
       );
-      expect(modelVisiblePrompt).not.toContain("Normal final replies are private");
+      expect(modelVisiblePrompt).not.toContain(
+        "Your normal final answer is private and is never posted to this conversation",
+      );
     } else {
       expect(modelVisiblePrompt).toContain(
         "Current source visible reply MUST use `message(action=send)`",
       );
-      expect(modelVisiblePrompt).toContain("Normal final replies are private");
+      expect(modelVisiblePrompt).toContain(
+        "Your normal final answer is private and is never posted to this conversation",
+      );
       expect(modelVisiblePrompt).not.toContain(
         "Your replies are automatically sent to this conversation",
       );

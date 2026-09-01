@@ -321,6 +321,19 @@ describe("supervised gateway lock recovery", () => {
           msg.includes("gateway.preflight.zombie_detected supervisor=launchd port=18789"),
         ),
       ).toBe(true);
+
+      // The signal is emitted once per recovery cycle, not on every retry tick:
+      // a normally-draining incumbent would otherwise inflate telemetry with a
+      // duplicate alert per tick across its whole drain window. The `.some`
+      // assertion above only pins that the warn fires at all, so without this
+      // count the `zombieDetection.loggedThisCycle` latch in run.ts is live
+      // production behaviour with no coverage. beta.2 asserted this; it was
+      // lost as collateral when a conflict-marker cleanup resolved the hunk to
+      // the empty beta.3 side.
+      const zombieWarnCount = warnMessages.filter((msg) =>
+        msg.includes("gateway.preflight.zombie_detected"),
+      ).length;
+      expect(zombieWarnCount).toBe(1);
     } finally {
       resetGatewayRestartTraceForTest();
       if (originalRestartTraceEnv === undefined) {
