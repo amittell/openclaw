@@ -150,36 +150,8 @@ not a good test.
   `OPENCLAW_*` names but only this one counts: one is in a test file (the
   counter excludes tests) and two are in gitignored `packages/plugin-sdk/dist/`
   build output (the counter uses `git ls-files --exclude-standard`).
-- **Direct `oxlint` over `src`: 11 errors, of which 6 are pre-existing at the
-  tag.** The pristine tag reports those same 6 (`no-control-regex` ×1,
-  `preserve-caught-error` ×5), so plain `oxlint src` is not a clean gate even
-  upstream. The carry introduced 14; 8 are fixed, and the remainder are
-  `max-lines` files being split.
-
-### `npm run lint` cannot be run on this machine
-
-It fails before oxlint ever executes:
-
-    Error: plugin-sdk boundary dts timed out after 300000ms
-      at prepare-extension-package-boundary-artifacts.mts:142
-
-The prerequisite dts step exceeds its own 300 s ceiling here, and the failure
-leaves an orphaned `.artifacts/dist-artifacts.lock` directory that blocks the
-next run until removed. **Direct `npx oxlint --config .oxlintrc.json <paths>`
-is the valid local instrument**; the wrapper's verdict is unavailable.
-
-Likewise for tests: `npx vitest run <path>` boots every project config and gets
-killed on long runs. The repo's own runner is
-`node scripts/run-vitest.mjs run --config test/vitest/vitest.<project>.config.ts <path>`.
-
-Note the wrapper reports `[exited with code 0]` in some harnesses even when the
-inner step timed out — that line is the runner's, not the gate's. Read the
-body, not the exit line.
-
-## Measurement traps hit during this port
-
-Kept because each cost a wrong answer.
-
+- **Direct `oxlint` over `src`: 5 errors, ALL pre-existing at the tag** (which
+  itself reports 6). The carry introduces none.
 - **A grep line-counter over-counts by ~10** against real oxlint (771 vs 761).
   Every budget claim here is from `npx oxlint`, never from grep.
 - **`oxfmt` relocates a standalone `// SAFETY:` comment onto a ternary's `?`
@@ -194,15 +166,94 @@ Kept because each cost a wrong answer.
 - **`$?` after a pipeline reports the last command, not the interesting one.**
   A `... | tail` made a failing gate read as `rc=0`.
 
+## Over-budget files and how they were split
+
+Seven files carried fork additions past `max-lines`. The baseline is shrink-only
+and its header says "Split files", so each was split by **pure code motion**
+into a cohesive sibling — no baseline rows, no `oxlint-disable`.
+
+| file                                     | before | after   | sibling                                                |
+| ---------------------------------------- | ------ | ------- | ------------------------------------------------------ |
+| `directive-handling.impl.ts`             | 717    | **613** | `ack-parts.ts` 158                                     |
+| `auth-controller.ts`                     | 718    | **678** | `cooldown-probe.ts` 48                                 |
+| `auth-controller.test.ts`                | 1077   | **728** | `refresh-deadline.test.ts` 272 + `test-support.ts` 122 |
+| `run-loop.ts`                            | 728    | **689** | `run-loop.exhaustion.ts` 106                           |
+| `terminal-resolution.ts`                 | 718    | **640** | `settled-turn.ts` 93                                   |
+| `message-tool-execution.ts`              | 741    | **696** | `send-suppression.ts` 57                               |
+| `heartbeat-runner.tool-response.test.ts` | 1004   | **997** | `previews.test.ts` 8                                   |
+
+Every number is from real oxlint. Test totals were identical across each split
+(252, 25, 47, 240, 40). Where a moved symbol had external importers it is
+re-exported from the original, so no importer path changed.
+
+**Two files have thin headroom** — `message-tool-execution.ts` at 696/700 and
+`heartbeat-runner.tool-response.test.ts` at 997/1000. Any further addition
+re-breaks them. The next clean seam on the first is the file-local
+`type MessageToolOptions` (39 effective lines, no external importers).
+
+**One split has a real side effect**: `heartbeat-runner.tool-response.previews.test.ts`
+is auto-classified as a _unit-fast_ test by the repo's own content-based
+`getUnitFastTestFilesForIncludePatterns`, so `vitest.infra.config.ts` now
+excludes it and it runs under `vitest.unit-fast.config.ts`. Running the infra
+config no longer covers that test.
+
+## The formatter and the assertion ratchet can disagree
+
+Two `memory-lancedb` SAFETY comments sat above an assertion inside a ternary.
+`oxfmt` rewrites that onto the `?` line:
+
+    // SAFETY: ...                    ->    ? // SAFETY: ...
+    ? (cfg.dreaming as Record<...>)         (cfg.dreaming as Record<...>)
+
+which the ratchet no longer detects — `config.ts: 1 > 0`. So the two gates could
+not both pass. **A trailing comment on the `as` line survives both** and is the
+form to use inside a ternary.
+
+## The build needs a dependency sync, and the failure blames the wrong thing
+
+A first `npm run build` on this branch failed with:
+
+    [MISSING_EXPORT] "TuiMainScreen" is not exported by
+      "node_modules/@earendil-works/pi-tui/dist/index.js"
+      ╭─[ src/tui/tui.ts:10:3 ]
+
+That reads as a carry defect in `src/tui`, and it is not one:
+
+    the TAG itself imports TuiMainScreen        tui.ts:10, used at :932
+    the carry's diff for that file              empty
+    package.json wants @earendil-works/pi-tui   0.84.2
+    installed                                   0.82.1
+
+**Stale `node_modules`.** `pnpm install --frozen-lockfile` brings it to 0.84.2,
+which exports the symbol. Sync dependencies before reading any build failure on
+this branch — the tag moved several package versions and an out-of-date tree
+reports the mismatch as a missing export in _our_ source.
+
+**This applies to the hosts too, and it changes the deploy procedure.** Measured
+on both:
+
+    rh-bot.lan      @earendil-works/pi-tui  0.82.1
+    mac-mini.lan    @earendil-works/pi-tui  0.82.1
+    this branch needs                       0.84.2
+
+The usual deploy is `git fetch && git checkout <sha> && pnpm build && restart`.
+On this branch that **fails on both hosts**, with the same misleading
+MISSING_EXPORT pointing at `src/tui/tui.ts`. The deploy must run
+`pnpm install` between the checkout and the build.
+
+Note also that the build's exit code is not what a wrapping harness may report.
+The first run's harness line said `exit code 0` while the real status was **1**;
+the failure was only visible because the log carried an explicit
+`BUILD_RC=$?`. Capture the status yourself rather than reading a runner's
+summary line.
+
 ## Not established
 
 - **No full test-suite run.** Individual files were run; the suite as a whole
   has not been, and several lanes reported that their carried files had never
   been executed at all.
-- **No typecheck and no build.** Import resolution was checked structurally
-  (993 relative named imports resolved, with positive and negative controls),
-  which proves symbols _exist_, not that types are compatible. Bare-specifier
-  imports (`@openclaw/*`, `vitest`, `node:*`) were not checked at all.
+- **The branch BUILDS** — `npm run build` rc=0 in 5m11s, after the dependency
+  sync above. No typecheck beyond tsgo:core.
 - **SAFETY invariants on inherited assertions are readings, not proofs.** The
   ratchet counts comments; it never validates the claim. They assert properties
   of code the annotator did not author.
@@ -212,5 +263,10 @@ Kept because each cost a wrong answer.
 - **`compaction-safeguard.ts` heartbeat/`isHeartbeatPrompt` re-anchor.** One
   proposed re-anchor was proven _wrong_ and reverted; the correct one was not
   established, so beta.3's heartbeat test remains unsatisfied.
-- **Deployment.** Both hosts still run `2026.8.1-beta.3 (77549fa)`. Nothing
-  from this branch has been deployed.
+- **Deployment.** Nothing from this branch has been deployed. The two hosts are
+  NOT on the same thing, which an earlier reading of this ledger got wrong:
+
+      rh-bot.lan      77549fa3889   beta.3
+      mac-mini.lan    8f120b77a7f   the WIP /temperature rescue commit
+
+  Neither is an ancestor of this branch, so both are switches, not fast-forwards.
