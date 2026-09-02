@@ -230,6 +230,13 @@ export type AgentDefaultsConfig = {
      * - strict-agentic: enable structured plan tracking and non-visible turn recovery on supported GPT-5 runs
      */
     executionContract?: EmbeddedAgentExecutionContract;
+    /**
+     * Ceiling in milliseconds for the exponential same-model overload backoff
+     * applied before failover. A lower value shortens the retry wait and `0`
+     * restores the legacy no-backoff behavior; any other value (negative,
+     * non-finite) falls back to the 30s default.
+     */
+    overloadBackoffMaxMs?: number;
   };
   /** Default thinking level when no /think directive is present. */
   thinkingDefault?: AgentThinkingLevel;
