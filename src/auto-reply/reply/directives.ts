@@ -163,7 +163,7 @@ export function extractTemperatureDirective(
   }
   const match = body.match(TEMPERATURE_DIRECTIVE_PATTERN);
   if (!match || match.index === undefined) {
-    return { cleaned: body.trim(), hasDirective: false };
+    return { cleaned: body, hasDirective: false };
   }
   const start = match.index;
   let i = match.index + match[0].length;
