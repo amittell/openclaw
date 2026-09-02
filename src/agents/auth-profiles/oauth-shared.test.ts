@@ -8,10 +8,61 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
 import {
+  mergeSuccessfulOAuthRefreshCredential,
   overlayRuntimeExternalOAuthProfiles,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
 import type { AuthProfileStore, OAuthCredential } from "./types.js";
+
+describe("mergeSuccessfulOAuthRefreshCredential", () => {
+  it("clears a permanent-refresh tombstone after a successful refresh", () => {
+    const refreshed = mergeSuccessfulOAuthRefreshCredential(
+      {
+        type: "oauth",
+        provider: "openai",
+        access: "dead-access",
+        refresh: "dead-refresh",
+        refreshDeadAt: 123,
+        accountId: "account-1",
+      },
+      {
+        access: "live-access",
+        refresh: "live-refresh",
+        expires: 456,
+      },
+    );
+    expect(refreshed).toEqual({
+      type: "oauth",
+      provider: "openai",
+      access: "live-access",
+      refresh: "live-refresh",
+      expires: 456,
+      accountId: "account-1",
+    });
+    expect(refreshed.refreshDeadAt).toBeUndefined();
+    expect("refreshDeadAt" in refreshed).toBe(false);
+  });
+
+  it("keeps stored identity fields the provider response omits", () => {
+    const refreshed = mergeSuccessfulOAuthRefreshCredential(
+      {
+        type: "oauth",
+        provider: "openai",
+        access: "old-access",
+        refresh: "old-refresh",
+        email: "user@example.com",
+        accountId: "acct-shared",
+      },
+      { access: "new-access" },
+    );
+    expect(refreshed).toMatchObject({
+      access: "new-access",
+      refresh: "old-refresh",
+      email: "user@example.com",
+      accountId: "acct-shared",
+    });
+  });
+});
 
 describe("overlayRuntimeExternalOAuthProfiles", () => {
   it("isolates runtime OAuth overlays without structuredClone", () => {

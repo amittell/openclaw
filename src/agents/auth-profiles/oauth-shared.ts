@@ -11,7 +11,7 @@ import {
   normalizeAuthEmailToken,
   normalizeAuthIdentityToken,
 } from "./oauth-identity.js";
-import type { AuthProfileStore, OAuthCredential } from "./types.js";
+import type { AuthProfileStore, OAuthCredential, OAuthCredentials } from "./types.js";
 
 export { normalizeAuthEmailToken, normalizeAuthIdentityToken } from "./oauth-identity.js";
 
@@ -66,6 +66,24 @@ export function isOAuthRefreshDead(credential: OAuthCredential | undefined): boo
   // NaN) must not flag a grant dead and reopen the external re-seed gate.
   const deadAt = credential?.type === "oauth" ? credential.refreshDeadAt : undefined;
   return typeof deadAt === "number" && Number.isFinite(deadAt) && deadAt > 0;
+}
+
+/** Merge provider-returned OAuth fields after a successful refresh. */
+export function mergeSuccessfulOAuthRefreshCredential(
+  credential: OAuthCredential,
+  refreshed: OAuthCredentials,
+): OAuthCredential {
+  const merged = {
+    ...credential,
+    ...refreshed,
+    type: "oauth",
+  } satisfies OAuthCredential;
+  // A successful refresh proves this grant is live. The provider response
+  // carries no refreshDeadAt, so a plain spread would inherit the tombstone
+  // from the stored credential and leave a healthy profile marked dead --
+  // which keeps the external CLI re-seed gate open over a working credential.
+  delete merged.refreshDeadAt;
+  return merged;
 }
 
 /** Returns true when both credentials carry the same non-empty refresh grant. */

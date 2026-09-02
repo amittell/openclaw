@@ -39,6 +39,7 @@ import {
   classifyOAuthRefreshFailureReason,
   OAuthRefreshFailureError,
 } from "./oauth-refresh-failure.js";
+import { mergeSuccessfulOAuthRefreshCredential } from "./oauth-shared.js";
 import { assertNoOAuthSecretRefPolicyViolations } from "./policy.js";
 import { clearLastGoodProfileWithLock } from "./profiles.js";
 import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
@@ -220,13 +221,7 @@ export async function refreshOAuthCredentialForRuntime(params: {
   cfg?: OpenClawConfig;
 }): Promise<OAuthCredential | null> {
   const refreshed = await refreshOAuthCredential(params.credential, { cfg: params.cfg });
-  return refreshed
-    ? {
-        ...params.credential,
-        ...refreshed,
-        type: "oauth",
-      }
-    : null;
+  return refreshed ? mergeSuccessfulOAuthRefreshCredential(params.credential, refreshed) : null;
 }
 
 const oauthManager = createOAuthManager({

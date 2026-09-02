@@ -7,7 +7,6 @@ import type { MockFn } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { beforeEach, vi } from "vitest";
 import type { TelegramBotDeps } from "./bot-deps.js";
-import { setTelegramRuntimeConfigForTest } from "./bot-handlers.bot-pair-loop.js";
 import { runTelegramChannelInboundEventWithHarness } from "./bot.test-helpers.js";
 
 type AnyMock = ReturnType<typeof vi.fn>;
@@ -617,10 +616,6 @@ function clearTelegramDispatchDedupeFilesForTest(): void {
 beforeEach(() => {
   getRuntimeConfig.mockReset();
   getRuntimeConfig.mockReturnValue(DEFAULT_TELEGRAM_TEST_CONFIG);
-  // Route bot-pair guard runtime config through the harness mock so tests
-  // that override `loadConfig` (e.g. setOpenChannelPostConfig) also control
-  // allowBots / botLoopProtection without the real runtime snapshot.
-  setTelegramRuntimeConfigForTest(() => getRuntimeConfig());
   sessionStoreEntries.value = {};
   rmSync(`${sessionStorePath}.telegram-messages.json`, { force: true });
   clearTelegramDispatchDedupeFilesForTest();

@@ -12,6 +12,7 @@ import {
   buildOAuthRefreshFailureLoginCommand,
   classifyOAuthRefreshFailure,
   classifyOAuthRefreshFailureError,
+  classifyOAuthRefreshFailureReason,
   formatOAuthRefreshFailureLoginCommandMarkdown,
   isPermanentOAuthRefreshFailure,
   OAuthRefreshFailureError,
@@ -19,6 +20,13 @@ import {
 
 describe("isPermanentOAuthRefreshFailure", () => {
   it("classifies dead-grant refresh failures as permanent, including nested causes", () => {
+    const codexExpiredBody =
+      'OpenAI Codex token refresh failed (401): {"error":{"message":"Your refresh token is expired.","code":"refresh_token_expired"}}';
+    expect(classifyOAuthRefreshFailureReason(codexExpiredBody)).toBe("refresh_token_expired");
+    expect(isPermanentOAuthRefreshFailure(new Error(codexExpiredBody))).toBe(true);
+    expect(
+      isPermanentOAuthRefreshFailure(new Error("wrapper", { cause: new Error(codexExpiredBody) })),
+    ).toBe(true);
     expect(
       isPermanentOAuthRefreshFailure(
         new Error('OpenAI Codex token refresh failed (401): {"error":"invalid_grant"}'),
@@ -64,6 +72,13 @@ describe("isPermanentOAuthRefreshFailure", () => {
         ),
       ),
     ).toBe(false);
+    // Ordering guard: a rotation-race body that also names the expired code
+    // must still classify as reuse, or the recoverable race gets tombstoned.
+    expect(
+      classifyOAuthRefreshFailureReason(
+        'refresh_token_expired {"error":{"code":"refresh_token_reused"}}',
+      ),
+    ).toBe("refresh_token_reused");
     expect(isPermanentOAuthRefreshFailure(new Error("fetch failed: ECONNRESET"))).toBe(false);
     expect(isPermanentOAuthRefreshFailure(undefined)).toBe(false);
     expect(isPermanentOAuthRefreshFailure("invalid_grant")).toBe(false);

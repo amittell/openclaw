@@ -33,6 +33,7 @@ import {
   isSameOAuthRefreshGrant,
   isSafeToAdoptBootstrapOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
+  mergeSuccessfulOAuthRefreshCredential,
   shouldBootstrapFromExternalCliCredential,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
@@ -718,13 +719,10 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
                   cfg: params.cfg,
                   agentDir: params.agentDir,
                 });
-                return refreshed
-                  ? ({
-                      ...credentialToRefresh,
-                      ...refreshed,
-                      type: "oauth",
-                    } satisfies OAuthCredential)
-                  : null;
+                if (!refreshed) {
+                  return null;
+                }
+                return mergeSuccessfulOAuthRefreshCredential(credentialToRefresh, refreshed);
               },
             );
             if (!refreshedCredentials) {
