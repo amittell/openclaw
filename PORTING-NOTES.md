@@ -359,6 +359,37 @@ it lives in the `agents` project, NOT `agents-embedded-agent-run` -- pointing th
 wrong config at it prints "No test files found" and exits 1, which reads exactly
 like a test failure.
 
+## Grep upstream's BASE before filing anything against it
+
+A fork pinned to a TAG ages exactly like a frozen deployment: `main` keeps
+moving, so with every day the odds rise that any defect you find is already
+fixed upstream. Treat "this may already be fixed" as the DEFAULT for fork work.
+
+    git fetch upstream
+    git show upstream/main:<path> | grep -n '<the defective token>'
+    git log --oneline -5 upstream/main -- <path>
+    git rev-list --count <your-base>..upstream/main     # how stale you are
+
+**Measured cost of skipping it, 2026-09-02.** The hardcoded `/tmp` store path in
+`bot.create-telegram-bot.test.ts` was diagnosed, fixed, and proven
+two-directionally with the real stale artifact planted -- then found to be
+already fixed on `upstream/main`, **character-for-character the same line**. The
+only reason it surfaced is that opening a PR requires naming a base branch.
+
+**The trigger is a MOMENT, not a state: the moment you decide to file, before
+writing any PR body.** "When in doubt" never fires, because a finished
+investigation -- reproduction, fix, oracle -- feels certain, and that is exactly
+when the question stops being asked.
+
+Note this is a different axis from searching the issue tracker. The tracker
+answers _has someone reported it_; the base answers _has someone already fixed
+it_. A clean tracker says nothing about the code.
+
+**And when it IS already fixed, the right action is the inverse of a PR: adopt
+upstream's exact line.** Carrying their wording verbatim makes the next rebase a
+no-op on that file; landing your own equivalent fix manufactures a divergence to
+reconcile later. That is what commit `63123709fef` does.
+
 ## Not established
 
 - **No full test-suite run.** Individual files were run; the suite as a whole
