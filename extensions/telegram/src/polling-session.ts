@@ -97,6 +97,8 @@ type TelegramPollingSessionOpts = {
   getAcceptedUpdateId: () => number | null;
   getCommittedUpdateId: () => number | null;
   persistUpdateId: (updateId: number) => void | Promise<void>;
+  /** Drop the persisted offset after the server rejected it as foreign to its queue. */
+  resetUpdateOffset?: () => void | Promise<void>;
   log: (line: string) => void;
   /** Pre-resolved Telegram transport to reuse across bot instances */
   telegramTransport?: TelegramTransport;
@@ -582,6 +584,17 @@ export class TelegramPollingSession {
       if (message.type === "spooled") {
         liveness.noteGetUpdatesActivity();
         requestImmediateDrain();
+        return;
+      }
+      if (message.type === "offset-rejected") {
+        this.opts.log(
+          `[telegram] getUpdates ignored offset ${message.requestedOffset} and answered from update ${message.adoptedUpdateId}; the Bot API server owns a different update_id sequence. Discarding the persisted offset and adopting the server's ids.`,
+        );
+        void Promise.resolve(this.opts.resetUpdateOffset?.()).catch((err: unknown) => {
+          this.opts.log(
+            `[telegram] failed to reset the persisted update offset: ${formatErrorMessage(err)}`,
+          );
+        });
       }
     });
     const stopOnAbort = () => {

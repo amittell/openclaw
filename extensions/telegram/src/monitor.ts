@@ -61,15 +61,19 @@ const TELEGRAM_OFFSET_ROTATION_LABELS: Record<TelegramOffsetRotationReason, stri
   "bot-id-changed": "bot identity change",
   "legacy-state": "legacy update offset",
   "token-rotated": "token rotation",
+  "api-root-changed": "Bot API root change",
 };
 
 function formatTelegramOffsetRotationMessage(
   accountId: string,
   info: TelegramUpdateOffsetRotationInfo,
 ): string {
-  const previousLabel = info.previousBotId ?? "(legacy unscoped offset)";
   const reasonLabel = TELEGRAM_OFFSET_ROTATION_LABELS[info.reason];
-  return `[telegram] Detected ${reasonLabel} for account "${accountId}" (was ${previousLabel}, now ${info.currentBotId}); discarding stale update offset ${info.staleLastUpdateId} and starting fresh.`;
+  const transition =
+    info.reason === "api-root-changed"
+      ? `was ${info.previousApiRoot ?? "(unrecorded, assumed cloud)"}, now ${info.currentApiRoot}`
+      : `was ${info.previousBotId ?? "(legacy unscoped offset)"}, now ${info.currentBotId}`;
+  return `[telegram] Detected ${reasonLabel} for account "${accountId}" (${transition}); discarding stale update offset ${info.staleLastUpdateId} and starting fresh.`;
 }
 
 /** Check if error is a Grammy HttpError (used to scope unhandled rejection handling) */
@@ -230,6 +234,7 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
       const persistedOffsetRaw = await readTelegramUpdateOffset({
         accountId: account.accountId,
         botToken: token,
+        apiRoot: account.config.apiRoot,
         onRotationDetected: async (info) => {
           log(formatTelegramOffsetRotationMessage(account.accountId, info));
           try {
@@ -255,6 +260,7 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
             accountId: account.accountId,
             updateId,
             botToken: token,
+            apiRoot: account.config.apiRoot,
           });
         },
         onInvalidUpdateId: (updateId) => {
@@ -292,6 +298,10 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
         getAcceptedUpdateId: offsetPersistence.getAcceptedUpdateId,
         getCommittedUpdateId: offsetPersistence.getCommittedUpdateId,
         persistUpdateId: offsetPersistence.persistUpdateId,
+        resetUpdateOffset: async () => {
+          offsetPersistence.reset();
+          await deleteTelegramUpdateOffset({ accountId: account.accountId });
+        },
         log,
         telegramTransport,
         createTelegramTransport: createTelegramTransportForPolling,
