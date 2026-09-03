@@ -421,3 +421,60 @@ reconcile later. That is what commit `63123709fef` does.
   `~/.openclaw/agent-db-backup-20260831-203148` (1.9G) and beta.3
   (`77549fa3889`) is still present in its object store, so rollback remains
   available.
+
+  **Superseded 2026-09-01 evening (measured 2026-09-02 20:14 EDT):** both hosts
+  are on `2644b2b5d00` (`git -C ~/.openclaw/openclaw log -1`, detached HEAD),
+  dist built 20:45 (rh-bot) and 20:50 (mac-mini) on 2026-09-01. Neither is on
+  the branch head. The four commits since (`52c01cf1023`..`bae9961f430`) plus
+  the fixes below are the pending deploy.
+
+## 2026-09-02: both bots silent, two unrelated causes, both outside this branch
+
+Measured on the hosts, not inferred from this ledger. Each had a different
+root cause, and neither was the port.
+
+**mac-mini: a Telegram polling hot loop, 4.9 M polls in 3 h.** At 17:43:58 a
+config reload switched `channels.telegram.apiRoot` to a local Bot API server
+(`http://localhost:8081`, `ai.openclaw.telegram-bot-api` under launchd, built
+16:12-16:23 the same day). The persisted update offset (`760546622`) was a
+cloud-API id. `update_id` sequences are per server: the local server's queue
+began at `592426180`. The worker asked for offset `760546623`, the local
+server treated it as invalid and answered from its queue head (tdlib
+`Client::do_get_updates` falls back to `tqueue->get_head` when
+`TQueue::get(from)` errors, "Specified from_id is in the future"), the worker
+only ever raises `lastUpdateId`, so the next poll asked for the same offset.
+1000 polls/s, `gateway.log` grew to 2.1 GB, gateway at 85 % CPU, and the 214
+real updates behind the head were unreachable. Fixed live by stopping the
+gateway, discarding the local backlog (`getUpdates offset=-1` then confirm),
+rewriting the two `plugin_state_entries` rows (`telegram.update-offsets`) to
+the local id space, rotating the log, restarting. Backup of the rows:
+`~/.openclaw/backups/telegram-update-offsets-20260902.json`; rollback script
+left by the migration author: `~/.openclaw/tba-build/rollback-to-cloud.sh`.
+The bot was never logged out of the cloud API (the documented migration
+step), so Telegram still queues a copy of every update there; unresolved,
+Alex's call.
+
+The code fix on this branch: the offset store records the Bot API root it was
+confirmed against and rotates on a change (`api-root-changed`, alongside
+bot-id and token rotation), and the ingress worker adopts the server's id
+space when a poll answers below the requested offset instead of re-asking
+forever, telling the session to drop the persisted watermark. Neither exists
+on `upstream/main` (checked 2026-09-02, `git grep` on the offset store).
+
+**rh-bot: macOS Local Network privacy denied the new node binary.** At 17:36
+another session repointed both gateways from `/opt/homebrew/opt/node`
+(26.x) to `/opt/homebrew/opt/node@24` "to match CI". node@24's code identity
+has no Local Network grant on either host (`/Library/Preferences/com.apple.networkextension.plist`,
+read-only), node 26's does. Under launchd, a node@24 probe resolved
+`gpufarm.lan` but `fetch` failed in 24 ms; node 26 got 200 in 29 ms. SSH
+shells are exempt, which is why every "works for me" probe passed. Every
+model request from the gateway had hung since 17:37:52 with no error line.
+Fixed by restoring the pre-node24 plist on both hosts (`engines` allows
+`>=25.9.0`; native modules load under 26). Re-aligning to node 24 needs the
+Local Network toggle flipped on each host's own GUI first.
+
+**Still open on rh-bot:** the group session `agent:main:telegram:group:-5268075089`
+is 3,595 events / 16 MB / ~656 K estimated tokens against a 280 K budget, one
+compaction event since 2026-08-25, every turn routes `compact_only`, and a
+turn takes about an hour. That is the fork's compaction-safeguard workstream
+(#721-#723, `amittell/openclaw#5`), not this port.
