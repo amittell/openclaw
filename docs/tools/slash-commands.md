@@ -24,8 +24,8 @@ command handling is enabled for the surface.
     only content in the message.
   </Card>
   <Card title="Directives" icon="sliders">
-    `/think`, `/fast`, `/verbose`, `/trace`, `/reasoning`, `/elevated`,
-    `/exec`, `/model`, `/queue` — stripped from the message before the model
+    `/think`, `/temperature`, `/fast`, `/verbose`, `/trace`, `/reasoning`,
+    `/elevated`, `/exec`, `/model`, `/queue` — stripped from the message before the model
     sees it. Most persist session settings when sent alone; `/exec` security
     and approval options apply only to their message.
   </Card>
@@ -206,6 +206,7 @@ plugins.
     | Command | Description |
     | --- | --- |
     | `/think <level\|default>` | Set the thinking level or clear the session override. Aliases: `/thinking`, `/t` |
+    | `/temperature <0-2\|default>` | Set the sampling temperature or clear the session override. Alias: `/temp` |
     | `/verbose on\|off\|full` | Toggle verbose output. Alias: `/v` |
     | `/trace on\|off` | Toggle plugin trace output for the current session |
     | `/fast [status\|auto\|on\|off\|default]` | Show, set, or clear fast mode |
