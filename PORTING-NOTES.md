@@ -428,6 +428,26 @@ reconcile later. That is what commit `63123709fef` does.
   the branch head. The four commits since (`52c01cf1023`..`bae9961f430`) plus
   the fixes below are the pending deploy.
 
+  **DEPLOYED 2026-09-02 22:22 (rh-bot) and 22:35 (mac-mini): both hosts on
+  `2be4112e856`** (`git -C ~/.openclaw/openclaw log -1`), each via stop ->
+  checkout -> `pnpm build` (3m02s on the M4) -> smoke on port 18790 (healthz
+  200, `[gateway] ready`) -> launchd bootstrap -> healthz 200. No dependency
+  change since `2644b2b5d00`, so no install and no doctor run. Both gateways
+  run `/opt/homebrew/opt/node/bin/node` (26.x), the binary macOS has granted
+  Local Network access. On mac-mini the smoke run itself performed the
+  `api-root-changed` rotation of the two pre-root offset rows.
+
+## Next port item: the compaction-safeguard workstream
+
+Alex, 2026-09-02 22:30: land the fork's compaction-safeguard set (#721-#723,
+`amittell/openclaw#5`, base beta.2, "137/137 tests pass, mergeStateStatus
+DIRTY") as the next carry onto this branch. Evidence for why: rh-bot's group
+session `agent:main:telegram:group:-5268075089` reached 3,595 events / 16 MB /
+~656 K estimated tokens with exactly one compaction since 2026-08-25, every
+turn routing `compact_only`, about an hour per turn. The session was reset the
+same night (transcript preserved in SQLite) so the bot answers; the defect
+that let it grow is the workstream.
+
 ## 2026-09-02: both bots silent, two unrelated causes, both outside this branch
 
 Measured on the hosts, not inferred from this ledger. Each had a different
