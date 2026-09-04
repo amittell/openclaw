@@ -927,3 +927,65 @@ nothing yet refuses to retry after N interruptions. `pnpm lint:core` did not
 complete - its runner timed out at 900s, which is an infrastructure timeout and
 not a reported violation - so the substitute was the targeted oxlint command
 `check-changed` builds for the same files, which passes.
+
+## 2026-09-04 13:0x EDT: both upstream PRs opened after a validity re-check
+
+Alex signed off on the bodies and asked for them to be pushed "if they are still
+valid". They are, and the check is worth recording because the first attempt at
+it produced a false clean.
+
+**Validity, measured against every current upstream ref.** Both defects are live
+on `upstream/main` (`6a97159ecec`), on `v2026.8.2`, on `v2026.9.1`, and on the
+untagged in-flight `upstream/release/2026.9.2`:
+
+- #721: `missingIdentifiers.slice(0, 3)` is still present in
+  `compaction-safeguard-quality.ts` on all four refs, and
+  `wrapUntrustedQualityFeedbackBlock` exists on none of them.
+- #723: `MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2)`
+  is still the fixed derivation at `compaction-safeguard.ts:87`, the constant is
+  still used directly as the finalization budget at `:1043`, and
+  `resolveCompactionSummaryBudgetChars` exists on none of them.
+
+Both branches still merge clean onto current `upstream/main` by
+`git merge-tree --write-tree`, rc=0 each.
+
+**The false clean, recorded because it nearly settled the question the wrong
+way.** My first sweep reported `slice(0,3)=0` on every ref, which reads as
+"upstream already fixed it". The positive control in the same output said
+`auditSummaryQuality=0`, which is impossible for that file, and that is what
+exposed it. Cause: `git show "$ref:src/agents/..."` in zsh, where `:s` is the
+substitute history modifier, so the pathspec was mangled before git saw it.
+Braced as `"${ref}:src/agents/..."` the control returns 1 and the real answer
+appears. Alex's `CLAUDE.md` already carries "Git object paths: `${sha}:path`;
+`$sha:path` invokes parameter modifiers", and having the rule written down did
+not stop me - only the control did. A second seat hit the identical trap on the
+same day with `"$H:crates/..."`.
+
+**Upstream issue search.** No open issue covers either defect. The nearest is
+`#119272` (closed, completed), a different failure in the same file: the
+appended suffix filling the 16,000-char budget and silently replacing the
+summary body, fixed on main by `#123827`. Ours is the adjacent defect - the
+budget itself being fixed at 16k regardless of session size - so `#119272` is
+referenced as `Related:` on the budget PR rather than claimed as closed by it.
+`gh search issues` rejects `--state all`; it takes open or closed only, and
+omitting the flag searches both.
+
+**Opened, following the merge-ref race procedure in `CLAUDE.md`:** created as
+drafts, polled until `mergeable` went non-null (True on both, `mergeable_state`
+unstable while CI runs), marked ready, then confirmed check runs attached to
+each head SHA.
+
+| PR                                                          | branch                                        | head          | files | diff     |
+| ----------------------------------------------------------- | --------------------------------------------- | ------------- | ----- | -------- |
+| [#138415](https://github.com/openclaw/openclaw/pull/138415) | `fix/compaction-quality-feedback-defect-list` | `5ca3c72f645` | 3     | +244/-2  |
+| [#138416](https://github.com/openclaw/openclaw/pull/138416) | `fix/compaction-summary-budget-output-bound`  | `024b1e8f729` | 3     | +339/-21 |
+
+`maintainer_can_modify` is true on both, so maintainers can push to the
+branches. Both bodies state plainly that neither carries live-gateway proof and
+that the boundary proof is a mocked-summarizer run through the real
+`session_before_compact` handler.
+
+Stale branches on the fork that must NOT be opened as PRs, since they are
+superseded shapes of the same work: `fix/compaction-quality-feedback-truncation`
+(`1e6f82266c2`, the window-based budget that `d71d1ee1720` replaced) and
+`fix/compaction-safeguards-721-722-723` (`df808efca37`).
