@@ -595,3 +595,15 @@ finalization, so the fork's #721 scenario had to omit a section as well to
 reach the corrective pass. Upstream: #722 is Alex's open PR #130393; nothing
 covers #721/#723, adjacent issues are #75336, #124911, #127239, #127987. PRs
 are to be prepared but not opened until Alex reviews (ruling 2026-09-04 03:30).
+
+**Rulings 2026-09-04 03:30-04:20 (Alex):** everything in the DSH section-compaction
+study gets built on this branch (increments in the session scratchpad
+`dsh-increments.md`: I1 cut-point pairing + shrink invariant + leaf re-check,
+I2 prune-then-remeasure, I3 recall of the shadowed span through
+`sessions_history`, I4 prefix-aligned single-shot summarization, I5
+exact-count admission on by default where the provider exposes a counter, I6
+durable compaction-in-progress marker); compaction summaries stay on
+qwen3.8-27b; upstream PRs for #721/#723 are prepared but opened only after Alex
+reviews the bodies (written with the myvoice skill). Codex hit its usage limit
+until 2026-09-08 21:53, so pre-land autoreview runs on the Claude engine until
+then (Alex, 04:18), recorded here per commit.
