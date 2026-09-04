@@ -22,6 +22,7 @@ import {
 import { readSessionMessagesAroundIdWithStatsAsync } from "../session-transcript-anchor-reader.js";
 import {
   readSessionMessagesAsync,
+  readSessionMessagesShadowedByCompactionAsync,
   type ReadRecentSessionMessagesResult,
 } from "../session-transcript-readers.js";
 import type { loadSessionEntry } from "../session-utils.js";
@@ -215,7 +216,15 @@ export function capChatHistoryAroundMessage(params: {
   return params.messages.slice(start, end);
 }
 
-export async function readChatHistoryPage(params: {
+/** Existing callers request only windows the transcript always has; a miss reads as empty. */
+export async function readChatHistoryPage(
+  params: Parameters<typeof readChatHistoryWindowPage>[0],
+): Promise<ChatHistoryPage> {
+  return (await readChatHistoryWindowPage(params)) ?? { messages: [] };
+}
+
+/** Reads one history window; undefined when the requested anchor is not in this transcript. */
+export async function readChatHistoryWindowPage(params: {
   entry: ReturnType<typeof loadSessionEntry>["entry"];
   provider: string | undefined;
   sessionId: string | undefined;
@@ -227,8 +236,9 @@ export async function readChatHistoryPage(params: {
   effectiveMaxChars: number;
   offset: number | undefined;
   messageId: string | undefined;
+  compactionId?: string;
   ignoreCliSessionImports?: boolean;
-}): Promise<ChatHistoryPage> {
+}): Promise<ChatHistoryPage | undefined> {
   const {
     entry,
     provider,
@@ -241,6 +251,7 @@ export async function readChatHistoryPage(params: {
     effectiveMaxChars,
     offset,
     messageId,
+    compactionId,
   } = params;
   if (!sessionId || !storePath) {
     if (messageId) {
@@ -268,12 +279,24 @@ export async function readChatHistoryPage(params: {
   // full snapshot. Paging oversized imports needs an opaque snapshot cursor and
   // is deferred to a follow-up issue. Anchored reads fall through with them: the
   // full-snapshot merge below still centers on messageId at the handler cap.
-  if ((offset !== undefined || messageId) && !cliSessionId) {
+  if ((offset !== undefined || messageId || compactionId) && !cliSessionId) {
     let pageOffset = offset ?? 0;
     let hasOverreadContext = false;
     let readPage: ReadRecentSessionMessagesResult;
     let incrementalTail: IncrementalChatHistoryTail | undefined;
-    if (messageId) {
+    if (compactionId) {
+      // A shadowed span is a fixed historical window: no live tail cursor and no CLI merge.
+      const span = await readSessionMessagesShadowedByCompactionAsync(readScope, {
+        compactionId,
+        maxMessages: max,
+        offset: offset ?? 0,
+      });
+      if (!span) {
+        return undefined;
+      }
+      pageOffset = span.offset;
+      readPage = span;
+    } else if (messageId) {
       const anchoredPage = await readSessionMessagesAroundIdWithStatsAsync(readScope, {
         messageId,
         maxMessages: max,
@@ -296,7 +319,7 @@ export async function readChatHistoryPage(params: {
       });
       readPage = incrementalTail.readPage;
     }
-    const isTailPage = !messageId && pageOffset === 0;
+    const isTailPage = !messageId && !compactionId && pageOffset === 0;
     const overreadContextMessage = incrementalTail
       ? incrementalTail.overreadContextMessage
       : hasOverreadContext || readPage.messages.length > max
@@ -383,8 +406,8 @@ export async function readChatHistoryPage(params: {
         localMessages: localMessagesWithBoundaryFilter,
         preparedImportedMessages: importedMessages,
       });
-  if ((offset !== undefined || messageId) && !cliHistory.imported) {
-    return readChatHistoryPage({ ...params, ignoreCliSessionImports: true });
+  if ((offset !== undefined || messageId || compactionId) && !cliHistory.imported) {
+    return readChatHistoryWindowPage({ ...params, ignoreCliSessionImports: true });
   }
   if (cliHistory.imported) {
     // Reuse this request's redacted external snapshot after the full local read;
@@ -404,7 +427,7 @@ export async function readChatHistoryPage(params: {
       preparedImportedMessages: importedMessages,
     });
     if (!completeCliHistory.imported) {
-      return readChatHistoryPage({ ...params, ignoreCliSessionImports: true });
+      return readChatHistoryWindowPage({ ...params, ignoreCliSessionImports: true });
     }
     const mergedMessages = dropPreSessionStartAnnouncePairs(
       completeCliHistory.messages,

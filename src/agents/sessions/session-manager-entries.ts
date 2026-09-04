@@ -1,3 +1,4 @@
+import type { BuildSessionContextOptions } from "../../../packages/agent-core/src/index.js";
 import {
   readActiveTranscriptEntryAnchor,
   type TranscriptEntryAnchor,
@@ -39,6 +40,16 @@ import type {
 } from "./session-manager-types.js";
 
 export class SessionManagerEntries extends SessionManagerPersistence {
+  // Set per run from the registered tool set; every context build in that run must
+  // render the same checkpoint bytes or the provider prompt cache breaks each turn.
+  private checkpointHandleFormatter: BuildSessionContextOptions["formatCheckpointHandle"];
+
+  setCompactionCheckpointHandleFormatter(
+    formatter: BuildSessionContextOptions["formatCheckpointHandle"],
+  ): void {
+    this.checkpointHandleFormatter = formatter;
+  }
+
   protected appendEntry(
     entry: SessionEntry,
     options?: AppendPersistenceOptions,
@@ -415,7 +426,9 @@ export class SessionManagerEntries extends SessionManagerPersistence {
   }
 
   buildSessionContext(): SessionContext {
-    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[]) as SessionContext;
+    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[], {
+      formatCheckpointHandle: this.checkpointHandleFormatter,
+    }) as SessionContext;
   }
 
   getBoundaryCount(): number {

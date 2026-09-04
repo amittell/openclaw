@@ -152,7 +152,7 @@ describe("sessions_history redaction", () => {
       Value.Check(tool.outputSchema!, { status: "forbidden", error: "hidden", extra: true }),
     ).toBe(false);
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      '{ bytes: number; contentRedacted: boolean; contentTruncated: boolean; droppedMessages: boolean; messages: Array<unknown>; sessionKey: string; truncated: boolean; hasMore?: boolean; nextOffset?: number; offset?: number; pendingInputs?: { items: Array<{ acceptedAt: number; id: string; message: unknown; state: "queued" | "cancelled" | "interrupted" }>; total: number; nextBefore?: number }; sessionLinkRule?: string; totalMessages?: number } | { error: string; status: "error" | "forbidden" }',
+      '{ bytes: number; contentRedacted: boolean; contentTruncated: boolean; droppedMessages: boolean; messages: Array<unknown>; sessionKey: string; truncated: boolean; hasMore?: boolean; nextOffset?: number; offset?: number; pendingInputs?: { items: Array<{ acceptedAt: number; id: string; message: unknown; state: "queued" | "cancelled" | "interrupted" }>; total: number; nextBefore?: number }; returnedCount?: number; sessionLinkRule?: string; shadowedCount?: number; totalMessages?: number } | { error: string; status: "error" | "forbidden" }',
     );
   });
 
@@ -325,6 +325,131 @@ describe("sessions_history redaction", () => {
     await expect(
       tool.execute("call-1", { sessionKey: "main", offset: 0, messageId: "message-1" }),
     ).rejects.toThrow("offset and messageId cannot be used together");
+  });
+
+  it("rejects compactionId with messageId", async () => {
+    const tool = createHistoryToolWithMessage("hello");
+
+    await expect(
+      tool.execute("call-1", { sessionKey: "main", compactionId: "c1", messageId: "m1" }),
+    ).rejects.toThrow("compactionId and messageId cannot be used together");
+  });
+
+  it("reads a compaction span with default-mode redaction, tool filtering, and paging", async () => {
+    useLoggingConfig("span-redaction-off.json", { redactSensitive: "off" });
+    const requests: CallGatewayRequest[] = [];
+    const span = [
+      { role: "tool", content: "hidden", __openclaw: { seq: 3 } },
+      {
+        role: "assistant",
+        content: "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789",
+        __openclaw: { seq: 4 },
+      },
+      { role: "user", content: "newest shadowed", __openclaw: { seq: 5 } },
+    ];
+    const tool = createSessionsHistoryTool({
+      config: {},
+      callGateway: async <T = Record<string, unknown>>(request: CallGatewayRequest): Promise<T> => {
+        requests.push(request);
+        const params = request.params as { compactionId?: string };
+        if (params.compactionId !== "checkpoint-1") {
+          return { messages: [{ role: "user", content: "live tail" }] } as T;
+        }
+        return {
+          messages: span,
+          offset: 0,
+          nextOffset: 3,
+          hasMore: true,
+          totalMessages: 5,
+        } as T;
+      },
+    });
+
+    const result = await tool.execute("span", {
+      sessionKey: "main",
+      compactionId: "checkpoint-1",
+      limit: 3,
+    });
+    const withTools = await tool.execute("span-tools", {
+      sessionKey: "main",
+      compactionId: "checkpoint-1",
+      includeTools: true,
+    });
+    const details = readHistoryDetails(result);
+
+    expect(requireGatewayRequest(requests, "chat.history").params).toMatchObject({
+      sessionKey: "main",
+      compactionId: "checkpoint-1",
+      limit: 3,
+    });
+    expect(details.messages).toHaveLength(2);
+    expect(JSON.stringify(details)).not.toContain("sk-or-v1-abcdef0123456789");
+    expect(details).toMatchObject({
+      contentRedacted: true,
+      truncated: false,
+      shadowedCount: 5,
+      returnedCount: 2,
+      offset: 0,
+      nextOffset: 2,
+      hasMore: true,
+      totalMessages: 5,
+    });
+    expect((readHistoryDetails(withTools).messages as unknown[]).length).toBe(3);
+    expect(Value.Check(tool.outputSchema!, details)).toBe(true);
+  });
+
+  it("reports the span rows the byte cap dropped and keeps paging past them", async () => {
+    const span: HistoryMessage[] = Array.from({ length: 30 }, (_, index) => ({
+      role: "assistant",
+      content: `shadowed-${index + 1} ${"x".repeat(10_000)}`,
+      __openclaw: { seq: index + 1 },
+    }));
+    const tool = createSessionsHistoryTool({
+      config: {},
+      callGateway: async <T = Record<string, unknown>>(): Promise<T> =>
+        ({
+          messages: span,
+          offset: 0,
+          nextOffset: 30,
+          hasMore: false,
+          totalMessages: 30,
+        }) as T,
+    });
+
+    const details = readHistoryDetails(
+      await tool.execute("span-cap", { sessionKey: "main", compactionId: "checkpoint-1" }),
+    );
+    const returned = details.messages as unknown[];
+    const oldestReturnedSeq = readMessageSeq(returned[0]);
+
+    expect(returned.length).toBeGreaterThan(0);
+    expect(returned.length).toBeLessThan(span.length);
+    expect(details).toMatchObject({
+      shadowedCount: 30,
+      returnedCount: returned.length,
+      truncated: true,
+      droppedMessages: true,
+      hasMore: true,
+      nextOffset: 30 - oldestReturnedSeq! + 1,
+    });
+  });
+
+  it("surfaces the gateway rejection for an id that is not a compaction checkpoint", async () => {
+    const rejection =
+      'compactionId "nope" is not a compaction checkpoint in this session; compaction rows in history carry __openclaw.kind "compaction" and the id in __openclaw.id';
+    const tool = createSessionsHistoryTool({
+      config: {},
+      callGateway: async <T = Record<string, unknown>>(request: CallGatewayRequest): Promise<T> => {
+        if ((request.params as { compactionId?: string }).compactionId) {
+          throw new Error(rejection);
+        }
+        return { messages: [{ role: "user", content: "live tail" }] } as T;
+      },
+    });
+
+    await expect(
+      tool.execute("bad-id", { sessionKey: "main", compactionId: "nope" }),
+    ).rejects.toThrow(rejection);
   });
 
   it("rejects sessionId without messageId", async () => {

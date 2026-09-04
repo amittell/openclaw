@@ -7,6 +7,9 @@ export const PROCESS_TOOL_DISPLAY_SUMMARY = "Inspect/control exec sessions.";
 export const CRON_TOOL_DISPLAY_SUMMARY = "Schedule reminders, automations, wake events.";
 export const SESSIONS_LIST_TOOL_DISPLAY_SUMMARY = "List visible sessions; filters/previews.";
 export const SESSIONS_HISTORY_TOOL_DISPLAY_SUMMARY = "Read sanitized session history.";
+/** Trailer for the compaction checkpoint line; inject only when sessions_history is registered. */
+export const SESSIONS_HISTORY_CHECKPOINT_READ_HINT =
+  "sessions_history can read them by compactionId";
 export const SESSIONS_SEARCH_TOOL_DISPLAY_SUMMARY = "Search past session transcripts.";
 export const SESSIONS_SEND_TOOL_DISPLAY_SUMMARY = "Run same-Gateway session/agent.";
 export const SESSIONS_SPAWN_TOOL_DISPLAY_SUMMARY =
@@ -80,6 +83,7 @@ export function describeSessionsHistoryTool(options?: SessionLinkDescriptionOpti
   return [
     "Read sanitized visible-session history.",
     "Before reply/debug/resume. Supports limit, offset, search-result sessionId/messageId anchors, and tool messages.",
+    "compactionId reads the rows a compaction checkpoint summarized, paged with offset/limit.",
     "pendingInputs are accepted inputs outside model history; page with pendingBefore=nextBefore. Cancelled/interrupted inputs never replay automatically. Lower limit for richer pending previews.",
     ...(options?.sessionLinkBase ? [describeSessionLinkRule(options.sessionLinkBase)] : []),
   ].join(" ");

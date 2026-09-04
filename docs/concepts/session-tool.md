@@ -51,6 +51,8 @@ Gateway sharing operations are outside this run-audit boundary.
 
 `sessions_history` fetches the conversation transcript for a specific session. By default, tool results are excluded; pass `includeTools: true` to see them. Use `limit` for the newest bounded tail. Pass `offset: 0` when you need pagination metadata, then pass returned `nextOffset` values to page backward through older OpenClaw transcript windows without reading raw transcript files. Explicit offset pages do not merge external CLI fallback imports; use the default newest-tail view (no `offset`) when you need that merged display history.
 
+After a compaction, the summary the model sees ends with a `[compaction checkpoint <id>: shadows N earlier entries]` line. Pass that id as `compactionId` to read the rows the summary replaced (from the previous compaction's kept tail up to this one's), with the same `offset`/`limit` paging, redaction, and byte cap; the result adds `shadowedCount` and `returnedCount`, and `truncated` says whether the page was cut. An id that is not a compaction checkpoint is rejected with an error that says how to find one.
+
 Durably admitted inputs from `sessions_send` or the Gateway `agent` method
 appear separately in `pendingInputs`, not in transcript `messages`. Each row
 records `queued`, `cancelled`, or `interrupted`.
