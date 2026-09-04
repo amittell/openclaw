@@ -642,3 +642,49 @@ rh-bot and mac-mini with an `/etc/hosts.bak-gpufarm-pin-*` beside each; both
 hosts and the router agreed on that address before the edit and three lookups
 plus a 401 from the endpoint confirmed it after. rh-bot had no gpufarm pin block
 at all before today.
+
+## 2026-09-04 05:30-06:15 EDT: the DSH increments land, and the upstream branches are ready
+
+**On this branch** (`29a818cf692`, pushed and verified by ref):
+
+- `a74258b30ba` I1: the compaction cut point never lands inside an open tool-call
+  frame; a summary that stops at the output budget is classified like empty output
+  so the existing retry-once policy covers it; a commit is refused when the session
+  leaf moved during summarization. 47 production lines, 197 test lines, three
+  named red tests in the neutralize check.
+- `de6484af41b` I3: recallable checkpoints. The compaction summary the model sees
+  carries one hard-capped 160-char handle line naming the boundary and how many
+  entries it shadows, derived at read time so persisted bytes are untouched, and
+  `sessions_history` gains a `compactionId` mode that returns that shadowed span
+  through the existing redaction, byte cap and paging. The wording that names
+  `sessions_history` is injected only when that run registers the tool. Net +298
+  production after a compression pass that deleted a parallel paging path, reverted
+  a handler restructure, and dropped a field the page total already provided.
+- `29a818cf692` a defect the review surfaced as sub-P0 and doctrine ranks higher:
+  a `compactionId` read shared the anchored branch with `offset`/`messageId`, which
+  deliberately falls through to the CLI-import merge, so a span request on a
+  CLI-bound session silently returned the live tail and reported success. The
+  decision is now `shouldReadAnchoredWindow`, which never lets a span fall through.
+
+**Not landed: the shrink invariant (study item 5).** Implemented three ways,
+including DSH's own formulation; each correctly refuses 13-14 of 27 session
+fixtures, because those fixtures compact two- and three-message transcripts into
+canned summaries ("condensed history") genuinely larger than the history they
+replace. Making them pass by inflating fixture token counts only worked by
+comparing provider-anchored "before" against heuristic "after", reintroducing the
+mixed units the invariant exists to remove. It needs the fixtures rebuilt with
+realistic history first. Fixture debt, not a defect in the fix.
+
+**Upstream branches ready, no PRs opened** (Alex reviews the bodies first):
+`fix/compaction-quality-feedback-defect-list` at `5ca3c72f645` and
+`fix/compaction-summary-budget-output-bound` at `024b1e8f729`, both exactly one
+commit on `upstream/main` at `ed79b95f44b`, verified independent of each other.
+Evidence in the session scratchpad (`pr-evidence-721.md`, `pr-evidence-723.md`):
+all 29 gate lanes ok on both (including plugin boundaries, which fails on THIS
+branch but not on upstream), tsgo clean, autoreview scoped-clean, and neutralize
+checks naming 3 and 2 red tests with an anchor control staying green in each.
+Named residual: per-identifier length is unbounded in `extractOpaqueIdentifiers`,
+so twelve pathological identifiers could still exceed the new 8000-char wrapper.
+Neither branch has live-gateway proof; both are proved at the
+`session_before_compact` boundary through the real audit, retention plan and
+finalizer with a mocked summarizer.
