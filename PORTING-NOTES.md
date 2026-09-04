@@ -1378,3 +1378,53 @@ Two independent schemes exist and they disagree. The scratchpad calls
 prune-then-remeasure "#4"; the original study's ranked table lists it **#3** and
 gives #4 to the shrink invariant. Use the descriptions and owner files as the
 key, never the numbers.
+
+## The summary budget is overridden downstream, so #138416 cannot change shipped behaviour as written
+
+Found 2026-09-04 while fixing the CJK finding, verified by reading the call site
+rather than taking the lane's word.
+
+`src/agents/sessions/agent-session-compaction.ts:276`:
+
+    compactionResult = {
+      ...compactionResult,
+      summary: capCompactionSummary(compactionResult.summary),
+    };
+
+That call passes **no explicit limit**, so it takes
+`maxChars = MAX_COMPACTION_SUMMARY_CHARS` (16,000 raw chars) from the signature
+default at `packages/agent-core/src/harness/compaction/compaction.ts:118-122`.
+It sits **outside** the extension branch, so it applies to the safeguard
+extension's output exactly as it applies to core's.
+
+So the whole #723/#138416 line of work raises a budget upstream of a fixed
+16,000-char cap that then truncates the artifact anyway. **The PR's tests pass
+because they assert on the hook's return value, which is upstream of this cap.**
+They are honest about what they measure and simply never reach the persisted
+artifact. That is also why every one of our neutralize checks was green on the
+fix and told us nothing about production.
+
+**It sharpens the original problem statement.** The order is AUDIT, then
+TRUNCATE. `auditSummaryQuality` runs inside the safeguard and passes on the full
+text; the cut happens after the hook returns. So the artifact a session replays
+is not the artifact that passed the audit, and a corrective retry cannot help -
+regenerating produces another summary that passes and is cut in the same place.
+Our PR body described the truncation as happening _before_ validation, which is
+the wrong way round.
+
+Two mitigations, recorded so the finding is not read as worse than it is:
+`capCompactionSummary` appends `SUMMARY_TRUNCATED_MARKER`, so the truncation is
+visible rather than silent; and nothing on either bot reaches this path at all,
+because compaction has never run on either (zero `compaction_start` and zero
+`compaction_end` across 5,000 log lines per host).
+
+**Not changed, and deliberately.** Aligning that cap to the resolved budget
+changes what is persisted for every session on every host. That is a persistence
+decision under this repo's rules, not something a budget fix should carry
+unannounced. Disclosed in the PR body and put to Alex. If the cap should take the
+resolved budget, it is a small change; if the cap is deliberate, #138416's
+premise needs rethinking rather than merging.
+
+Also fixed and pushed today on that branch: the CJK ceiling, at `6f06c1d3f06`.
+A 60,000-char Chinese body went from 63,910 replay tokens (21.3% of the window)
+to 29,565 (9.86%), with the Latin twin unchanged as an anchor control.
