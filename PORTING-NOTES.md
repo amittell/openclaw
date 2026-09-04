@@ -850,3 +850,80 @@ board is 9 open of 106.
 can review any row there. Already filed as gpufarm #231 with a reproduction; it
 blocks four existing rows and both of mine. The remedy is an interactive
 admin-scoped login only he can run.
+
+## Decision record: I6 durable compaction-in-progress marker (persistent-store change)
+
+`docs/reference/database-schemas.md:102` requires that a material persistent-store
+change link an accepted decision, and that a new table counts as material even
+when the schema version does not move. The I6 lane correctly refused to treat my
+relayed approval as that record. This is the record. **Alex's acceptance so far
+was given on a one-line summary, not on the design below, so the honest status is
+"accepted in principle, full record pending his read".** I am not landing I6
+until he confirms against this text.
+
+**Owning store and lifecycle.** The per-agent database
+(`agents/<agentId>/agent/openclaw-agent.sqlite`), which already owns
+agent-scoped session state. The producer is
+`AgentSessionCompaction.runCompactionWork`; both compaction entry points
+converge there, so one write covers both. Rows are cascade-deleted with the
+session.
+
+**Problem.** Compaction is multi-step and only its last step is durable. A
+crash, OOM kill, or Gateway restart between the summarizer call and the append
+leaves no record that an attempt happened. "Never compacted" and "died
+mid-compaction" are indistinguishable, so recovery cannot tell whether to
+retry, whether a previous attempt already spent the summarizer budget, or
+whether attempts are looping. That is the silent-failure class this repo ranks
+above crashes.
+
+**Alternatives that avoid new persistence, and why they were rejected.**
+Inferring from transcript shape cannot distinguish an interrupted attempt from
+a session that was never eligible. Reusing the existing `compactionCount`
+counter records completions only. An in-memory marker dies with the process,
+which is exactly the failure being detected. The repo's own doctrine argues for
+this shape directly: "Record facts where they happen... Answering 'did X
+happen?' by combining several indirect signals rots as sibling paths evolve;
+prefer a recorded fact at the boundary that owns it."
+
+**Canonical versus derived.** The row is canonical for "an attempt opened and
+has not settled". Nothing else derives from it and no projection reads it. It
+is not a cache and must not be rebuilt from anything.
+
+**Schema, upgrade and downgrade.** One new table,
+`session_compaction_attempts`, no column added to any existing table,
+`OPENCLAW_AGENT_SCHEMA_VERSION` unchanged at 19. Qualifies as additive at the
+same version per `database-schemas.md:33` ("New tables qualify because older
+builds ignore them"). Declared in the canonical schema plus a one-time
+idempotent lazy ensure on first feature use, mirroring
+`ensureSessionGoalOperationsSchema`, and registered in
+`AGENT_SCHEMA_COMPATIBILITY.allowedMissingTables`. Downgrade proof is in the
+lane's test: an older reader opens the database, uses it, and writes, with
+`PRAGMA user_version` and the `schema_meta` row unchanged, and a candidate
+reopen sees the same state.
+
+**Retention and deletion.** One row per session, replaced by each new attempt,
+removed with the session by foreign-key cascade. No growth term, no sweeper.
+
+**Concurrency and recovery invariants.** The ensure runs outside the write
+transaction; no `await` occurs inside any transaction callback
+(`check-sqlite-transaction-boundary.mts` passes). The mark carries its own
+scope so a settlement lands on the session the attempt opened against. All row
+access is Kysely, not raw SQL.
+
+**Visibility.** The next compaction decision after a restart claims the
+unsettled row once per session and emits the existing `compaction_end` with
+`{status:"failed"}` - the shipped WARN log and agent event, no new event type.
+The lane checked that a `failed` outcome with no preceding `compaction_start`
+has no harmful side effects.
+
+**Rollback.** Revert the commit. The table is then unread and inert; older
+readers already tolerate its presence, so no migration is needed to back out.
+
+**Validation limits, stated rather than hidden.** No live Gateway or Control UI
+proof: the `compaction_end` path is proven at the session-event boundary only,
+so whether an operator actually notices the WARN line is untested against a
+real surface. `interrupted_attempts` records a streak but drives no policy;
+nothing yet refuses to retry after N interruptions. `pnpm lint:core` did not
+complete - its runner timed out at 900s, which is an infrastructure timeout and
+not a reported violation - so the substitute was the targeted oxlint command
+`check-changed` builds for the same files, which passes.
