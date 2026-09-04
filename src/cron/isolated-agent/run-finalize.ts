@@ -151,9 +151,11 @@ export async function finalizeCronRun(params: {
   // A fallback-served run is transient. Persisting its runtime model would
   // prevent the configured primary from being retried after it recovers, and
   // persisting its context window would desynchronize status and compaction.
-  const isFromFallback =
-    modelUsed !== execution.liveSelection.model ||
-    providerUsed !== execution.liveSelection.provider;
+  // Read the executor's explicit signal rather than re-deriving it. The fallback
+  // path rewrites execution.liveSelection to the fallback tuple, so comparing
+  // modelUsed against it reports "not a fallback" for every fallback run and
+  // defeats the guard below.
+  const isFromFallback = execution.usedFallback;
   if (!params.isAborted()) {
     setCronSessionAgentHarnessId({
       entry: prepared.cronSession.sessionEntry,
