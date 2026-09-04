@@ -1150,3 +1150,43 @@ both by grep before trusting the build:
     grep -c 'shouldReadAnchoredWindow' src/gateway/server-methods/chat-history-pages.ts
 
 A clean `merge-tree` on these files is not evidence the span guard survived.
+
+## Undeclared: our cut-point fix changes shipped plugin-SDK behaviour
+
+Measured 2026-09-04. Not a defect in the fix, but a fact that must be declared
+if I1 is ever offered upstream, and one neither the commit nor the ledger stated.
+
+`a74258b30ba` changed `findValidCutPoints` so a cut point strictly inside an open
+tool-call frame is skipped. That function has one caller inside agent-core:
+
+    packages/agent-core/src/harness/compaction/compaction.ts:448  export function findCutPoint(...)
+    :454                                                          const cutPoints = findValidCutPoints(...)
+
+and `findCutPoint` is re-exported on the plugin SDK barrel:
+
+    src/plugin-sdk/agent-core.ts:39   findCutPoint,
+
+It is present on that barrel at **both `v2026.8.1` and `v2026.9.1`**, so by this
+repo's own definition - "Shipped means reachable from a stable release Git tag" -
+it is shipped public API.
+
+**The observable change for an SDK consumer.** No signature change; the returned
+`firstKeptEntryIndex` moves. Before, a transcript whose candidate cut sat between
+an assistant's tool call and its `toolResult` could be cut there, splitting the
+pair across the summary boundary. Now the scan tracks open calls with
+`createToolCallOccurrenceQueue`, clears them at each assistant, claims them at
+each `toolResult`, and skips any candidate while calls remain open - so the cut
+lands at a pair boundary instead.
+
+**My reading, not a ruling:** this is a bug fix rather than a compat break,
+because the old value was an invalid cut point and a plugin depending on it was
+depending on a defect. But `CLAUDE.md` treats plugin SDK surface as
+compatibility-sensitive and asks for the count and direction of such changes in
+review. We declared neither. Whoever offers I1 upstream - the sweep names
+`#127987` (OPEN, P1, `no-new-fix-pr`, review already describing this exact fix,
+no PR yet) as the target - must state in the PR body that `findCutPoint`'s
+returned index changes for tool-pair transcripts, and should carry a test at the
+SDK boundary rather than only at the internal one.
+
+Neither open PR is affected: `#138415` and `#138416` touch the safeguard, not
+agent-core's cut-point scan.
