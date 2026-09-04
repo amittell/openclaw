@@ -688,3 +688,71 @@ so twelve pathological identifiers could still exceed the new 8000-char wrapper.
 Neither branch has live-gateway proof; both are proved at the
 `session_before_compact` boundary through the real audit, retention plan and
 finalizer with a mocked summarizer.
+
+## 2026-09-04 09:06 EDT: both hosts on 1b6e6e8b33b, health loop back, four increments in flight
+
+**Deploy.** rh-bot and mac-mini are both on `1b6e6e8b33b` (ten commits: the
+dead-generation fence fix, the #721/#723 carry, I1, I3, the compaction-span
+fallthrough fix, ledger docs). mac-mini: preflight 09:01 at `556e25210b4` with
+46 GiB free, lockfile unchanged, bootout rc=0, build rc=0 with zero
+`[INEFFECTIVE_DYNAMIC_IMPORT]` warnings, smoke healthz 200 on 18790, bootstrap
+rc=0, pid 23786, healthz 200 at 09:06:27. Both Telegram providers restarted on
+their existing offsets (`373259813` default, `592427445` ratbot), so nothing was
+re-fetched or dropped across the restart.
+
+The five increment markers are present in the built chunks on both hosts, which
+is the check that matters because the build splits and grepping `dist/index.js`
+alone finds zero:
+
+| marker                        | rh-bot | mac-mini |
+| ----------------------------- | ------ | -------- |
+| `compactionId`                | 9      | 12       |
+| `shouldReadAnchoredWindow`    | 2      | 2        |
+| `compaction checkpoint`       | 10     | 15       |
+| `summary exceeded max tokens` | 2      | 2        |
+| `changed while starting work` | 12     | 12       |
+
+**Ingress spool, both hosts, post-deploy.** rh-bot 1000 completed / 46 failed,
+mac-mini 1013 completed / 22 failed, and zero rows in any non-terminal state on
+either. Every failure is `handler-timeout` dated 2026-08-24 or 2026-08-25,
+predating the retry-policy change; nothing has failed since. Read off `status`,
+not a guessed `deliveredAt` column - the first query I wrote used column names
+that do not exist and SQLite said so, which is the good failure mode.
+
+**Health loop re-enabled** per Alex's ruling ("1 but re-enabled after deploy"):
+job `9ab3bc70`, `2-59/5 * * * *`, so it fires at :02 and every five minutes off
+the :00 mark. The 10-minute fleet job `58ac593d` continues alongside it.
+
+**Increments.** I1 and I3 are landed and deployed. I2 (prune-then-remeasure) and
+I4 (prefix-aligned single-shot summarization) are in flight in their own
+worktrees. I5 (exact-count admission) and I6 (durable compaction-in-progress
+marker) started 09:0x. I6 carries Alex's explicit approval for a persistent-store
+change and is constrained to the additive same-schema-version path in
+`docs/reference/database-schemas.md` - new table or bare nullable STRICT columns,
+no version bump, older-reader proof required.
+
+**gpufarm exact tokenization** (Alex: "also add the exact_tokenize_disabled to
+gpufarm / vllm"). Not yet changed. `POST /v1/tokenize` still answers 503
+`exact_tokenize_disabled` for `qwen3.8-27b`. The capability is a real subsystem
+in `gpufarm/exact_tokenize_proxy.py` with an authorities file, a freshness
+requirement on the authority, per-request nonces, worker binding, a generation
+check and a scope check, and it is default-off by design. A read-only mapping
+lane is enumerating the refusal ladder and the exact enablement path before
+anything is touched; this is a live shared inference gateway and the change is
+GitOps, so it gets read first and edited second.
+
+**Live proof of the compaction-span read** is running against a dev gateway on
+mac-mini with an isolated state dir and its own port, never 18789 and never the
+operator's state. Neither I1 nor I3 carries that proof; the fallthrough fix is
+the one behavior on this branch that a unit test cannot fully settle, because the
+defect only appears when a session carries a Claude CLI import binding.
+
+**Upstream PR bodies drafted** with the `myvoice` skill, in the scratchpad as
+`pr-body-721.md` and `pr-body-723.md`, following the repo template's four
+required sections. Both carry the neutralize-check red test names with the reason
+each went red, the anchor control that stays green, the full gate table result,
+the autoreview verdict, and an explicit statement that neither has live-gateway
+proof. 721's body also records the gate invocation that failed first
+(`ENOBUFS` from a `--base`-less classifier diffing a 70k-commit-divergent
+remote) so the green cannot be mistaken for retry-until-green. No PR is opened
+and nothing is posted on GitHub until Alex signs off.
