@@ -565,3 +565,33 @@ hash matched, `gzip -t` passed, and `tar -tzf` listed. Not touched: Messages
 (10.7 / 28.5 GiB), Mail (8.7 / 9.8), Photos, iCloud, the stale `~/openclaw`
 and `~/openclaw-scheduler` checkouts on mac-mini (tier 3, not approved), the
 live checkouts' `.git` (tier 4, not approved).
+
+## 2026-09-04 03:38-03:46 EDT: both hosts on 556e25210b4; stderr no longer discarded
+
+Alex, 03:36: "Now, both hosts." rh-bot 03:38:17 bootout -> 03:41:40 ready
+(pid 96945), mac-mini 03:42:56 -> 03:45:58 (pid 85483). Same procedure as
+2026-09-02 (`deploy_host.sh`: stop, checkout, build, smoke on 18790, bootstrap);
+lockfile unchanged so no install. Before each bootout the LaunchAgent plist's
+`StandardErrorPath` was changed from `/dev/null` to
+`~/Library/Logs/openclaw/gateway.err.log` (backup beside it,
+`.bak-stderr-20260904-*`); `launchctl print` confirms the new path on both.
+First hour of stderr on rh-bot: skill manifests rejected for a missing
+description, AGENTS.md truncated at 20,000 chars, orphaned-user-message merges,
+none of which stdout ever showed. The startup scan resumed the sessions the
+bootout interrupted (rh-bot started=3, mac-mini started=2); no "changed while
+starting work" on either host since.
+
+## Carried: #721 and #723 (commit after 556e25210b4)
+
+The fork's compaction-safeguard set is now fully on this branch: #722 was
+already here (degrade fallback, fresh coverage), #721 and #723 are re-derived
+by hand in `cfa10b2`'s successor commit (see `git log -- src/agents/agent-hooks/compaction-safeguard.quality-feedback-and-budget.test.ts`).
+Two things learned porting them: (1) the fork's `1e6f82266c2` window-based
+budget (1.25 % of the context window) was superseded three commits later by
+`d71d1ee1720`'s output-bound formula, and the fork's regression suite pins the
+later one, so that is what was carried; (2) this branch's
+`createSummaryQualityRetentionPlan` injects audited identifiers during
+finalization, so the fork's #721 scenario had to omit a section as well to
+reach the corrective pass. Upstream: #722 is Alex's open PR #130393; nothing
+covers #721/#723, adjacent issues are #75336, #124911, #127239, #127987. PRs
+are to be prepared but not opened until Alex reviews (ruling 2026-09-04 03:30).
