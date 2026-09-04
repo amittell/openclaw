@@ -498,3 +498,70 @@ is 3,595 events / 16 MB / ~656 K estimated tokens against a 280 K budget, one
 compaction event since 2026-08-25, every turn routes `compact_only`, and a
 turn takes about an hour. That is the fork's compaction-safeguard workstream
 (#721-#723, `amittell/openclaw#5`), not this port.
+
+**Follow-up noted 2026-09-03 15:48 EDT (loop monitor, measured, not fixed):**
+`~/.openclaw/scheduler/scheduler.db` is 158 MB on rh-bot (`message_receipts`
+261,375 rows, `job_dispatch_queue` 18,204, `idempotency_ledger` 8,215) and
+114 MB on mac-mini. Neither table appears to have retention. Not a disk threat
+today (rh-bot 14.3 GiB free at 93% used; that hour's drop was a Chrome 152
+update plus Spotlight reindexing, measured at 0 MB/20 s afterwards), but it is
+unbounded growth in an OpenClaw-owned store and belongs with the scheduler's
+owner, not this port.
+
+## 2026-09-04 00:10-02:20 EDT: rh-bot swallowed a group message for 3.5 h; disk cleanup on both hosts
+
+**The wedge (measured on rh-bot, fixed in this branch, deployed only after the
+morning restart).** Spooled event `735976357` (Alex in the RequestHub group,
+2026-09-03 21:10:39) was released 106 times, backoff capped at 3 min, every
+attempt ending in `Session "agent:main:telegram:group:-5268075089" changed
+while starting work. Retry.` The gateway log showed only the 106 "Inbound
+message" lines: the drain's `spooled update N failed; keeping for retry` notice
+goes through the Telegram monitor's log router, which sends every non-`[diag]`
+line to stderr, and both hosts' `ai.openclaw.gateway.plist` set
+`StandardErrorPath` to `/dev/null`. The dead-letter rule needs 8 attempts AND
+24 h of age, so nothing would have surfaced before 21:10 tonight.
+
+Owner: main-session restart recovery. The entry carried
+`mainRestartRecovery{revision 7, no claims/reservation/tombstone}` plus one
+fence run `af0e7718` from lifecycle generation `8a53f162` (a Gateway process
+that died in the 2026-09-02 17:36-22:22 restarts) with no terminal fact.
+`claim_foreground` only retires fences when every run has a terminal fact
+(#118873), a run from a dead generation can never record one, and with
+`abortedLastRun=false` the transition falls through to `no_change`, which
+`claimMainSessionRecoveryOwner` maps to `invalidated`. Fix (this branch):
+`isMainRestartRecoveryAggregateTerminalOnly(entry, currentLifecycleGeneration?)`
+treats a fence from another generation as settled when the caller is the
+Gateway (`claim_foreground`, `observe`, and the startup-scan gate pass their
+generation; `inspect` stays generation-blind so standalone callers cannot
+retire a live fence). Regression: three tests in
+`main-session-recovery-state.terminal-residue.test.ts`; the two Gateway-path
+tests fail on the pre-fix code, the standalone control passes on both.
+
+Live remediation (Alex, 02:05: "delete session, let the message deliver"):
+`openclaw sessions delete` on the group session at 02:08 (transcript archived
+to `sessions/eee12d95-….jsonl.deleted.2026-09-04T06-08-00.903Z.….zst`), the
+event admitted at 02:09:45 into fresh session `a3dfb22c`, reply sent 02:13:12
+(`messageId=15864`). That session was also the 670 K-token one, so the reset
+Alex ordered on 2026-09-02 is now real.
+
+**Morning deploy list:** (1) this fix; (2) both plists:
+`StandardErrorPath` -> `~/Library/Logs/openclaw/gateway.err.log` so drain
+notices and real errors stop vanishing (needs the same bootout/bootstrap as the
+deploy); (3) the loop monitor must read stderr too.
+
+**Disk cleanup (Alex approved tiers 1+2 at 00:05).** Both are 228 GB disks
+with `nodeLinker: hoisted`, so the pnpm store never hardlinks into
+`node_modules` and is a pure download cache; `pnpm store prune` removed
+nothing on either host, `rm -rf` of the store did.
+
+| host     | before               | after                | what moved                                                                                                                                                                                                            |
+| -------- | -------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| rh-bot   | 14.3 GiB free (93 %) | 80.0 GiB free (59 %) | pnpm store 56.9 GiB, npm cache 1.8, Chrome update clones 2.7, OpenClaw tmp 0.9, Warp 0.55; archived+removed: agent-db-backup-20260831 1.9, backups quarantines 2.0, April openclaw-backups 1.3, Aug 10 agent .bak 0.7 |
+| mac-mini | 16.3 GiB free (92 %) | 46.6 GiB free (76 %) | 12 TM local snapshots (+8.7), pnpm store 21.5, Warp 1.1, npm/tmp 0.4; archived+removed: agent-db-backup-20260901 1.4, backups 1.3, backup/ 0.3                                                                        |
+
+Archives: `/Volumes/Storage/{mac-mini,rh-bot}-archive-20260904/*.tar.gz` with
+`.sha256` and `.contents.txt` beside each; sources were removed only after the
+hash matched, `gzip -t` passed, and `tar -tzf` listed. Not touched: Messages
+(10.7 / 28.5 GiB), Mail (8.7 / 9.8), Photos, iCloud, the stale `~/openclaw`
+and `~/openclaw-scheduler` checkouts on mac-mini (tier 3, not approved), the
+live checkouts' `.git` (tier 4, not approved).
