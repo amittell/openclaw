@@ -1231,3 +1231,53 @@ the repro) or `#117096` (closed `not_planned`, whose closing comment concedes
 "the central bug remains on current main"). Any such PR must carry a fixture
 with a dead generation and NO terminal run id, since that is the case the
 existing suite cannot express.
+
+## Both upstream PRs are P1-blocked, and the two fixes are specified
+
+Reviewed 2026-09-04. Both findings are correct and both are the same error:
+I asserted a bound after reasoning about typical content, never worst-case.
+
+### #138415 - the 8,000-char feedback cap can still truncate
+
+Measured at `compaction-safeguard-quality.ts:395-407`. The extractor caps the
+COUNT (`.slice(0, MAX_EXTRACTED_IDENTIFIERS)`, 12) and filters a MINIMUM
+(`value.length >= 4`). There is no maximum, and the first alternation branch is
+`https?:\/\/\S+` - greedy across all non-whitespace. Twelve long URLs overflow
+8,000 chars and the block is cut mid-item, which is exactly the defect the PR
+removes.
+
+**Specified fix, and the shape matters.** Do NOT truncate an identifier: a
+partial identifier is a wrong identifier, and the corrective pass needs the exact
+string to restore it. Instead emit only WHOLE identifiers that fit the budget and
+state how many were omitted. That converts a silent mid-item cut into a recorded,
+visible non-outcome, which is what the product doctrine asks for
+("every action ends in a visible outcome or a recorded, intentional
+non-outcome"). With unbounded identifier length no fixed budget can show all
+twelve, so the honest contract is "these N complete, M omitted" rather than a
+pretence of completeness.
+
+### #138416 - the character ceiling is not a token ceiling
+
+`CHARS_PER_TOKEN_ESTIMATE` (4) and the CJK-aware `estimateStringChars` live ten
+lines apart in `packages/normalization-core/src/cjk-chars.ts`. The estimator adds
+`CHARS_PER_TOKEN_ESTIMATE - 1` per common CJK character, so replay charges CJK at
+roughly one token per character. Our 120,000-char ceiling is ~30,000 tokens of
+English and ~120,000 of Chinese: 40% of a 300k window, not the 10% the PR body
+claims.
+
+**Specified fix.** Stop approximating. The budget is applied at finalization
+where the summary text exists, so bound it in TOKENS using the same estimator the
+replay uses, rather than converting through a constant that matches only for
+ASCII. Simpler than what is there now, and it makes the asserted invariant true
+by construction instead of by assumption.
+
+### Second blocker on both: real behavior proof
+
+Both were declared without live-gateway proof and the reviewer treats that as
+blocking. The repo defines a satisfying form - a mock-gateway harness run with
+the verdict JSON in the PR body - so this does not need a live channel.
+
+**Neither fix can proceed until a gate host is available.** The Air is barred for
+suites, the M1 measured load 62 on 10 cores, and the M4 is at 2.0% container free
+partly because my own lanes added ~1 GB to its pnpm store. `pnpm store prune` is
+the reversible remedy and is with Alex.
