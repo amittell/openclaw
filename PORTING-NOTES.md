@@ -1190,3 +1190,44 @@ SDK boundary rather than only at the internal one.
 
 Neither open PR is affected: `#138415` and `#138416` touch the safeguard, not
 agent-core's cut-point scan.
+
+## Upstream's regression test for the fence defect does not cover the defect
+
+Verified 2026-09-04 against `upstream/main`. This is the argument to lead with
+if `cfa10b22ee3` is ever offered upstream, and it is unusually clean.
+
+Upstream's `main-session-recovery-state.terminal-residue.test.ts` is the
+regression coverage for #118873 (fixed by #126671). Its fixtures are labelled
+with dead generations, which makes the case look covered:
+
+    restartRecoveryRuns: [{ runId: "settled-run", lifecycleGeneration: "dead-generation" }]
+
+**But the same fixture also writes:**
+
+    restartRecoveryTerminalRunIds: ["settled-run"]
+
+So the run carries a terminal fact, and upstream's predicate retires the
+aggregate on THAT, not on the generation. The `dead-generation` string does no
+work in any assertion; swap it for `generation-1` and every test still passes.
+The label reads as coverage and is decoration.
+
+**The case that still wedges a session is the one the fixture never builds:** a
+run whose `lifecycleGeneration` belongs to a Gateway process that is gone AND
+which has no terminal fact - because it cannot record one, the process that
+would have written it died. `#126671` shipped only the all-runs-terminal half of
+the criterion that `#118873`'s own body proposed. Ours adds the generation arm:
+
+    runs.every((run) =>
+      hasRestartRecoveryTerminalRun(entry, run.runId) ||
+      (currentLifecycleGeneration !== undefined &&
+        run.lifecycleGeneration !== currentLifecycleGeneration))
+
+That is the wedge rh-bot hit on 2026-09-04, which swallowed a group message for
+three and a half hours behind "changed while starting work" - the exact string
+upstream's own test comment names as the symptom it is preventing.
+
+**Offer target**, per the sweep: `#118839` (OPEN, `needs-live-repro`, and we have
+the repro) or `#117096` (closed `not_planned`, whose closing comment concedes
+"the central bug remains on current main"). Any such PR must carry a fixture
+with a dead generation and NO terminal run id, since that is the case the
+existing suite cannot express.
