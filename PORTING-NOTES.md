@@ -756,3 +756,97 @@ proof. 721's body also records the gate invocation that failed first
 (`ENOBUFS` from a `--base`-less classifier diffing a 70k-commit-divergent
 remote) so the green cannot be mistaken for retry-until-green. No PR is opened
 and nothing is posted on GitHub until Alex signs off.
+
+## 2026-09-04 12:40 EDT: four increments committed, and the gpufarm premise corrected
+
+**All four remaining increments are committed on their own branches**, each in
+its own worktree, none pushed, none landed. Every one reports a neutralize check
+with named red tests and an anchor control that stays green, and every one
+reproduced the `plugin boundaries` lane failure on a clean tree before calling
+it pre-existing.
+
+| inc                             | branch                        | commit        | production LOC | red on neutralize                |
+| ------------------------------- | ----------------------------- | ------------- | -------------- | -------------------------------- |
+| I2 prune-then-remeasure         | `inc/prune-remeasure`         | `0da3af82ce4` | +149 / -12     | 2 named, 3 anchor controls green |
+| I4 prefix-aligned summarization | `inc/prefix-aligned-summary`  | `a571fd8dc77` | +123 / -18     | 7 named, 5 anchor controls green |
+| I5 exact-count admission        | `inc/exact-count-admission`   | `421be5a1c79` | +335 / -16     | 9 of 24, plus a whole suite      |
+| I6 durable start marker         | `inc/compaction-start-marker` | `9e070aee475` | +360 / -4      | 4 named, two-stage               |
+
+Three of the four flagged something worth more than the code:
+
+- **I2 deviated from its brief, correctly.** It was told to truncate, then
+  re-measure, then decide. It measures a projection first and commits the
+  persisted rewrite only once the result is known to fit, because committing
+  first destroys tool output the summary was about to cover when the re-measure
+  says "still over budget". It also bounded its own value: the skip can only
+  fire through the per-result oversize path, never the aggregate one, so this
+  helps the "a few huge tool results" case and not the general one.
+- **I5 caught two of its own tests being spuriously green.** Its first
+  neutralize pass showed 7 red; two more passed only because nothing called the
+  counter at all. It added a call assertion and a positive control, re-ran, and
+  reported 9. It also states plainly that its overflow-recovery test does _not_
+  fail on pre-fix code and explains what that test is for instead.
+- **I6 refused to take my word for its own approval.** Alex's approval for the
+  persistent-store change reached it through me, and it recorded that it has no
+  independent evidence of it and that the commit body links no decision record.
+  That is the correct posture and the link needs adding before it becomes a PR.
+
+**Live-gateway proof of the compaction-span read: done, with a premise
+correction that matters more than the result.** The fix behaves as described -
+a `compactionId` read returns the 135 shadowed messages, disjoint from both the
+live tail and the CLI-imported rows, while `messageId` and `offset` on the same
+session with the same binding return all 192 rows with `completeSnapshot`. An
+unknown `compactionId` returns `ok:false`, not a silent tail. But the census
+found **zero real compactions anywhere on mac-mini** across seven agent
+databases and 357 session rows, so the boundary was seeded. What is real is the
+175-message transcript and the entire read path in the shipped dist. The
+"ten sessions with compaction checkpoints" I reported earlier were ten
+`compactionCount: 0` counters. Worth knowing before anyone cites that number.
+
+The proof also turned up why the defect needed a real CLI import to appear at
+all: with a binding whose import yields nothing, `chat-history-pages.ts:431`
+retries with `ignoreCliSessionImports` and answers correctly even pre-fix. The
+silent wrong answer exists only when the merge actually merges.
+
+## The gpufarm premise was wrong, and Alex caught it
+
+I wrote that the exact-tokenize env var could be set "on the mac-mini". Alex:
+"mac-mini isnt the gateway anymore, so make sure you have verified every fact
+first". He is right, and here is what verification found.
+
+`gpufarm.lan` is **192.168.210.123**, OS hostname `gpufarm`, Ubuntu 26.04.1,
+Caddy on :80 fronting uvicorn. Supervised by **`systemd --user` (pid 3204)**,
+not launchd and not the install-slots wrapper I cited. Gateway is pid 16815 on
+127.0.0.1:8788; coordinator :8765; tierd :8766. mac-mini answers nothing.
+
+The gateway imports **`/home/alexm/git/gpufarm-prod`** as an editable install,
+`gpufarm 0.7.6`, branch `main`, head `eaf576aa703`, clean, remote
+`writhub.io/alexm/gpufarm`. The exact-tokenize subsystem **is** deployed and
+`@app.post("/v1/tokenize")` is live at `openai_gateway.py:5364`. All four
+relevant files are byte-identical by sha256 to my local checkout, so the source
+analysis holds against production.
+
+`GPUFARM_EXACT_TOKENIZE_AUTHORITIES_FILE` is **not set in the running process**,
+read from `/proc/16815/environ`. That is the entire reason for the 503, and it
+is now measured rather than inferred.
+
+Two traps on the way: reaching the host needed a known_hosts repair, and the
+changed key was verified benign by hashing the entry I already trusted for
+`gpufarm-new.lan` and `192.168.210.123` - byte-identical, so it is the
+documented 2026-09-03 repointing and not an interception. And probing
+`site-packages` for a module under an editable install is a false-negative
+oracle; a positive control at the same path overturned my first answer. Recorded
+in the measurement skill, dotfiles `e18688f`.
+
+**Filed upstream** (Alex: "file these upstream in gpufarm... fully implemented
+changes... test coverage and test locally before CI"): the ASGI shim's missing
+source-IP gate (`client_allowed` called 0 times there against 2 in the stdlib
+shim) and the coupled `exact_completion` activation
+(`exact_tokenize_authority.py:486-487`). Both were confirmed unfiled against
+`--state all`, which matters because `wh issue list` defaults to open and this
+board is 9 open of 106.
+
+**Blocked on Alex, DMed:** `alexm/gpufarm` is owners-only, so no distinct key
+can review any row there. Already filed as gpufarm #231 with a reproduction; it
+blocks four existing rows and both of mine. The remedy is an interactive
+admin-scoped login only he can run.
