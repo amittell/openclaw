@@ -223,6 +223,32 @@ export async function readChatHistoryPage(
   return (await readChatHistoryWindowPage(params)) ?? { messages: [] };
 }
 
+/**
+ * Anchored reads (offset, messageId, compaction span) bypass the CLI-import merge.
+ *
+ * Bound snapshots are terminal by contract, so offset requests return the same full
+ * snapshot; paging oversized imports needs an opaque snapshot cursor and is deferred.
+ * offset and messageId therefore fall through to the merge when the session carries a
+ * CLI import binding, because that merge still centers on messageId at the handler cap.
+ *
+ * A compaction span never falls through. It is a fixed historical window in this
+ * session's own transcript, so an import binding cannot change what the boundary
+ * shadowed, and the merge would answer a span request with the live tail while
+ * reporting success -- the caller could not tell the span was never read.
+ */
+export function shouldReadAnchoredWindow(params: {
+  offset: number | undefined;
+  messageId: string | undefined;
+  compactionId: string | undefined;
+  cliSessionId: string | undefined;
+}): boolean {
+  const { offset, messageId, compactionId, cliSessionId } = params;
+  if (compactionId) {
+    return true;
+  }
+  return (offset !== undefined || Boolean(messageId)) && !cliSessionId;
+}
+
 /** Reads one history window; undefined when the requested anchor is not in this transcript. */
 export async function readChatHistoryWindowPage(params: {
   entry: ReturnType<typeof loadSessionEntry>["entry"];
@@ -275,11 +301,7 @@ export async function readChatHistoryWindowPage(params: {
   const cliSessionId = params.ignoreCliSessionImports
     ? undefined
     : resolveClaudeCliBindingSessionId(entry);
-  // Bound snapshots are terminal by contract, so offset requests return the same
-  // full snapshot. Paging oversized imports needs an opaque snapshot cursor and
-  // is deferred to a follow-up issue. Anchored reads fall through with them: the
-  // full-snapshot merge below still centers on messageId at the handler cap.
-  if ((offset !== undefined || messageId || compactionId) && !cliSessionId) {
+  if (shouldReadAnchoredWindow({ offset, messageId, compactionId, cliSessionId })) {
     let pageOffset = offset ?? 0;
     let hasOverreadContext = false;
     let readPage: ReadRecentSessionMessagesResult;
