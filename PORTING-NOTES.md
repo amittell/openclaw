@@ -635,3 +635,10 @@ single pathological identifier can still overflow the 8000-char defect-list
 budget across 12 items (a partial-fix limit, not a regression), and the scaled
 ceiling admits summaries up to about 4x max output tokens. Branch pushed:
 `github/upgrade-v2026.8.1` at `b82bde7fd9b`, verified by `ls-remote`.
+
+Alex, 04:44: pin it on both hosts, and re-enable the 5-minute health loop after
+the next deploy. `192.168.210.123 gpufarm.lan gpufarm` is now in `/etc/hosts` on
+rh-bot and mac-mini with an `/etc/hosts.bak-gpufarm-pin-*` beside each; both
+hosts and the router agreed on that address before the edit and three lookups
+plus a 401 from the endpoint confirmed it after. rh-bot had no gpufarm pin block
+at all before today.
