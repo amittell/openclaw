@@ -10,6 +10,10 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 // and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
+// The audit itself is the cap for the full corrective defect list: it carries at most
+// five missing sections plus one missing-identifiers line. The 4000-char untrusted
+// wrapper is for operator-supplied context only; never route the defect list through it.
+const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 8000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -44,6 +48,21 @@ export function wrapUntrustedInstructionBlock(label: string, text: string): stri
     label,
     text,
     maxChars: MAX_UNTRUSTED_INSTRUCTION_CHARS,
+  });
+}
+
+/**
+ * Wraps quality-audit feedback (missing sections, missing identifiers) as untrusted
+ * prompt data for the corrective regeneration pass. The budget must fit the whole
+ * defect list (up to the MAX_EXTRACTED_IDENTIFIERS missing-identifier values): a
+ * list truncated mid-item hands the model defects it cannot repair, so the same
+ * audit fails on retry (#721).
+ */
+export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): string {
+  return wrapUntrustedPromptDataBlock({
+    label,
+    text,
+    maxChars: MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS,
   });
 }
 
@@ -466,7 +485,11 @@ export function auditSummaryQuality(params: {
       (identifier) => !summaryIncludesIdentifier(params.summary, identifier),
     );
     if (missingIdentifiers.length > 0) {
-      reasons.push(`missing_identifiers:${missingIdentifiers.slice(0, 3).join(",")}`);
+      // Feed the FULL missing list back to the corrective pass (bounded only by the
+      // MAX_EXTRACTED_IDENTIFIERS cap). A truncated defect list is unrecoverable: the
+      // model never sees which identifiers to restore and the retry fails the same
+      // audit (#721).
+      reasons.push(`missing_identifiers:${missingIdentifiers.join(",")}`);
     }
   }
   if (!hasAskOverlap(params.summary, params.latestAsk)) {
