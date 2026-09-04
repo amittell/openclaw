@@ -21,7 +21,12 @@ import {
 import type { AgentMessage, ThinkingLevel } from "../../types.js";
 import { convertToLlm, type HarnessMessage } from "../messages.js";
 import { buildSessionContext, projectSessionEntryMessage } from "../session/session.js";
-import { selectResetKeptEntries } from "../session/tool-result-pairing.js";
+import {
+  createToolCallOccurrenceQueue,
+  extractToolCallsFromAssistant,
+  extractToolResultId,
+  selectResetKeptEntries,
+} from "../session/tool-result-pairing.js";
 import {
   CompactionError,
   err,
@@ -377,13 +382,34 @@ function findValidCutPoints(
   endIndex: number,
 ): number[] {
   const cutPoints: number[] = [];
+  // Tool calls still awaiting results. A cut inside that window would split a call
+  // from its results across the summary boundary; the next assistant closes it because
+  // the provider only produced that message after the frame was completed or repaired.
+  const openToolCalls = createToolCallOccurrenceQueue<true>();
   for (let i = startIndex; i < endIndex; i++) {
     const entry = entries[i];
     if (!entry) {
       continue;
     }
     const message = getMessageFromEntryForCompaction(entry);
-    if (message && isCutPointMessage(message)) {
+    if (!message) {
+      continue;
+    }
+    if (message.role === "assistant") {
+      openToolCalls.clear();
+      for (const toolCall of extractToolCallsFromAssistant(message)) {
+        openToolCalls.add(toolCall.id, true);
+      }
+    } else if (message.role === "toolResult") {
+      const id = extractToolResultId(message);
+      if (id) {
+        openToolCalls.claim(id);
+      }
+      continue;
+    } else if (openToolCalls.size > 0) {
+      continue;
+    }
+    if (isCutPointMessage(message)) {
       cutPoints.push(i);
     }
   }
@@ -645,6 +671,13 @@ async function runSummarizationCompletion(params: {
         "summarization_failed",
         `${params.errorLabel} failed: ${response.errorMessage || "Unknown error"}`,
       ),
+    );
+  }
+  // A summary cut off at the output budget is structurally incomplete. Classify it
+  // like empty output so the host's retry-once policy covers it instead of committing it.
+  if (response.stopReason === "length") {
+    return err(
+      new InvalidSummaryOutputError(`${params.errorLabel} failed: summary exceeded max tokens`),
     );
   }
 

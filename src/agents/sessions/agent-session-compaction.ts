@@ -185,6 +185,10 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     }
 
     const pathEntries = this.sessionManager.getBranch();
+    // The branch prepared here and the leaf committed onto below must be the same leaf:
+    // the awaited hook/summarizer can outlive an append, and a compaction committed under
+    // a moved leaf would shadow entries it never summarized.
+    const preparedLeafId = this.sessionManager.getLeafId();
     let preparation: CompactionPreparation | undefined;
     if (isManual) {
       const manualPreflight = preflightManualSessionCompaction(pathEntries, options.settings);
@@ -272,6 +276,14 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       summary: capCompactionSummary(compactionResult.summary),
     };
 
+    // Re-check the leaf captured before the awaited hook/summarizer: committing under a
+    // moved leaf would shadow entries this summary never covered.
+    if (this.sessionManager.getLeafId() !== preparedLeafId) {
+      return {
+        status: "skipped",
+        reason: "Session leaf moved during compaction; nothing committed",
+      };
+    }
     const compactionEntryId = this.sessionManager.appendCompaction(
       compactionResult.summary,
       compactionResult.firstKeptEntryId,
