@@ -607,3 +607,31 @@ qwen3.8-27b; upstream PRs for #721/#723 are prepared but opened only after Alex
 reviews the bodies (written with the myvoice skill). Codex hit its usage limit
 until 2026-09-08 21:53, so pre-land autoreview runs on the Claude engine until
 then (Alex, 04:18), recorded here per commit.
+
+## 2026-09-04 04:25-04:35 EDT: the stderr repair paid for itself in under an hour
+
+mac-mini's gateway logged six `ENOTFOUND gpufarm.lan` model-call failures in 25
+minutes, every one of them on stderr. Under the old plist they would have gone
+to `/dev/null` and the only symptom would have been a `skill-workshop-review`
+lane that produced nothing. Cause was not the network: the router answered
+`dig @192.168.210.1 gpufarm.lan -> 192.168.210.123` while the host's own
+`getaddrinfo` refused that one name three times in a row and resolved
+`rh-bot.lan` normally through the same cache, so mDNSResponder held a poisoned
+negative entry. `sudo dscacheutil -flushcache && sudo killall -HUP
+mDNSResponder` restored it (three consecutive lookups to `.123`, `curl` 401 from
+the endpoint, rh-bot agreeing on the address). Durable follow-up left for Alex:
+`/etc/hosts` there already pins four gpufarm _inference_ hosts (block added
+2026-07-21 "prevent coordinator DNS-flake outages") but not `gpufarm.lan`
+itself, which every model call uses.
+
+**#721/#723 review and push.** Codex is out of credits until 2026-09-08, so the
+pre-land review ran on the Claude engine per Alex's 04:18 ruling: `scoped-clean`,
+`patch is correct`, confidence 0.72, zero findings at any priority. It had to run
+from a detached worktree pinned at `01f1fc34b42`, because autoreview verifies the
+source tree after the engine returns and sibling agents were editing the main
+checkout ("source changed after the review bundle was created"). Sub-P0
+observations it declined to file, recorded here so they are not rediscovered: a
+single pathological identifier can still overflow the 8000-char defect-list
+budget across 12 items (a partial-fix limit, not a regression), and the scaled
+ceiling admits summaries up to about 4x max output tokens. Branch pushed:
+`github/upgrade-v2026.8.1` at `b82bde7fd9b`, verified by `ls-remote`.
