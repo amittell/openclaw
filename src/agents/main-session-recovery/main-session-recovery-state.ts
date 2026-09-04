@@ -196,7 +196,17 @@ export function inspectMainRestartRecoveryRolloverEligibility(
 // forever, failing every later admission with "changed while starting work"
 // (#118873). A live admitted recovery run always holds
 // restartRecoveryDeliveryRunId, so that gate keeps active work authoritative.
-export function isMainRestartRecoveryAggregateTerminalOnly(entry: SessionEntry): boolean {
+//
+// Gateway-owned callers pass their lifecycle generation: a fence whose run died
+// with an earlier Gateway process can never record a terminal fact, so it is
+// settled the moment the current Gateway sees it (rh-bot 2026-09-03: one such
+// fence held a healthy session at "changed while starting work" for 106
+// retries). Standalone callers omit the generation; their process generation
+// differs from the live Gateway's and must not retire its fences.
+export function isMainRestartRecoveryAggregateTerminalOnly(
+  entry: SessionEntry,
+  currentLifecycleGeneration?: string,
+): boolean {
   const state = entry.mainRestartRecovery;
   if (!state || state.tombstone || state.reservation || state.foregroundClaims) {
     return false;
@@ -208,13 +218,22 @@ export function isMainRestartRecoveryAggregateTerminalOnly(entry: SessionEntry):
   return (
     runs !== undefined &&
     runs.length > 0 &&
-    runs.every((run) => hasRestartRecoveryTerminalRun(entry, run.runId))
+    runs.every(
+      (run) =>
+        hasRestartRecoveryTerminalRun(entry, run.runId) ||
+        (currentLifecycleGeneration !== undefined &&
+          run.lifecycleGeneration !== currentLifecycleGeneration),
+    )
   );
 }
 
 // A healthy session can retain lifecycle fences after its final recovery owner
 // clears. With no active delivery or aggregate, those fences no longer own work.
-function hasOrphanedMainRestartRecoveryFences(entry: SessionEntry, sessionKey: string): boolean {
+function hasOrphanedMainRestartRecoveryFences(
+  entry: SessionEntry,
+  sessionKey: string,
+  currentLifecycleGeneration?: string,
+): boolean {
   return (
     (entry.status === "running" &&
       entry.abortedLastRun !== true &&
@@ -222,7 +241,7 @@ function hasOrphanedMainRestartRecoveryFences(entry: SessionEntry, sessionKey: s
       isMainRestartRecoveryCandidate(entry, sessionKey) &&
       ((entry.restartRecoveryRuns !== undefined && entry.mainRestartRecovery === undefined) ||
         // Terminal-only aggregate: every run settled, nothing owns work (#118873).
-        isMainRestartRecoveryAggregateTerminalOnly(entry))) ||
+        isMainRestartRecoveryAggregateTerminalOnly(entry, currentLifecycleGeneration))) ||
     // Sessions that are not running were permanently unadmittable while holding
     // recovery residue, returning "changed while starting work" forever
     // (production incident 2026-07-26). A row whose status is absent never
@@ -399,7 +418,10 @@ export function transitionMainSessionRecovery(
         // but release the stale slot so the next bounded attempt can proceed.
         updateRecoveryState(entry, state, { reservation: undefined });
       }
-      if (entry.abortedLastRun !== true && isMainRestartRecoveryAggregateTerminalOnly(entry)) {
+      if (
+        entry.abortedLastRun !== true &&
+        isMainRestartRecoveryAggregateTerminalOnly(entry, command.lifecycleGeneration)
+      ) {
         // The scan owns retiring dead residue: heal the row durably here so
         // later admissions — including standalone inspect-only callers — never
         // meet the stale aggregate (#118873).
@@ -584,7 +606,7 @@ export function transitionMainSessionRecovery(
     case "claim_foreground": {
       if (
         entry.sessionId === command.sessionId &&
-        hasOrphanedMainRestartRecoveryFences(entry, command.sessionKey)
+        hasOrphanedMainRestartRecoveryFences(entry, command.sessionKey, command.lifecycleGeneration)
       ) {
         Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));
         return { kind: "applied" };
