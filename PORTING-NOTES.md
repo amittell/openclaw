@@ -989,3 +989,60 @@ Stale branches on the fork that must NOT be opened as PRs, since they are
 superseded shapes of the same work: `fix/compaction-quality-feedback-truncation`
 (`1e6f82266c2`, the window-based budget that `d71d1ee1720` replaced) and
 `fix/compaction-safeguards-721-722-723` (`df808efca37`).
+
+## 2026-09-04 13:30 EDT: two gpufarm findings filed, and two corrections to my own claims
+
+**Both design findings are filed upstream in `alexm/gpufarm` with implemented
+fixes, tests and green CI**, per Alex's ruling "fully and foundationally fix it
+... make sure there is test coverage and test locally before CI".
+
+| finding                                        | issue                                               | change                                               | production LOC     | neutralize                       |
+| ---------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- | ------------------ | -------------------------------- |
+| ASGI shim has no source-IP gate                | [#329](https://writhub.io/alexm/gpufarm/issues/329) | [#331](https://writhub.io/alexm/gpufarm/changes/331) | +98/-33, code +30  | 6 red, 9 anchor controls green   |
+| `exact_completion` coupled to `exact_tokenize` | [#328](https://writhub.io/alexm/gpufarm/issues/328) | [#330](https://writhub.io/alexm/gpufarm/changes/330) | +125/-63, code +33 | 10 red, 19 anchor controls green |
+
+Both were confirmed unfiled against all 107 issues and 220 Changes read with
+`--state all` plus per-issue GETs, since the list endpoint carries neither body
+nor thread. `wh issue list` defaults to open-only, which is 10 of 107 here.
+
+**Correction 1, severity of the ASGI gap.** I recorded it as the shim lacking
+the source-IP gate, which reads as an open port. It is a **latent cutover
+regression**: no live deployment runs `shim_asgi` today (`runner.py:284` serves
+the stdlib shim, no production caller of `make_app` exists in-tree, and
+`kebab-rtx6000` runs its own FastAPI router which enforces
+`KEBAB_RTX_RESTRICT_MODEL_API_CLIENTS=1` right now, read from the live
+`/proc/<pid>/environ`). It still matters because `shim_asgi` is the transport
+that router is meant to migrate onto, and because `runner.py` wires neither
+`GPUFARM_API_KEYS` nor `GPUFARM_AUTH_REQUIRED`, so `client_allowed` is the only
+admission control the shipped entrypoint can enable. Brain corrected.
+
+**Correction 2, the coupling is bidirectional and worse than I briefed.**
+`_parse_authority` required the four `completion_*` fields, so a tokenize-only
+authority could not be expressed at all, and a missing completion key silently
+withdrew the tokenize advertisement too. The "deliberate" hypothesis is refuted
+rather than merely unsupported: `same_worker_binding_sha256` never references
+the tokenize path, and the gateway-side authority carries no completion fields,
+so tokenize already stands alone there.
+
+**Correction 3, my own scoping of the maxTokens finding.** I wrote "this fleet"
+and "the deployed config". Wrong denominator. The values live in
+`~/.openclaw/openclaw.json` at `models.providers.gpufarm.models[0]` on the two
+OpenClaw bot hosts ONLY - 265000 appears nowhere in `src/` or `packages/`. DSH
+declares `maxTokens: 32768` against a 262144 window, a real output cap, so a
+seat reading my claim would have wrongly distrusted a correct config. Caught by
+another seat that could check DSH and I could not.
+
+The two bots also differ from each other, which I had flattened:
+
+    rh-bot     maxTokens=265000  contextTokens=300000  contextWindow=1010000
+    mac-mini   maxTokens=265000  contextTokens=none    contextWindow=262144
+
+So the ceiling our #723 formula produces (1,059,616 chars) is about 88% of
+rh-bot's declared window and about **101% of mac-mini's** - it exceeds the whole
+context there. I had reported 88% for both.
+
+Unresolved and not touched: rh-bot's `contextWindow: 1010000` matches the vLLM
+`--max-model-len 1010000` in gpufarm-manifests for `qwen38-27b-nvfp4`, while
+mac-mini's 262144 does not. Same model id, same endpoint, two declared windows,
+one of them under-declared relative to what the server serves. The dsh-ops skill
+records that an under-declared window wedges every large session.
