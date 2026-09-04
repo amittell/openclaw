@@ -1105,3 +1105,48 @@ surface decision outside this invariant.
 `inc/compaction-start-marker`, `fix/branch-summary-length`. Each needs a fresh
 `autoreview` before landing per `CLAUDE.md`, and gate capacity is the current
 constraint: the Air is barred for suites and the M4 is at 98% container use.
+
+## Rebase hazard: our span fix and upstream's anchor fix are complementary, and a careless merge drops ours silently
+
+Measured 2026-09-04 against `upstream/main`.
+
+Upstream landed `f3652df7492` ("fix: return empty history for missing CLI-import
+anchors", #136720, steipete, 2026-09-02). It is **not in our fork** and it
+converges on the SAME invariant as our `29a818cf692`: an anchored read must not
+be answered with the live tail. But it is `messageId`-scoped only.
+
+    upstream/main  chat-history-pages.ts   occurrences of `compactionId`:  0
+
+So upstream cannot guard a compaction span, because the feature does not exist
+there. **Both fixes are needed; neither subsumes the other.**
+
+The mechanical trap. `f3652df7492` also **un-exported**
+`capOffsetChatHistoryProjectedMessages` and deleted its use as a fallback:
+
+    ours       session-history-tail.ts:27   `export function capOffset...`
+    upstream   session-history-tail.ts:27   `function capOffset...`      (no export)
+
+    ours       chat-history-pages.ts:16     imports it
+    ours       chat-history-pages.ts:378    `?? capOffsetChatHistoryProjectedMessages(projected, max)`
+    upstream   removed both
+
+Two ways this goes wrong on rebase, and only one of them is loud:
+
+1. Upstream's `session-history-tail.ts` wins while our `chat-history-pages.ts`
+   survives -> the import has no export to bind and the build fails. Loud, fine.
+2. Upstream's `chat-history-pages.ts` hunk wins -> the import and the fallback
+   both vanish, the tree compiles, **and our `shouldReadAnchoredWindow` extraction
+   can go with it**. Silent, and it restores the exact defect `29a818cf692` was
+   written to remove: a span request answered with the live tail while reporting
+   success.
+
+**Resolution instruction for whoever rebases.** Take upstream's removal of the
+`capOffset...` fallback and its un-export - that is their deliberate design.
+Keep OUR `shouldReadAnchoredWindow`, and re-apply the span term on top of
+upstream's `messageId` guard rather than instead of it. After resolving, assert
+both by grep before trusting the build:
+
+    grep -c 'compactionId' src/gateway/server-methods/chat-history-pages.ts   # must be > 0
+    grep -c 'shouldReadAnchoredWindow' src/gateway/server-methods/chat-history-pages.ts
+
+A clean `merge-tree` on these files is not evidence the span guard survived.
