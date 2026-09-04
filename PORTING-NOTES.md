@@ -1281,3 +1281,100 @@ the verdict JSON in the PR body - so this does not need a live channel.
 suites, the M1 measured load 62 on 10 cores, and the M4 is at 2.0% container free
 partly because my own lanes added ~1 GB to its pnpm store. `pnpm store prune` is
 the reversible remedy and is with Alex.
+
+## Carry-forward audit for the 9.x rebase (Alex, 2026-09-04: "all the pi and DSH enhancements... and all our PRs that aren't covered upstream both open and closed... once validated with evidence they are needed")
+
+Two read-only lanes plus my own checks. Target confirmed as the 9.x line.
+
+### The PR population
+
+75 PRs authored by `amittell` on `openclaw/openclaw`, cross-checked three ways
+(GraphQL `author:`, `gh pr list --state all`, and `involves:` minus four he only
+commented on). **8 merged, 57 closed unmerged, 10 open.** All 8 merged are
+already ancestors of both `upstream/main` and our branch, so they need nothing.
+
+**The finding that matters: 21 of the 57 closed PRs carry only the bot's
+queue-cap message** ("more than 10 active PRs") and no technical verdict at all.
+That is where the live work is - not in the ones a maintainer actually refused.
+
+### Rebase surface, measured
+
+- 143 fork production files changed vs the base tag (+5,412/-928), plus 93 test
+  and 10 docs files.
+- **86 of those 143 were also changed upstream** - the real conflict surface.
+  57 should apply cleanly.
+- **0 add/add collisions.** Exactly one fork-modified file upstream deleted:
+  `src/auto-reply/reply/commands-subagents.test-helpers.ts`.
+- Only **2** genuinely fork-added `OPENCLAW_*` env names. The other 14
+  "fork-only" names are ones upstream DELETED and the fork inherited - check
+  those references survive.
+- **`v2026.9.1` is a release branch too**, 41 commits main lacks and 961 behind
+  main, so "upstream has this" remains two claims at the new target as well.
+  One verdict differs between them: `capOffsetChatHistoryProjectedMessages` is
+  still exported at `v2026.9.1` and un-exported on `main`.
+
+### Strongest to offer upstream, in order
+
+1. **`ee97d524e50` cron fallback pin.** Provably live upstream:
+   `run-finalize.ts:152-163` writes the fallback tuple back unconditionally and
+   `isFromFallback|usedFallback` returns zero across `upstream/main:src/cron/`
+   (control: `setCronSessionRuntimeModel` 8 hits / 3 files). Needs reshaping -
+   upstream's `CronExecutionResult` lacks the fields the fork compares against.
+2. **`cfa10b22ee3` dead-generation fence**, with the vacuous-coverage argument
+   already recorded above. Targets `#118839` (open, `needs-live-repro`, and we
+   have the repro) or `#117096`.
+3. **`2276250b531` Bot API root offset scoping.** Absent upstream, fixes a
+   measured incident, but bumps `STORE_VERSION` 3->4 so it goes through the
+   persistent-store gate first.
+4. **`#101866`** - and offer the PR head `6876d240238`, which is AHEAD of what
+   the fork carries, not the fork's narrower `redactUngroundedMediaRefs`.
+
+### Must NOT be re-offered
+
+- **`#100493`** - its cap reads `pendingFinalDeliveryAttemptCount`, which
+  `projectCanonicalSessionEntryShape` destructures out at
+  `store-entry-shape.ts:61` and never re-adds, and which sits in
+  `RETIRED_SESSION_SLOT_KEYS`. Nothing writes it, so the cap reads 0 forever: a
+  safeguard that can never fire but looks like one.
+- **`#66912` and the self-authored half of `#126789`** - he withdrew #66912
+  citing a test that pins the opposite, and **that test still exists**, renamed
+  into an `it.each` at `bot.test.ts:4577`. #126789's diff inverts that assertion
+  under a title describing only the dedupe. Split it: the `fileUniqueId` dedupe
+  is a genuinely different defect and is fine.
+- **`#56517`/`#56532`** - steipete: "We are intentionally not adding new public
+  timeout or retry config knobs here." **Our `embedding.fallbackBaseUrl` falls
+  inside that ruling.** Keep it locally; do not upstream it as config.
+- **`#130400`** - a maintainer ran the real flow and found the opposite symptom.
+  Re-offering the identical patch-id spends credibility.
+
+### Cleanup the rebase should carry
+
+- Delete the dead `isFromFallback` residue in `session-store.ts` (89, 143-145,
+  152, 180, 198) - upstream's `post-run.ts:177-182` forces it false, so it is
+  unreachable.
+- Relax the fork's own `validateProfileId` (the pre-relaxation 128-char
+  allowlist at `sanitize.ts:37-38`) before shipping `models auth clean`.
+
+### Two hazards beyond the PR list
+
+- **The Codex turn watchdog is an architecture upstream deleted.**
+  `isReasoningProgressNotification`, `postToolProgressNeedsTerminalGuard` and the
+  `CODEX_*_IDLE_TIMEOUT_MS` family are all 0 at `upstream/main`, replaced by
+  terminal settlement. Expect a large conflict; do not carry the old model
+  forward by default.
+- **`#75336` (SebTardif, open, +1097/-21) touches exactly our two compaction
+  files.** It does not duplicate ours semantically but heavily rewrites
+  `extractOpaqueIdentifiers`. Whichever lands second rebases.
+
+### DSH
+
+DSH upstream accepts no external PRs at all - `CONTRIBUTING.md`, issues
+disabled, zero PRs ever. So for every DSH-fork item "has upstream absorbed it"
+is structurally **no**, and the only real question is supersession.
+
+### A numbering trap
+
+Two independent schemes exist and they disagree. The scratchpad calls
+prune-then-remeasure "#4"; the original study's ranked table lists it **#3** and
+gives #4 to the shrink invariant. Use the descriptions and owner files as the
+key, never the numbers.
