@@ -1046,3 +1046,62 @@ Unresolved and not touched: rh-bot's `contextWindow: 1010000` matches the vLLM
 mac-mini's 262144 does not. Same model id, same endpoint, two declared windows,
 one of them under-declared relative to what the server serves. The dsh-ops skill
 records that an under-declared window wedges every large session.
+
+## 2026-09-04 14:15 EDT: the truncated-summary guard was one-sided, and now is not
+
+`a74258b30ba` taught `runSummarizationCompletion` to reject a summary whose
+`stopReason` is `length`, because a body cut off at the output budget is
+structurally incomplete. It did not touch the sibling. `generateBranchSummary`
+handled only `aborted` and `error`, so a truncated branch summary fell through
+to `extractSummaryText`, came back non-undefined, and was committed. Same
+defect, same consequence, shipped to both bots in the same deploy.
+
+`CLAUDE.md` names this exact case: "One-sided fixes need sibling-surface proof,
+an explanation for why siblings are unaffected, or explicit follow-up work." I
+provided none of the three at the time. The upstream sweep found it, not me.
+
+**Reproduced rather than argued.** Pre-fix, `navigateTree` resolved and
+committed a summary ending mid-heading:
+`## Goal\nRewrite the parser\n\n## Progress\n### Do`.
+
+**"Deliberate?" was settled by the path's own contract, not the sibling's.**
+`sdk.test.ts:406` already pins that a branch summary with no usable text
+REJECTS `navigateTree` and commits nothing. The path had already chosen
+fail-closed for unusable output; it simply did not count truncation as unusable.
+The branch output cap is a hard 2048 tokens, so `length` is reachable in
+ordinary use, and the `## Next Steps` / `## Key Decisions` sections the template
+promises come last, so they are what a truncation removes.
+
+**Fixed by absorbing, not by branching.** Both handlers now call
+`readSummaryCompletion` in `compaction/utils.ts`, which returns the text or a
+closed failure kind; each caller maps to its own error vocabulary, so every
+existing code and message string is byte-identical. Both shapes were measured
+rather than assumed: the shared owner is **+62/-49 = net +13** production, the
+branch-only guard would have been **+11** and kept the duplicate that had
+already drifted once. Three lines for an ownership boundary.
+
+`src/agents/sessions/compaction/branch-summarization.ts` needs nothing: it is a
+host bridge that flattens the `Result`, so a truncated summary now reaches it as
+the same `{error}` shape it already returned for empty output.
+
+Commit `3ef37bc19c5` on `fix/branch-summary-length`, not pushed, not landed.
+Red tests, both named with their assertions: agent-core `rejects a summary cut
+off at the output budget` (`expected true to be false`), and host
+`refuses to commit a branch summary stopped at its output budget` (expected a
+rejection, got a resolved entry ending `### Do`). Anchor control
+`commits a branch summary that finished within its output budget` green on both
+sides. Gates ran on the M4 with the host stamped on every run; `plugin
+boundaries` output compared byte-identical against a clean-tree control.
+
+**Named follow-up, not fixed:** the host bridge is reachable only through the
+`sessions/index.ts` and `extension-sdk.ts` barrels, while the real consumer
+`agent-session-tree.ts` calls agent-core directly via
+`normalizeBranchSummaryResult` - two parallel adapters for the same mapping.
+Consolidating touches an extension-facing barrel export, which is a public
+surface decision outside this invariant.
+
+**Landing queue, all unlanded pending validation:** `inc/prune-remeasure`,
+`inc/prefix-aligned-summary`, `inc/exact-count-admission`,
+`inc/compaction-start-marker`, `fix/branch-summary-length`. Each needs a fresh
+`autoreview` before landing per `CLAUDE.md`, and gate capacity is the current
+constraint: the Air is barred for suites and the M4 is at 98% container use.
