@@ -532,6 +532,7 @@ describe("createReplyRestartRecoveryClaimController", () => {
       restartRecoveryDeliveryContext: deliveryContext,
       restartRecoveryDeliveryRunId: "orphaned-run",
       restartRecoveryDeliverySourceRunId: "telegram-update-old",
+      restartRecoverySourceIngress: "channel",
       status: "running",
     };
     await replaceSessionEntry({ storePath, sessionKey }, entry);
@@ -602,6 +603,7 @@ describe("createReplyRestartRecoveryClaimController", () => {
       restartRecoveryDeliveryRunId: "live-run",
       restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: "telegram-update-old",
+      restartRecoverySourceIngress: "channel",
       status: "running",
     };
     await replaceSessionEntry({ storePath, sessionKey }, entry);
