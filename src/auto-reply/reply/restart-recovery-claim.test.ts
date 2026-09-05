@@ -511,6 +511,79 @@ describe("createReplyRestartRecoveryClaimController", () => {
     });
   });
 
+  it("retires an orphaned channel claim on a session left running by a gateway restart", async () => {
+    const root = tempDirs.make("openclaw-reply-admission-restart-orphan-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:telegram:group:chat";
+    const sessionId = "channel-session-id";
+    const sourceTurnId = "telegram-update-new";
+    const deliveryContext = {
+      channel: "telegram",
+      to: "chat",
+      accountId: "default",
+    };
+    // A gateway restart leaves the interrupted session `running` with the dead
+    // process's delivery claim still on it. Active turn claims do not survive a
+    // restart, so this claim is orphaned exactly like the `done` case below it.
+    let entry: SessionEntry = {
+      sessionId,
+      updatedAt: 10,
+      abortedLastRun: false,
+      restartRecoveryDeliveryContext: deliveryContext,
+      restartRecoveryDeliveryRunId: "orphaned-run",
+      restartRecoveryDeliverySourceRunId: "telegram-update-old",
+      status: "running",
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, entry);
+    const admission = createTestAdmission({
+      entryId: sourceTurnId,
+      sessionId,
+      sessionKey,
+      storePath,
+    });
+    const recorder = {
+      message: undefined,
+      getPersistedMessage: () => undefined,
+      resolveMessage: async () => ({
+        role: "user" as const,
+        content: "continue",
+        idempotencyKey: sourceTurnId,
+        timestamp: Date.now(),
+      }),
+      getAdmissionReceipt: () => admission,
+      markRuntimePersistencePending: () => {},
+      markRuntimePersisted: () => {},
+      markBlocked: () => {},
+      hasPersisted: () => true,
+      isBlocked: () => false,
+      hasRuntimePersistencePending: () => false,
+      waitForRuntimePersistence: async () => {},
+      persistApproved: vi.fn<UserTurnTranscriptRecorder["persistApproved"]>(),
+      persistBlocked: async () => undefined,
+      persistFallback: async () => undefined,
+    } satisfies UserTurnTranscriptRecorder;
+    const controller = createReplyRestartRecoveryClaimController({
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      getEntry: () => entry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => deliveryContext,
+      sessionKey,
+      setEntry: (next) => {
+        entry = next;
+      },
+      sourceTurnId,
+      storePath,
+    });
+
+    await expect(controller.admitUserTurn(recorder)).resolves.toBe("admitted");
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      restartRecoveryDeliveryRunId: expect.not.stringMatching(/^orphaned-run$/),
+      restartRecoveryDeliverySourceRunId: sourceTurnId,
+      status: "running",
+    });
+  });
+
   it("rejects claim adoption when a recovery cycle starts after the snapshot", async () => {
     const root = tempDirs.make("openclaw-reply-admission-cycle-");
     const storePath = path.join(root, "sessions.json");
