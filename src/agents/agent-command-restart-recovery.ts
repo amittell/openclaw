@@ -298,6 +298,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   | "restartRecoveryDeliveryMediaUrls"
   | "restartRecoveryDisableMessageTool"
   | "restartRecoveryDeliveryRunId"
+  | "restartRecoveryDeliveryLifecycleGeneration"
   | "restartRecoveryDeliverySourceRunId"
   | "restartRecoveryForceSafeTools"
   | "restartRecoverySourceIngress"
