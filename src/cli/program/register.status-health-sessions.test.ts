@@ -12,12 +12,14 @@ const mocks = vi.hoisted(() => ({
   sessionsCleanupCommand: vi.fn(),
   sessionsTailCommand: vi.fn(),
   sessionsCompactCommand: vi.fn(),
+  sessionsAbortCommand: vi.fn(),
   sessionsArchiveCommand: vi.fn(),
   sessionsDeleteCommand: vi.fn(),
   exportTrajectoryCommand: vi.fn(),
   sessionsCleanupModuleLoaded: vi.fn(),
   sessionsTailModuleLoaded: vi.fn(),
   sessionsCompactModuleLoaded: vi.fn(),
+  sessionsAbortModuleLoaded: vi.fn(),
   sessionsLifecycleModuleLoaded: vi.fn(),
   exportTrajectoryModuleLoaded: vi.fn(),
   setVerbose: vi.fn(),
@@ -34,6 +36,7 @@ const sessionsCommand = mocks.sessionsCommand;
 const sessionsCleanupCommand = mocks.sessionsCleanupCommand;
 const sessionsTailCommand = mocks.sessionsTailCommand;
 const sessionsCompactCommand = mocks.sessionsCompactCommand;
+const sessionsAbortCommand = mocks.sessionsAbortCommand;
 const sessionsArchiveCommand = mocks.sessionsArchiveCommand;
 const sessionsDeleteCommand = mocks.sessionsDeleteCommand;
 const exportTrajectoryCommand = mocks.exportTrajectoryCommand;
@@ -86,6 +89,11 @@ vi.mock("../../commands/sessions-tail.js", () => {
 vi.mock("../../commands/sessions-compact.js", () => {
   mocks.sessionsCompactModuleLoaded();
   return { sessionsCompactCommand: mocks.sessionsCompactCommand };
+});
+
+vi.mock("../../commands/sessions-abort.js", () => {
+  mocks.sessionsAbortModuleLoaded();
+  return { sessionsAbortCommand: mocks.sessionsAbortCommand };
 });
 
 vi.mock("../../commands/sessions-lifecycle.js", () => {
@@ -214,6 +222,19 @@ describe("registerStatusHealthSessionsCommands", () => {
       args: ["sessions", "--json", "compact", "agent:main:test", "--timeout", "0"],
       message: "--timeout must be a positive integer (milliseconds).",
       owner: sessionsCompactCommand,
+    },
+    {
+      name: "abort inherited store scope",
+      args: ["sessions", "--store", "/tmp/other.sqlite", "abort", "agent:main:test", "--json"],
+      message:
+        "`sessions abort` does not support the parent `sessions` option --store; the gateway resolves the target store from <key> and --agent.",
+      owner: sessionsAbortCommand,
+    },
+    {
+      name: "abort invalid timeout",
+      args: ["sessions", "--json", "abort", "agent:main:test", "--timeout", "0"],
+      message: "--timeout must be a positive integer (milliseconds).",
+      owner: sessionsAbortCommand,
     },
   ])("rejects $name before loading any session owner", async ({ args, message, owner }) => {
     await expectSessionsRegistrationError(args, message, owner);
@@ -427,6 +448,27 @@ describe("registerStatusHealthSessionsCommands", () => {
     expectCommandOptions(sessionsCompactCommand, {
       key: "agent:work:main",
       agent: "work",
+    });
+  });
+
+  // Same hazard as compact's #91378 regression, with a worse outcome: dropping an
+  // inherited --agent would abort a different agent's live session.
+  it("inherits the parent sessions --agent for abort", async () => {
+    await runCli(["sessions", "--agent", "work", "abort", "agent:work:main"]);
+
+    expectCommandOptions(sessionsAbortCommand, {
+      key: "agent:work:main",
+      agent: "work",
+    });
+  });
+
+  it("forwards abort run scoping and queue clearing", async () => {
+    await runCli(["sessions", "abort", "agent:main:main", "--run-id", "run-77", "--clear-queued"]);
+
+    expectCommandOptions(sessionsAbortCommand, {
+      key: "agent:main:main",
+      runId: "run-77",
+      clearQueued: true,
     });
   });
 
