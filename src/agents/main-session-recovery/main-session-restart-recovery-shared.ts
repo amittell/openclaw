@@ -44,6 +44,7 @@ export function buildRestartRecoveryExpectedState(
     restartRecoveryDeliveryToolCallId: entry.restartRecoveryDeliveryToolCallId,
     restartRecoveryDeliveryRequestFingerprint: entry.restartRecoveryDeliveryRequestFingerprint,
     restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
+    restartRecoveryDeliveryLifecycleGeneration: entry.restartRecoveryDeliveryLifecycleGeneration,
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,

@@ -22,6 +22,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { loadOrCreateProcessDeviceIdentity } from "../../infra/device-identity.js";
 import { findRestartRecoveryUnsafeChatAdmissionHook } from "../../plugins/restart-recovery-hook-safety.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
@@ -411,6 +412,9 @@ export function buildRestartSafeChatTranscriptState(params: {
       restartRecoveryDeliveryContext: undefined,
       restartRecoveryDeliveryRequestFingerprint: params.admission.requestFingerprint,
       restartRecoveryDeliveryRunId: params.clientRunId,
+      // Binds the claim to the process that minted it; a claim without a live
+      // generation is restart-orphaned and retirable rather than a live conflict.
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: params.clientRunId,
       restartRecoveryRequesterAccountId: undefined,
       restartRecoveryRequesterSenderId: undefined,

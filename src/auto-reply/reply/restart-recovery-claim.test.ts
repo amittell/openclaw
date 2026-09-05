@@ -584,6 +584,77 @@ describe("createReplyRestartRecoveryClaimController", () => {
     });
   });
 
+  it("still rejects a competing claim minted by the running generation", async () => {
+    const root = tempDirs.make("openclaw-reply-admission-live-claim-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:telegram:group:chat";
+    const sessionId = "channel-session-id";
+    const sourceTurnId = "telegram-update-new";
+    const deliveryContext = { channel: "telegram", to: "chat", accountId: "default" };
+    // Same shape as the restart-orphaned case above, except the claim carries the
+    // CURRENT generation. That is live authority and a second message must not
+    // steal it - this is the control proving the generation check still blocks.
+    let entry: SessionEntry = {
+      sessionId,
+      updatedAt: 10,
+      abortedLastRun: false,
+      restartRecoveryDeliveryContext: deliveryContext,
+      restartRecoveryDeliveryRunId: "live-run",
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
+      restartRecoveryDeliverySourceRunId: "telegram-update-old",
+      status: "running",
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, entry);
+    const admission = createTestAdmission({
+      entryId: sourceTurnId,
+      sessionId,
+      sessionKey,
+      storePath,
+    });
+    const recorder = {
+      message: undefined,
+      getPersistedMessage: () => undefined,
+      resolveMessage: async () => ({
+        role: "user" as const,
+        content: "continue",
+        idempotencyKey: sourceTurnId,
+        timestamp: Date.now(),
+      }),
+      getAdmissionReceipt: () => admission,
+      markRuntimePersistencePending: () => {},
+      markRuntimePersisted: () => {},
+      markBlocked: () => {},
+      hasPersisted: () => true,
+      isBlocked: () => false,
+      hasRuntimePersistencePending: () => false,
+      waitForRuntimePersistence: async () => {},
+      persistApproved: vi.fn<UserTurnTranscriptRecorder["persistApproved"]>(),
+      persistBlocked: async () => undefined,
+      persistFallback: async () => undefined,
+    } satisfies UserTurnTranscriptRecorder;
+    const controller = createReplyRestartRecoveryClaimController({
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      getEntry: () => entry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => deliveryContext,
+      sessionKey,
+      setEntry: (next) => {
+        entry = next;
+      },
+      sourceTurnId,
+      storePath,
+    });
+
+    await expect(controller.admitUserTurn(recorder)).rejects.toThrow(
+      "restart recovery claim changed before agent adoption",
+    );
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      restartRecoveryDeliveryRunId: "live-run",
+      restartRecoveryDeliverySourceRunId: "telegram-update-old",
+    });
+  });
+
   it("rejects claim adoption when a recovery cycle starts after the snapshot", async () => {
     const root = tempDirs.make("openclaw-reply-admission-cycle-");
     const storePath = path.join(root, "sessions.json");

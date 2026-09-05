@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   buildRestartRecoveryClaimCleanupPatch,
+  hasLiveRestartRecoveryDeliveryClaim,
   hasRestartRecoverySourceClaim,
   hasRestartRecoveryTerminalRun,
 } from "../../config/sessions/restart-recovery-state.js";
@@ -17,7 +18,10 @@ import type {
 } from "../../config/sessions/session-transcript-turn-lifecycle.types.js";
 import { sessionMatchesExpectedTranscriptTurn } from "../../config/sessions/session-transcript-turn-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
-import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+import {
+  assertAgentRunLifecycleGenerationCurrent,
+  getAgentEventLifecycleGeneration,
+} from "../../infra/agent-events.js";
 import { createAgentRunStaleLifecycleError } from "../../infra/agent-lifecycle-error.js";
 import type {
   UserTurnTranscriptRecorder,
@@ -100,6 +104,7 @@ function buildExpectedSessionState(entry: SessionEntry): SessionTranscriptTurnEx
     restartRecoveryDeliveryToolCallId: entry.restartRecoveryDeliveryToolCallId,
     restartRecoveryDeliveryRequestFingerprint: entry.restartRecoveryDeliveryRequestFingerprint,
     restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
+    restartRecoveryDeliveryLifecycleGeneration: entry.restartRecoveryDeliveryLifecycleGeneration,
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
@@ -109,6 +114,15 @@ function buildExpectedSessionState(entry: SessionEntry): SessionTranscriptTurnEx
     restartRecoveryTerminalRunIds: entry.restartRecoveryTerminalRunIds,
     status: entry.status,
   };
+}
+
+/**
+ * Every minted claim carries a generation. Falling back to the running one keeps
+ * a claim from being born already-orphaned when the caller has no operation
+ * generation to hand, which would make it retirable by the very next admission.
+ */
+function mintedLifecycleGeneration(operationGeneration?: string): string {
+  return normalizeOptionalString(operationGeneration) ?? getAgentEventLifecycleGeneration();
 }
 
 export function createReplyRestartRecoveryClaimController(params: {
@@ -263,6 +277,11 @@ export function createReplyRestartRecoveryClaimController(params: {
                 restartRecoveryDeliveryRequestFingerprint: undefined,
               }),
           restartRecoverySourceIngress: entry.restartRecoverySourceIngress ?? "control-ui",
+          // Adoption moves ownership to this process, so the claim is re-minted
+          // under the running generation and becomes live authority again.
+          restartRecoveryDeliveryLifecycleGeneration: mintedLifecycleGeneration(
+            params.lifecycleGeneration,
+          ),
           updatedAt: Date.now(),
         },
         recorder,
@@ -299,7 +318,11 @@ export function createReplyRestartRecoveryClaimController(params: {
     if (
       activeClaimRunId &&
       (entry.abortedLastRun === true ||
-        entry.status === "running" ||
+        // `status` persists across a Gateway restart and so cannot tell a live run
+        // from a dead one; the claim's own generation can. A restart-orphaned claim
+        // falls through to the retirement patch below instead of failing closed
+        // forever against a process that no longer exists.
+        hasLiveRestartRecoveryDeliveryClaim(entry) ||
         entry.restartRecoveryDeliveryReceiptState === "terminal-pending")
     ) {
       throw new Error("restart recovery claim changed before agent adoption");
@@ -322,6 +345,9 @@ export function createReplyRestartRecoveryClaimController(params: {
           restartRecoveryDeliveryContext: recoverableDeliveryContext,
           restartRecoveryDeliveryRequestFingerprint: undefined,
           restartRecoveryDeliveryRunId: recoveryRunId,
+          restartRecoveryDeliveryLifecycleGeneration: mintedLifecycleGeneration(
+            params.lifecycleGeneration,
+          ),
           restartRecoveryDeliverySourceRunId: sourceTurnId,
           restartRecoveryRequesterAccountId: sourceTurnId
             ? normalizeOptionalString(params.requesterAccountId)
