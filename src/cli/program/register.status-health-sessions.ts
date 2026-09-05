@@ -537,5 +537,66 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       });
     });
 
+  addSessionsGatewayOptions(sessionsCmd.command("abort <key>"))
+    .description("Abort active work for a stored session via the running gateway")
+    .option("--run-id <id>", "Abort only this run instead of all active work for the session")
+    .option(
+      "--clear-queued",
+      "Also discard followup and lane queues owned by the session (key-only, non-global)",
+    )
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.heading("Examples:")}\n${formatHelpExamples([
+          [
+            'openclaw sessions abort "agent:main:main"',
+            "Stop whatever the session is currently running.",
+          ],
+          [
+            'openclaw sessions abort "agent:main:main" --clear-queued',
+            "Stop it and drop queued followups so nothing restarts the work.",
+          ],
+          [
+            'openclaw sessions abort "agent:main:main" --run-id run-123 --json',
+            "Scope the abort to one run and emit JSON.",
+          ],
+        ])}\n\n${theme.muted(
+          "Backed by the sessions.abort gateway RPC - the same operation the Control UI Stop button uses. Reports no-active-run (exit 0) when the session had nothing running.",
+        )}`,
+    )
+    .action(async (key: string, opts, command) => {
+      // Same inherited-option hazard as `compact` above: a parent `--store`
+      // would suggest the operator chose the store, while the gateway resolves
+      // it from <key> + --agent. Reject rather than silently drop it.
+      const parentOpts = command.parent?.opts() as SessionsListCliOptions | undefined;
+      rejectUnsupportedSessionsParentOptions(
+        "abort",
+        parentOpts,
+        ["store", "allAgents", "active", "limit", "verbose"],
+        "the gateway resolves the target store from <key> and --agent",
+      );
+      const timeoutMs = parseStrictPositiveInteger(opts.timeout);
+      if (opts.timeout !== undefined && timeoutMs === undefined) {
+        throwSessionsCliError("--timeout must be a positive integer (milliseconds).");
+      }
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { sessionsAbortCommand } = await import("../../commands/sessions-abort.js");
+        await sessionsAbortCommand(
+          {
+            key,
+            agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            runId: opts.runId as string | undefined,
+            clearQueued: Boolean(opts.clearQueued),
+            timeout: timeoutMs !== undefined ? String(timeoutMs) : undefined,
+            url: opts.url as string | undefined,
+            token: opts.token as string | undefined,
+            password: opts.password as string | undefined,
+            json: Boolean(opts.json || parentOpts?.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
   registerTasksCommand(program);
 }

@@ -402,6 +402,44 @@ Example truncate response (`--max-lines 200`):
 }
 ```
 
+## Abort active work
+
+Stop whatever a session is currently running. `openclaw sessions abort <key>` is
+the first-class wrapper around the `sessions.abort` Gateway RPC - the same
+operation the Control UI **Stop** button uses - and requires a running Gateway.
+
+```bash
+openclaw sessions abort "agent:main:main"
+openclaw sessions abort "agent:main:main" --clear-queued
+openclaw sessions abort "agent:main:main" --run-id run-123 --json
+```
+
+- Without `--run-id`, the Gateway aborts the session's active work.
+- `--run-id <id>`: scope the abort to one run instead of the whole session.
+- `--clear-queued`: also discard followup and lane queues owned by the session,
+  so nothing restarts the work. Key-only, non-global sessions.
+- `--agent <id>`: agent that owns the session; required for `global` keys.
+- `--url` / `--token` / `--password`: Gateway connection overrides.
+- `--timeout <ms>`: optional client-side RPC timeout in milliseconds.
+- `--json`: print the raw RPC payload.
+
+The result carries a closed `status`:
+
+| `status`        | Meaning                                   | Exit |
+| --------------- | ----------------------------------------- | ---- |
+| `aborted`       | Active work was found and cancelled.      | 0    |
+| `no-active-run` | The session had nothing running to abort. | 0    |
+
+`no-active-run` is a reported outcome, not a failure: you asked for the session
+to stop and it is already stopped. The command still prints it, because an
+operator who ran this against a session that _looks_ stuck needs to know the
+Gateway found nothing to cancel. If the session then still refuses new messages,
+its stored state is stale rather than busy - check `openclaw sessions list` and
+`openclaw doctor`.
+
+The command exits non-zero when the Gateway reports a failed abort or is
+unreachable, so crons and scripts never mistake a silent no-op for success.
+
 ## Related
 
 - [Session config](/gateway/config-agents#session)
