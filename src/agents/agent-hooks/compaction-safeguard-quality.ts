@@ -12,7 +12,12 @@ const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
 // The audit itself is the cap for the full corrective defect list: it carries at most
 // five missing sections plus one missing-identifiers line. The 4000-char untrusted
 // wrapper is for operator-supplied context only; never route the defect list through it.
-const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 8000;
+// That line is bounded only by the 12-identifier COUNT — each identifier is a URL
+// (`https?:\/\/\S+`) and can be arbitrarily long, so a fixed small char budget can
+// still truncate the list mid-identifier (the #721 failure mode). This budget exceeds
+// the audit's realistic worst case and, if ever exceeded, truncation degrades to the
+// #722 structured fallback rather than a broken corrective pass.
+const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 20_000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -40,9 +45,10 @@ export function wrapUntrustedInstructionBlock(label: string, text: string): stri
  * Wraps structured quality-audit feedback (missing sections, missing identifiers)
  * as untrusted prompt data for regeneration instructions. The audit reasons carry
  * at most five `missing_section` lines plus one `missing_identifiers` line (the full
- * missing list, up to the 12-item extraction cap), so this budget must fit the whole
- * defect list. Truncating it mid-list hands the model an incomplete list it cannot
- * repair, so the same audit fails on retry (#721).
+ * missing list, up to the 12-item extraction cap — a COUNT bound, so the line itself
+ * is length-unbounded), so this budget must fit the whole defect list. Truncating it
+ * mid-list hands the model an incomplete list it cannot repair, so the same audit fails
+ * on retry (#721).
  */
 export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): string {
   return wrapUntrustedPromptDataBlock({
@@ -51,7 +57,6 @@ export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): 
     maxChars: MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS,
   });
 }
-
 function resolveExactIdentifierSectionInstruction(
   summarizationInstructions?: CompactionSummarizationInstructions,
 ): string {

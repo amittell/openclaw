@@ -1386,6 +1386,33 @@ describe("compaction-safeguard recent-turn preservation", () => {
     }
   });
 
+  it("keeps a >8000-char missing-identifiers defect list complete through the corrective wrapper (#721)", () => {
+    // The 12-item cap bounds the COUNT, not the length: each identifier is a URL
+    // and can be arbitrarily long, so the joined defect list can exceed the
+    // 8000-char quality-feedback wrapper budget. The wrapper must carry the full
+    // list — truncating mid-list reproduces the #721 unrecoverable-defect mode.
+    const identifiers = Array.from(
+      { length: 12 },
+      (_, index) =>
+        `https://dl.example.internal/v2/obj/${index}/blob/${"0123456789abcdef".repeat(16)}.map/${Array.from({ length: 16 }, (_, j) => `seg-${String(index).padStart(2, "0")}-${String(j).padStart(2, "0")}`).join("/")}?token=${"0123456789abcdef".repeat(8)}&nonce=${"fedcba9876543210".repeat(8)}`,
+    );
+    expect(identifiers.join(",").length).toBeGreaterThan(8000);
+    const summaryText =
+      "## Decisions\nKeep flow.\n## Open TODOs\nNone.\n## Constraints/Rules\nNone.\n## Pending user asks\nStatus.\n## Exact identifiers\n";
+    const reasons = auditSummaryQuality({
+      summary: summaryText,
+      structuralSummary: summaryText,
+      identifiers,
+      latestAsk: "Status",
+    }).reasons;
+    const text = `Previous summary failed quality checks (${reasons.join(", ")}).`;
+    const wrapped = wrapUntrustedQualityFeedbackBlock("Quality check feedback", text);
+    const content = wrapped.split("\n").slice(2, -1).join("\n");
+    for (const identifier of identifiers) {
+      expect(content).toContain(identifier);
+    }
+  });
+
   it("sends the complete >4000-char missing-identifiers defect list to the corrective pass (#721)", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "report the deployment status";
