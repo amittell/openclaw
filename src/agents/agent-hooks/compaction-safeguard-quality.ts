@@ -9,6 +9,15 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 // and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
+// The audit itself is the cap for the full corrective defect list: it carries at most
+// five missing sections plus one missing-identifiers line. The 4000-char untrusted
+// wrapper is for operator-supplied context only; never route the defect list through it.
+// That line is bounded only by the 12-identifier COUNT — each identifier is a URL
+// (`https?:\/\/\S+`) and can be arbitrarily long, so a fixed small char budget can
+// still truncate the list mid-identifier (the #721 failure mode). This budget exceeds
+// the audit's realistic worst case and, if ever exceeded, truncation degrades to the
+// #722 structured fallback rather than a broken corrective pass.
+const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 20_000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -32,6 +41,22 @@ export function wrapUntrustedInstructionBlock(label: string, text: string): stri
   });
 }
 
+/**
+ * Wraps structured quality-audit feedback (missing sections, missing identifiers)
+ * as untrusted prompt data for regeneration instructions. The audit reasons carry
+ * at most five `missing_section` lines plus one `missing_identifiers` line (the full
+ * missing list, up to the 12-item extraction cap — a COUNT bound, so the line itself
+ * is length-unbounded), so this budget must fit the whole defect list. Truncating it
+ * mid-list hands the model an incomplete list it cannot repair, so the same audit fails
+ * on retry (#721).
+ */
+export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): string {
+  return wrapUntrustedPromptDataBlock({
+    label,
+    text,
+    maxChars: MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS,
+  });
+}
 function resolveExactIdentifierSectionInstruction(
   summarizationInstructions?: CompactionSummarizationInstructions,
 ): string {
@@ -216,7 +241,11 @@ export function auditSummaryQuality(params: {
       (identifier) => !summaryIncludesIdentifier(params.summary, identifier),
     );
     if (missingIdentifiers.length > 0) {
-      reasons.push(`missing_identifiers:${missingIdentifiers.slice(0, 3).join(",")}`);
+      // Feed the FULL missing list back to the corrective pass (bounded only by the
+      // 12-item extraction cap). A truncated defect list is unrecoverable: the model
+      // never sees which identifiers to restore, the retry fails the same audit, and
+      // the run cancels with no valid summary (#721).
+      reasons.push(`missing_identifiers:${missingIdentifiers.join(",")}`);
     }
   }
   if (!hasAskOverlap(params.summary, params.latestAsk)) {
