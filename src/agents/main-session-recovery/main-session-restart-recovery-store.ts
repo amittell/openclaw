@@ -299,6 +299,17 @@ export async function recoverStore(params: {
       entry?.abortedLastRun === true ||
       (entry !== undefined && isMainRestartRecoveryAggregateTerminalOnly(entry));
     if (!entry || entry.status !== "running" || !hasRecoveryStateToObserve) {
+      // Every other branch in this loop records its decision. A session still
+      // carrying a recovery episode is one the marking pass claimed, so passing
+      // over it silently is how a marked session vanishes between "marked N" and
+      // "started M" with nothing in the log naming it or saying why.
+      if (entry?.status === "running" && entry.mainRestartRecovery) {
+        mainSessionRecoveryLog.warn(
+          `restart recovery passed over a marked session: sessionKey=${sessionKey} ` +
+            `cycleId=${entry.mainRestartRecovery.cycleId} ` +
+            `abortedLastRun=${entry.abortedLastRun === true}`,
+        );
+      }
       continue;
     }
     if (!isMainRestartRecoveryCandidate(entry, sessionKey)) {
