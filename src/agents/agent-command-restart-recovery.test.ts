@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   buildCurrentRunRestartRecoveryClaim,
   buildRestartRecoveryTerminalDeliveryEvidence,
@@ -24,6 +25,7 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       restartRecoveryDeliveryMediaUrls: [],
       restartRecoveryDisableMessageTool: true,
       restartRecoveryDeliveryRunId: "media-run",
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: "media-run",
       restartRecoverySourceIngress: "internal",
       restartRecoverySourceReplyDeliveryMode: "automatic",
@@ -65,6 +67,7 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       restartRecoveryDeliveryMediaUrls: ["/tmp/proof.png"],
       restartRecoveryDisableMessageTool: true,
       restartRecoveryDeliveryRunId: "recovery-run",
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: "media-run",
       restartRecoverySourceIngress: "internal",
       restartRecoverySourceReplyDeliveryMode: "automatic",

@@ -59,6 +59,13 @@ export type SessionRestartRecoveryState = {
   restartRecoverySuppressTextDelivery?: true;
   restartRecoveryDeliveryRequestFingerprint?: string;
   restartRecoveryDeliveryRunId?: string;
+  /**
+   * Lifecycle generation that minted the delivery claim. A claim is live authority
+   * only while this matches the running generation; turn claims never survive a
+   * Gateway restart, so a stale or absent value marks the claim orphaned and
+   * retirable rather than a competing live run.
+   */
+  restartRecoveryDeliveryLifecycleGeneration?: string;
   restartRecoveryDeliverySourceRunId?: string;
   restartRecoveryRequesterAccountId?: string;
   restartRecoveryRequesterSenderId?: string;
