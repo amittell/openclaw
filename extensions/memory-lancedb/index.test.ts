@@ -12,6 +12,7 @@ import { Buffer } from "node:buffer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
+import { vectorFromArray } from "apache-arrow";
 import { Command } from "commander";
 import { isToolResultError } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
@@ -4498,12 +4499,25 @@ describe("memory plugin e2e", () => {
     }
   });
 
-  test("memory_refresh replace handles typed-array stored vectors from LanceDB", async () => {
+  test.each([
+    { name: "array", vector: [0.1, 0.2, 0.3], valid: true },
+    { name: "Float32Array", vector: new Float32Array([0.1, 0.2, 0.3]), valid: true },
+    { name: "Float64Array", vector: new Float64Array([0.1, 0.2, 0.3]), valid: true },
+    { name: "Arrow vector", vector: vectorFromArray([0.1, 0.2, 0.3]), valid: true },
+    { name: "array-like row", vector: { 0: 0.1, 1: 0.2, 2: 0.3, length: 3 }, valid: true },
+    { name: "non-finite element", vector: [0.1, Number.NaN, 0.3], valid: false },
+    { name: "non-numeric element", vector: [0.1, "0.2", 0.3], valid: false },
+    { name: "missing element", vector: { 0: 0.1, 2: 0.3, length: 3 }, valid: false },
+    { name: "empty vector", vector: [], valid: false },
+    { name: "dimension mismatch", vector: [0.1, 0.2], valid: false },
+    { name: "JSON string", vector: "[0.1,0.2,0.3]", valid: false },
+    { name: "wrapper object", vector: { values: [0.1, 0.2, 0.3] }, valid: false },
+  ])("memory_refresh audits similarity for a LanceDB $name", async ({ vector, valid }) => {
     const existingId = "bbbbbbbb-0000-0000-0000-000000000002";
     const existingEntry = {
       id: existingId,
       text: "Old memory text stored with a typed vector",
-      vector: new Float32Array([0.1, 0.2, 0.3]),
+      vector,
       importance: 0.7,
       category: "fact",
       createdAt: 1000,
@@ -4520,6 +4534,7 @@ describe("memory plugin e2e", () => {
       limit: vi.fn(() => ({ toArray: vi.fn(async () => []) })),
     }));
 
+    vi.stubEnv("OPENCLAW_STATE_DIR", `${getTmpDir()}/.openclaw`);
     vi.resetModules();
     vi.doMock("openai", () => ({
       default: class MockOpenAI {
@@ -4574,7 +4589,21 @@ describe("memory plugin e2e", () => {
       expect(result.details.operation).toBe("replaced");
       expect(tableDelete).toHaveBeenCalledWith(`(agentId = 'main') AND (id = '${existingId}')`);
       expect(tableAdd).toHaveBeenCalledTimes(1);
+      const auditContent = await fs.readFile(
+        `${getTmpDir()}/.openclaw/memory/refresh-audit.jsonl`,
+        "utf8",
+      );
+      const audit = JSON.parse(auditContent.trim());
+      expect(audit.operation).toBe("replaced");
+      expect(audit.old_id).toBe(existingId);
+      expect(audit.new_id).toBe(existingId);
+      if (valid) {
+        expect(audit.similarity).toBeCloseTo(1 / (1 + Math.sqrt(3 * 0.05 ** 2)), 6);
+      } else {
+        expect(audit.similarity).toBeNull();
+      }
     } finally {
+      vi.unstubAllEnvs();
       vi.doUnmock("openai");
       vi.doUnmock("./lancedb-runtime.js");
       vi.resetModules();
