@@ -236,7 +236,7 @@ export async function readChatHistoryPage(
  * shadowed, and the merge would answer a span request with the live tail while
  * reporting success -- the caller could not tell the span was never read.
  */
-export function shouldReadAnchoredWindow(params: {
+function shouldReadAnchoredWindow(params: {
   offset: number | undefined;
   messageId: string | undefined;
   compactionId: string | undefined;

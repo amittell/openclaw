@@ -6398,6 +6398,7 @@ public struct SessionRow: Codable, Sendable {
     public let estimatedcostusd: Double?
     public let model: String?
     public let modelprovider: String?
+    public let authprofileoverride: String?
     public let modeloverridesource: AnyCodable?
     public let tooloverrides: [String: AnyCodable]?
 
@@ -6472,6 +6473,7 @@ public struct SessionRow: Codable, Sendable {
         estimatedcostusd: Double? = nil,
         model: String? = nil,
         modelprovider: String? = nil,
+        authprofileoverride: String? = nil,
         modeloverridesource: AnyCodable? = nil,
         tooloverrides: [String: AnyCodable]? = nil)
     {
@@ -6545,6 +6547,7 @@ public struct SessionRow: Codable, Sendable {
         self.estimatedcostusd = estimatedcostusd
         self.model = model
         self.modelprovider = modelprovider
+        self.authprofileoverride = authprofileoverride
         self.modeloverridesource = modeloverridesource
         self.tooloverrides = tooloverrides
     }
@@ -6620,6 +6623,7 @@ public struct SessionRow: Codable, Sendable {
         case estimatedcostusd = "estimatedCostUsd"
         case model
         case modelprovider = "modelProvider"
+        case authprofileoverride = "authProfileOverride"
         case modeloverridesource = "modelOverrideSource"
         case tooloverrides = "toolOverrides"
     }

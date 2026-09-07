@@ -121,6 +121,26 @@ cleared; the existing `--fail-on-eligible-compat` gate continues to apply only
 to dated `deprecated` records. Reader references are surface-token matches for
 triage; use the published-artifact sweep before authorizing removal.
 
+### September SDK subpath review
+
+The five SDK subpaths with `removeAfter: 2026-09-01` are now
+`removal-pending`. Their original dates and public exports remain unchanged;
+the elapsed window does not establish that published plugins have migrated.
+Each requires a published-plugin artifact reader sweep and explicit
+breaking-release approval before removal, with these additional conditions:
+
+| SDK subpath              | Unresolved migration condition                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channel-lifecycle`      | Decide migration or explicit retirement for `createRunStateMachine` and `createArmableStallWatchdog`, which `channel-outbound` does not export.               |
+| `channel-message`        | Migrate the legacy dispatch-count names to the maintained inbound names.                                                                                      |
+| `channel-reply-pipeline` | Prove published readers of the shipped reply-pipeline exports have migrated.                                                                                  |
+| `config-runtime`         | Migrate the remaining internal type imports and verify published readers of the config and session exports.                                                   |
+| `infra-runtime`          | Honor the next Plugin SDK major promise for `ErrorKind` and `detectErrorKind` and decide their migration; the focused error replacement does not export them. |
+
+This pending queue records unresolved work, not completed retirement or a new
+deadline. The published-reader survey has not been established for these five
+subpaths. Their deprecated-import guards remain active for repository code.
+
 ### Session agent resolution aliases
 
 New plugins should use `resolveSessionAgentIdsStrict` or

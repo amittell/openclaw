@@ -21,7 +21,7 @@ type ErrorAgentMetaInput = Parameters<typeof buildErrorAgentMeta>[0];
  * attempts or lives behind a getter, so the loop supplies a reader rather than
  * values: reading happens at the same instant the inline code read it.
  */
-export type EmbeddedRunExhaustionLoopState = {
+type EmbeddedRunExhaustionLoopState = {
   sessionId: ErrorAgentMetaInput["sessionId"];
   sessionFile: ErrorAgentMetaInput["sessionFile"];
   modelAttempt: AgentRuntimeModelAttempt | undefined;

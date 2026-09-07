@@ -22,6 +22,7 @@ describe("mergeSuccessfulOAuthRefreshCredential", () => {
         provider: "openai",
         access: "dead-access",
         refresh: "dead-refresh",
+        expires: 100,
         refreshDeadAt: 123,
         accountId: "account-1",
       },
@@ -50,14 +51,16 @@ describe("mergeSuccessfulOAuthRefreshCredential", () => {
         provider: "openai",
         access: "old-access",
         refresh: "old-refresh",
+        expires: 100,
         email: "user@example.com",
         accountId: "acct-shared",
       },
-      { access: "new-access" },
+      { access: "new-access", refresh: "old-refresh", expires: 100 },
     );
     expect(refreshed).toMatchObject({
       access: "new-access",
       refresh: "old-refresh",
+      expires: 100,
       email: "user@example.com",
       accountId: "acct-shared",
     });

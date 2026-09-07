@@ -193,6 +193,8 @@ export type GatewaySessionRow = {
   effectiveQueueMode?: QueueMode;
   modelProvider?: string;
   model?: string;
+  /** Persisted profile identifier only; never credential material. */
+  authProfileOverride?: string;
   modelOverrideSource?: "user" | "auto" | null;
   modelSelectionLocked?: boolean;
   agentRuntime?: GatewayAgentRuntime;

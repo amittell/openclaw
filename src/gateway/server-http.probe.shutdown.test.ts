@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   markGatewayShuttingDown,
-  resetGatewayShuttingDownForTest,
+  resetGatewayShuttingDownState,
 } from "./gateway-shutdown-state.js";
 import { resetGatewayHealthzShuttingDownLogForTest } from "./server-http.js";
 import {
@@ -38,7 +38,7 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 });
 
 afterEach(() => {
-  resetGatewayShuttingDownForTest();
+  resetGatewayShuttingDownState();
   resetGatewayHealthzShuttingDownLogForTest();
   gatewayProbeWarn.mockClear();
 });
@@ -159,7 +159,7 @@ describe("gateway probe endpoints: shutting-down 503", () => {
         expect(gatewayProbeWarn).toHaveBeenCalledTimes(1);
 
         // Simulate startup completing a new cycle, then a fresh shutdown.
-        resetGatewayShuttingDownForTest();
+        resetGatewayShuttingDownState();
         markGatewayShuttingDown();
         const req2 = createRequest({ path: "/healthz?strict=1" });
         const { res: res2 } = createResponse();

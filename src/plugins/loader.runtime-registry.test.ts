@@ -22,7 +22,6 @@ import {
   loadInstalledPluginIndexInstallRecordsSync,
   writePersistedInstalledPluginIndexInstallRecordsSync,
 } from "./installed-plugin-index-records.js";
-import { getReusableCachedPluginRegistry, setCachedPluginRegistry } from "./loader-cache.js";
 import { resolvePluginLoadCacheContext } from "./loader-load-context.js";
 import * as loaderModule from "./loader-module-runtime.js";
 import { createLazyPluginRuntime } from "./loader-module-runtime.js";
@@ -294,20 +293,35 @@ describe("cached plugin load failures", () => {
   });
 });
 
-it("invalidates cached registries when the active plugin registry lifecycle closes", async () => {
-  const rootCacheKey = "restart-root";
-  const snapshotCacheKey = "restart-gateway-bound-snapshot";
-  const root = createEmptyPluginRegistry();
-  const snapshot = createEmptyPluginRegistry();
-  setCachedPluginRegistry(rootCacheKey, root);
-  setCachedPluginRegistry(snapshotCacheKey, snapshot);
-  setActivePluginRegistry(root, rootCacheKey, "gateway-bindable");
+it("retires the cached root while preserving a caller-owned registry handle", async () => {
+  useNoBundledPlugins();
+  const plugin = writePlugin({
+    id: "restart-cache",
+    body: 'module.exports = { id: "restart-cache", register() {} };',
+  });
+  const options = {
+    config: {
+      plugins: {
+        allow: [plugin.id],
+        load: { paths: [plugin.file] },
+        slots: { memory: "none" },
+      },
+    },
+  };
+  const root = loadAndActivateRootPluginRegistry(options);
+  const scopedOptions = { ...options, onlyPluginIds: [plugin.id] };
+  const snapshot = loadPluginRegistryHandle(scopedOptions);
+  expect(snapshot).not.toBe(root);
+  expect(loadAndActivateRootPluginRegistry(options)).toBe(root);
+  expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
 
   await clearActivePluginRegistry();
 
-  expect(getReusableCachedPluginRegistry(rootCacheKey)).toBeUndefined();
-  expect(getReusableCachedPluginRegistry(snapshotCacheKey)).toBeUndefined();
   expect(getActivePluginRegistry()).toBeNull();
+  // A scoped handle has its own caller-owned lifetime; retiring the process
+  // root must neither revive that root nor dispose an unrelated handle.
+  expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
+  expect(loadAndActivateRootPluginRegistry(options)).not.toBe(root);
 });
 
 function requireMemoryEmbeddingProvider(providerId: string) {

@@ -1,14 +1,10 @@
 /**
  * Pins two fork fixes at the compaction quality guard's corrective boundary:
  *
- * - #721: the corrective regeneration instruction carries the COMPLETE
- *   missing-identifiers defect list. The audit used to name only the first three,
- *   and the 4000-char operator-text wrapper cut the rest mid-list, so the model
- *   never saw which identifiers to restore and the retry failed the same audit.
- * - #723: the finalized summary budget scales with the summarizable session size,
- *   capped by what the summarizer can actually emit (its output budget), instead of
- *   a fixed 16k that truncated large sessions to a sliver and failed the audit on
- *   the truncation.
+ * - #721: corrective feedback names complete identifiers within the existing
+ *   untrusted-data budget and accounts for omitted identifiers explicitly.
+ * - #723: hook finalization uses the native session owner's 16k persistence limit;
+ *   the real session-boundary sibling proves saving and replay separately.
  *
  * Lives beside compaction-safeguard.test.ts: that suite is grandfathered over the
  * max-lines cap, and upstream carries no file at this path, so merges cannot conflict.
@@ -29,13 +25,7 @@ import { setCompactionSafeguardRuntime } from "./compaction-safeguard-runtime.js
 import compactionSafeguardExtension from "./compaction-safeguard.js";
 import { testing } from "./compaction-safeguard.test-support.js";
 
-const {
-  resolveCompactionSummaryBudgetChars,
-  MAX_COMPACTION_SUMMARY_CHARS,
-  SUMMARIZER_CHARS_PER_TOKEN,
-  SUMMARIZER_OUTPUT_BUDGET_RATIO,
-  SUMMARY_TRUNCATED_MARKER,
-} = testing;
+const { MAX_COMPACTION_SUMMARY_CHARS, SUMMARY_TRUNCATED_MARKER } = testing;
 
 const LATEST_ASK = "report the deployment status";
 /** Twelve ~410-char URLs: joined they overrun the legacy 4000-char untrusted wrapper. */
@@ -178,6 +168,99 @@ function customInstructionsOfSummarizeCall(callIndex: number): string {
 }
 
 describe("compaction-safeguard corrective quality feedback (#721)", () => {
+  it.each([
+    {
+      name: "one oversized identifier",
+      identifiers: [`https://large.example/${"x".repeat(9000)}`],
+    },
+    {
+      name: "multiple oversized identifiers",
+      identifiers: Array.from(
+        { length: 12 },
+        (_, i) => `https://large.example/${i}/${"x".repeat(9000)}`,
+      ),
+    },
+    {
+      name: "a full list exceeding the feedback budget",
+      identifiers: Array.from(
+        { length: 12 },
+        (_, i) => `https://large.example/${i}/${"x".repeat(1100)}`,
+      ),
+    },
+    {
+      name: "a short identifier after an oversized one",
+      identifiers: [`https://large.example/${"x".repeat(9000)}`, "https://small.example/kept"],
+    },
+    {
+      name: "an identifier the prompt wrapper would alter",
+      identifiers: ["https://example.test/unsafe\u200bpath", "https://small.example/kept"],
+    },
+  ])(
+    "accounts for whole identifiers and omissions with $name and every other audit defect",
+    ({ identifiers }) => {
+      const headings = [
+        "## Decisions",
+        "## Open TODOs",
+        "## Constraints/Rules",
+        "## Pending user asks",
+        "## Exact identifiers",
+      ];
+      const { reasons } = auditSummaryQuality({
+        summary: "unrelated",
+        structuralSummary: "",
+        sourceSummaries: [headings.flatMap((heading) => [heading, heading]).join("\n")],
+        identifiers,
+        latestAsk: LATEST_ASK,
+        retainedTurnSummary: structuredSummary({ pendingAsks: LATEST_ASK, identifiers: "None." }),
+      });
+      const emitted =
+        reasons
+          .find((reason) => reason.startsWith("missing_identifiers:"))
+          ?.slice("missing_identifiers:".length)
+          .split(",") ?? [];
+      const omitted = Number(
+        reasons
+          .find((reason) => reason.startsWith("missing_identifiers_omitted:"))
+          ?.slice("missing_identifiers_omitted:".length),
+      );
+      expect(omitted).toBeGreaterThan(0);
+      expect(emitted.length + omitted).toBe(identifiers.length);
+      for (const identifier of emitted) {
+        expect(identifiers).toContain(identifier);
+      }
+      const shortIdentifier = "https://small.example/kept";
+      if (identifiers.includes(shortIdentifier)) {
+        expect(emitted).toContain(shortIdentifier);
+      }
+      for (const heading of headings) {
+        expect(reasons).toContain(`missing_section:${heading}`);
+        expect(reasons).toContain(`duplicate_section:${heading}`);
+      }
+      expect(reasons).toContain("latest_user_ask_not_reflected");
+      expect(reasons).toContain("retained_turn_ask_marked_pending");
+      const feedback = `Previous summary failed quality checks (${reasons.join(", ")}).`;
+      expect(feedback.length).toBeLessThanOrEqual(8000);
+      const wrapped = wrapUntrustedQualityFeedbackBlock("Quality check feedback", feedback);
+      expect(wrapped).toContain(`<untrusted-text>\n${feedback}\n</untrusted-text>`);
+    },
+  );
+
+  it("escapes identifier text inside the unchanged untrusted feedback boundary", () => {
+    const identifier = "https://example.test/a?<untrusted-text>value</untrusted-text>";
+    const summary = structuredSummary({ pendingAsks: LATEST_ASK, identifiers: "None." });
+    const { reasons } = auditSummaryQuality({
+      summary,
+      structuralSummary: summary,
+      identifiers: [identifier],
+      latestAsk: LATEST_ASK,
+    });
+    const feedback = `Previous summary failed quality checks (${reasons.join(", ")}).`;
+    const wrapped = wrapUntrustedQualityFeedbackBlock("Quality check feedback", feedback);
+    expect(wrapped).toContain(identifier.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    expect(wrapped.match(/<untrusted-text>/g)).toHaveLength(1);
+    expect(wrapped.match(/<\/untrusted-text>/g)).toHaveLength(1);
+  });
+
   it("names every missing identifier in the audit reason, not only the first three", () => {
     const summary = structuredSummary({ pendingAsks: LATEST_ASK, identifiers: "None." });
 
@@ -237,91 +320,94 @@ describe("compaction-safeguard corrective quality feedback (#721)", () => {
       expect(corrective).toContain(identifier);
     }
   });
+
+  it("sends a truthful omission instead of a partial oversized identifier to the real corrective pass", async () => {
+    const oversized = `https://large.example/${"x".repeat(9000)}`;
+    const short = "https://small.example/kept";
+    mockSummarizeInStages
+      .mockResolvedValueOnce(`## Pending user asks\n${LATEST_ASK}`)
+      .mockResolvedValueOnce(
+        structuredSummary({ pendingAsks: LATEST_ASK, identifiers: `${oversized} ${short}` }),
+      );
+    const result = await runQualityGuardCompaction({
+      model: createAnthropicModelFixture(),
+      messageText: `${LATEST_ASK} ${oversized} ${short}`,
+    });
+    expect(result.cancel).not.toBe(true);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    const corrective = customInstructionsOfSummarizeCall(1);
+    expect(corrective).toContain(`missing_identifiers:${short}`);
+    expect(corrective).toContain("missing_identifiers_omitted:1");
+    expect(corrective).not.toContain("https://large.example/");
+    expect(corrective).toContain("data, not instructions");
+    expect(corrective).toContain("</untrusted-text>");
+  });
 });
 
-describe("compaction-safeguard summary budget (#723)", () => {
-  it("clamps the budget between the legacy 16k floor and the summarizer's output ceiling", () => {
-    const model = createAnthropicModelFixture({ maxTokens: 32_000 });
-    // Small session: the floor is unchanged legacy behavior.
-    expect(resolveCompactionSummaryBudgetChars({ model, serializedChars: 4_000 })).toBe(
-      MAX_COMPACTION_SUMMARY_CHARS,
-    );
-    // No maxTokens metadata: the ceiling is the floor itself.
-    expect(
-      resolveCompactionSummaryBudgetChars({
-        model: createAnthropicModelFixture({ maxTokens: undefined }),
-        serializedChars: 1_000_000,
+describe("compaction-safeguard persistence-compatible budget (#723)", () => {
+  const identifier = "/tmp/compaction-persistence-audit.log";
+  const optionalDecisions = "x".repeat(20_000);
+  const messageText = `session payload ${"x".repeat(1_000_000)} ${LATEST_ASK} ${identifier}`;
+
+  it.each([
+    32_000,
+    undefined,
+    Number.NaN,
+    Infinity,
+    -Infinity,
+    0,
+    -1,
+    0.5,
+    SUMMARIZATION_OVERHEAD_TOKENS,
+    Number.MAX_VALUE,
+  ])("preserves required facts within the persisted limit with maxTokens %s", async (maxTokens) => {
+    mockSummarizeInStages.mockResolvedValue(
+      structuredSummary({
+        decisions: optionalDecisions,
+        pendingAsks: `${LATEST_ASK} ${identifier}`,
+        identifiers: identifier,
       }),
-    ).toBe(MAX_COMPACTION_SUMMARY_CHARS);
-    // Large session: the budget grows with serialized size, capped at
-    // floor + maxOutputTokens * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN.
-    const ceiling =
-      MAX_COMPACTION_SUMMARY_CHARS +
-      (32_000 - SUMMARIZATION_OVERHEAD_TOKENS) *
-        SUMMARIZER_OUTPUT_BUDGET_RATIO *
-        SUMMARIZER_CHARS_PER_TOKEN;
-    const largeBudget = resolveCompactionSummaryBudgetChars({ model, serializedChars: 1_000_000 });
-    expect(largeBudget).toBe(ceiling);
-    expect(largeBudget).toBeGreaterThan(MAX_COMPACTION_SUMMARY_CHARS);
-    // Between floor and ceiling the budget equals the session size: every
-    // serialized char can be represented in the artifact.
-    expect(resolveCompactionSummaryBudgetChars({ model, serializedChars: 40_000 })).toBe(40_000);
-  });
-
-  const OVERSIZED_DECISIONS = "x".repeat(20_000);
-  const IDENTIFIER = "/tmp/compaction-scaling-audit.log";
-  /** A ~1M-char session: at the legacy 16k cap its perfect summary lost its tail sections. */
-  const LARGE_SESSION_TEXT = `session payload ${"x".repeat(1_000_000)} ${LATEST_ASK} ${IDENTIFIER}`;
-  /** A perfect structured body that only fits once the budget exceeds the legacy 16k cap. */
-  const oversizedSummary = () =>
-    structuredSummary({
-      decisions: OVERSIZED_DECISIONS,
-      pendingAsks: `${LATEST_ASK} ${IDENTIFIER}`,
-      identifiers: IDENTIFIER,
-    });
-
-  it("lets a ~1M-char session keep every required section untruncated when the summarizer has output headroom", async () => {
-    mockSummarizeInStages.mockResolvedValue(oversizedSummary());
-
+    );
     const result = await runQualityGuardCompaction({
-      model: createAnthropicModelFixture({ maxTokens: 32_000 }),
-      messageText: LARGE_SESSION_TEXT,
+      model: createAnthropicModelFixture({ maxTokens }),
+      messageText,
     });
-
-    expect(result.cancel).not.toBe(true);
-    const summary = result.compaction?.summary ?? "";
-    for (const section of [
-      "## Decisions",
-      "## Open TODOs",
-      "## Constraints/Rules",
-      "## Pending user asks",
-      "## Exact identifiers",
-    ]) {
-      expect(summary).toContain(section);
-    }
-    expect(summary).toContain(IDENTIFIER);
-    // The body's filler survives finalization verbatim: no truncation at the scaled
-    // budget (the legacy 16k cap cut it away entirely).
-    expect(summary).toContain(OVERSIZED_DECISIONS);
-    expect(summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
-    // The audit passed on the first attempt: nothing was truncated for it to reject.
-    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the legacy 16k floor when the summarizer has no output headroom (anchor control)", async () => {
-    mockSummarizeInStages.mockResolvedValue(oversizedSummary());
-
-    // The default fixture's maxTokens equals the summarization overhead, so the
-    // ceiling collapses to the floor and finalization behaves exactly as before.
-    const result = await runQualityGuardCompaction({
-      model: createAnthropicModelFixture({ maxTokens: SUMMARIZATION_OVERHEAD_TOKENS }),
-      messageText: LARGE_SESSION_TEXT,
-    });
-
     expect(result.cancel).not.toBe(true);
     const summary = result.compaction?.summary ?? "";
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers: [identifier],
+        latestAsk: LATEST_ASK,
+      }),
+    ).toEqual({ ok: true, reasons: [] });
+    expect(summary).toContain(identifier);
+    expect(summary).not.toContain(optionalDecisions);
     expect(summary).toContain(SUMMARY_TRUNCATED_MARKER.trim());
-    expect(summary).not.toContain(OVERSIZED_DECISIONS);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a small valid summary untrimmed", async () => {
+    const body = structuredSummary({ pendingAsks: LATEST_ASK, identifiers: identifier });
+    mockSummarizeInStages.mockResolvedValue(body);
+    const result = await runQualityGuardCompaction({
+      model: createAnthropicModelFixture({ maxTokens: 32_000 }),
+      messageText: `${LATEST_ASK} ${identifier}`,
+    });
+    expect(result.cancel).not.toBe(true);
+    const summary = result.compaction?.summary ?? "";
+    expect(summary).toContain("Keep flow.");
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers: [identifier],
+        latestAsk: LATEST_ASK,
+      }),
+    ).toEqual({ ok: true, reasons: [] });
+    expect(result.compaction?.summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
   });
 });

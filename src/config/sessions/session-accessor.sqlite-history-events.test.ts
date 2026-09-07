@@ -388,7 +388,16 @@ describe("SQLite transcript history events", () => {
     });
     const ids = (events: Array<{ event: unknown }> | undefined) => events?.map(historyEventId);
     expect(ids(readSessionTranscriptHistoryEvents(scope))).toEqual([
-      ...["m1", "m2", "m3", "m4", "c1", "m5", "m6", "m7", "c2", "m8"],
+      "m1",
+      "m2",
+      "m3",
+      "m4",
+      "c1",
+      "m5",
+      "m6",
+      "m7",
+      "c2",
+      "m8",
     ]);
 
     const first = readSessionTranscriptCompactionShadowPage(scope, {

@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { AgentsListResult } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionStorePathCore as resolveStorePath } from "../../config/sessions.js";
-import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import {
+  loadSessionEntryReadOnly,
+  replaceSessionEntry,
+} from "../../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { recordAgentProvenance } from "../../state/agent-provenance.js";
@@ -322,6 +325,55 @@ test("unknown-agent session reads return missing results without provisioning an
 
   expectAgentStoreAbsent(UNKNOWN_AGENT_ID);
   expect(await listAgentIdsViaRpc()).toEqual(["main"]);
+});
+
+test("sessions.describe exposes the idle exact-session profile without mutating session state", async () => {
+  await setAgentsConfig({ ownership: "explicit", entries: { ops: {}, research: {} } });
+  const now = Date.now();
+  const targets = [
+    {
+      agentId: "ops",
+      sessionKey: "agent:ops:main",
+      profile: "vendor:overnight",
+      updatedAt: now - 12 * 60 * 60_000,
+    },
+    {
+      agentId: "research",
+      sessionKey: "agent:research:main",
+      profile: "vendor:research",
+      updatedAt: now,
+    },
+    { agentId: "ops", sessionKey: "agent:ops:unpinned", profile: undefined, updatedAt: now },
+    ...Array.from({ length: 101 }, (_, index) => ({
+      agentId: "ops",
+      sessionKey: `agent:ops:thread:${index}`,
+      profile: "vendor:neighbor",
+      updatedAt: now,
+    })),
+  ].map((target) => ({
+    agentId: target.agentId,
+    sessionKey: target.sessionKey,
+    profile: target.profile,
+    updatedAt: target.updatedAt,
+    storePath: resolveStorePath(undefined, { agentId: target.agentId }),
+  }));
+  for (const target of targets) {
+    await replaceSessionEntry(target, {
+      sessionId: target.sessionKey,
+      updatedAt: target.updatedAt,
+      ...(target.profile ? { authProfileOverride: target.profile } : {}),
+    });
+  }
+  const before = targets.map((target) => loadSessionEntryReadOnly(target));
+  for (const target of targets.slice(0, 3)) {
+    const described = await directSessionReq<{
+      session: { key: string; authProfileOverride?: string } | null;
+    }>("sessions.describe", { key: target.sessionKey });
+    expect(described.ok).toBe(true);
+    expect(described.payload?.session?.key).toBe(target.sessionKey);
+    expect(described.payload?.session?.authProfileOverride).toBe(target.profile);
+  }
+  expect(targets.map((target) => loadSessionEntryReadOnly(target))).toEqual(before);
 });
 
 test("a hidden-foreign role cannot discover sessions through search, batch previews, or exact resolve", async () => {

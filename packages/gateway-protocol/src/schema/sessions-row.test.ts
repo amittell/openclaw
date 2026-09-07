@@ -4,6 +4,15 @@ import { validateSessionsAssignOwnerParams } from "../index.js";
 import { SessionRowSchema } from "./sessions-row.js";
 
 describe("SessionRowSchema", () => {
+  it("accepts an optional profile identifier and rejects non-string profile metadata", () => {
+    const row = { key: "agent:ops:main", kind: "direct" };
+    expect(Value.Check(SessionRowSchema, row)).toBe(true);
+    expect(Value.Check(SessionRowSchema, { ...row, authProfileOverride: "vendor:overnight" })).toBe(
+      true,
+    );
+    expect(Value.Check(SessionRowSchema, { ...row, authProfileOverride: 42 })).toBe(false);
+  });
+
   it("round-trips optional sharing fields", () => {
     const row = {
       key: "agent:main:main",

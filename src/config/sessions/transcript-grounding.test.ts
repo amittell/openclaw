@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { persistSessionTranscriptTurn, replaceSessionEntry } from "./session-accessor.js";
-import { UNGROUNDED_MEDIA_PLACEHOLDER, redactUngroundedMediaRefs } from "./transcript-grounding.js";
+import { redactUngroundedMediaRefs } from "./transcript-grounding.js";
 import { readRecentUserAssistantTextForSession } from "./transcript.js";
 
 describe("redactUngroundedMediaRefs", () => {
@@ -13,7 +13,9 @@ describe("redactUngroundedMediaRefs", () => {
   it("redacts a fabricated managed-media path and keeps the prose", () => {
     const text = `IMAGE:${mediaDir}/whats-app-image-2026-07-06-909898742550877-194.jpg That's a serious setup, Ally.`;
     const redacted = redactUngroundedMediaRefs(text, { mediaDir, exists: never });
-    expect(redacted).toBe(`IMAGE:${UNGROUNDED_MEDIA_PLACEHOLDER} That's a serious setup, Ally.`);
+    expect(redacted).toBe(
+      "IMAGE:[unverified media reference removed] That's a serious setup, Ally.",
+    );
   });
 
   it("keeps managed-media paths that resolve to real files", () => {
@@ -40,13 +42,13 @@ describe("redactUngroundedMediaRefs", () => {
     const varDir = "/var/state/media";
     const text = `Saved to /private/var/state/media/inbound/fake.png earlier.`;
     const redacted = redactUngroundedMediaRefs(text, { mediaDir: varDir, exists: never });
-    expect(redacted).toBe(`Saved to ${UNGROUNDED_MEDIA_PLACEHOLDER} earlier.`);
+    expect(redacted).toBe("Saved to [unverified media reference removed] earlier.");
   });
 
   it("leaves trailing sentence punctuation attached to the prose", () => {
     const text = `I attached ${mediaDir}/fake.png.`;
     const redacted = redactUngroundedMediaRefs(text, { mediaDir, exists: never });
-    expect(redacted).toBe(`I attached ${UNGROUNDED_MEDIA_PLACEHOLDER}.`);
+    expect(redacted).toBe("I attached [unverified media reference removed].");
   });
 
   it("redacts every fabricated ref while keeping the verified one", () => {
@@ -57,7 +59,7 @@ describe("redactUngroundedMediaRefs", () => {
       exists: (candidate) => candidate === real,
     });
     expect(redacted).toBe(
-      `first ${UNGROUNDED_MEDIA_PLACEHOLDER} then ${real} then ${UNGROUNDED_MEDIA_PLACEHOLDER}`,
+      `first [unverified media reference removed] then ${real} then [unverified media reference removed]`,
     );
   });
 });
@@ -134,7 +136,7 @@ describe("readRecentUserAssistantTextFromSessionTranscript grounding", () => {
       const assistant = entries.find((entry) => entry.role === "assistant");
       expect(user?.text).toBe(`user mentions ${fakeFile} verbatim`);
       expect(assistant?.text).toBe(
-        `IMAGE:${UNGROUNDED_MEDIA_PLACEHOLDER} That's a serious setup. Original at ${realFile}.`,
+        `IMAGE:[unverified media reference removed] That's a serious setup. Original at ${realFile}.`,
       );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });

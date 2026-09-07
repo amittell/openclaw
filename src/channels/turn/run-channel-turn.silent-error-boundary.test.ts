@@ -191,27 +191,42 @@ describe("channel turn silent-error boundary (PR1 DM no-reply fix)", () => {
     expect(readAgentRunTerminalOutcome(dispatchError as object)).toBe("failed");
   });
 
-  it("skips the B' fallback and preserves the original error for observeOnly turns", async () => {
-    // Carried from the fork's run-channel-turn.delivery.test.ts, which cannot
-    // hold it: that file is 997 effective lines against a 1000 budget.
-    // The opt-out is satisfied by admission.kind === "observeOnly"; the turn is
-    // also system-sourced, which the guard reads via ctxPayload.InternalTurnSource.
-    dispatchReplyWithRoutedChannelDispatcherCore.mockImplementation(createThrowingDispatch());
-    const deliver = vi.fn(async () => {
-      throw new Error("observeOnly delivery must be impossible");
-    });
-    await expect(
-      dispatchRoutedChannelTurn({
+  it.each([
+    { kind: "Error", rejection: new Error("run retry limit exhausted") },
+    { kind: "string", rejection: "run retry limit exhausted" },
+    { kind: "structured", rejection: { message: "run retry limit exhausted", code: "FAILED" } },
+    { kind: "frozen Error", rejection: Object.freeze(new Error("run retry limit exhausted")) },
+  ])(
+    "keeps observeOnly $kind failures silent and preserves their error details",
+    async ({ rejection }) => {
+      dispatchReplyWithRoutedChannelDispatcherCore.mockRejectedValue(rejection);
+      const deliver = vi.fn(async () => {
+        throw new Error("observeOnly delivery must be impossible");
+      });
+      const error = await dispatchRoutedChannelTurn({
         cfg,
         channel: "telegram",
         admission: { kind: "observeOnly", reason: "heartbeat" },
         route: { agentId: "main", sessionKey: "agent:main:telegram:peer" },
         ctxPayload: createCtx({ Surface: "telegram", Provider: "heartbeat" }),
         delivery: { deliver },
-      }),
-    ).rejects.toThrow("run retry limit exhausted");
-    expect(deliver).not.toHaveBeenCalled();
-  });
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ message: "run retry limit exhausted" });
+      if (rejection instanceof Error) {
+        expect(error).toBe(rejection);
+      } else if (typeof rejection === "object") {
+        expect(error).toMatchObject({ cause: rejection });
+        if ("code" in rejection) {
+          expect(error).toMatchObject({ code: rejection.code });
+        }
+      }
+      expect(readAgentRunTerminalOutcome(error)).toBe(
+        Object.isExtensible(rejection) || !(rejection instanceof Error) ? "failed" : undefined,
+      );
+      expect(deliver).not.toHaveBeenCalled();
+    },
+  );
 
   beforeEach(() => {
     vi.clearAllMocks();

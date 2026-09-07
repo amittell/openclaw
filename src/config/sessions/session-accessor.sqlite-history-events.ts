@@ -610,12 +610,14 @@ export function readSessionTranscriptCompactionShadowPage(
     );
     const endExclusive = spanEnd - offset;
     const start = Math.max(spanStart, endExclusive - maxMessages);
+    const shadowedEvents = readVisibleHistoryRange(projection, start, endExclusive, history);
+    // The range owns fresh display rows; rebase only their page ordinals, not raw positions.
+    for (const entry of shadowedEvents) {
+      entry.seq -= spanStart;
+    }
     return {
       displaySource: history.displaySource,
-      events: readVisibleHistoryRange(projection, start, endExclusive, history).map((entry) => ({
-        ...entry,
-        seq: entry.seq - spanStart,
-      })),
+      events: shadowedEvents,
       offset,
       shadowedCount,
     };

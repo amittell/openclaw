@@ -701,17 +701,11 @@ async function dispatchChannelTurnWithDeliveryOwner(
           // recorded outcome instead of a silent non-outcome (blocker 3): the visible
           // fallback above already put an explanation in front of the user. Non-visible
           // turns (e.g. a terminal durable preflight failure) keep the original error text.
-          const surfacedError =
-            params.admission?.kind === "observeOnly"
-              ? dispatchError
-              : toErrorObject(dispatchError, "channel dispatch failed");
-          if (
-            typeof surfacedError === "object" &&
-            surfacedError !== null &&
-            Object.isExtensible(surfacedError)
-          ) {
-            // SAFETY: guarded above by typeof "object", non-null and Object.isExtensible.
-            recordAgentRunTerminalOutcome(surfacedError as object, "failed");
+          // Observe-only suppresses delivery, not the Error contract; existing Error
+          // identity survives normalization, including non-extensible provider errors.
+          const surfacedError = toErrorObject(dispatchError, "channel dispatch failed");
+          if (Object.isExtensible(surfacedError)) {
+            recordAgentRunTerminalOutcome(surfacedError, "failed");
           }
           throw surfacedError;
         }

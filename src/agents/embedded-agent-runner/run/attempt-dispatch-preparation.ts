@@ -32,7 +32,7 @@ type TerminalRetryState = ReturnType<typeof createEmbeddedRunTerminalRetryState>
  * Best-effort read of the session-level sampling temperature set with /temperature.
  * Returns undefined when the session has no override, so configured model params win.
  */
-export function resolveSessionTemperatureOverride(params: {
+function resolveSessionTemperatureOverride(params: {
   agentId: string;
   sessionKey: string | undefined;
   storePath?: string;

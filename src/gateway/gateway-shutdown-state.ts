@@ -43,10 +43,6 @@ export function resetGatewayShuttingDownState(): void {
   shuttingDownResponseLogged = false;
 }
 
-export function resetGatewayShuttingDownForTest(): void {
-  resetGatewayShuttingDownState();
-}
-
 export function noteShuttingDownProbeResponse(requestPath: string): void {
   if (shuttingDownResponseLogged) {
     return;
