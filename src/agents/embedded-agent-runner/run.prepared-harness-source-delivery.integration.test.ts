@@ -172,12 +172,23 @@ describe("prepared harness source delivery", () => {
     });
     const followupRun = createFollowupRun();
     const emittedStreamingCallbacks: string[] = [];
-    let modelVisiblePrompt = "";
-    const recordModelVisiblePrompt = (attemptParams: {
-      extraSystemPrompt?: string;
+    type AttemptDeliveryInput = {
+      prompt: string;
       forceMessageTool?: boolean;
       sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
-    }) => {
+      suppressNextUserMessagePersistence?: boolean;
+    };
+    const attemptDeliveryInputs: AttemptDeliveryInput[] = [];
+    let modelVisiblePrompt = "";
+    const recordModelVisiblePrompt = (
+      attemptParams: AttemptDeliveryInput & { extraSystemPrompt?: string },
+    ) => {
+      attemptDeliveryInputs.push({
+        prompt: attemptParams.prompt,
+        forceMessageTool: attemptParams.forceMessageTool,
+        sourceReplyDeliveryMode: attemptParams.sourceReplyDeliveryMode,
+        suppressNextUserMessagePersistence: attemptParams.suppressNextUserMessagePersistence,
+      });
       modelVisiblePrompt = buildEmbeddedSystemPrompt({
         workspaceDir: followupRun.run.workspaceDir,
         reasoningTagHint: false,
@@ -440,7 +451,39 @@ describe("prepared harness source delivery", () => {
     }
     const cliSucceeded =
       testCase.candidatePath === "cli" || testCase.candidatePath === "embedded-failure-cli";
-    expect(emittedStreamingCallbacks).toEqual(cliSucceeded ? [] : ["partial", "block"]);
+    if (cliSucceeded) {
+      expect(attemptDeliveryInputs).toEqual([]);
+      expect(emittedStreamingCallbacks).toEqual([]);
+    } else if (testCase.preparedVisibleReplies === "message_tool") {
+      // Undelivered text gets one internal delivery nudge under the same prepared owner.
+      expect(attemptDeliveryInputs).toEqual([
+        {
+          prompt: "hello",
+          forceMessageTool: true,
+          sourceReplyDeliveryMode: "message_tool_only",
+          suppressNextUserMessagePersistence: false,
+        },
+        {
+          prompt: expect.stringContaining(
+            "Send your final answer now with a single message tool call.",
+          ),
+          forceMessageTool: true,
+          sourceReplyDeliveryMode: "message_tool_only",
+          suppressNextUserMessagePersistence: true,
+        },
+      ]);
+      expect(emittedStreamingCallbacks).toEqual(["partial", "block", "partial", "block"]);
+    } else {
+      expect(attemptDeliveryInputs).toEqual([
+        {
+          prompt: "hello",
+          forceMessageTool: false,
+          sourceReplyDeliveryMode: "automatic",
+          suppressNextUserMessagePersistence: false,
+        },
+      ]);
+      expect(emittedStreamingCallbacks).toEqual(["partial", "block"]);
+    }
     expect(onPartialReply).toHaveBeenCalledTimes(testCase.expectedPartials);
     expect(result.queuedFinal).toBe(testCase.expectedDeliveries === 1);
     expect(deliver).toHaveBeenCalledTimes(testCase.expectedDeliveries + testCase.expectedBlocks);
