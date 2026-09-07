@@ -12,6 +12,7 @@ import {
   replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
   resetDiagnosticRunActivityForTest,
   RUN_STALE_TAKEOVER_MS,
@@ -779,13 +780,15 @@ describe("reply turn admission", () => {
   it("drops a queued followup for an admitted recovery fence", async () => {
     const sessionKey = "agent:main:telegram:topic:admitted-recovery";
     const sessionId = "admitted-recovery-session";
+    // Only the live Gateway generation owns an admitted fence; older generations retire.
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const storePath = createSessionStore({
       [sessionKey]: {
         sessionId,
         updatedAt: 100,
         status: "running",
         abortedLastRun: false,
-        restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration: "generation-1" }],
+        restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
         mainRestartRecovery: {
           cycleId: "cycle-1",
           revision: 3,
@@ -803,6 +806,11 @@ describe("reply turn admission", () => {
         kind: "queued_followup",
       }),
     ).resolves.toEqual({ status: "skipped", reason: "lifecycle-invalidated" });
+    expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(await readSessionEntry(storePath, sessionKey)).toMatchObject({
+      restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
+      mainRestartRecovery: { cycleId: "cycle-1", revision: 3, chargedAttempts: 1 },
+    });
   });
 
   it("schedules released recovery only after retained admission exits", async () => {

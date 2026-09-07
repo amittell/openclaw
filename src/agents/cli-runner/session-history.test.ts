@@ -76,12 +76,13 @@ it("recovers SQLite-only compacted history across every CLI reader", async () =>
       content: "CANONICAL_HISTORY",
       timestamp: 1,
     });
-    manager.appendCompaction("CANONICAL_SUMMARY", kept, 1000);
+    const compactionId = manager.appendCompaction("CANONICAL_SUMMARY", kept, 1000);
+    const renderedSummary = `CANONICAL_SUMMARY\n[compaction checkpoint ${compactionId}: shadows 0 earlier entries]`;
     manager.appendMessage({ role: "user", content: "CANONICAL_TAIL", timestamp: 3 });
     manager.flushPendingPersistence();
     expect(loadTranscriptEventsSync(target)).toHaveLength(4);
     expect(SessionManager.open(target).buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "CANONICAL_SUMMARY" },
+      { role: "compactionSummary", summary: renderedSummary },
       { role: "user", content: "CANONICAL_HISTORY" },
       { role: "user", content: "CANONICAL_TAIL" },
     ]);
@@ -97,7 +98,7 @@ it("recovers SQLite-only compacted history across every CLI reader", async () =>
     ]);
     for (const messages of [reseed, context]) {
       expect.soft(messages).toMatchObject([
-        { role: "compactionSummary", summary: "CANONICAL_SUMMARY" },
+        { role: "compactionSummary", summary: renderedSummary },
         { role: "user", content: "CANONICAL_HISTORY" },
         { role: "user", content: "CANONICAL_TAIL" },
       ]);
@@ -193,10 +194,14 @@ describe("canonical CLI history", () => {
 
   it("uses retained prefixes for compaction and reset without reviving older context", async () => {
     const { params, manager } = await createSession(["summarized", "retained"]);
-    manager.appendCompaction("summary", "msg-1", 1000);
+    const compactionId = manager.appendCompaction("summary", "msg-1", 1000);
     const tail = manager.appendMessage({ role: "user", content: "tail", timestamp: 3 });
     await expect(loadCliSessionContextEngineMessages(params)).resolves.toMatchObject([
-      { role: "compactionSummary", summary: "summary", firstKeptEntryId: "msg-1" },
+      {
+        role: "compactionSummary",
+        summary: `summary\n[compaction checkpoint ${compactionId}: shadows 1 earlier entries]`,
+        firstKeptEntryId: "msg-1",
+      },
       { content: "retained" },
       { content: "tail" },
     ]);
@@ -229,14 +234,20 @@ describe("canonical CLI history", () => {
         timestamp: 2,
       });
       const retained = manager.appendMessage({ role: "user", content: "retained", timestamp: 3 });
-      if (boundary === "compaction") {
-        manager.appendCompaction("summary", firstKept, 1000);
-      } else {
-        manager.appendResetBoundary("reset", firstKept);
-      }
+      const boundaryId =
+        boundary === "compaction"
+          ? manager.appendCompaction("summary", firstKept, 1000)
+          : manager.appendResetBoundary("reset", firstKept);
       manager.appendMessage({ role: "user", content: "tail", timestamp: 4 });
       const expected = [
-        ...(boundary === "compaction" ? [{ role: "compactionSummary", summary: "summary" }] : []),
+        ...(boundary === "compaction"
+          ? [
+              {
+                role: "compactionSummary",
+                summary: `summary\n[compaction checkpoint ${boundaryId}: shadows 1 earlier entries]`,
+              },
+            ]
+          : []),
         { role: "user", content: "retained" },
         { role: "user", content: "tail" },
       ];
@@ -299,7 +310,7 @@ describe("canonical CLI history", () => {
     await expect(loadCliSessionContextEngineMessages(params)).resolves.toMatchObject([
       {
         role: "compactionSummary",
-        summary: "summary",
+        summary: "summary\n[compaction checkpoint compact: shadows 0 earlier entries]",
         timestamp: "2026-01-01T00:00:00.000Z",
         tokensBefore: 100,
         tokensAfter: 10,

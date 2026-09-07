@@ -342,11 +342,15 @@ it.each(["cold", "warm"])(
         expectHistory([freshUserId]);
       }
 
-      manager.appendCompaction("fresh-only summary", freshUserId, 100);
+      const compactionId = manager.appendCompaction("fresh-only summary", freshUserId, 100);
       await settle();
       expectHistory([freshUserId]);
       expect(manager.buildSessionContext().messages).toMatchObject([
-        { role: "compactionSummary", summary: "fresh-only summary" },
+        {
+          role: "compactionSummary",
+          summary: `fresh-only summary
+[compaction checkpoint ${compactionId}: shadows 1 earlier entries]`,
+        },
         { role: "user", content: "fresh user" },
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);
@@ -367,12 +371,20 @@ it.each(["cold", "warm"])(
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);
 
-      manager.appendCompaction("newest-only summary", newestUserId, 100);
+      const newestCompactionId = manager.appendCompaction("newest-only summary", newestUserId, 100);
       await settle();
       expectHistory([nextUserId, newestUserId]);
       const reopened = SessionManager.open(scope);
+      expect(reopened.getEntry(compactionId)).toMatchObject({ summary: "fresh-only summary" });
+      expect(reopened.getEntry(newestCompactionId)).toMatchObject({
+        summary: "newest-only summary",
+      });
       expect(reopened.buildSessionContext().messages).toMatchObject([
-        { role: "compactionSummary", summary: "newest-only summary" },
+        {
+          role: "compactionSummary",
+          summary: `newest-only summary
+[compaction checkpoint ${newestCompactionId}: shadows 2 earlier entries]`,
+        },
         { role: "user", content: "after second reset" },
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);

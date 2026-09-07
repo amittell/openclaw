@@ -164,10 +164,13 @@ it.each([1, 2])("retains the forward cut after %i excluded first-kept entries", 
     throw new Error("missing first-kept fixture");
   }
   manager.appendMessage({ role: "user", content: "retained", timestamp: 3 });
-  manager.appendCompaction("summary", firstKept, 100);
+  const compactionId = manager.appendCompaction("summary", firstKept, 100);
   const expected = manager.buildSessionContext();
   expect(expected.messages).toMatchObject([
-    { role: "compactionSummary", summary: "summary" },
+    {
+      role: "compactionSummary",
+      summary: `summary\n[compaction checkpoint ${compactionId}: shadows 1 earlier entries]`,
+    },
     { role: "user", content: "retained" },
   ]);
   const bounded = SessionManager.openBounded(scope, { maxEvents: 4, maxBytes: 4096 });
