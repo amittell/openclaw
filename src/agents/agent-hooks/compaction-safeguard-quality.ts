@@ -463,7 +463,9 @@ function missingIdentifierAuditReasons(identifiers: string[]): string[] {
   const included: string[] = [];
   let chars = prefix.length;
   for (const identifier of identifiers) {
-    const nextChars = chars + (included.length > 0 ? 1 : 0) + identifier.length;
+    // The prompt boundary expands angle brackets; budget the complete escaped value.
+    const escapedChars = identifier.replace(/</g, "&lt;").replace(/>/g, "&gt;").length;
+    const nextChars = chars + (included.length > 0 ? 1 : 0) + escapedChars;
     if (
       nextChars > MAX_MISSING_IDENTIFIER_REASON_CHARS ||
       hasPromptUnsafeControlCharacter(identifier)

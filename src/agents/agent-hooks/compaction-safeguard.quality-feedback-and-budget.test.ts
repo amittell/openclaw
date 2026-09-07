@@ -192,6 +192,20 @@ describe("compaction-safeguard corrective quality feedback (#721)", () => {
       identifiers: [`https://large.example/${"x".repeat(9000)}`, "https://small.example/kept"],
     },
     {
+      name: "one identifier exceeding the budget only after escaping",
+      identifiers: [
+        `https://large.example/?q=${"<x>".repeat(1000)}tail`,
+        "https://small.example/kept",
+      ],
+    },
+    {
+      name: "a full list exceeding the budget only after escaping",
+      identifiers: Array.from(
+        { length: 12 },
+        (_, i) => `https://large.example/${i}/?q=${"<x>".repeat(100)}tail`,
+      ),
+    },
+    {
       name: "an identifier the prompt wrapper would alter",
       identifiers: ["https://example.test/unsafe\u200bpath", "https://small.example/kept"],
     },
@@ -213,6 +227,11 @@ describe("compaction-safeguard corrective quality feedback (#721)", () => {
         latestAsk: LATEST_ASK,
         retainedTurnSummary: structuredSummary({ pendingAsks: LATEST_ASK, identifiers: "None." }),
       });
+      const feedback = `Previous summary failed quality checks (${reasons.join(", ")}).`;
+      const wrapped = wrapUntrustedQualityFeedbackBlock("Quality check feedback", feedback);
+      const escapedFeedback = feedback.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      expect(escapedFeedback.length).toBeLessThanOrEqual(8000);
+      expect(wrapped).toContain(`<untrusted-text>\n${escapedFeedback}\n</untrusted-text>`);
       const emitted =
         reasons
           .find((reason) => reason.startsWith("missing_identifiers:"))
@@ -238,10 +257,6 @@ describe("compaction-safeguard corrective quality feedback (#721)", () => {
       }
       expect(reasons).toContain("latest_user_ask_not_reflected");
       expect(reasons).toContain("retained_turn_ask_marked_pending");
-      const feedback = `Previous summary failed quality checks (${reasons.join(", ")}).`;
-      expect(feedback.length).toBeLessThanOrEqual(8000);
-      const wrapped = wrapUntrustedQualityFeedbackBlock("Quality check feedback", feedback);
-      expect(wrapped).toContain(`<untrusted-text>\n${feedback}\n</untrusted-text>`);
     },
   );
 
