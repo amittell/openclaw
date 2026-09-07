@@ -155,7 +155,7 @@ describe("memory-lancedb embedding endpoint failover", () => {
     },
   ])("normalizes the last $name failure without losing details", async ({ failure }) => {
     openAiMocks.handlers.set(PRIMARY, endpointDown);
-    openAiMocks.handlers.set(FALLBACK, () => Promise.reject(failure));
+    openAiMocks.handlers.set(FALLBACK, vi.fn().mockRejectedValue(failure));
     const embeddings = createEmbeddings(createApi());
 
     const result = embeddings.embed("main", "hello", embeddingConfig());
