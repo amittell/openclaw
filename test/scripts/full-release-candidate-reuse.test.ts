@@ -156,13 +156,21 @@ function constituentArtifactReader(manifest: CandidateConstituentSource) {
   };
 }
 
-async function fixture() {
+async function fixture(now = NOW) {
   const manifest = fullReleaseCandidateManifestFixture();
+  const expiresAt = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
+  for (const artifact of [
+    manifest.package.artifact,
+    manifest.prepublishPluginRegistry.artifact,
+    manifest.sharedImage.artifact,
+  ]) {
+    artifact.expiresAt = expiresAt;
+  }
   const archive = await archiveWithManifest(manifest);
   return {
     archive,
     manifest,
-    metadata: artifactMetadata(archive),
+    metadata: artifactMetadata(archive, { expires_at: expiresAt }),
   };
 }
 
@@ -553,7 +561,8 @@ esac
 `,
     );
     chmodSync(ghPath, 0o755);
-    const { archive, manifest } = await fixture();
+    // The CLI uses the real clock, so its candidate input must still be live.
+    const { archive, manifest, metadata } = await fixture(Date.now());
     const artifacts = Array.from({ length: 6 }, (_, index) => {
       const runId = 80 + index;
       const jobs = workflowJobs(manifest, { runId });
@@ -563,6 +572,7 @@ esac
       return artifactMetadata(archive, {
         created_at: new Date(NOW - index * 1000).toISOString(),
         id: 400 + index,
+        expires_at: metadata.expires_at,
         workflow_run: {
           head_repository_id: 1,
           head_sha: manifest.request.toolingSha,
@@ -638,7 +648,7 @@ esac
 `,
     );
     chmodSync(ghPath, 0o755);
-    const { archive, manifest, metadata } = await fixture();
+    const { archive, manifest, metadata } = await fixture(Date.now());
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
     writeFileSync(archivePath, archive);
     writeFileSync(artifactListingPath, JSON.stringify({ artifacts: [metadata] }));

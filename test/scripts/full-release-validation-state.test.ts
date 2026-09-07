@@ -1,8 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   composeReleaseAttemptJobs,
   isReleaseGhArtifactMissingError,
@@ -691,6 +690,14 @@ describe("release child attempt composition", () => {
 });
 
 describe("release decision policy", () => {
+  beforeEach(() => {
+    // These run fixtures belong to this repository regardless of the CI checkout.
+    vi.stubEnv("GITHUB_REPOSITORY", "openclaw/openclaw");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("reports a decisive blocker while unrelated diagnostics continue", () => {
     const result = classifyReleaseSnapshot({
       children: [
@@ -2004,7 +2011,7 @@ describe("release state artifacts", () => {
   });
 
   function selectFromFilesystem(layout: "asymmetric" | "multi" | "single") {
-    const root = mkdtempSync(join(tmpdir(), `frv-select-${layout}-`));
+    const root = tempDirs.make(`frv-select-${layout}-`);
     const executionPlanPath = join(root, "plan.json");
     const decisionRoot = join(root, "decisions");
     const drainRoot = join(root, "drains");
@@ -2197,7 +2204,7 @@ describe("collector subprocess", () => {
       },
     },
   ])("seals and revalidates the complete $name reuse tuple", (reuse) => {
-    const root = mkdtempSync(join(tmpdir(), "frv-plan-reuse-"));
+    const root = tempDirs.make("frv-plan-reuse-");
     const output = join(root, "full-release-execution-plan.json");
     const validator = join(root, "release-evidence-validator.mjs");
     const validatorArgs = join(root, "validator-args.json");
@@ -2301,7 +2308,7 @@ console.log(JSON.stringify({
   });
 
   it("blocks Decision when canonical evidence manifest changes after planning", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-reuse-manifest-mismatch-"));
+    const root = tempDirs.make("frv-reuse-manifest-mismatch-");
     const output = join(root, "decision.json");
     const executionPlanPath = join(root, "plan.json");
     const gh = join(root, "gh");
@@ -2374,7 +2381,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("validates a generated manifest against its immutable execution plan", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-generated-manifest-"));
+    const root = tempDirs.make("frv-generated-manifest-");
     const executionPlanPath = join(root, "plan.json");
     const manifestPath = join(root, "manifest.json");
     const sealedPlan = executionPlan({ rerunGroup: "ci" });
@@ -2415,7 +2422,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("binds the generated manifest to the candidate sealed by attempt one", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-generated-candidate-manifest-"));
+    const root = tempDirs.make("frv-generated-candidate-manifest-");
     const decisionPath = join(root, "decision.json");
     const drainPath = join(root, "drain.json");
     const executionPlanPath = join(root, "plan.json");
@@ -2581,7 +2588,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
       planReuse: true,
     },
   ])("rejects a generated manifest with $name", ({ mutate, planReuse }) => {
-    const root = mkdtempSync(join(tmpdir(), "frv-invalid-generated-manifest-"));
+    const root = tempDirs.make("frv-invalid-generated-manifest-");
     const executionPlanPath = join(root, "plan.json");
     const manifestPath = join(root, "manifest.json");
     const reuse = {
@@ -2635,7 +2642,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("persists a classified plan that Release Decision can consume after reuse rejection", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-classified-plan-"));
+    const root = tempDirs.make("frv-classified-plan-");
     const output = join(root, "full-release-execution-plan.json");
     const decisionOutput = join(root, "full-release-decision.json");
     const validator = join(root, "release-evidence-validator.mjs");
@@ -2709,7 +2716,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("restores the phased attempt-one plan unchanged on an attempt-two collector retry", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-plan-restore-"));
+    const root = tempDirs.make("frv-plan-restore-");
     const output = join(root, "full-release-execution-plan.json");
     const githubOutput = join(root, "github-output");
     const candidate = candidateBinding();
@@ -2814,7 +2821,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("writes the execution plan immediately when SIGTERM interrupts a stalled reuse API", async () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-plan-signal-"));
+    const root = tempDirs.make("frv-plan-signal-");
     const gh = join(root, "gh");
     const ghReady = join(root, "gh-ready");
     const output = join(root, "full-release-execution-plan.json");
@@ -2871,7 +2878,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("records target resolution failure even when no target SHA exists", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-state-target-failure-"));
+    const root = tempDirs.make("frv-state-target-failure-");
     const output = join(root, "decision.json");
     const executionPlanPath = join(root, "full-release-execution-plan.json");
     writeFileSync(
@@ -2930,7 +2937,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("writes an immediate terminal handoff with active identity on SIGTERM", async () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-state-signal-"));
+    const root = tempDirs.make("frv-state-signal-");
     const gh = join(root, "gh");
     const ghReady = join(root, "gh-ready");
     const output = join(root, "drain.json");
@@ -2992,7 +2999,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   });
 
   it("cancels only the exact affected child and never cancels from drain", () => {
-    const root = mkdtempSync(join(tmpdir(), "frv-state-fail-fast-"));
+    const root = tempDirs.make("frv-state-fail-fast-");
     const gh = join(root, "gh");
     const calls = join(root, "calls");
     writeFileSync(calls, "");
