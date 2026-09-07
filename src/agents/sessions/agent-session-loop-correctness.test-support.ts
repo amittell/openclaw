@@ -135,6 +135,7 @@ export async function createTestSession(
   });
   const sessionOptions = {
     model,
+    authStorage,
     noTools: "builtin" as const,
     customTools: options.customTools,
     resourceLoader: options.resourceLoader ?? createResourceLoader(),

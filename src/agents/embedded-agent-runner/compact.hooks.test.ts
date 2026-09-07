@@ -1,6 +1,6 @@
 // Hook integration coverage for direct and queued embedded compaction.
 
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@openclaw/llm-core";
@@ -1809,6 +1809,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
 
     afterEach(() => {
+      vi.unstubAllEnvs();
       vi.mocked(summaryBridge).mockReset().mockResolvedValue("summary");
       limitHistoryTurnsMock.mockImplementation(originalHistoryLimit);
     });
@@ -1835,6 +1836,13 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     ] as const)(
       "keeps model fallback boundaries for $scenario",
       async ({ scenario, errorMessage, outcome }) => {
+        // The real session fixture owns in-memory auth even when ambient auth needs migration.
+        const ambientAgentDir = join(TEST_WORKSPACE_DIR, "ambient-agent");
+        const legacyAuthPath = join(ambientAgentDir, "auth.json");
+        const legacyAuth = "{}\n";
+        await mkdir(ambientAgentDir);
+        await writeFile(legacyAuthPath, legacyAuth);
+        vi.stubEnv("OPENCLAW_AGENT_DIR", ambientAgentDir);
         const [
           { createAgentSessionForEmbeddedRunner },
           { guardSessionManager },
@@ -2024,6 +2032,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           );
           expect(sessionManager.buildSessionContext().messages).toEqual(originalMessages);
         }
+        expect(await readdir(ambientAgentDir)).toEqual(["auth.json"]);
+        expect(await readFile(legacyAuthPath, "utf8")).toBe(legacyAuth);
       },
     );
   });
