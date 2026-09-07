@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentSession } from "../../sessions/index.js";
+import type { AgentSession, SessionManager } from "../../sessions/index.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 const hoisted = vi.hoisted(() => ({
@@ -91,6 +91,7 @@ function createInput(options?: {
   activationError?: Error;
   codeModeControlsEnabledForRun?: boolean;
   coreReadAllowed?: boolean;
+  sessionToolAllowlist?: string[];
 }) {
   const events: string[] = [];
   const settingsManager = { id: "settings" };
@@ -109,12 +110,16 @@ function createInput(options?: {
     agent: { id: "agent", subscribe: vi.fn() },
     setActiveToolsByName,
   } as unknown as AgentSession;
-  const sessionManager = { id: "session-manager" };
+  const sessionManager = {
+    id: "session-manager",
+    setCompactionCheckpointHandleFormatter:
+      vi.fn<SessionManager["setCompactionCheckpointHandleFormatter"]>(),
+  };
   const transcriptLifecycle = {
     withTranscriptWrite: vi.fn(async (operation: () => unknown) => await operation()),
   };
   const hookRunner = { id: "hooks" };
-  const sessionToolAllowlist = [{ name: "read" }];
+  const sessionToolAllowlist = options?.sessionToolAllowlist ?? ["read"];
   const allCustomTools = [{ name: "custom" }];
   const clientToolRuntime = {
     builtinToolNames: new Set(["read"]),
@@ -195,6 +200,7 @@ function createInput(options?: {
     onDeliveredSourceReply: () => onDeliveredSourceReply?.(),
     resourceLoader,
     setActiveToolsByName,
+    sessionManager,
     sessionToolAllowlist,
     settingsManager,
   };
@@ -251,6 +257,29 @@ describe("prepareEmbeddedAttemptAgentSession", () => {
     result.setCodeModeReconciliationReadAuthorized(true);
     fixture.markCodeModeReconciliationCandidate();
     expect(result.getCodeModeRecoveryCandidate()).toEqual({});
+  });
+
+  it.each([
+    { label: "registered", toolNames: ["read", "sessions_history"], hasHistoryTool: true },
+    { label: "absent", toolNames: ["read"], hasHistoryTool: false },
+  ])("configures checkpoint read hints when sessions_history is $label", async (testCase) => {
+    const fixture = createInput({ sessionToolAllowlist: testCase.toolNames });
+
+    await prepareEmbeddedAttemptAgentSession(fixture.input);
+
+    const setter = fixture.sessionManager.setCompactionCheckpointHandleFormatter;
+    expect(setter).toHaveBeenCalledOnce();
+    expect(setter.mock.invocationCallOrder[0]).toBeLessThan(
+      hoisted.createAgentSessionForEmbeddedRunner.mock.invocationCallOrder[0] ?? 0,
+    );
+    const formatter = setter.mock.calls[0]?.[0];
+    if (testCase.hasHistoryTool) {
+      expect(formatter?.({ entryId: "checkpoint-1", shadowedEntryCount: 5 })).toBe(
+        "[compaction checkpoint checkpoint-1: shadows 5 earlier entries; sessions_history can read them by compactionId]",
+      );
+    } else {
+      expect(formatter).toBeUndefined();
+    }
   });
 
   it("does not install Code Mode outcome handling when the run kept direct tools", async () => {

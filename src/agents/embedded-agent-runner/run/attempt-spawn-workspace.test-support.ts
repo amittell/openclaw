@@ -31,7 +31,7 @@ import type {
 import { buildToolLifecycleErrorResult } from "../../embedded-agent-tool-results.js";
 import type { AgentMessage, StreamFn } from "../../runtime/index.js";
 import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
-import type { CreateAgentSessionOptions } from "../../sessions/index.js";
+import type { CreateAgentSessionOptions, SessionManager } from "../../sessions/index.js";
 import {
   getModelRegistryRuntime,
   initializeModelRegistryRuntime,
@@ -67,6 +67,9 @@ function normalizeMockProviderId(providerId?: string): string {
 }
 
 type SessionManagerMocks = {
+  setCompactionCheckpointHandleFormatter: Mock<
+    SessionManager["setCompactionCheckpointHandleFormatter"]
+  >;
   getSessionTarget: Mock<() => undefined>;
   getLeafEntry: UnknownMock;
   getEntry: UnknownMock;
@@ -272,6 +275,8 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
   const embeddedSystemPromptInputs: unknown[] = [];
   const trajectoryEvents: CapturedTrajectoryEvent[] = [];
   const sessionManager = {
+    setCompactionCheckpointHandleFormatter:
+      vi.fn<SessionManager["setCompactionCheckpointHandleFormatter"]>(),
     getSessionTarget: vi.fn(() => undefined),
     getLeafEntry: vi.fn(() => null),
     getEntry: vi.fn(() => undefined),
@@ -1138,6 +1143,7 @@ export function resetEmbeddedAttemptHarness(
   hoisted.systemPromptTexts.length = 0;
   hoisted.embeddedSystemPromptInputs.length = 0;
   hoisted.trajectoryEvents.length = 0;
+  hoisted.sessionManager.setCompactionCheckpointHandleFormatter.mockReset();
   hoisted.sessionManager.getSessionTarget.mockReset().mockReturnValue(undefined);
   hoisted.sessionManager.getLeafEntry.mockReset().mockReturnValue(null);
   hoisted.sessionManager.getEntry.mockReset().mockReturnValue(undefined);
