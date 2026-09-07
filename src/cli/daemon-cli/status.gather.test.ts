@@ -1282,15 +1282,8 @@ describe("gatherDaemonStatus", () => {
       url: "wss://127.0.0.1:19001",
     });
 
-<<<<<<< HEAD
     const status = await gatherStatus({
       rpc: { url: "wss://gateway.example:19001" },
-=======
-    const status = await gatherDaemonStatus({
-      rpc: {},
-      probe: true,
-      deep: false,
->>>>>>> 3a3014adf5d (fix(status): preserve degraded probing for unresolved auth)
     });
 
     expect(status.rpc?.ok).toBe(false);
