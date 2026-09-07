@@ -5,6 +5,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { publicPluginSdkSubpaths } from "../../scripts/lib/plugin-sdk-entries.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { defineToolPlugin, getToolPluginMetadata } from "../plugin-sdk/tool-plugin.js";
 import { defaultRuntime } from "../runtime.js";
@@ -826,11 +827,15 @@ describe("plugin authoring commands", () => {
     const indexSource = fs.readFileSync(path.join(projectDir, "src/index.ts"), "utf8");
     expect(indexSource).toContain("definePluginEntry");
     expect(indexSource).toContain("api.registerProvider");
-    expect(indexSource).toContain("buildSingleProviderApiKeyCatalog");
-
-    expect(fs.readFileSync(path.join(projectDir, "src/index.test.ts"), "utf8")).toContain(
-      "OpenClawPluginApi",
-    );
+    const testSource = fs.readFileSync(path.join(projectDir, "src/index.test.ts"), "utf8");
+    expect(testSource).toContain("OpenClawPluginApi");
+    for (const source of [indexSource, testSource]) {
+      const sdkImports = [...source.matchAll(/from "openclaw\/plugin-sdk\/([^"]+)"/g)];
+      expect(sdkImports).not.toHaveLength(0);
+      for (const [, subpath] of sdkImports) {
+        expect(publicPluginSdkSubpaths).toContain(subpath);
+      }
+    }
     expect(fs.readFileSync(path.join(projectDir, "vitest.config.ts"), "utf8")).toContain(
       'include: ["src/**/*.test.ts"]',
     );
