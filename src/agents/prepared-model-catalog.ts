@@ -120,25 +120,12 @@ function resolveInputs(params: LoadPreparedModelCatalogParams = {}): {
   activationFull: PreparedModelRuntimeInput;
 } {
   const config = params.config ?? getRuntimeConfig();
-  // Unscoped reads (no agentId/agentDir) own the ambient-owner lookup. On an explicit
-  // multi-agent roster with no default, that lookup throws AgentSelectionRequiredError
-  // (the self-poll regression). Degrade only that ambient case to the no-owner shape
-  // callers already tolerate; explicit per-agent reads keep the intentional
-  // AgentSelectionRequiredError contract untouched.
-  let explicitOrDefaultAgentId: string | undefined = params.agentId;
-  if (explicitOrDefaultAgentId === undefined && params.agentDir === undefined) {
-    try {
-      explicitOrDefaultAgentId = resolveAmbientOwnerAgentId(config);
-    } catch (error) {
-      if (!(error instanceof AgentSelectionRequiredError)) {
-        throw error;
-      }
-      explicitOrDefaultAgentId = undefined;
-    }
+  let explicitOrDefaultAgentId = params.agentId;
+  let agentDir = params.agentDir;
+  if (agentDir === undefined) {
+    explicitOrDefaultAgentId ??= resolveAmbientOwnerAgentId(config);
+    agentDir = resolveAgentDir(config, explicitOrDefaultAgentId, params.env);
   }
-  const agentDir =
-    // SAFETY: resolveAgentDir forwards this to normalizeAgentId, which accepts null/undefined and falls back to the default agent id, so a cleared selection still resolves a directory.
-    params.agentDir ?? resolveAgentDir(config, explicitOrDefaultAgentId as string, params.env);
   const matchingAgentIds =
     explicitOrDefaultAgentId !== undefined
       ? []
@@ -172,11 +159,32 @@ function resolveInputs(params: LoadPreparedModelCatalogParams = {}): {
   };
 }
 
+function resolveNonblockingInputs(params: LoadPreparedModelCatalogParams) {
+  try {
+    return resolveInputs(params);
+  } catch (error) {
+    // An ownerless ambient read has no directory to query. Keep explicit selections
+    // and other failures strict, and never infer an owner from a default directory.
+    if (
+      params.agentId === undefined &&
+      params.agentDir === undefined &&
+      error instanceof AgentSelectionRequiredError
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 /** Returns the configured lifecycle owner for the current generation without starting discovery. */
 export function getPreparedModelCatalogOwnerSnapshot(
   params: LoadPreparedModelCatalogParams = {},
 ): PreparedModelRuntimeSnapshot | undefined {
-  const { activationExact, activationFull, exact, full } = resolveInputs(params);
+  const inputs = resolveNonblockingInputs(params);
+  if (!inputs) {
+    return undefined;
+  }
+  const { activationExact, activationFull, exact, full } = inputs;
   const publishedFull = getPreparedModelRuntimeSnapshot(full);
   if (publishedFull && preparedModelRuntimeConfigsMatch(publishedFull.config, full.config)) {
     return publishedFull;
@@ -210,7 +218,11 @@ export function getPreparedModelCatalogOwnerSnapshot(
 export function getPublishedPreparedModelCatalogOwnerSnapshot(
   params: GetPublishedPreparedModelCatalogOwnerParams = {},
 ): PreparedModelRuntimeSnapshot | undefined {
-  const { activationFull, full } = resolveInputs(params);
+  const inputs = resolveNonblockingInputs(params);
+  if (!inputs) {
+    return undefined;
+  }
+  const { activationFull, full } = inputs;
   const published = getPreparedModelRuntimeSnapshot(full);
   if (published) {
     return published;

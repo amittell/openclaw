@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   config: {} as object,
@@ -18,7 +19,15 @@ vi.mock("../config/config.js", () => ({
   getRuntimeConfig: () => mocks.config,
 }));
 
-import { AgentSelectionRequiredError, resolveAmbientOwnerAgentId } from "./agent-scope-config.js";
+import { unregisterResolvedAgentDir } from "./agent-dir-registry.js";
+import {
+  AgentSelectionRequiredError,
+  listAgentIds as listConfiguredAgentIds,
+  resolveAgentDir as resolveConfiguredAgentDir,
+  resolveAgentWorkspaceDir as resolveConfiguredWorkspaceDir,
+  resolveAmbientOwnerAgentId,
+} from "./agent-scope-config.js";
+import * as agentScope from "./agent-scope.js";
 vi.mock("./agent-scope.js", () => ({
   listAgentIds: () => mocks.agentIds,
   resolveAgentDir: (_config: object, agentId: string, env?: NodeJS.ProcessEnv) =>
@@ -65,7 +74,9 @@ vi.mock("./prepared-model-runtime.scoped-catalog.js", () => ({
 import { PreparedModelCatalogConfigReplacedError } from "./prepared-model-catalog.errors.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
+  getPreparedModelCatalogOwnerSnapshot,
   getPreparedModelCatalogSnapshot,
+  getAvailablePreparedModelCatalogSnapshot,
   loadPreparedModelCatalogOwnerSnapshot,
   loadPreparedModelCatalogSnapshot,
   loadResolvedPublishedModelCatalogOwner,
@@ -122,18 +133,108 @@ describe("prepared model catalog access", () => {
     expect(lifecycleInput).toHaveProperty("agentId", "main");
   });
 
-  it("degrades an unscoped multi-agent catalog read to a no-owner shape instead of throwing", () => {
-    // Exercise the real ambient resolver: an explicit fleet without an owner rejects there,
-    // while catalog reads tolerate its known-unbound result.
-    mocks.agentIds = ["ops", "research"];
+  describe("configured catalog selection", () => {
+    const env = { OPENCLAW_STATE_DIR: "/tmp/prepared-catalog-owner-selection" };
     const config = {
-      agents: { ownership: "explicit" as const, entries: { ops: {}, research: {} } },
+      agents: { ownership: "explicit" as const, entries: { main: {}, research: {} } },
     };
 
-    expect(() => resolveAmbientOwnerAgentId(config)).toThrow(AgentSelectionRequiredError);
-    expect(getPreparedModelCatalogSnapshot({ config })).toBeUndefined();
-    expect(mocks.getSnapshot).toHaveBeenCalledOnce();
-    expect(mocks.getSnapshot.mock.calls[0]?.[0]).not.toHaveProperty("agentId");
+    beforeEach(() => {
+      vi.spyOn(agentScope, "listAgentIds").mockImplementation(listConfiguredAgentIds);
+      vi.spyOn(agentScope, "resolveAgentDir").mockImplementation(resolveConfiguredAgentDir);
+      vi.spyOn(agentScope, "resolveAgentWorkspaceDir").mockImplementation(
+        resolveConfiguredWorkspaceDir,
+      );
+    });
+
+    afterEach(() => {
+      for (const agentId of ["main", "ops", "research"]) {
+        unregisterResolvedAgentDir({
+          agentId,
+          agentDir: path.join(env.OPENCLAW_STATE_DIR, "agents", agentId, "agent"),
+          env,
+        });
+      }
+      vi.restoreAllMocks();
+    });
+
+    it.each(["main", "ops"])(
+      "leaves an unscoped %s/research roster unavailable before looking up a directory",
+      (firstAgentId) => {
+        const ownerlessConfig = {
+          agents: {
+            ownership: "explicit" as const,
+            entries: { [firstAgentId]: {}, research: {} },
+          },
+        };
+        mocks.getSnapshot.mockReturnValue({ ...fullSnapshot, config: ownerlessConfig });
+
+        expect(() => resolveAmbientOwnerAgentId(ownerlessConfig)).toThrow(
+          AgentSelectionRequiredError,
+        );
+        for (const read of [
+          getPreparedModelCatalogOwnerSnapshot,
+          getPublishedPreparedModelCatalogOwnerSnapshot,
+          getPreparedModelCatalogSnapshot,
+          getAvailablePreparedModelCatalogSnapshot,
+        ]) {
+          expect(read({ config: ownerlessConfig, env })).toBeUndefined();
+        }
+        expect(agentScope.resolveAgentDir).not.toHaveBeenCalled();
+        expect(mocks.getSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, false])(
+      "requires an owner before loading a catalog (readOnly=%s)",
+      async (readOnly) => {
+        mocks.prepareSnapshot.mockResolvedValue({ ...fullSnapshot, config });
+        await expect(loadPreparedModelCatalogSnapshot({ config, env, readOnly })).rejects.toThrow(
+          AgentSelectionRequiredError,
+        );
+        await expect(
+          loadPublishedPreparedModelCatalogOwnerSnapshot({ config, env, readOnly }),
+        ).rejects.toThrow(AgentSelectionRequiredError);
+        expect(mocks.prepareSnapshot).not.toHaveBeenCalled();
+        expect(mocks.loadSnapshot).not.toHaveBeenCalled();
+        expect(mocks.activateSnapshot).not.toHaveBeenCalled();
+        expect(mocks.acquireSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["agentId", "agentDir"])(
+      "preserves explicit %s selection and the captured published owner",
+      async (selection) => {
+        const agentDir = resolveConfiguredAgentDir(config, "research", env);
+        const catalogOwner = {
+          agentId: "research",
+          workspaceDir: "/tmp/prepared-catalog-published-workspace",
+        };
+        const published = { ...fullSnapshot, config, agentDir, catalogOwner };
+        mocks.getSnapshot.mockReturnValue(published);
+        mocks.prepareSnapshot.mockResolvedValue(published);
+        const params = {
+          config,
+          env,
+          ...(selection === "agentId" ? { agentId: "research" } : { agentDir }),
+        };
+
+        expect(getPreparedModelCatalogSnapshot(params)).toBe(published.modelCatalog);
+        expect(mocks.getSnapshot).toHaveBeenCalledWith(
+          expect.objectContaining({ agentId: "research", agentDir, env }),
+        );
+        const resolved = await loadResolvedPublishedModelCatalogOwner(params);
+        expect(resolved.catalogOwner).toBe(catalogOwner);
+        expect(resolved.workspaceDir).toBe(catalogOwner.workspaceDir);
+      },
+    );
+
+    it("keeps configuration failures visible to nonblocking readers", () => {
+      expect(() =>
+        getPreparedModelCatalogSnapshot({ config: { agents: { entries: {} } }, env }),
+      ).toThrow("No agents configured");
+      expect(mocks.getSnapshot).not.toHaveBeenCalled();
+    });
   });
 
   it("uses the requested environment for directory selection and workspace activation", async () => {
