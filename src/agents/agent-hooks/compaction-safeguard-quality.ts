@@ -8,15 +8,17 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 // Compaction summary quality helpers. They define the structured summary contract
 // and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
+// Keep corrective defect feedback bounded when a source message contains an
+// attacker-controlled or accidentally gigantic URL/path token.
+const MAX_EXTRACTED_IDENTIFIER_CHARS = 1024;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
 // The audit itself is the cap for the full corrective defect list: it carries at most
 // five missing sections plus one missing-identifiers line. The 4000-char untrusted
 // wrapper is for operator-supplied context only; never route the defect list through it.
-// That line is bounded only by the 12-identifier COUNT — each identifier is a URL
-// (`https?:\/\/\S+`) and can be arbitrarily long, so a fixed small char budget can
-// still truncate the list mid-identifier (the #721 failure mode). This budget exceeds
-// the audit's realistic worst case and, if ever exceeded, truncation degrades to the
-// #722 structured fallback rather than a broken corrective pass.
+// Each extracted identifier is also bounded by MAX_EXTRACTED_IDENTIFIER_CHARS, so the
+// wrapper's budget cannot truncate the list mid-identifier (the #721 failure mode).
+// A source token beyond that bound is omitted from exact-identifier auditing because
+// asking a model to repair an unrepresentable token would only produce partial feedback.
 const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 20_000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
@@ -180,7 +182,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
   return uniqueStrings(
     matches
       .map((value) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(value)))
-      .filter((value) => value.length >= 4),
+      .filter((value) => value.length >= 4 && value.length <= MAX_EXTRACTED_IDENTIFIER_CHARS),
   ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
 }
 

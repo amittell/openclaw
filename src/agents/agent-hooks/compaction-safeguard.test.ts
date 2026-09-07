@@ -636,6 +636,14 @@ it("scales the summary budget with session size and model output limit (#723)", 
       serializedChars: 1_000_000,
     }),
   ).toBe(MIN_COMPACTION_SUMMARY_CHARS);
+  for (const maxTokens of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    expect(
+      resolveCompactionSummaryBudgetChars({
+        model: createAnthropicModelFixture({ maxTokens }),
+        serializedChars: 1_000_000,
+      }),
+    ).toBe(MIN_COMPACTION_SUMMARY_CHARS);
+  }
   // Large session: budget grows with serialized size, capped at
   // floor + maxOutputTokens * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN.
   const largeBudget = resolveCompactionSummaryBudgetChars({
@@ -1358,6 +1366,16 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(identifiers).toContain("/tmp/x.log");
   });
 
+  it("omits unrepresentably long identifiers before quality feedback is built", () => {
+    const oversizedUrl = `https://example.com/${"segment/".repeat(300)}`;
+    const identifiers = extractOpaqueIdentifiers(
+      `${oversizedUrl} https://example.com/short/path /tmp/x.log`,
+    );
+    expect(identifiers).not.toContain(oversizedUrl);
+    expect(identifiers).toContain("https://example.com/short/path");
+    expect(identifiers).toContain("/tmp/x.log");
+  });
+
   it("keeps the full missing-identifier list in quality audit reasons (#721)", () => {
     // Twelve identifier-dense items that join to well over the legacy 4000-char
     // untrusted-instruction cap; a truncated defect list is unrecoverable.
@@ -1394,7 +1412,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const identifiers = Array.from(
       { length: 12 },
       (_, index) =>
-        `https://dl.example.internal/v2/obj/${index}/blob/${"0123456789abcdef".repeat(16)}.map/${Array.from({ length: 16 }, (_, j) => `seg-${String(index).padStart(2, "0")}-${String(j).padStart(2, "0")}`).join("/")}?token=${"0123456789abcdef".repeat(8)}&nonce=${"fedcba9876543210".repeat(8)}`,
+        `https://dl.example.internal/v2/obj/${index}/blob/${"0123456789abcdef".repeat(16)}.map/${Array.from({ length: 16 }, (_unusedSegment, segmentIndex) => `seg-${String(index).padStart(2, "0")}-${String(segmentIndex).padStart(2, "0")}`).join("/")}?token=${"0123456789abcdef".repeat(8)}&nonce=${"fedcba9876543210".repeat(8)}`,
     );
     expect(identifiers.join(",").length).toBeGreaterThan(8000);
     const summaryText =

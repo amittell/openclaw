@@ -759,10 +759,11 @@ function resolveCompactionSummaryBudgetChars(params: {
   model: NonNullable<Parameters<typeof summarizeInStages>[0]["model"]>;
   serializedChars: number;
 }): number {
-  const maxOutputTokens = Math.max(
-    0,
-    Math.floor((params.model.maxTokens ?? 0) - SUMMARIZATION_OVERHEAD_TOKENS),
-  );
+  const modelMaxTokens =
+    typeof params.model.maxTokens === "number" && Number.isFinite(params.model.maxTokens)
+      ? params.model.maxTokens
+      : 0;
+  const maxOutputTokens = Math.max(0, Math.floor(modelMaxTokens - SUMMARIZATION_OVERHEAD_TOKENS));
   const ceiling =
     MIN_COMPACTION_SUMMARY_CHARS +
     maxOutputTokens * SUMMARIZER_OUTPUT_BUDGET_RATIO * SUMMARIZER_CHARS_PER_TOKEN;
