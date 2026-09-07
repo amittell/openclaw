@@ -63,6 +63,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./auth-profiles/external-cli-sync.js", () => ({
   listExternalCliSyncProviderIds: () => [],
+  syncEnvBackedTokenCredentials: () => null,
   resolveExternalCliAuthProfiles: mocks.resolveExternalCliAuthProfiles,
 }));
 
@@ -806,6 +807,9 @@ describe("auth profile sqlite store", () => {
         "access-2",
       );
       expect(mocks.resolveExternalCliAuthProfiles).toHaveBeenCalledTimes(2);
+      expect(loadPersistedAuthProfileStore(agentDir)?.profiles).toEqual(
+        apiKeyStore("sk-test").profiles,
+      );
     });
   });
 });
