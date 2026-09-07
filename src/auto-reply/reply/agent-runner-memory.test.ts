@@ -768,6 +768,12 @@ describe("runMemoryFlushIfNeeded", () => {
       });
 
       const result = await runDefaultMemoryFlush(sessionEntry, {
+        followupRun: createTestFollowupRun({
+          thinkingCatalog: [
+            { provider: "anthropic", id: "claude", input: ["text"] },
+            { provider: "anthropic", id: "fallback", input: ["text"] },
+          ],
+        }),
         sessionStore,
         sessionKey,
         storePath,
@@ -921,7 +927,12 @@ describe("runMemoryFlushIfNeeded", () => {
         };
       },
     );
-    const followupRun = createTestFollowupRun();
+    const followupRun = createTestFollowupRun({
+      thinkingCatalog: [
+        { provider: "openai", id: "gpt-5.6-sol", input: ["text"] },
+        { provider: "demo", id: "basic", input: ["text"] },
+      ],
+    });
     followupRun.run.provider = "openai";
     followupRun.run.model = "gpt-5.6-sol";
     followupRun.run.thinkLevel = "ultra";
@@ -975,7 +986,9 @@ describe("runMemoryFlushIfNeeded", () => {
       model: "qwen3.5:4b",
     });
     followupRun.run.thinkLevel = "high";
-    followupRun.run.thinkingCatalog = [{ provider: "ollama", id: "qwen3.5:4b", reasoning: true }];
+    followupRun.run.thinkingCatalog = [
+      { provider: "ollama", id: "qwen3.5:4b", reasoning: true, input: ["text"] },
+    ];
 
     await runMemoryFlushIfNeeded({
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
@@ -1030,6 +1043,7 @@ describe("runMemoryFlushIfNeeded", () => {
       followupRun: createTestFollowupRun({
         provider: "anthropic",
         model: "claude-opus-4-6",
+        thinkingCatalog: [{ provider: "anthropic", id: "claude-opus-4-6", input: ["text"] }],
         sessionId: sessionEntry.sessionId,
         sessionKey: "main",
       }),
@@ -1428,7 +1442,14 @@ describe("runMemoryFlushIfNeeded", () => {
           },
         },
       },
-      followupRun: createTestFollowupRun({ provider: "anthropic", model: "claude" }),
+      followupRun: createTestFollowupRun({
+        provider: "anthropic",
+        model: "claude",
+        thinkingCatalog: [
+          { provider: "anthropic", id: "claude", input: ["text"] },
+          { provider: "ollama", id: "qwen3:8b", input: ["text"] },
+        ],
+      }),
       sessionCtx: createTestTemplateContext({ Provider: "whatsapp" }),
       defaultModel: "anthropic/claude",
       modelContextTokens: 100_000,
@@ -1498,6 +1519,7 @@ describe("runMemoryFlushIfNeeded", () => {
         workspaceDir: "/workspace",
         provider: "openai",
         model: "gpt-5.4",
+        thinkingCatalog: [{ provider: "openai", id: "gpt-5.4", input: ["text"] }],
       }),
       sessionCtx: createTestTemplateContext({ Provider: "telegram" }),
       defaultModel: "openai/gpt-5.4",
