@@ -24,6 +24,7 @@ import {
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import type { TaskRecord } from "../tasks/task-registry.types.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import "./server-startup-outcomes.test-support.js";
 
@@ -46,6 +47,7 @@ const hoisted = vi.hoisted(() => {
   const scheduleGatewayUpdateCheck = vi.fn(() => () => {});
   const logGatewayStartup = vi.fn();
   const activateSubagentRegistry = vi.fn();
+  const isSubagentRegistryRestored = vi.fn(() => false);
   const markStartupOrphanedMainSessionsForRecovery = vi.fn(async () => ({
     marked: 0,
     skipped: 0,
@@ -109,6 +111,7 @@ const hoisted = vi.hoisted(() => {
     scheduleGatewayUpdateCheck,
     logGatewayStartup,
     activateSubagentRegistry,
+    isSubagentRegistryRestored,
     markStartupOrphanedMainSessionsForRecovery,
     scheduleRestartAbortedMainSessionRecovery,
     scheduleRestartSentinelWake,
@@ -140,6 +143,7 @@ vi.mock("../agents/session-dirs.js", () => ({
 
 vi.mock("../agents/subagents/registry/subagent-registry.js", () => ({
   activateSubagentRegistry: hoisted.activateSubagentRegistry,
+  isSubagentRegistryRestored: hoisted.isSubagentRegistryRestored,
 }));
 
 vi.mock("../agents/main-session-recovery/main-session-restart-recovery-marking.js", () => ({
@@ -372,6 +376,13 @@ async function cleanupGatewayTestState(): Promise<void> {
   publishedGatewayLifetimeSidecars.clear();
   publishedPostReadySidecars.clear();
   transferredSidecars.clear();
+  await cleanup(async () => {
+    const maintenance = await vi.importActual<
+      typeof import("../tasks/task-registry.maintenance.js")
+    >("../tasks/task-registry.maintenance.js");
+    maintenance.stopTaskRegistryMaintenance();
+    maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+  });
   await cleanup(() => resetGatewayWorkAdmission());
   await cleanup(() => closeOpenClawStateDatabaseForTest());
   await cleanup(() => {
@@ -486,6 +497,8 @@ describe("startGatewayPostAttachRuntime", () => {
     hoisted.scheduleGatewayUpdateCheck.mockClear();
     hoisted.logGatewayStartup.mockClear();
     hoisted.activateSubagentRegistry.mockClear();
+    hoisted.isSubagentRegistryRestored.mockReset();
+    hoisted.isSubagentRegistryRestored.mockReturnValue(false);
     hoisted.markStartupOrphanedMainSessionsForRecovery.mockReset();
     hoisted.markStartupOrphanedMainSessionsForRecovery.mockResolvedValue({
       marked: 0,
@@ -651,6 +664,93 @@ describe("startGatewayPostAttachRuntime", () => {
     expect(hoisted.scheduleRestartAbortedMainSessionRecovery).toHaveBeenCalledOnce();
     expect(recoverySidecar.stop).toHaveBeenCalledOnce();
     expect(onGatewayLifetimeSidecars).toHaveBeenCalledWith([recoverySidecar]);
+  });
+
+  it("retains native tasks after the default registry activation loader fails", async () => {
+    const maintenance = await vi.importActual<
+      typeof import("../tasks/task-registry.maintenance.js")
+    >("../tasks/task-registry.maintenance.js");
+    const tasks = await import("../tasks/runtime-internal.js");
+    const resets = await import("../tasks/task-runtime.test-helpers.js");
+    const { listTaskRecordsInDatabase, upsertTaskRegistryRecordToSqlite } =
+      await import("../tasks/task-registry.store.sqlite.js");
+    const { openOpenClawStateDatabase } = await import("../state/openclaw-state-db.js");
+    const { withOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
+    const configPaths = await import("../config/paths.js");
+    const actualPaths =
+      await vi.importActual<typeof import("../config/paths.js")>("../config/paths.js");
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const configPath = vi
+        .spyOn(configPaths, "resolveConfigPath")
+        .mockImplementation(actualPaths.resolveConfigPath);
+      const old = Date.now() - 60 * 60_000;
+      const task: TaskRecord = {
+        taskId: "failed-activation-native-task",
+        runtime: "subagent",
+        sourceId: "failed-activation-native-run",
+        runId: "failed-activation-native-run",
+        childSessionKey: "agent:main:subagent:missing-after-failed-activation",
+        requesterSessionKey: "agent:main:main",
+        ownerKey: "agent:main:main",
+        agentId: "main",
+        scopeKind: "session",
+        task: "retain an execution whose restoration failed",
+        status: "running",
+        deliveryStatus: "not_applicable",
+        notifyPolicy: "silent",
+        createdAt: old,
+        startedAt: old,
+        lastEventAt: old,
+      };
+      try {
+        maintenance.stopTaskRegistryMaintenance();
+        maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+        resets.resetDetachedTaskLifecycleRuntimeForTests();
+        resets.resetTaskFlowRegistryForTests({ persist: false });
+        resets.resetTaskRegistryForTests({ persist: false });
+        upsertTaskRegistryRecordToSqlite(task);
+        tasks.publishTaskRecordAfterAtomicStore(task);
+        maintenance.configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
+        hoisted.activateSubagentRegistry.mockImplementationOnce(() => {
+          throw new Error("fixture registry restoration unavailable");
+        });
+        const params = createPostAttachParams({ defaultWorkspaceDir: state.workspaceDir });
+        await startGatewayPostAttachRuntime(params);
+        expect(hoisted.activateSubagentRegistry).toHaveBeenCalledOnce();
+        expect(params.log.warn).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "subagent restart recovery failed to activate: Error: fixture registry restoration unavailable",
+          ),
+        );
+        expect((await maintenance.runTaskRegistryMaintenance()).reconciled).toBe(0);
+        expect(tasks.getTaskById(task.taskId)).toMatchObject({
+          status: "running",
+          lastEventAt: old,
+        });
+        expect(
+          listTaskRecordsInDatabase(openOpenClawStateDatabase()).find(
+            (row) => row.taskId === task.taskId,
+          ),
+        ).toMatchObject({ status: "running", lastEventAt: old });
+        expect(
+          maintenance.getInspectableActiveTaskRestartBlockers().map((row) => row.taskId),
+        ).toContain(task.taskId);
+      } finally {
+        try {
+          await cleanupGatewayTestState();
+        } finally {
+          try {
+            maintenance.stopTaskRegistryMaintenance();
+            maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+            resets.resetDetachedTaskLifecycleRuntimeForTests();
+            resets.resetTaskFlowRegistryForTests({ persist: false });
+            resets.resetTaskRegistryForTests({ persist: false });
+          } finally {
+            configPath.mockRestore();
+          }
+        }
+      }
+    });
   });
 
   it("gates main-session recovery behind post-ready work", async () => {

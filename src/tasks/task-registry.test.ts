@@ -3268,7 +3268,7 @@ describe("task-registry", () => {
     });
   });
 
-  it("uses normal reconcile grace for OpenClaw-owned subagent tasks", async () => {
+  it("retains OpenClaw-owned subagent tasks until the native owner is installed", async () => {
     await withTaskRegistryTempDir(async () => {
       resetTaskRegistryForTests({ persist: false });
       const now = Date.now();
@@ -3281,14 +3281,14 @@ describe("task-registry", () => {
       });
 
       expect(await runTaskRegistryMaintenance()).toEqual({
-        reconciled: 1,
+        reconciled: 0,
         recovered: 0,
         cleanupStamped: 0,
         pruned: 0,
       });
       expectRecordFields(requireTaskById(task.taskId), {
-        status: "lost",
-        error: "backing session missing",
+        status: "running",
+        error: undefined,
       });
     });
   });

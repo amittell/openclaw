@@ -108,6 +108,7 @@ export function createSubagentRegistryRestorer(config: {
     warn,
   } = config;
   let restoreState: "idle" | "in-progress" | "succeeded" = "idle";
+  let restoredLifecycleGeneration: string | undefined;
   let activationRequested = false;
   let activated = false;
   // A dependency can merge rows before throwing. Keep their reconciliation
@@ -140,6 +141,7 @@ export function createSubagentRegistryRestorer(config: {
   function completeRestore() {
     restoredRowsPending = false;
     restoreState = "succeeded";
+    restoredLifecycleGeneration = getAgentEventLifecycleGeneration();
     clearRestoreRetryTimer();
     if (activationRequested) {
       activateRestoredRuns();
@@ -521,11 +523,18 @@ export function createSubagentRegistryRestorer(config: {
   }
 
   return {
+    isRestored: () =>
+      restoreState === "succeeded" &&
+      activated &&
+      !restoredRowsPending &&
+      restoredLifecycleGeneration !== undefined &&
+      isAgentEventLifecycleGenerationCurrent(restoredLifecycleGeneration),
     restoreOnce: restoreSubagentRunsOnce,
     activate: activateRestoredRuns,
     reset: () => {
       clearRestoreRetryTimer();
       restoreState = "idle";
+      restoredLifecycleGeneration = undefined;
       restoredRowsPending = false;
       activationRequested = false;
       activated = false;

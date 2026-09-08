@@ -480,6 +480,32 @@ export function listFinishedSessions() {
   return Array.from(finishedSessions.values());
 }
 
+/** Raw execution and delivery owners, including handles hidden from process listings. */
+export function hasProcessSessionForTask(identities: {
+  runIds: ReadonlySet<string>;
+  sessionKeys: ReadonlySet<string>;
+  sessionIds: ReadonlySet<string>;
+}): boolean {
+  for (const session of [
+    ...runningSessions.values(),
+    ...finishedSessions.values(),
+    ...Array.from(activeExecSessions.values(), (entry) => entry.session),
+  ]) {
+    if (
+      identities.runIds.has(session.id) ||
+      Boolean(session.sessionKey && identities.sessionKeys.has(session.sessionKey)) ||
+      Boolean(
+        session.scopeKey &&
+        (identities.sessionKeys.has(session.scopeKey) ||
+          identities.sessionIds.has(session.scopeKey)),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Test-only reset for in-memory registry state and retention timers. */
 function resetProcessRegistryForTests() {
   runningSessions.clear();

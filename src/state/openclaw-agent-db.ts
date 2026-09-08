@@ -71,6 +71,7 @@ import {
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { withOpenClawStateLease, type OpenClawStateLeaseContext } from "./openclaw-state-lease.js";
 
 export {
@@ -124,6 +125,7 @@ const cachedDatabases = new Map<string, OpenClawAgentDatabase>();
 const incognitoDatabases = new WeakSet<OpenClawAgentDatabase>();
 let incognitoDatabaseGeneration = 0;
 const cachedDatabaseOpenFailures = new Map<string, unknown>();
+const failedDatabaseCloses = new WeakSet<OpenClawAgentDatabase>();
 const cachedDatabaseLeases = new Map<
   string,
   { leaseId: string; env: NodeJS.ProcessEnv | undefined }
@@ -480,9 +482,14 @@ function closeCachedOpenClawAgentDatabase(
 ): void {
   // Eviction must stay cheap: PASSIVE skips waiting on concurrent readers,
   // whose drained TRUNCATE checkpoints blocked the event loop for seconds.
-  database.walMaintenance.close(options.eviction ? { checkpointMode: "PASSIVE" } : undefined);
-  if (database.db.isOpen) {
-    database.db.close();
+  try {
+    database.walMaintenance.close(options.eviction ? { checkpointMode: "PASSIVE" } : undefined);
+    if (database.db.isOpen) {
+      database.db.close();
+    }
+  } catch (error) {
+    failedDatabaseCloses.add(database);
+    throw error;
   }
   const lease = cachedDatabaseLeases.get(database.path);
   if (lease) {
@@ -563,6 +570,30 @@ export function getOpenClawAgentDatabaseIfOpen(
     );
   }
   return database;
+}
+
+/** Only this thread's exact idle cached handle can exempt its own writable lease. */
+export function ownsOpenClawAgentDatabaseLease(params: {
+  database: OpenClawAgentDatabase;
+  statePath: string;
+  leaseId: string;
+}): boolean {
+  const { database } = params;
+  const cached = cachedDatabases.get(database.path);
+  const lease = cachedDatabaseLeases.get(database.path);
+  if (
+    cached !== database ||
+    !database.db.isOpen ||
+    database.db.isTransaction ||
+    cachedDatabaseOpenFailures.has(database.path) ||
+    failedDatabaseCloses.has(database) ||
+    incognitoDatabases.has(database) ||
+    !lease ||
+    path.resolve(params.statePath) !== resolveOpenClawStateSqlitePath(lease.env)
+  ) {
+    return false;
+  }
+  return lease.leaseId === params.leaseId;
 }
 
 /** Lists process-held incognito databases without opening new sentinel handles. */

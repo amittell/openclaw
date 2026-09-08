@@ -55,7 +55,7 @@ function hasStateStatus(
   return isRecord(value) && typeof value.status === "string" && statuses.has(value.status);
 }
 
-function isCanonicalSubagentRunRecord(value: unknown): value is CanonicalSubagentRunRecord {
+export function isCanonicalSubagentRunRecord(value: unknown): value is CanonicalSubagentRunRecord {
   return (
     isRecord(value) &&
     hasStateStatus(value.execution, EXECUTION_STATUSES) &&
@@ -174,8 +174,11 @@ type SubagentRegistryReadScope =
   | { kind: "controller"; sessionKey: string }
   | { kind: "child"; sessionKey: string };
 
-function readSubagentRegistryRows(scope?: SubagentRegistryReadScope): SubagentRunSqliteRow[] {
-  const { db } = openOpenClawStateDatabase();
+function readSubagentRegistryRows(
+  scope?: SubagentRegistryReadScope,
+  database: Pick<OpenClawStateDatabase, "db"> = openOpenClawStateDatabase(),
+): SubagentRunSqliteRow[] {
+  const { db } = database;
   const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
   let query = stateDb.selectFrom("subagent_runs").selectAll();
   if (scope?.kind === "child") {
@@ -348,6 +351,21 @@ export function loadSubagentRegistryFromSqlite(): Map<string, SubagentRunRecord>
     if (entry) {
       runs.set(entry.runId, entry);
     }
+  }
+  return runs;
+}
+
+/** Reads every physical row on the owner's handle; invalid or unreadable rows cannot prove absence. */
+export function loadSubagentRegistryForReconciliationInDatabase(
+  database: Pick<OpenClawStateDatabase, "db">,
+): Map<string, SubagentRunRecord> {
+  const runs = new Map<string, SubagentRunRecord>();
+  for (const row of readSubagentRegistryRows(undefined, database)) {
+    const entry = rowToSubagentRunRecord(row);
+    if (!entry) {
+      throw new Error("Subagent reconciliation requires a complete canonical registry");
+    }
+    runs.set(entry.runId, entry);
   }
   return runs;
 }

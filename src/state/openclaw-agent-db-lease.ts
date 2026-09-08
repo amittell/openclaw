@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import crypto from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import type { Selectable } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -12,16 +14,152 @@ import {
   assertAgentDeletionPathFence,
   prepareAgentDeletionPathFence,
 } from "./agent-deletion-journal.js";
+import { assertSingleAgentDatabaseReconciliationDomain } from "./openclaw-agent-db-registry-listing.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
 import { ensureAgentDatabaseLeaseSchema } from "./openclaw-state-db-schema-additive.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
-import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
+import {
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabase,
+} from "./openclaw-state-db.js";
 import type { OpenClawStateLeaseContext } from "./openclaw-state-lease.js";
 
 type AgentDatabaseLeaseDatabase = Pick<
   OpenClawStateKyselyDatabase,
   "agent_database_leases" | "agent_deletion_journal" | "state_leases"
 >;
+
+type AgentDatabaseLeaseRow = Selectable<OpenClawStateKyselyDatabase["agent_database_leases"]>;
+
+export type AgentDatabaseLeaseObservation = {
+  agentId: string;
+  path: string;
+  fileIdentity: string;
+  rows: readonly AgentDatabaseLeaseRow[];
+  targetLeaseIds: ReadonlySet<string>;
+  deadLeaseIds: ReadonlySet<string>;
+};
+
+function agentDatabaseFileIdentity(pathname: string): string {
+  if (realpathSync(pathname) !== pathname) {
+    throw new Error("Agent reconciliation requires an unambiguous database path");
+  }
+  const stat = statSync(pathname, { bigint: true });
+  if (!stat.isFile()) {
+    throw new Error("Agent reconciliation requires a regular database file");
+  }
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+}
+
+function readAgentDatabaseLeaseRows(database: Pick<OpenClawStateDatabase, "db">) {
+  const db = getNodeSqliteKysely<AgentDatabaseLeaseDatabase>(database.db);
+  return executeSqliteQuerySync(
+    database.db,
+    db.selectFrom("agent_database_leases").selectAll().orderBy("lease_id"),
+  ).rows;
+}
+
+function assertAgentDatabaseReconciliationAuthoritiesAbsent(
+  database: Pick<OpenClawStateDatabase, "db">,
+): void {
+  const db = getNodeSqliteKysely<AgentDatabaseLeaseDatabase>(database.db);
+  const maintenance = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("state_leases")
+      .select("owner")
+      .where("scope", "=", AGENT_DATABASE_MAINTENANCE_LEASE.scope)
+      .where("lease_key", "=", AGENT_DATABASE_MAINTENANCE_LEASE.key),
+  );
+  const deletion = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db.selectFrom("agent_deletion_journal").select("agent_id").limit(1),
+  );
+  // Deletion can fence another agent through overlapping paths. Any retained deletion
+  // conservatively blocks this rare reconciliation; do not reimplement path ownership.
+  // An expired maintenance record is not evidence that its physical writer has stopped.
+  if (maintenance || deletion) {
+    throw new Error("Agent database has an unresolved maintenance or deletion owner");
+  }
+}
+
+/** Plan process identity checks outside the synchronous shared-state write section. */
+export function observeAgentDatabaseLeasesForReconciliation(params: {
+  database: Pick<OpenClawStateDatabase, "db" | "path">;
+  agentId: string;
+  path: string;
+}): AgentDatabaseLeaseObservation {
+  const agentId = normalizeAgentId(params.agentId);
+  assertSingleAgentDatabaseReconciliationDomain(params);
+  assertAgentDatabaseReconciliationAuthoritiesAbsent(params.database);
+  const fileIdentity = agentDatabaseFileIdentity(params.path);
+  const rows = readAgentDatabaseLeaseRows(params.database);
+  const targetLeaseIds = new Set<string>();
+  const deadLeaseIds = new Set<string>();
+  for (const row of rows) {
+    if (
+      !row.lease_id ||
+      !row.agent_id ||
+      !row.path ||
+      !Number.isSafeInteger(row.owner_pid) ||
+      row.owner_pid <= 0 ||
+      !Number.isSafeInteger(row.opened_at) ||
+      row.opened_at < 0 ||
+      (row.owner_start_time !== null &&
+        (!Number.isSafeInteger(row.owner_start_time) || row.owner_start_time < 0))
+    ) {
+      throw new Error("Agent database lease identity is incomplete");
+    }
+    if (isPidDefinitelyDead(row.owner_pid)) {
+      deadLeaseIds.add(row.lease_id);
+      continue;
+    }
+    const start = getFileLockProcessStartTime(row.owner_pid);
+    if (row.owner_start_time !== null && start !== null && row.owner_start_time !== start) {
+      deadLeaseIds.add(row.lease_id);
+      continue;
+    }
+    const sameFile = agentDatabaseFileIdentity(row.path) === fileIdentity;
+    if (row.agent_id !== agentId || row.path !== params.path || !sameFile) {
+      // Another store may have descendants even before its first registration
+      // completes. Supported opens claim this shared-state lease before writing.
+      throw new Error("Task reconciliation cannot fence another agent database domain");
+    }
+    targetLeaseIds.add(row.lease_id);
+  }
+  return { agentId, path: params.path, fileIdentity, rows, targetLeaseIds, deadLeaseIds };
+}
+
+/** Revalidate the complete census without pruning leases or opening an agent writer. */
+export function assertAgentDatabaseLeaseObservationCurrent(params: {
+  database: Pick<OpenClawStateDatabase, "db" | "path">;
+  observation: AgentDatabaseLeaseObservation;
+  ownsLocalLease: (leaseId: string) => boolean;
+}): void {
+  const { observation } = params;
+  assertSingleAgentDatabaseReconciliationDomain({
+    database: params.database,
+    agentId: observation.agentId,
+    path: observation.path,
+  });
+  assertAgentDatabaseReconciliationAuthoritiesAbsent(params.database);
+  const current = readAgentDatabaseLeaseRows(params.database);
+  if (
+    JSON.stringify(current) !== JSON.stringify(observation.rows) ||
+    agentDatabaseFileIdentity(observation.path) !== observation.fileIdentity
+  ) {
+    throw new Error("Agent database ownership changed during reconciliation");
+  }
+  for (const row of current) {
+    if (
+      observation.targetLeaseIds.has(row.lease_id) &&
+      !observation.deadLeaseIds.has(row.lease_id) &&
+      !params.ownsLocalLease(row.lease_id)
+    ) {
+      throw new Error("Agent database has another writable handle");
+    }
+  }
+}
 
 export const AGENT_DATABASE_MAINTENANCE_LEASE = {
   scope: "core:agent-database-maintenance",

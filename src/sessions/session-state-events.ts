@@ -82,6 +82,28 @@ function getSessionStateKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<SessionStateDatabase>(db);
 }
 
+/** Exact retained terminal evidence; errors must never become absence for reconciliation. */
+export function hasTaskTerminalSessionStateEvent(
+  db: DatabaseSync,
+  params: { runIds: readonly string[]; sessionKeys: readonly string[] },
+): boolean {
+  if (!params.runIds.length || !params.sessionKeys.length) {
+    throw new Error("Terminal evidence requires exact run and session identities");
+  }
+  return Boolean(
+    executeSqliteQueryTakeFirstSync(
+      db,
+      getSessionStateKysely(db)
+        .selectFrom("session_state_events")
+        .select("sequence")
+        .where("session_key", "in", params.sessionKeys)
+        .where("run_id", "in", params.runIds)
+        .where("kind", "in", ["run_completed", "run_failed"])
+        .limit(1),
+    ),
+  );
+}
+
 function normalizeOptionalSqliteNumber(
   value: number | bigint | null | undefined,
 ): number | undefined {
