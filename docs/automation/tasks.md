@@ -165,7 +165,7 @@ Agent run completion is authoritative for active task records. A successful deta
 `lost` is runtime-aware:
 
 - ACP tasks: only a live in-process ACP turn in the Gateway proves the run is alive; persisted session metadata alone does not. Offline CLI audit stays conservative and never reclaims ACP tasks.
-- Subagent tasks: backing child session disappeared from the target agent store (or carries a restart-recovery tombstone).
+- Subagent tasks: the current Gateway owner proves the native run is absent after registry restoration, lifecycle and database ownership checks. A child session or restart-recovery tombstone alone is not proof. Eligible orphans become `lost` with their historical outcome unknown; ambiguous or multi-agent ownership retains them. Offline CLI maintenance retains active native tasks.
 - Automation tasks: the automations runtime no longer tracks the job as active and durable run history does not show a terminal result for that run. Offline CLI audit does not treat its own empty in-process automations runtime state as authority.
 - CLI tasks: tasks with a run id/source id use the live run context, so lingering child-session or chat-session rows do not keep them alive after the gateway-owned run disappears. Legacy CLI tasks without run identity still fall back to the child session. Gateway-backed `openclaw agent` runs also finalize from their run result, so completed runs do not sit active until the sweeper marks them `lost`.
 
@@ -290,14 +290,15 @@ openclaw tasks notify <lookup> state_changes
     ```bash
     openclaw tasks maintenance [--json]
     openclaw tasks maintenance --apply [--json]
+    openclaw tasks maintenance --gateway --apply [--json]
     ```
 
     Use this to preview or apply reconciliation, cleanup stamping, and pruning for tasks, TaskFlow state, and stale automation run session registry rows.
 
     Reconciliation is runtime-aware:
 
-    - ACP tasks require a live in-process turn in the Gateway; subagent tasks check their backing child session.
-    - Subagent tasks whose child session has a restart-recovery tombstone are marked lost instead of being treated as recoverable backing sessions.
+    - ACP tasks require a live in-process turn in the Gateway.
+    - Native subagent tasks require the current Gateway's restored registry and final ownership checks. Use `--gateway --apply` with `operator.admin` credentials to request a task registry sweep; this mode does not maintain local Task Flow or session registries and has no remote preview. A failed Gateway request never falls back to local maintenance. Tombstones do not override active or ambiguous ownership, and multi-agent ownership may keep a task retained. See [tasks maintenance](/cli/tasks#maintenance).
     - Automation tasks check whether the automations runtime still owns the job, then recover terminal status from persisted run logs/job state before falling back to `lost`. Only the Gateway process is authoritative for the in-memory active-job set; offline CLI audit uses durable history but does not mark an automation task lost solely because that local set is empty.
     - CLI tasks with run identity check the owning live run context, not just child-session or chat-session rows. Only Gateway maintenance owns that liveness check; standalone CLI audit and maintenance retain active CLI tasks because their local run registry cannot prove that the Gateway run has ended.
 

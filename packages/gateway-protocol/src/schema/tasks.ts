@@ -131,6 +131,20 @@ export const TasksRecoveryResultSchema = closedObject({
   results: Type.Array(TaskRecoveryItemSchema, { maxItems: 10 }),
 });
 
+/** Apply maintenance through the configured Gateway owner; caller authority is never accepted. */
+export const TasksMaintenanceParamsSchema = withSince("2026.8", closedObject({}));
+
+/** Counts from one completed task registry sweep, not proof that every retained task is absent. */
+export const TasksMaintenanceResultSchema = withSince(
+  "2026.8",
+  closedObject({
+    reconciled: Type.Integer({ minimum: 0 }),
+    recovered: Type.Integer({ minimum: 0 }),
+    cleanupStamped: Type.Integer({ minimum: 0 }),
+    pruned: Type.Integer({ minimum: 0 }),
+  }),
+);
+
 // Wire types derive directly from local schema consts so public d.ts graphs never
 // pull in the ProtocolSchemas registry.
 export type TaskSummary = Static<typeof TaskSummarySchema>;
@@ -142,3 +156,5 @@ export type TasksCancelParams = Static<typeof TasksCancelParamsSchema>;
 export type TasksCancelResult = Static<typeof TasksCancelResultSchema>;
 export type TasksRecoveryParams = Static<typeof TasksRecoveryParamsSchema>;
 export type TasksRecoveryResult = Static<typeof TasksRecoveryResultSchema>;
+export type TasksMaintenanceParams = Static<typeof TasksMaintenanceParamsSchema>;
+export type TasksMaintenanceResult = Static<typeof TasksMaintenanceResultSchema>;
