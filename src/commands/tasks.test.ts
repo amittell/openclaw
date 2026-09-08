@@ -893,7 +893,7 @@ describe("tasks commands", () => {
         .mock.calls.map(([line]) => String(line))
         .join("\n");
       expect(joined).toContain(
-        `Retained lost tasks: 1 retained until ${new Date(cleanupAfter).toISOString()}; maintenance will prune after cleanupAfter.`,
+        `Retained lost tasks: 1 retained until at least ${new Date(cleanupAfter).toISOString()}; undelivered orphan outcomes remain retained until notification is queued.`,
       );
     });
   });

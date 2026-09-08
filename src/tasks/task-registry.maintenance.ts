@@ -892,9 +892,14 @@ export function reconcileTaskLookupToken(token: string): TaskRecord | undefined 
   return task ? reconcileTaskRecordForOperatorInspection(task) : undefined;
 }
 
+function shouldRetainUndeliveredOrphanTask(task: TaskRecord): boolean {
+  return isProvenSubagentOrphanTask(task) && shouldAutoDeliverTaskTerminalUpdate(task);
+}
+
 // Preview is synchronous and cannot call the async detached-task recovery hook,
 // so hook-recovered tasks are counted under reconciled here. Durable cron
-// recovery is synchronous and can be previewed exactly.
+// recovery is synchronous and can be previewed exactly. Undelivered orphan
+// outcomes remain retained; preview cannot assume async delivery will succeed.
 export function previewTaskRegistryMaintenance(): TaskRegistryMaintenanceSummary {
   taskRegistryMaintenanceRuntime.ensureTaskRegistryReady();
   const now = Date.now();
@@ -913,6 +918,9 @@ export function previewTaskRegistryMaintenance(): TaskRegistryMaintenanceSummary
     }
     if (shouldMarkLost(task, now, backingSessionContext)) {
       reconciled += 1;
+      continue;
+    }
+    if (shouldRetainUndeliveredOrphanTask(task)) {
       continue;
     }
     if (shouldPruneTerminalTask(task, now, cronHistoryOverflowTaskIds)) {
@@ -1138,7 +1146,7 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
           (await taskRegistryMaintenanceRuntime.maybeDeliverTaskTerminalUpdate(current.taskId)) ??
           current;
       }
-      if (shouldAutoDeliverTaskTerminalUpdate(cleanupTask)) {
+      if (shouldRetainUndeliveredOrphanTask(cleanupTask)) {
         processed += 1;
         if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
           await yieldToEventLoop();

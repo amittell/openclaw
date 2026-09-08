@@ -28,11 +28,13 @@ import {
   maybeDeliverTaskTerminalUpdate,
   publishTaskRecordAfterAtomicStore,
   reloadTaskRuntimeStateFromStore,
+  setTaskRunDeliveryStatusByRunId,
   updateTaskNotifyPolicyById,
 } from "../../../tasks/runtime-internal.js";
 import {
   configureTaskRegistryMaintenance,
   getInspectableActiveTaskRestartBlockers,
+  previewTaskRegistryMaintenance,
   resetTaskRegistryMaintenanceRuntimeForTests,
   runTaskRegistryMaintenance,
   stopTaskRegistryMaintenance,
@@ -502,6 +504,18 @@ describe("native current orphan owner", () => {
           priorEvents.length + (silent ? 0 : 1),
         );
         expect(listTaskRecordsInDatabase(openOpenClawStateDatabase())[0]).toEqual(lost);
+        if (deliveryStatus === "delivered") {
+          setTaskRunDeliveryStatusByRunId({
+            runId: task.runId!,
+            deliveryStatus: "delivered",
+          });
+          expect(getTaskById(task.taskId)?.deliveryStatus).toBe("delivered");
+        }
+        vi.spyOn(Date, "now").mockReturnValue(lost!.endedAt! + 2 * 24 * 60 * 60_000);
+        configureTaskRegistryMaintenance({ runtimeAuthoritative: false });
+        expect(previewTaskRegistryMaintenance().pruned).toBe(1);
+        expect((await runTaskRegistryMaintenance()).pruned).toBe(1);
+        expect(getTaskById(task.taskId)).toBeUndefined();
       });
     },
   );
@@ -511,22 +525,23 @@ describe("native current orphan owner", () => {
       const task = { ...(await fixture()), notifyPolicy: "done_only" as const };
       upsertTaskRegistryRecordToSqlite(task);
       publishTaskRecordAfterAtomicStore(task);
-      expect(
-        await createSubagentTaskReconciler({ isRegistryRestored: () => true }).reconcile(
-          task,
-          Date.now(),
-          async () => false,
-        ),
-      ).toMatchObject({ status: "lost", deliveryStatus: "pending" });
+      const lost = await createSubagentTaskReconciler({ isRegistryRestored: () => true }).reconcile(
+        task,
+        Date.now(),
+        async () => false,
+      );
+      expect(lost).toMatchObject({ status: "lost", deliveryStatus: "pending" });
       expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
       resetTaskRegistryForTests({ persist: false });
+      vi.spyOn(Date, "now").mockReturnValue(lost!.endedAt! + 2 * 24 * 60 * 60_000);
       configureTaskRegistryMaintenance({ runtimeAuthoritative: false });
+      expect(previewTaskRegistryMaintenance().pruned).toBe(0);
       expect((await runTaskRegistryMaintenance()).pruned).toBe(0);
       expect(getTaskById(task.taskId)).toMatchObject({ status: "lost", deliveryStatus: "pending" });
       expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
       configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
-      await runTaskRegistryMaintenance();
-      expect(getTaskById(task.taskId)?.deliveryStatus).toBe("session_queued");
+      expect((await runTaskRegistryMaintenance()).pruned).toBe(1);
+      expect(getTaskById(task.taskId)).toBeUndefined();
       expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
         expect.stringContaining("historical outcome unknown"),
       ]);
@@ -553,9 +568,12 @@ describe("native current orphan owner", () => {
       expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
       reloadTaskRuntimeStateFromStore();
       vi.spyOn(Date, "now").mockReturnValue(lost.endedAt! + 2 * 24 * 60 * 60_000);
+      configureTaskRegistryMaintenance({ runtimeAuthoritative: false });
+      expect(previewTaskRegistryMaintenance().pruned).toBe(0);
       expect((await runTaskRegistryMaintenance()).pruned).toBe(0);
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("failed");
       failure.mockRestore();
+      configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
       expect((await runTaskRegistryMaintenance()).pruned).toBe(1);
       expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
         expect.stringContaining("historical outcome unknown"),

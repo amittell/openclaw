@@ -681,7 +681,7 @@ export async function tasksMaintenanceCommand(
   if (retainedLostAfter.count > 0) {
     runtime.log(
       info(
-        `Retained lost tasks: ${retainedLostAfter.count} retained until ${timestampMsToIsoString(retainedLostAfter.nextCleanupAfter) ?? "cleanupAfter"}; maintenance will prune after cleanupAfter.`,
+        `Retained lost tasks: ${retainedLostAfter.count} retained until at least ${timestampMsToIsoString(retainedLostAfter.nextCleanupAfter) ?? "cleanupAfter"}; undelivered orphan outcomes remain retained until notification is queued.`,
       ),
     );
   }
