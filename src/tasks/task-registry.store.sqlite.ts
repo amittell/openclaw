@@ -29,6 +29,7 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { SUBAGENT_ORPHAN_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { parseDeliveryContextJson, parseSqliteJsonValue } from "./task-registry.sqlite.shared.js";
 import type { TaskRegistryStoreSnapshot } from "./task-registry.store.types.js";
 import {
@@ -43,6 +44,7 @@ import {
   type TaskRecord,
   type TaskRuntime,
 } from "./task-registry.types.js";
+import { resolveTaskCleanupAfter } from "./task-retention.js";
 
 type TaskRunsTable = OpenClawStateKyselyDatabase["task_runs"];
 type TaskDeliveryStateTable = OpenClawStateKyselyDatabase["task_delivery_state"];
@@ -254,6 +256,61 @@ function selectTaskRows(db: DatabaseSync): TaskRegistryRow[] {
     .orderBy("created_at", "asc")
     .orderBy("task_id", "asc");
   return executeSqliteQuerySync(db, query).rows;
+}
+
+/** Reads canonical task owners on the caller's exact shared-state handle. */
+export function listTaskRecordsInDatabase(
+  database: Pick<OpenClawStateDatabase, "db">,
+): TaskRecord[] {
+  return selectTaskRows(database.db).map(rowToTaskRecord);
+}
+
+/** Commits a proven present orphan only while the exact previously observed task remains unchanged. */
+export function markOrphanTaskLostInDatabase(params: {
+  database: OpenClawStateDatabase;
+  expected: TaskRecord;
+  now: number;
+}): TaskRecord | null {
+  const { database, expected, now } = params;
+  if (!database.db.isTransaction) {
+    throw new Error("Orphan reconciliation requires the owning shared-state transaction");
+  }
+  const row = executeSqliteQueryTakeFirstSync(
+    database.db,
+    getTaskRegistryKysely(database.db)
+      .selectFrom("task_runs")
+      .select(TASK_RUN_SELECT_COLUMNS)
+      .where("task_id", "=", expected.taskId),
+  );
+  const current = row ? rowToTaskRecord(row) : undefined;
+  if (
+    !current ||
+    current.runtime !== "subagent" ||
+    (current.status !== "queued" && current.status !== "running") ||
+    current.endedAt !== undefined ||
+    JSON.stringify(bindTaskRecord(current)) !== JSON.stringify(bindTaskRecord(expected))
+  ) {
+    return null;
+  }
+  const next: TaskRecord = {
+    ...current,
+    status: "lost",
+    endedAt: now,
+    lastEventAt: now,
+    error: SUBAGENT_ORPHAN_TASK_ERROR,
+    // A prior progress notification cannot acknowledge this new terminal outcome.
+    deliveryStatus: current.notifyPolicy === "silent" ? current.deliveryStatus : "pending",
+  };
+  next.cleanupAfter ??= resolveTaskCleanupAfter(next);
+  const { task_id: _taskId, ...values } = bindTaskRecord(next);
+  const changed = executeSqliteQuerySync(
+    database.db,
+    getTaskRegistryKysely(database.db)
+      .updateTable("task_runs")
+      .set(values)
+      .where("task_id", "=", expected.taskId),
+  );
+  return changed.numAffectedRows === 1n ? next : null;
 }
 
 function selectTaskRowsByOwnerKey(db: DatabaseSync, ownerKey: string): TaskRegistryRow[] {

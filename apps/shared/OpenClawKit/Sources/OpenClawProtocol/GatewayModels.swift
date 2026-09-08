@@ -11987,6 +11987,34 @@ public struct TasksRecoveryResult: Codable, Sendable {
     }
 }
 
+public struct TasksMaintenanceParams: Codable, Sendable {}
+
+public struct TasksMaintenanceResult: Codable, Sendable {
+    public let reconciled: Int
+    public let recovered: Int
+    public let cleanupstamped: Int
+    public let pruned: Int
+
+    public init(
+        reconciled: Int,
+        recovered: Int,
+        cleanupstamped: Int,
+        pruned: Int)
+    {
+        self.reconciled = reconciled
+        self.recovered = recovered
+        self.cleanupstamped = cleanupstamped
+        self.pruned = pruned
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reconciled
+        case recovered
+        case cleanupstamped = "cleanupStamped"
+        case pruned
+    }
+}
+
 public struct ConfigGetParams: Codable, Sendable {}
 
 public struct ConfigSetParams: Codable, Sendable {

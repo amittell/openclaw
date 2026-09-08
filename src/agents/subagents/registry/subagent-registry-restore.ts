@@ -108,6 +108,7 @@ export function createSubagentRegistryRestorer(config: {
     warn,
   } = config;
   let restoreState: "idle" | "in-progress" | "succeeded" = "idle";
+  let restorationLifecycleGeneration = getAgentEventLifecycleGeneration();
   let activationRequested = false;
   let activated = false;
   // A dependency can merge rows before throwing. Keep their reconciliation
@@ -126,11 +127,15 @@ export function createSubagentRegistryRestorer(config: {
     if (restoreRetryTimer) {
       return;
     }
+    const retryLifecycleGeneration = restorationLifecycleGeneration;
     const timer = setTimeout(() => {
       if (restoreRetryTimer !== timer) {
         return;
       }
       restoreRetryTimer = undefined;
+      if (!isAgentEventLifecycleGenerationCurrent(retryLifecycleGeneration)) {
+        return;
+      }
       restoreSubagentRunsOnce(Math.min(delayMs * 2, RESTORE_RETRY_MAX_DELAY_MS));
     }, delayMs);
     restoreRetryTimer = timer;
@@ -147,6 +152,9 @@ export function createSubagentRegistryRestorer(config: {
   }
 
   function activateRestoredRuns() {
+    if (!isAgentEventLifecycleGenerationCurrent(restorationLifecycleGeneration)) {
+      resetRestorationLifecycle();
+    }
     activationRequested = true;
     if (restoreState !== "succeeded" || activated) {
       return;
@@ -308,6 +316,9 @@ export function createSubagentRegistryRestorer(config: {
   }
 
   function restoreSubagentRunsOnce(retryDelayMs = RESTORE_RETRY_DELAY_MS) {
+    if (!isAgentEventLifecycleGenerationCurrent(restorationLifecycleGeneration)) {
+      resetRestorationLifecycle();
+    }
     if (restoreState !== "idle") {
       return;
     }
@@ -520,15 +531,27 @@ export function createSubagentRegistryRestorer(config: {
     }
   }
 
+  function resetRestorationLifecycle() {
+    clearRestoreRetryTimer();
+    restoreState = "idle";
+    restorationLifecycleGeneration = getAgentEventLifecycleGeneration();
+    // Partial merges still need reconciliation even if their startup was replaced.
+    // An old startup's activation must not make the replacement ready before attach.
+    activationRequested = false;
+    activated = false;
+  }
+
   return {
+    isRestored: () =>
+      restoreState === "succeeded" &&
+      activated &&
+      !restoredRowsPending &&
+      isAgentEventLifecycleGenerationCurrent(restorationLifecycleGeneration),
     restoreOnce: restoreSubagentRunsOnce,
     activate: activateRestoredRuns,
     reset: () => {
-      clearRestoreRetryTimer();
-      restoreState = "idle";
+      resetRestorationLifecycle();
       restoredRowsPending = false;
-      activationRequested = false;
-      activated = false;
     },
   };
 }

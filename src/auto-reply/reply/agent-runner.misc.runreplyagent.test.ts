@@ -677,6 +677,15 @@ describe("runReplyAgent auto-compaction token update", () => {
           sessionFile: path.join(tmp, "session.jsonl"),
           workspaceDir: tmp,
           model: "claude-opus-4-6",
+          // Prepared modalities keep this fixture out of real provider discovery.
+          thinkingCatalog: [
+            {
+              provider: "anthropic",
+              id: "claude-opus-4-6",
+              input: ["text"],
+              baseUrl: "https://example.test",
+            },
+          ],
           config: {
             models: {
               providers: {

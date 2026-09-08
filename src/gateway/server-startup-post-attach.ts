@@ -1023,8 +1023,23 @@ const defaultGatewayPostAttachRuntimeDeps: GatewayPostAttachRuntimeDeps = {
     (await import("../infra/update-startup.js")).scheduleGatewayUpdateCheck(...args),
   startGatewaySidecars,
   warmSystemCa: beginMacOSSystemCaWarmupOnce,
-  loadSubagentRegistryActivation: async () =>
-    (await import("../agents/subagents/registry/subagent-registry.js")).activateSubagentRegistry,
+  loadSubagentRegistryActivation: async () => {
+    const { activateSubagentRegistry, isSubagentRegistryRestored } =
+      await import("../agents/subagents/registry/subagent-registry.js");
+    const createSubagentTaskReconciler = (
+      await import("../agents/subagents/registry/subagent-task-liveness.js")
+    ).createSubagentTaskReconciler;
+    const configureTaskRegistryMaintenance = (await import("../tasks/task-registry.maintenance.js"))
+      .configureTaskRegistryMaintenance;
+    return (resolveGatewayContext) => {
+      activateSubagentRegistry(resolveGatewayContext);
+      configureTaskRegistryMaintenance({
+        subagentReconciler: createSubagentTaskReconciler({
+          isRegistryRestored: isSubagentRegistryRestored,
+        }),
+      });
+    };
+  },
 };
 
 function createDeferredGatewayUpdateCheck(params: {

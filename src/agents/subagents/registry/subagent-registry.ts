@@ -615,6 +615,12 @@ export function initSubagentRegistry() {
   }
   state.restorer.restoreOnce();
 }
+
+/** Reports completed restoration without initiating recovery or registry activation. */
+export function isSubagentRegistryRestored(): boolean {
+  return subagentRegistryBootstrapState.restorer?.isRestored() === true;
+}
+
 export function activateSubagentRegistry(resolveGatewayContext: GatewayContextResolver) {
   const lifecycleGatewayContextResolver =
     fenceScheduledGatewayContextResolver(resolveGatewayContext);

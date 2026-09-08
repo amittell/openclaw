@@ -10,13 +10,40 @@ import {
 import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
 import { detectOpenClawStateDatabaseSchemaMigrationsFromDatabase } from "./openclaw-state-db-schema-repair.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
-import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
+import type { OpenClawStateDatabase, OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
 import {
   resolveOpenClawRegisteredAgentDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "./openclaw-state-db.paths.js";
 
 type OpenClawAgentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "agent_databases">;
+
+/** A local lineage census cannot establish absence across additional agent stores. */
+export function assertSingleAgentDatabaseReconciliationDomain(params: {
+  database: Pick<OpenClawStateDatabase, "db" | "path">;
+  agentId: string;
+  path: string;
+}): void {
+  const { database } = params;
+  // Always read the supplied handle: the ordinary listing memo intentionally
+  // ignores other-process registry changes until restart.
+  const rows = executeSqliteQuerySync(
+    database.db,
+    getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database.db)
+      .selectFrom("agent_databases")
+      .selectAll(),
+  ).rows;
+  const row = rows[0];
+  if (
+    rows.length !== 1 ||
+    !row ||
+    row.agent_id !== params.agentId ||
+    row.schema_version !== OPENCLAW_AGENT_SCHEMA_VERSION ||
+    resolveOpenClawRegisteredAgentDatabasePath(database.path, row.path) !== params.path
+  ) {
+    throw new Error("Task reconciliation cannot establish complete cross-agent lineage");
+  }
+}
 
 // Registry metadata is process-stable: registry writes invalidate after each commit;
 // other-process changes take effect on restart. Polling here puts schema probes back on hot reads.

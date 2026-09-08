@@ -9,14 +9,17 @@ import {
   validateTasksCancelParams,
   validateTasksGetParams,
   validateTasksListParams,
+  validateTasksMaintenanceParams,
   validateTasksRecoveryParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
   dismissSubagentCompletionDelivery,
   retrySubagentCompletionDelivery,
 } from "../../agents/subagents/completion/subagent-completion-delivery.js";
+import { isSubagentRegistryRestored } from "../../agents/subagents/registry/subagent-registry.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions.js";
 import { getTaskById, listTaskRecordPage } from "../../tasks/runtime-internal.js";
+import { runTaskRegistryMaintenance } from "../../tasks/task-registry.maintenance.js";
 import type { TaskStatus } from "../../tasks/task-registry.types.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { canAccessTaskRequesterSession } from "../task-session-access.js";
@@ -62,6 +65,28 @@ function parseCursor(cursor: string | undefined): number | null {
 // Control UI task methods expose the stable gateway protocol shape; helpers
 // above keep runtime registry details out of the wire result.
 export const tasksHandlers: GatewayRequestHandlers = {
+  "tasks.maintenance": async ({ params, respond }) => {
+    if (!assertValidParams(params, validateTasksMaintenanceParams, "tasks.maintenance", respond)) {
+      return;
+    }
+    if (!isSubagentRegistryRestored()) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          "Task maintenance requires the current Gateway's restored subagent registry",
+          {
+            retryable: true,
+          },
+        ),
+      );
+      return;
+    }
+    // Startup configured this owner. Keep all final lifecycle, lease and absence
+    // fences inside canonical maintenance, including across its asynchronous work.
+    respond(true, await runTaskRegistryMaintenance());
+  },
   "tasks.list": ({ params, respond, context, client }) => {
     if (!assertValidParams(params, validateTasksListParams, "tasks.list", respond)) {
       return;

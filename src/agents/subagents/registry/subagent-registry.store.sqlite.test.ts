@@ -14,6 +14,7 @@ import {
   loadSubagentRunsForChildSessionFromSqlite,
   loadSubagentRunsForControllerFromSqlite,
   loadSubagentRegistryFromSqlite,
+  loadSubagentRegistryForReconciliationInDatabase,
   loadSubagentSessionListRunsFromSqlite,
   saveSubagentRegistryChangesToSqlite,
   saveSubagentRegistryToSqlite,
@@ -136,6 +137,40 @@ describe("subagent registry sqlite store", () => {
       });
       expect(await fs.stat(path.join(tempStateDir!, "state", "openclaw.sqlite"))).toBeTruthy();
       await expect(fs.stat(path.join(tempStateDir!, "subagents", "runs.json"))).rejects.toThrow();
+    });
+  });
+
+  it("does not turn a filtered physical owner row into authoritative absence", async () => {
+    await withTempStateEnv(async () => {
+      const run = createRun();
+      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+      const database = openOpenClawStateDatabase();
+      const db = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+      executeSqliteQuerySync(
+        database.db,
+        db.updateTable("subagent_runs").set({ payload_json: "{}" }).where("run_id", "=", run.runId),
+      );
+
+      expect(loadSubagentRegistryFromSqlite().size).toBe(0);
+      expect(() => loadSubagentRegistryForReconciliationInDatabase(database)).toThrow(
+        "complete canonical registry",
+      );
+    });
+  });
+
+  it("reads retained terminal owners and their pending delivery from the exact supplied handle", async () => {
+    await withTempStateEnv(async () => {
+      const run = createRun();
+      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+      const database = openOpenClawStateDatabase();
+      expect(
+        loadSubagentRegistryForReconciliationInDatabase(database).get(run.runId),
+      ).toMatchObject({
+        execution: { status: "terminal" },
+        delivery: { status: "pending" },
+      });
+      closeOpenClawStateDatabaseForTest();
+      expect(() => loadSubagentRegistryForReconciliationInDatabase(database)).toThrow();
     });
   });
 

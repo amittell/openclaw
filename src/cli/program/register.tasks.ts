@@ -161,11 +161,20 @@ export function registerTasksCommand(program: Command): void {
     .description("Preview or apply tasks and TaskFlow maintenance")
     .option("--json", "Output as JSON", false)
     .option("--apply", "Apply reconciliation, cleanup stamping, and pruning", false)
+    .option(
+      "--gateway",
+      "Apply task maintenance through the running Gateway (requires --apply)",
+      false,
+    )
     .action(async (opts, command) => {
       const resolved = resolveTasksLeafOptions(command, "maintenance");
       await runOwner(loadTasksCommands, ({ tasksMaintenanceCommand }) =>
         tasksMaintenanceCommand(
-          { json: Boolean(resolved.json), apply: Boolean(opts.apply) },
+          {
+            json: Boolean(resolved.json),
+            apply: Boolean(opts.apply),
+            gateway: Boolean(opts.gateway),
+          },
           defaultRuntime,
         ),
       );

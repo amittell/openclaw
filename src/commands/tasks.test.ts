@@ -518,21 +518,14 @@ describe("tasks commands", () => {
       await tasksMaintenanceCommand({ json: true, apply: false }, runtime);
 
       const payload = readFirstJsonLog(runtime) as {
-        diagnostics: {
-          staleRunningTasks: Array<{
-            taskId: string;
-            decision: string;
-            reason: string;
-            childSessionKey?: string;
-          }>;
-        };
+        diagnostics: taskRegistryMaintenance.TaskRegistryMaintenanceDiagnostics;
       };
 
       expect(payload.diagnostics.staleRunningTasks).toContainEqual(
         expect.objectContaining({
           taskId: task.taskId,
           decision: "retained",
-          reason: "backing_session_present",
+          reason: "subagent_owner_reconciliation_required",
           childSessionKey,
         }),
       );
@@ -567,22 +560,27 @@ describe("tasks commands", () => {
         },
       });
 
+      const collectDiagnostics = taskRegistryMaintenance.getTaskRegistryMaintenanceDiagnostics;
+      const diagnosticsSpy = vi
+        .spyOn(taskRegistryMaintenance, "getTaskRegistryMaintenanceDiagnostics")
+        .mockImplementation(() => {
+          expect(loadSessionEntry({ sessionKey: childSessionKey, storePath })).toBeDefined();
+          return collectDiagnostics();
+        });
       const runtime = createRuntime();
-      await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
+      try {
+        await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
+        expect(diagnosticsSpy).toHaveBeenCalledOnce();
+      } finally {
+        diagnosticsSpy.mockRestore();
+      }
 
       const payload = readFirstJsonLog(runtime) as {
         maintenance: {
           tasks: { reconciled: number };
           sessions: { pruned: number };
         };
-        diagnostics: {
-          staleRunningTasks: Array<{
-            taskId: string;
-            decision: string;
-            reason: string;
-            childSessionKey?: string;
-          }>;
-        };
+        diagnostics: taskRegistryMaintenance.TaskRegistryMaintenanceDiagnostics;
       };
 
       expect(payload.maintenance.tasks.reconciled).toBe(0);
@@ -591,7 +589,7 @@ describe("tasks commands", () => {
         expect.objectContaining({
           taskId: task.taskId,
           decision: "retained",
-          reason: "backing_session_present",
+          reason: "subagent_owner_reconciliation_required",
           childSessionKey,
         }),
       );
@@ -895,7 +893,7 @@ describe("tasks commands", () => {
         .mock.calls.map(([line]) => String(line))
         .join("\n");
       expect(joined).toContain(
-        `Retained lost tasks: 1 retained until ${new Date(cleanupAfter).toISOString()}; maintenance will prune after cleanupAfter.`,
+        `Retained lost tasks: 1 retained until at least ${new Date(cleanupAfter).toISOString()}; undelivered orphan outcomes remain retained until notification is queued.`,
       );
     });
   });

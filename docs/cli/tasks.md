@@ -129,6 +129,7 @@ code.
 
 ```bash
 openclaw tasks maintenance [--apply] [--json]
+openclaw tasks maintenance --gateway --apply [--json]
 ```
 
 Previews or applies task and Task Flow reconciliation, cleanup stamping,
@@ -138,12 +139,31 @@ For cron tasks, reconciliation uses persisted run logs/job state before
 marking an old active task `lost`, so completed cron runs do not become
 false audit errors just because the in-memory Gateway runtime state is gone.
 Offline CLI audit and maintenance are not authoritative for the Gateway's
-process-local cron, CLI, or ACP liveness. They retain active tasks of those
+process-local cron, CLI, ACP, or native subagent liveness. They retain active tasks of those
 kinds when the local runtime cannot prove completion. Gateway maintenance
 marks CLI tasks with a run id/source id `lost` when their live run context is
 gone, even if an old child-session row remains.
 
-When applied, maintenance also prunes `cron:<jobId>:run:<uuid>` session
+To reconcile native subagent tasks, use `--gateway --apply` with credentials
+that grant `operator.admin` on the configured Gateway. The Gateway must finish
+startup and restore its native registry. This operation applies only task registry
+maintenance on that Gateway; it does not inspect or change local Task Flow or
+session registries. `--gateway` requires `--apply` and has no preview mode.
+Unavailable or denied Gateway requests fail visibly without local maintenance.
+
+Native reconciliation retains tasks while execution, another agent's database
+ownership, or ambiguous evidence prevents proof of absence. A retained child
+session or recovery tombstone alone does not prove completion. Eligible orphans
+become `lost` with their historical outcome explicitly unknown. Multi-agent
+ownership or incomplete restoration can leave tasks retained after a successful
+sweep; zero reconciled is not a health certificate.
+
+Gateway JSON returns `mode: "apply"`, `authority: "gateway"`, and
+`maintenance.tasks` with `reconciled`, `recovered`, `cleanupStamped`, and `pruned`
+counts. Offline JSON retains its local diagnostics, including
+`subagent_owner_reconciliation_required` for active native tasks.
+
+When applied without `--gateway`, maintenance also prunes `cron:<jobId>:run:<uuid>` session
 registry rows older than 7 days while preserving currently running cron
 jobs and leaving non-cron session rows untouched.
 

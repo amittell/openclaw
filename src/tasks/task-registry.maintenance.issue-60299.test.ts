@@ -223,7 +223,7 @@ function expectTaskStatus(
 }
 
 describe("task-registry maintenance issue #60299", () => {
-  it("reuses session entry lists across stale subagent task checks in one pass", async () => {
+  it("retains native subagent tasks without consulting speculative session projections", async () => {
     const tasks = Array.from({ length: 10 }, (_, index) =>
       makeStaleTask({
         runtime: "subagent",
@@ -233,14 +233,17 @@ describe("task-registry maintenance issue #60299", () => {
     );
     const listSessionEntriesMock = vi.fn(() => []);
 
-    createTaskRegistryMaintenanceHarness({
+    const { currentTasks } = createTaskRegistryMaintenanceHarness({
       tasks,
       listSessionEntries: listSessionEntriesMock,
       resolveStorePath: () => "/tmp/openclaw-test-sessions-main.json",
     });
 
-    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: tasks.length });
-    expect(listSessionEntriesMock).toHaveBeenCalledTimes(1);
+    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: 0 });
+    expect(listSessionEntriesMock).not.toHaveBeenCalled();
+    for (const task of tasks) {
+      expectTaskStatus(currentTasks, task.taskId, "running");
+    }
   });
 
   it("reuses CLI channel session type derivation across duplicate stale task checks", async () => {
@@ -413,7 +416,7 @@ describe("task-registry maintenance issue #60299", () => {
     expect(blockers[0]?.runId).toBe("run-running-live");
   });
 
-  it("marks subagent tasks lost when their child session recovery is tombstoned", async () => {
+  it("retains tombstoned recovery until the native owner can reconcile it", async () => {
     const childSessionKey = "agent:main:subagent:wedged-child";
     const staleAt = Date.now() - 45 * 60_000;
     const task = makeStaleTask({
@@ -443,21 +446,18 @@ describe("task-registry maintenance issue #60299", () => {
       },
     });
 
-    expectMaintenanceCounts(previewTaskRegistryMaintenance(), { reconciled: 1 });
+    expectMaintenanceCounts(previewTaskRegistryMaintenance(), { reconciled: 0 });
     expect(getTaskRegistryMaintenanceDiagnostics().staleRunningTasks).toContainEqual(
       expect.objectContaining({
         taskId: task.taskId,
-        decision: "would_reconcile",
-        reason: "subagent_recovery_wedged",
-        detail: "subagent orphan recovery blocked after 2 rapid accepted resume attempts",
+        decision: "retained",
+        reason: "subagent_owner_reconciliation_required",
       }),
     );
-    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: 1 });
+    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: 0 });
     const storedTask = requireTaskRecord(currentTasks, task.taskId);
-    expect(storedTask.status).toBe("lost");
-    expect(storedTask.error).toBe(
-      "subagent orphan recovery blocked after 2 rapid accepted resume attempts",
-    );
+    expect(storedTask.status).toBe("running");
+    expect(storedTask.error).toBeUndefined();
   });
 
   it("does not mark cron tasks lost when the current process is not the cron runtime authority", async () => {

@@ -1,6 +1,9 @@
 // Verifies task executor delivery policy and terminal message formatting.
 import { describe, expect, it } from "vitest";
-import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
+import {
+  SUBAGENT_KILL_TASK_ERROR,
+  SUBAGENT_ORPHAN_TASK_ERROR,
+} from "./detached-task-runtime-contract.js";
 import {
   formatTaskBlockedFollowupMessage,
   formatTaskStateChangeMessage,
@@ -30,6 +33,33 @@ function createTask(partial: Partial<TaskRecord>): TaskRecord {
 }
 
 describe("task-executor-policy", () => {
+  it.each([
+    ["lost", SUBAGENT_ORPHAN_TASK_ERROR, "pending", "done_only", true],
+    ["lost", SUBAGENT_ORPHAN_TASK_ERROR, "failed", "done_only", true],
+    ["lost", SUBAGENT_ORPHAN_TASK_ERROR, "pending", "silent", false],
+    ["lost", SUBAGENT_ORPHAN_TASK_ERROR, "session_queued", "done_only", false],
+    ["lost", SUBAGENT_ORPHAN_TASK_ERROR, "delivered", "done_only", false],
+    ["lost", "Unproven old outcome", "pending", "done_only", false],
+    ["running", SUBAGENT_ORPHAN_TASK_ERROR, "pending", "done_only", false],
+    ["succeeded", undefined, "pending", "done_only", false],
+    ["failed", "Actual provider failure", "pending", "done_only", false],
+  ] as const)(
+    "preserves native ownership for %s/%s/%s/%s",
+    (status, error, deliveryStatus, notifyPolicy, expected) => {
+      expect(
+        shouldAutoDeliverTaskTerminalUpdate(
+          createTask({
+            runtime: "subagent",
+            status,
+            error,
+            deliveryStatus,
+            notifyPolicy,
+          }),
+        ),
+      ).toBe(expected);
+    },
+  );
+
   it("identifies terminal statuses", () => {
     expect(isTerminalTaskStatus("queued")).toBe(false);
     expect(isTerminalTaskStatus("running")).toBe(false);

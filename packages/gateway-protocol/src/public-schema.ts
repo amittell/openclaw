@@ -368,6 +368,8 @@ export {
   TasksCancelResultSchema,
   TasksRecoveryParamsSchema,
   TasksRecoveryResultSchema,
+  TasksMaintenanceParamsSchema,
+  TasksMaintenanceResultSchema,
   ConfigGetParamsSchema,
   ConfigSetParamsSchema,
   ConfigApplyParamsSchema,

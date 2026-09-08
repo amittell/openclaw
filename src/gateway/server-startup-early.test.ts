@@ -2,6 +2,7 @@
  * Early gateway startup helper tests.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskRecord } from "../tasks/task-registry.types.js";
 import { runGatewayShutdownSteps } from "./server-shutdown.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
@@ -46,9 +47,12 @@ vi.mock("../agents/context.js", () => ({
   ensureContextWindowCacheLoaded: mocks.ensureContextWindowCacheLoaded,
 }));
 
-vi.mock("../tasks/runtime-internal.js", () => ({
-  ensureTaskRuntimeStateReady: mocks.ensureTaskRuntimeStateReady,
-}));
+vi.mock("../tasks/runtime-internal.js", async () => {
+  const actual = await vi.importActual<typeof import("../tasks/runtime-internal.js")>(
+    "../tasks/runtime-internal.js",
+  );
+  return { ...actual, ensureTaskRuntimeStateReady: mocks.ensureTaskRuntimeStateReady };
+});
 
 vi.mock("../tasks/task-registry.maintenance.js", () => ({
   configureTaskRegistryMaintenance: mocks.configureTaskRegistryMaintenance,
@@ -150,6 +154,87 @@ describe("startGatewayEarlyRuntime", () => {
     await earlyRuntime.skillsChangeUnsub();
     expect(mocks.skillsChangeUnsub).toHaveBeenCalledTimes(1);
     expect(mocks.closeSkillsWatchers).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a native task while early authoritative maintenance precedes registry activation", async () => {
+    const maintenance = await vi.importActual<
+      typeof import("../tasks/task-registry.maintenance.js")
+    >("../tasks/task-registry.maintenance.js");
+    const tasks = await vi.importActual<typeof import("../tasks/runtime-internal.js")>(
+      "../tasks/runtime-internal.js",
+    );
+    const resets = await import("../tasks/task-runtime.test-helpers.js");
+    const { listTaskRecordsInDatabase, upsertTaskRegistryRecordToSqlite } =
+      await import("../tasks/task-registry.store.sqlite.js");
+    const { openOpenClawStateDatabase } = await import("../state/openclaw-state-db.js");
+    const { withOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      maintenance.stopTaskRegistryMaintenance();
+      maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+      resets.resetDetachedTaskLifecycleRuntimeForTests();
+      resets.resetTaskFlowRegistryForTests({ persist: false });
+      resets.resetTaskRegistryForTests({ persist: false });
+      const old = Date.now() - 60 * 60_000;
+      const task: TaskRecord = {
+        taskId: "early-startup-native-task",
+        runtime: "subagent",
+        sourceId: "early-startup-native-run",
+        runId: "early-startup-native-run",
+        childSessionKey: "agent:main:subagent:missing-before-activation",
+        requesterSessionKey: "agent:main:main",
+        ownerKey: "agent:main:main",
+        agentId: "main",
+        scopeKind: "session",
+        task: "restore the execution owner before deciding liveness",
+        status: "running",
+        deliveryStatus: "not_applicable",
+        notifyPolicy: "silent",
+        createdAt: old,
+        startedAt: old,
+        lastEventAt: old,
+      };
+      let earlyRuntime: Awaited<ReturnType<typeof startGatewayEarlyRuntime>> | undefined;
+      try {
+        upsertTaskRegistryRecordToSqlite(task);
+        tasks.publishTaskRecordAfterAtomicStore(task);
+        mocks.ensureTaskRuntimeStateReady.mockImplementation(tasks.ensureTaskRuntimeStateReady);
+        mocks.configureTaskRegistryMaintenance.mockImplementation(
+          maintenance.configureTaskRegistryMaintenance,
+        );
+        mocks.startTaskRegistryMaintenance.mockImplementation(
+          maintenance.startTaskRegistryMaintenance,
+        );
+        mocks.getInspectableActiveTaskRestartBlockers.mockImplementation(
+          maintenance.getInspectableActiveTaskRestartBlockers,
+        );
+        vi.useFakeTimers();
+        earlyRuntime = await startGatewayEarlyRuntime(
+          earlyRuntimeInput({ minimalTestGateway: false }),
+        );
+        expect(mocks.configureTaskRegistryMaintenance).toHaveBeenCalledWith({
+          runtimeAuthoritative: true,
+        });
+        expect((await maintenance.runTaskRegistryMaintenance()).reconciled).toBe(0);
+        expect(tasks.getTaskById(task.taskId)).toMatchObject({
+          status: "running",
+          lastEventAt: old,
+        });
+        expect(
+          listTaskRecordsInDatabase(openOpenClawStateDatabase()).find(
+            (row) => row.taskId === task.taskId,
+          ),
+        ).toMatchObject({ status: "running", lastEventAt: old });
+        expect(earlyRuntime.getActiveTaskCount()).toBe(1);
+      } finally {
+        maintenance.stopTaskRegistryMaintenance();
+        maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+        await earlyRuntime?.skillsChangeUnsub();
+        resets.resetDetachedTaskLifecycleRuntimeForTests();
+        resets.resetTaskFlowRegistryForTests({ persist: false });
+        resets.resetTaskRegistryForTests({ persist: false });
+        vi.useRealTimers();
+      }
+    });
   });
 
   it.each([false, true])(

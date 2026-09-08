@@ -305,3 +305,7 @@ export {
   resolveSessionTranscriptRuntimeTarget,
   resolveSessionTranscriptRuntimeTarget as resolveSessionTranscriptRuntimeReadTarget,
 } from "./session-accessor.transcript-target.js";
+export {
+  readSessionTaskOwnership,
+  type SessionTaskOwnershipObservation,
+} from "./session-accessor.sqlite-task-ownership.js";

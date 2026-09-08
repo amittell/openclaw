@@ -309,6 +309,24 @@ export function getAgentRunContext(runId: string): AgentRunContext | undefined {
   return getAgentRunRegistryState().contexts.get(runId);
 }
 
+/** Retains raw run owners, including hidden projections and windows absent from current session UI. */
+export function hasAgentRunContextForTask(params: {
+  runIds: ReadonlySet<string>;
+  sessionKeys: ReadonlySet<string>;
+  sessionIds: ReadonlySet<string>;
+}): boolean {
+  for (const [runId, context] of getAgentRunRegistryState().contexts) {
+    if (
+      params.runIds.has(runId) ||
+      (context.sessionKey !== undefined && params.sessionKeys.has(context.sessionKey)) ||
+      (context.sessionId !== undefined && params.sessionIds.has(context.sessionId))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Holds an existing run context only while its current execution awaits lane admission. */
 export function retainQueuedAgentRunContext(
   runId: string,
