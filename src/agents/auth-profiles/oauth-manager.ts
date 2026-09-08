@@ -69,6 +69,9 @@ type ResolvedOAuthAccess = {
 };
 
 /** Refresh failure that preserves a redacted refreshed store and credential. */
+/** Live ownership of a bounded in-lock refresh section; flips when the deadline fires. */
+type RefreshSectionOwnership = { state: "owned" | "abandoned" };
+
 export class OAuthManagerRefreshError extends OAuthRefreshFailureError {
   override readonly profileId: string;
   readonly code?: string;
@@ -381,15 +384,20 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
   async function withRefreshCallTimeout<T>(
     label: string,
     timeoutMs: number,
-    fn: () => Promise<T>,
+    fn: (ownership: RefreshSectionOwnership) => Promise<T>,
   ): Promise<T> {
     let timeoutHandle: NodeJS.Timeout | undefined;
+    // The deadline cannot cancel the body it bounds. Once it fires the lock is
+    // released and a successor may own this key, so the body re-checks ownership
+    // before any write-back and a stale continuation no-ops instead of clobbering.
+    const ownership: RefreshSectionOwnership = { state: "owned" };
     try {
       return await new Promise<T>((resolve, reject) => {
         timeoutHandle = setTimeout(() => {
+          ownership.state = "abandoned";
           reject(new Error(`OAuth refresh call "${label}" exceeded hard timeout (${timeoutMs}ms)`));
         }, timeoutMs);
-        fn().then(resolve, reject);
+        fn(ownership).then(resolve, reject);
       });
     } finally {
       if (timeoutHandle) {
@@ -650,10 +658,12 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         if (normalizeSecretInputString(credentialToRefresh.refresh) === undefined) {
           return null;
         }
+        let refreshSectionOwnership: RefreshSectionOwnership | undefined;
         const refreshedCredentials = await withRefreshCallTimeout(
           `refreshOAuthCredential(${cred.provider})`,
           OAUTH_REFRESH_CALL_TIMEOUT_MS,
-          async () => {
+          async (ownership) => {
+            refreshSectionOwnership = ownership;
             params.attemptedCredentials?.push(credentialToRefresh);
             const refreshed = await adapter.refreshCredential(credentialToRefresh, {
               cfg: params.cfg,
@@ -669,6 +679,16 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           },
         );
         if (!refreshedCredentials) {
+          return null;
+        }
+        // A refresh that settled after the section deadline no longer owns this key:
+        // a successor refresher may already hold it, so discard the write-back rather
+        // than clobbering the successor's credentials.
+        if (refreshSectionOwnership && refreshSectionOwnership.state !== "owned") {
+          authProfilesLog.debug(
+            "discarded abandoned OAuth refresh write-back after in-lock deadline",
+            { profileId: params.profileId, provider: cred.provider },
+          );
           return null;
         }
         store.profiles[params.profileId] = refreshedCredentials;

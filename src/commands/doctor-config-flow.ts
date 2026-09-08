@@ -255,6 +255,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       fixHint: options.fixHint,
     });
   };
+  // SAFETY: optional probe of an authored meta block on a loosely-typed source config; ?. covers a missing meta.
   const sourceMeta = (snapshot.sourceConfig as { meta?: { lastTouchedVersion?: unknown } })?.meta;
   const sourceLastTouchedVersion =
     typeof sourceMeta?.lastTouchedVersion === "string" ? sourceMeta.lastTouchedVersion : undefined;
@@ -293,6 +294,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     // again after health repairs, when the retired owner marker is no longer available to recover it.
     const migrated = migratePersistedImplicitMainRoster(state.candidate, {
       materializeWorkspace: true,
+      // SAFETY: migratePersistedImplicitMainRoster returns the same config shape it was given.
     }).config as OpenClawConfig;
     const migratedRoster = readAgentRosterProperty(migrated);
     const migratedEntries = migratedRoster?.kind === "entries" ? migratedRoster.value : undefined;
@@ -304,6 +306,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
         agents: {
           ...candidateAgents,
           ...(stampsExplicitOwnership ? { ownership: "explicit" as const } : {}),
+          // SAFETY: migratedEntries was produced by the roster migration above, so it is the entries map.
           entries: migratedEntries as NonNullable<OpenClawConfig["agents"]>["entries"],
         },
       },
@@ -674,6 +677,9 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     note,
   });
   const cfg = finalized.cfg;
+  if (legacyDefaultAgentId) {
+    retainLegacyDefaultAgentId(cfg, legacyDefaultAgentId);
+  }
   const shouldWriteConfig = finalized.shouldWriteConfig && !legacyMigrationBlocksWrite;
   const singleTopLevelIncludeWrite =
     shouldWriteConfig &&

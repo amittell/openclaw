@@ -1,5 +1,5 @@
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
-import { sleepWithAbort } from "../../../infra/backoff.js";
+import { computeBackoff, sleepWithAbort } from "../../../infra/backoff.js";
 import {
   type AuthProfileFailureReason,
   markAuthProfileFailure,
@@ -20,6 +20,7 @@ import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import {
   MAX_TRANSIENT_RETRIES,
   resolveTransientRetryDelayMs,
+  resolveOverloadFailoverBackoffPolicy,
   resolveOverloadProfileRotationLimit,
   resolveRateLimitProfileRotationLimit,
 } from "./helpers.js";
@@ -58,6 +59,8 @@ export function createEmbeddedRunFailoverRetryController(input: {
     fallbackConfigured,
     profileFailureStore,
   } = input;
+  const overloadBackoffPolicy = resolveOverloadFailoverBackoffPolicy(params.config);
+  let overloadFailoverAttempts = 0;
   const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit();
   const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit();
   let rateLimitProfileRotations = 0;
@@ -148,6 +151,20 @@ export function createEmbeddedRunFailoverRetryController(input: {
 
   return {
     overloadProfileRotationLimit,
+    // Exponential same-model overload backoff before spending a failover slot:
+    // sustained provider overload otherwise burns the whole profile rotation budget
+    // in a few hundred milliseconds.
+    maybeBackoffBeforeOverloadFailover: async (reason: FailoverReason | null) => {
+      if (reason !== "overloaded" || overloadBackoffPolicy.maxMs <= 0) {
+        return;
+      }
+      overloadFailoverAttempts += 1;
+      const delayMs = computeBackoff(overloadBackoffPolicy, overloadFailoverAttempts);
+      log.warn(
+        `overload backoff before failover for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)}: attempt=${overloadFailoverAttempts} delayMs=${delayMs}`,
+      );
+      await sleepForRetry(delayMs);
+    },
     get transientRetryCount() {
       return transientRetryCount;
     },

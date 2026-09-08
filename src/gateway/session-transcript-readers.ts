@@ -15,6 +15,7 @@ import {
 import { visitSessionTranscriptMessageEvents } from "../config/sessions/session-accessor.sqlite-active-events.js";
 import {
   readRecentSessionTranscriptHistoryEvents,
+  readSessionTranscriptCompactionShadowPage,
   readSessionTranscriptHistoryEventById,
   readSessionTranscriptHistoryEventCount,
   readSessionTranscriptHistoryEventLookup,
@@ -387,6 +388,24 @@ export async function readSessionMessagesPageWithStatsAsync(
     transcriptPath: target.sessionFile,
     transcriptSource: "active",
   };
+}
+
+/** Reads one page of the rows a compaction summary shadows; undefined when the id is not a compaction. */
+export async function readSessionMessagesShadowedByCompactionAsync(
+  scope: SessionTranscriptReadScope,
+  opts: { compactionId: string; maxMessages: number; offset: number },
+): Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined> {
+  const target = resolveTranscriptReadTarget(scope);
+  const page = readSessionTranscriptCompactionShadowPage(toTranscriptReadScope(target), opts);
+  return page
+    ? {
+        messages: projectSqliteHistoryEvents(page.events),
+        offset: page.offset,
+        // The span is the window, so its size is what this summary replaced.
+        totalMessages: page.shadowedCount,
+        transcriptPath: target.sessionFile,
+      }
+    : undefined;
 }
 
 /** Reads aggregate usage from a full transcript asynchronously through the reader seam. */

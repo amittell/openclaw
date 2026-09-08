@@ -9,6 +9,10 @@ export type MemoryConfig = {
     model: string;
     apiKey?: string;
     baseUrl?: string;
+    // Optional secondary OpenAI-compatible endpoint. When set, the embedder fails
+    // over to it if the primary baseUrl is unreachable (client-side failover; see
+    // OpenAiCompatibleEmbeddings).
+    fallbackBaseUrl?: string;
     dimensions?: number;
   };
   dreaming?: Record<string, unknown>;
@@ -33,7 +37,14 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-small": 1536,
   "text-embedding-3-large": 3072,
 };
-const EMBEDDING_CONFIG_KEYS = ["provider", "apiKey", "model", "baseUrl", "dimensions"] as const;
+const EMBEDDING_CONFIG_KEYS = [
+  "provider",
+  "apiKey",
+  "model",
+  "baseUrl",
+  "fallbackBaseUrl",
+  "dimensions",
+] as const;
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -111,6 +122,7 @@ export const memoryConfigSchema = {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("memory config required");
     }
+    // SAFETY: the guard above already threw for null, non-object and array values.
     const cfg = value as Record<string, unknown>;
     assertAllowedKeys(
       cfg,
@@ -128,6 +140,7 @@ export const memoryConfigSchema = {
       "memory config",
     );
 
+    // SAFETY: optional read off the narrowed cfg; the next lines throw unless it is a non-array object.
     const embedding = cfg.embedding as Record<string, unknown> | undefined;
     if (!embedding || typeof embedding !== "object" || Array.isArray(embedding)) {
       throw new Error("embedding config required");
@@ -185,13 +198,14 @@ export const memoryConfigSchema = {
       cfg.dreaming === undefined
         ? undefined
         : cfg.dreaming && typeof cfg.dreaming === "object" && !Array.isArray(cfg.dreaming)
-          ? (cfg.dreaming as Record<string, unknown>)
+          ? (cfg.dreaming as Record<string, unknown>) // SAFETY: branch checked non-null, object, non-array.
           : (() => {
               throw new Error("dreaming config must be an object");
             })();
 
     // Parse storageOptions (object with string values)
     let storageOptions: Record<string, string> | undefined;
+    // SAFETY: optional read off the narrowed cfg; the block below throws unless it is a non-array object.
     const storageOpts = cfg.storageOptions as Record<string, unknown> | undefined;
     if (storageOpts !== undefined && storageOpts !== null) {
       if (!storageOpts || typeof storageOpts !== "object" || Array.isArray(storageOpts)) {
@@ -214,6 +228,10 @@ export const memoryConfigSchema = {
         apiKey: typeof embedding.apiKey === "string" ? resolveEnvVars(embedding.apiKey) : undefined,
         baseUrl:
           typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined,
+        fallbackBaseUrl:
+          typeof embedding.fallbackBaseUrl === "string"
+            ? resolveEnvVars(embedding.fallbackBaseUrl)
+            : undefined,
         dimensions,
       },
       dreaming,

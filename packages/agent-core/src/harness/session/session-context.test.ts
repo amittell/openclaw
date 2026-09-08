@@ -2,7 +2,11 @@ import type { AssistantMessage, ProviderReplayState } from "@openclaw/llm-core";
 import { describe, expect, it } from "vitest";
 import { convertToLlm } from "../messages.js";
 import type { SessionTreeEntry } from "../types.js";
-import { buildSessionContext, projectSessionEntryMessage } from "./session.js";
+import {
+  buildSessionContext,
+  formatCompactionCheckpointHandle,
+  projectSessionEntryMessage,
+} from "./session.js";
 
 const timestamp = "2026-07-17T00:00:00.000Z";
 
@@ -281,7 +285,7 @@ describe("buildSessionContext", () => {
       "user",
     ]);
     expect(context.messages).toMatchObject([
-      { summary: "older context" },
+      { summary: expect.stringMatching(/^older context\n\[compaction checkpoint compaction: /) },
       { content: "retained" },
       { content: [{ text: "retained checkpoint" }] },
       { content: [{ text: "retained Anthropic checkpoint" }] },
@@ -561,8 +565,98 @@ describe("buildSessionContext", () => {
     ];
 
     expect(buildSessionContext(entries).messages).toMatchObject([
-      { role: "compactionSummary", summary: "latest summary" },
+      { role: "compactionSummary", summary: expect.stringContaining("latest summary") },
       { role: "user", content: "post reset" },
     ]);
+  });
+});
+
+describe("compaction checkpoint handle", () => {
+  function compactionEntry(
+    id: string,
+    parentId: string,
+    summary: string,
+    firstKeptEntryId: string,
+  ): SessionTreeEntry {
+    return {
+      type: "compaction",
+      id,
+      parentId,
+      timestamp,
+      summary,
+      firstKeptEntryId,
+      tokensBefore: 1,
+    };
+  }
+  // Path: u1 a1 [u2 a2 c1 u3 a3 model] u4 c2 u5 — c2 shadows the bracketed span (5 rows,
+  // the model change is not a transcript row) and keeps u4 verbatim.
+  const twoCompactions: SessionTreeEntry[] = [
+    userEntry("u1", null, "one"),
+    assistantEntry("a1", "u1", "two"),
+    userEntry("u2", "a1", "three"),
+    assistantEntry("a2", "u2", "four"),
+    compactionEntry("c1", "a2", "first summary", "u2"),
+    userEntry("u3", "c1", "five"),
+    assistantEntry("a3", "u3", "six"),
+    {
+      type: "model_change",
+      id: "model",
+      parentId: "a3",
+      timestamp,
+      provider: "test-provider",
+      modelId: "test-model",
+    },
+    userEntry("u4", "model", "seven"),
+    compactionEntry("c2", "u4", "second summary", "u4"),
+    userEntry("u5", "c2", "eight"),
+  ];
+
+  it("appends one handle line naming the boundary and what it shadows", () => {
+    const messages = buildSessionContext(twoCompactions).messages;
+
+    expect(messages).toMatchObject([
+      {
+        role: "compactionSummary",
+        summary: "second summary\n[compaction checkpoint c2: shadows 5 earlier entries]",
+      },
+      { content: "seven" },
+      { content: "eight" },
+    ]);
+  });
+
+  it("counts from the path start when no earlier boundary exists", () => {
+    const messages = buildSessionContext(twoCompactions.slice(0, 6)).messages;
+
+    expect(messages[0]).toMatchObject({
+      summary: "first summary\n[compaction checkpoint c1: shadows 2 earlier entries]",
+    });
+  });
+
+  it("lets the host add read wording but hard-caps the line", () => {
+    const seen: unknown[] = [];
+    const hinted = buildSessionContext(twoCompactions, {
+      formatCheckpointHandle: (handle) => {
+        seen.push(handle);
+        return formatCompactionCheckpointHandle(handle, "history_reader can read them");
+      },
+    }).messages;
+    const oversized = buildSessionContext(twoCompactions, {
+      formatCheckpointHandle: () => "x".repeat(500),
+    }).messages;
+
+    expect(seen).toEqual([{ entryId: "c2", shadowedEntryCount: 5 }]);
+    expect(hinted[0]).toMatchObject({
+      summary:
+        "second summary\n[compaction checkpoint c2: shadows 5 earlier entries; history_reader can read them]",
+    });
+    const oversizedSummary = (oversized[0] as { summary: string }).summary;
+    expect(oversizedSummary.split("\n").at(-1)).toHaveLength(160);
+  });
+
+  it("adds no handle when the branch has no compaction", () => {
+    const messages = buildSessionContext(twoCompactions.slice(0, 2)).messages;
+
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(messages)).not.toContain("compaction checkpoint");
   });
 });

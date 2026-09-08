@@ -34,6 +34,7 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { recordGatewayRestartTrace } from "../../gateway/restart-trace.js";
 import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
@@ -507,7 +508,10 @@ async function probeGatewayHealthz(params: {
   const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS;
   const result = await requestGatewayLocalHttpProbe({
     ...params,
-    pathname: "/healthz",
+    // ?strict=1 opts into shutdown-aware 503 responses (see `isStrictLiveProbeRequest`
+    // in server-http-probes.ts). Public probes that hit /healthz without this marker
+    // keep receiving 200 during shutdown, so external monitors keep their contract.
+    pathname: "/healthz?strict=1",
     timeoutMs,
   });
   return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -518,7 +522,11 @@ function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
   return async (params: { host: string; port: number }): Promise<boolean> => {
     const result = await probe.requestHttp({
       ...params,
-      pathname: "/healthz",
+      // Same strict marker as probeGatewayHealthz: this is the probe the
+      // supervised-lock recovery actually runs in production (wired at the
+      // runGatewayCommandOnce call site), so without ?strict=1 a draining
+      // gateway answers 200 and the zombie/drain detection never fires.
+      pathname: "/healthz?strict=1",
       timeoutMs: SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS,
     });
     return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -554,6 +562,10 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
   const retryMs = params.retryMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_MS;
   const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_TIMEOUT_MS;
   const startedAt = now();
+  // Dedup the zombie_detected signal across the recovery cycle. Cleared when
+  // the cycle resolves (either the prior gateway becomes healthy and we defer,
+  // or we time out and throw); a fresh recovery later starts a new cycle.
+  const zombieDetection = { loggedThisCycle: false };
 
   for (;;) {
     try {
@@ -579,7 +591,24 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
       }
 
       const elapsedMs = now() - startedAt;
-      if (elapsedMs >= timeoutMs) {
+      const shouldRetry = elapsedMs < timeoutMs;
+      // Probe came back unhealthy while the lock is held: either the previous
+      // gateway is mid-shutdown (503 from /healthz?strict=1) or it is a zombie that
+      // lost the close path but kept the HTTP listener. Log once per recovery cycle,
+      // not every retry tick, so a normal 30s drain cannot inflate telemetry.
+      if (!zombieDetection.loggedThisCycle) {
+        recordGatewayRestartTrace("gateway.preflight.zombie_detected", elapsedMs, [
+          ["supervisor", supervisor],
+          ["port", params.port],
+        ]);
+        params.log.warn(
+          `gateway.preflight.zombie_detected supervisor=${supervisor} port=${params.port}; lock held but /healthz reported unhealthy (likely zombie or draining)`,
+        );
+        if (shouldRetry) {
+          zombieDetection.loggedThisCycle = true;
+        }
+      }
+      if (!shouldRetry) {
         throw new SupervisedGatewayLockError(
           `gateway already running under ${supervisor}; existing gateway did not become healthy after ${timeoutMs}ms`,
           err,
@@ -1134,6 +1163,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
           tailscale: tailscaleOverride,
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           startupStartedAt,
+          // This CLI daemon path owns the node process, so it alone opts into
+          // the post-shutdown force-exit watchdog.
+          postShutdownExitWatchdog: true,
           hostLifecycle,
           ...(requestHotReloadRecovery ? { hotReloadRecovery: requestHotReloadRecovery } : {}),
           ...(startupConfigSnapshotReadForThisStart

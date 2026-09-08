@@ -5,11 +5,33 @@ import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { authorizeHttpGatewayConnect } from "./auth.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { classifyGatewayProbePath } from "./gateway-http-route-contracts.js";
+import { isGatewayShuttingDown, noteShuttingDownProbeResponse } from "./gateway-shutdown-state.js";
 import { readPreparedGatewayIngressAttribution } from "./ingress-attribution.js";
 import { isLocalDirectRequest } from "./net.js";
 import type { ReadinessChecker, StartupChecker, StartupResult } from "./server/readiness.js";
 
 const getHttpAuthUtilsModule = createLazyRuntimeModule(() => import("./http-auth-utils.js"));
+
+/** Strict-mode live probe: only the supervised lock-recovery preflight uses
+ * `?strict=1` to opt into shutdown-aware 503 responses. Public probes (external
+ * monitors, service managers) hit /health or /healthz without the marker and
+ * keep receiving 200 even during shutdown, preserving the legacy contract.
+ */
+function isStrictLiveProbeRequest(req: IncomingMessage): boolean {
+  const url = req.url ?? "";
+  const queryStart = url.indexOf("?");
+  if (queryStart < 0) {
+    return false;
+  }
+  const search = url.slice(queryStart + 1);
+  for (const pair of search.split("&")) {
+    const [rawKey, rawValue] = pair.split("=", 2);
+    if (rawKey === "strict" && (rawValue === "1" || rawValue === "true")) {
+      return true;
+    }
+  }
+  return false;
+}
 
 async function shouldIncludeGatewayProbeDetails(params: {
   req: IncomingMessage;
@@ -87,7 +109,17 @@ export async function handleGatewayProbeRequest(
 
   let statusCode: number;
   let body: string;
-  if (status === "ready" && getReadiness) {
+  // To preserve the public live-probe contract (external monitors and service
+  // managers expect 200 on /health and /healthz during normal shutdown),
+  // shutdown-aware 503 is gated on an explicit ?strict=1 query parameter that
+  // the supervised lock-recovery preflight sets. Public callers without the
+  // strict marker continue to receive 200.
+  const isStrictLiveProbe = isStrictLiveProbeRequest(req);
+  if (status === "live" && isStrictLiveProbe && isGatewayShuttingDown()) {
+    noteShuttingDownProbeResponse(requestPath);
+    statusCode = 503;
+    body = JSON.stringify({ live: false, phase: "shutting_down" });
+  } else if (status === "ready" && getReadiness) {
     // Readiness details expose subsystem names, so only local direct or authenticated
     // callers receive them; unauthenticated remote probes get the aggregate boolean.
     const includeDetails = await shouldIncludeGatewayProbeDetails({

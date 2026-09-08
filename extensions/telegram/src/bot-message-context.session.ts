@@ -195,7 +195,10 @@ function formatReplyChainEntry(entry: TelegramReplyChainEntry, index: number): s
           entry.mediaKind
             ? { kind: entry.mediaKind }
             : isTelegramMediaKind(entry.mediaType ?? "")
-              ? { kind: entry.mediaType as TelegramMediaKind }
+              ? {
+                  // SAFETY: the isTelegramMediaKind guard on this branch already proved membership.
+                  kind: entry.mediaType as TelegramMediaKind,
+                }
               : { contentType: entry.mediaType },
         ])
       : undefined,
@@ -214,6 +217,7 @@ const TELEGRAM_MEDIA_KINDS = new Set<TelegramMediaKind>([
 ]);
 
 function isTelegramMediaKind(value: string): value is TelegramMediaKind {
+  // SAFETY: Set.has only reads; a non-member string returns false, which is exactly this predicate's contract.
   return TELEGRAM_MEDIA_KINDS.has(value as TelegramMediaKind);
 }
 
@@ -616,6 +620,20 @@ export async function buildTelegramInboundContextPayload(params: {
     transcribed: index !== undefined && audioTranscribedMediaIndex === index,
   });
   const currentMediaFacts = allMedia.map(toInboundMedia);
+  // Canonical staged-media identity (media://inbound/<id>) used to guarantee the
+  // same file is never attached twice to one prompt. The core merges the current
+  // facts with the reply-quote facts into ctx.media; without this guard a
+  // reply-chain node that re-resolves the current message's staged file yields two
+  // identical image blocks (re-derive of upstream PR #57280 part b).
+  const mediaDedupeKey = (mediaPath?: string) =>
+    mediaPath ? (resolveTelegramPromptMediaPath(mediaPath) ?? mediaPath) : "";
+  const seenMediaKeys = new Set(
+    currentMediaFacts.map((fact) => mediaDedupeKey(fact.path)).filter(Boolean),
+  );
+  const duplicateMediaFact = (mediaPath?: string): boolean => {
+    const key = mediaDedupeKey(mediaPath);
+    return key !== "" && seenMediaKeys.has(key);
+  };
   const toReplyChainMediaFact = (entry: TelegramReplyChainEntry) =>
     entry.mediaPath || entry.mediaKind || entry.mediaType
       ? {
@@ -634,11 +652,21 @@ export async function buildTelegramInboundContextPayload(params: {
     visibleReplyChain.length > 0
       ? visibleReplyChain.flatMap((entry) => {
           const media = toReplyChainMediaFact(entry);
-          return media ? [media] : [];
+          if (!media) {
+            return [];
+          }
+          // A reply-chain node must not re-attach a staged file the current
+          // message already carries; it would surface as a duplicate image block.
+          if (!entry.mediaPath || duplicateMediaFact(entry.mediaPath)) {
+            return [];
+          }
+          return [media];
         })
       : visibleReplyTarget
         ? replyMedia.length > 0
-          ? replyMedia.map((media) => toInboundMedia(media))
+          ? replyMedia.flatMap((media) =>
+              duplicateMediaFact(media.path) ? [] : [toInboundMedia(media)],
+            )
           : visibleReplyTarget.mediaType
             ? [{ kind: visibleReplyTarget.mediaType }]
             : []

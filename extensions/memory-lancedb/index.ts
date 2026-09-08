@@ -9,7 +9,7 @@ import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { isIncognitoSessionKey, normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { asOptionalRecord, asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { textResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
@@ -76,6 +76,21 @@ export {
   normalizeRecallQuery,
   shouldCapture,
 } from "./memory-policy.js";
+import { registerMemoryRefreshTool, withMemoryLock } from "./memory-refresh.js";
+
+// Heartbeat turns are machine-generated keepalives, not user conversation:
+// injecting recalled memories into them wastes an embed on the prompt-build
+// hot path and pollutes the heartbeat prompt with unrelated context.
+function isHeartbeatHookContext(ctx: unknown): boolean {
+  const record = asRecord(ctx);
+  if (!record) {
+    return false;
+  }
+  if (record.trigger === "heartbeat") {
+    return true;
+  }
+  return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
+}
 
 function memoryDeleteFailureResult(id: string) {
   const error = `Memory ${id} was not deleted because it was not found.`;
@@ -453,7 +468,9 @@ export default definePluginEntry({
             const { query, memoryId } = params as { query?: string; memoryId?: string };
 
             if (memoryId) {
-              const deleted = await db.delete(agentId, memoryId);
+              // Acquire the per-ID lock so a concurrent memory_refresh replace on the
+              // same ID cannot race this delete.
+              const deleted = await withMemoryLock(memoryId, () => db.delete(agentId, memoryId));
               if (!deleted) {
                 return memoryDeleteFailureResult(memoryId);
               }
@@ -515,11 +532,18 @@ export default definePluginEntry({
       { name: "memory_forget" },
     );
 
+    registerMemoryRefreshTool({
+      api,
+      db,
+      embeddings,
+      resolveEnabledAgentId,
+      resolveRuntimeConfig,
+      resolveCurrentConfig: resolveCurrentHookConfig,
+    });
+
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig);
 
-    api.on(
-      "before_prompt_build",
-      createAutoRecallHook({
+    const autoRecallHook = createAutoRecallHook({
         logger: api.logger,
         db,
         embeddings,
@@ -527,7 +551,14 @@ export default definePluginEntry({
         resolveEnabledAgentId,
         readCooldown: readMemoryRecallCooldown,
         recordCooldown: recordMemoryRecallCooldown,
-      }),
+    });
+
+    api.on(
+      "before_prompt_build",
+      // Heartbeat turns build a prompt but are not user turns: recalling there
+      // spends embed latency and prompt budget on a turn nobody reads, and can
+      // trip the recall cooldown that a real turn then inherits.
+      async (event, ctx) => (isHeartbeatHookContext(ctx) ? undefined : autoRecallHook(event, ctx)),
       { requiresToolAuthority: true },
     );
 

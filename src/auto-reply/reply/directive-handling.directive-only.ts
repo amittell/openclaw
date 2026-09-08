@@ -16,6 +16,7 @@ export function isDirectiveOnly(params: {
   const { directives, cleanedBody, ctx, cfg, agentId, isGroup } = params;
   if (
     !directives.hasThinkDirective &&
+    !directives.hasTemperatureDirective &&
     !directives.hasVerboseDirective &&
     !directives.hasTraceDirective &&
     !directives.hasFastDirective &&

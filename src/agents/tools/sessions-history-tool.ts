@@ -54,6 +54,7 @@ const SessionsHistoryToolSchema = Type.Object({
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
   pendingBefore: optionalPositiveIntegerSchema(),
   messageId: Type.Optional(Type.String({ minLength: 1 })),
+  compactionId: Type.Optional(Type.String({ minLength: 1 })),
   sessionId: Type.Optional(Type.String({ minLength: 1 })),
   includeTools: Type.Optional(Type.Boolean()),
 });
@@ -77,6 +78,8 @@ const SessionsHistoryOutputSchema = Type.Union([
       nextOffset: Type.Optional(Type.Number()),
       hasMore: Type.Optional(Type.Boolean()),
       totalMessages: Type.Optional(Type.Number()),
+      shadowedCount: Type.Optional(Type.Number()),
+      returnedCount: Type.Optional(Type.Number()),
       pendingInputs: Type.Optional(
         Type.Object(
           {
@@ -450,9 +453,13 @@ export function createSessionsHistoryTool(opts?: {
       const offset = readOffsetParam(params);
       const pendingBefore = readPositiveIntegerParam(params, "pendingBefore");
       const messageId = readToolStringParam(params, "messageId");
+      const compactionId = readToolStringParam(params, "compactionId");
       const sessionId = readToolStringParam(params, "sessionId");
       if (offset !== undefined && messageId) {
         throw new ToolInputError("offset and messageId cannot be used together");
+      }
+      if (compactionId && messageId) {
+        throw new ToolInputError("compactionId and messageId cannot be used together");
       }
       if (sessionId && !messageId) {
         throw new ToolInputError("sessionId requires messageId");
@@ -588,6 +595,7 @@ export function createSessionsHistoryTool(opts?: {
               ...(offset !== undefined ? { offset } : {}),
               ...(pendingBefore !== undefined ? { pendingBefore } : {}),
               ...(messageId ? { messageId } : {}),
+              ...(compactionId ? { compactionId } : {}),
               ...(sessionId ? { sessionId } : {}),
             },
           }),
@@ -630,6 +638,10 @@ export function createSessionsHistoryTool(opts?: {
           ? { sessionLinkRule: describeSessionLinkRule(opts.sessionLinkBase) }
           : {}),
         ...pagination,
+        // A span read's window is the shadowed span, so its total names what the summary replaced.
+        ...(compactionId
+          ? { shadowedCount: result?.totalMessages ?? 0, returnedCount: hardened.items.length }
+          : {}),
       });
     },
   };

@@ -507,6 +507,7 @@ function createPollingSession(params: {
   getAcceptedUpdateId?: () => number | null;
   getCommittedUpdateId?: () => number | null;
   persistUpdateId?: ConstructorParameters<typeof TelegramPollingSession>[0]["persistUpdateId"];
+  resetUpdateOffset?: ConstructorParameters<typeof TelegramPollingSession>[0]["resetUpdateOffset"];
   stallThresholdMs?: number;
   setStatus?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
   isolatedIngress?: ConstructorParameters<typeof TelegramPollingSession>[0]["isolatedIngress"];
@@ -523,6 +524,7 @@ function createPollingSession(params: {
     getAcceptedUpdateId: params.getAcceptedUpdateId ?? params.getCommittedUpdateId ?? (() => null),
     getCommittedUpdateId: params.getCommittedUpdateId ?? (() => null),
     persistUpdateId: params.persistUpdateId ?? (async () => undefined),
+    resetUpdateOffset: params.resetUpdateOffset,
     log: params.log ?? (() => undefined),
     telegramTransport: params.telegramTransport,
     stallThresholdMs: params.stallThresholdMs,
@@ -841,6 +843,7 @@ function startIsolatedIngressSession(params: {
   init?: AsyncVoidFn;
   log?: (message: string) => void;
   persistUpdateId?: ConstructorParameters<typeof TelegramPollingSession>[0]["persistUpdateId"];
+  resetUpdateOffset?: ConstructorParameters<typeof TelegramPollingSession>[0]["resetUpdateOffset"];
   stop?: () => Promise<void>;
   spooledUpdateHandlerTimeoutMs?: number;
   spooledUpdateHandlerAbortGraceMs?: number;
@@ -859,6 +862,7 @@ function startIsolatedIngressSession(params: {
     getCommittedUpdateId: params.getCommittedUpdateId,
     log: params.log,
     persistUpdateId: params.persistUpdateId,
+    resetUpdateOffset: params.resetUpdateOffset,
     stallThresholdMs: params.stallThresholdMs,
     isolatedIngress: {
       enabled: true,
@@ -1352,6 +1356,53 @@ describe("TelegramPollingSession", () => {
       });
       expect(init).toHaveBeenCalledBefore(handleUpdate);
       expect(handleUpdate).toHaveBeenCalledWith(update);
+    });
+  });
+
+  it("drops the persisted offset when the worker reports a foreign offset", async () => {
+    await withTempSpool(async (tempDir) => {
+      const abort = new AbortController();
+      const handleUpdate = vi.fn(async () => undefined);
+      const worker = createListeningIngressWorker();
+      const resetUpdateOffset = vi.fn(async () => undefined);
+      const persistUpdateId = vi.fn(async () => undefined);
+      const log = vi.fn();
+      const { runPromise } = startIsolatedIngressSession({
+        abort,
+        spoolDir: tempDir,
+        handleUpdate,
+        createWorker: worker.createWorker,
+        getCommittedUpdateId: () => 760_546_622,
+        persistUpdateId,
+        resetUpdateOffset,
+        log,
+      });
+      try {
+        await waitForTelegramTestState(() => expect(worker.hasListener()).toBe(true));
+        worker.emit({
+          type: "offset-rejected",
+          requestedOffset: 760_546_623,
+          adoptedUpdateId: 592_426_180,
+        });
+        // The reset must land before the adopted update's offset is persisted.
+        expect(resetUpdateOffset).toHaveBeenCalledTimes(1);
+        expect(persistUpdateId).not.toHaveBeenCalled();
+        worker.emit({
+          type: "update",
+          requestId: "foreign-1",
+          update: directUpdate(592_426_180, 123, "head"),
+          queued: 1,
+        });
+        await waitForTelegramTestState(() =>
+          expect(persistUpdateId).toHaveBeenCalledWith(592_426_180),
+        );
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining("ignored offset 760546623 and answered from update 592426180"),
+        );
+      } finally {
+        abort.abort();
+        await runPromise;
+      }
     });
   });
 

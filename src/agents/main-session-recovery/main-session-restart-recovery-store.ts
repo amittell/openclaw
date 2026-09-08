@@ -297,7 +297,11 @@ export async function recoverStore(params: {
     let entry = loadedEntry;
     const hasRecoveryStateToObserve =
       entry?.abortedLastRun === true ||
-      (entry !== undefined && isMainRestartRecoveryAggregateTerminalOnly(entry));
+      (entry !== undefined &&
+        isMainRestartRecoveryAggregateTerminalOnly(
+          entry,
+          params.lifecycleGeneration ?? getAgentEventLifecycleGeneration(),
+        ));
     if (!entry || entry.status !== "running" || !hasRecoveryStateToObserve) {
       continue;
     }

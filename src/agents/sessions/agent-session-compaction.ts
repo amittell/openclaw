@@ -212,6 +212,10 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     }
 
     const pathEntries = this.sessionManager.getBranch();
+    // The branch prepared here and the leaf committed onto below must be the same leaf:
+    // the awaited hook/summarizer can outlive an append, and a compaction committed under
+    // a moved leaf would shadow entries it never summarized.
+    const preparedLeafId = this.sessionManager.getLeafId();
     let preparation: CompactionPreparation | undefined;
     if (isManual && !options.requestState) {
       const manualPreflight = preflightManualSessionCompaction(pathEntries, options.settings);
@@ -316,6 +320,15 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     // An in-memory transcript has no SQLite writer fence. Revalidate its
     // captured owner after summarization, immediately before replacing context.
     this.assertContextReplacementActive?.();
+    // Re-check the leaf captured before the awaited hook/summarizer: committing under a
+    // moved leaf would shadow entries this summary never covered. Complementary to the
+    // owner revalidation above, which proves liveness but not leaf identity.
+    if (this.sessionManager.getLeafId() !== preparedLeafId) {
+      return {
+        status: "skipped",
+        reason: "Session leaf moved during compaction; nothing committed",
+      };
+    }
     const compactionEntryId = this.sessionManager.appendCompaction(
       compactionResult.summary,
       compactionResult.firstKeptEntryId,

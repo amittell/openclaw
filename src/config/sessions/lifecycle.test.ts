@@ -126,6 +126,22 @@ describe("terminal main session transcript freshness", () => {
     expect(check(entry, sessionKey)).toBe(true);
   });
 
+  it("does not rotate a yielded main session whose continuation is still pending", async () => {
+    // The lifecycle projection persists a yielded parent as status "running"
+    // with a positive endedAt until the continuation starts -- see
+    // session-lifecycle-state.test.ts, "keeps an explicitly yielded parent
+    // pending until continuation starts". The sibling test above proves an
+    // endedAt-only row DOES rotate, so the status is what discriminates.
+    const { entry, sessionKey } = await createEntry({
+      status: "running",
+      endedAt: Date.now() - 20_000,
+      updatedAt: Date.now() - 10_000,
+    });
+
+    expect(entry.status).toBe("running");
+    expect(check(entry, sessionKey)).toBe(false);
+  });
+
   it("uses SQLite freshness for entries that still contain legacy transcript paths", async () => {
     const { entry, sessionKey } = await createEntry({
       sessionFile: path.join(stateDir, "legacy-session.jsonl"),

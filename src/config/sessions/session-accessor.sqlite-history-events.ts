@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
 import type { TranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
 import {
@@ -498,6 +499,125 @@ export function readSessionTranscriptHistoryEventPage(
       events: readVisibleHistoryRange(projection, start, endExclusive, history),
       displaySource: history.displaySource,
       totalMessages: history.total,
+    };
+  });
+}
+
+export type SessionTranscriptCompactionShadowPage = {
+  displaySource?: string;
+  /** `seq` is span-relative (1 = oldest shadowed row) so offset paging math is shared. */
+  events: SessionTranscriptMessageEvent[];
+  offset: number;
+  shadowedCount: number;
+};
+
+/** Display position of the first visible row at or after an entry; undefined when off-branch. */
+function resolveDisplayPositionAtOrAfter(
+  projection: CurrentTranscriptProjection,
+  history: VisibleHistoryProjection,
+  entryId: string,
+): number | undefined {
+  const db = getActiveTranscriptKysely(projection.database);
+  const row = executeSqliteQueryTakeFirstSync(
+    projection.database.db,
+    db
+      .selectFrom("session_transcript_active_events as active")
+      .select("active.message_position")
+      .where("active.session_id", "=", projection.resolved.sessionId)
+      .where("active.message_position", "is not", null)
+      .where("active.active_position", ">=", (eb) =>
+        eb
+          .selectFrom("transcript_event_identities as identity")
+          .innerJoin("session_transcript_active_events as anchor", (join) =>
+            join
+              .onRef("anchor.session_id", "=", "identity.session_id")
+              .onRef("anchor.event_seq", "=", "identity.seq"),
+          )
+          .select("anchor.active_position")
+          .where("identity.session_id", "=", projection.resolved.sessionId)
+          .where("identity.event_id", "=", entryId),
+      )
+      .orderBy("active.active_position", "asc")
+      .limit(1),
+  );
+  if (!row || row.message_position === null) {
+    return undefined;
+  }
+  const seq = resolveHistoryMessageSequence(
+    resolveVisibleMessagePositions(projection),
+    history,
+    row.message_position,
+  );
+  return seq === undefined ? undefined : seq - 1;
+}
+
+/** Where a boundary's kept prefix starts; the boundary itself when nothing before it was kept. */
+function resolveKeptPrefixStart(
+  projection: CurrentTranscriptProjection,
+  history: VisibleHistoryProjection,
+  boundary: VisibleHistoryBoundary,
+  event: Record<string, unknown>,
+): number {
+  const firstKeptEntryId = event.firstKeptEntryId;
+  const keptStart =
+    typeof firstKeptEntryId === "string"
+      ? resolveDisplayPositionAtOrAfter(projection, history, firstKeptEntryId)
+      : undefined;
+  return keptStart !== undefined && keptStart < boundary.displayPosition
+    ? keptStart
+    : boundary.displayPosition;
+}
+
+/**
+ * Reads the rows a compaction summary replaced: from the previous compaction's kept prefix
+ * (or the visible window start) up to this boundary's kept prefix. The kept prefix is
+ * excluded because it still replays verbatim after the summary; only the summarized span
+ * is shadowed. Unknown ids and reset boundaries resolve to undefined.
+ */
+export function readSessionTranscriptCompactionShadowPage(
+  scope: SessionTranscriptReadScope,
+  options: { compactionId: string; maxMessages: number; offset: number },
+): SessionTranscriptCompactionShadowPage | undefined {
+  return withCurrentProjectionSnapshot(scope, (projection) => {
+    const history = resolveVisibleHistoryProjection(projection);
+    const index = history.boundaries.findIndex(
+      (candidate) => candidate.eventId === options.compactionId,
+    );
+    const boundary = history.boundaries[index];
+    if (!boundary) {
+      return undefined;
+    }
+    const previous = history.boundaries[index - 1];
+    const events = readBoundaryEvents(projection, previous ? [previous, boundary] : [boundary]);
+    const event = asOptionalRecord(events.get(boundary.eventSeq));
+    if (event?.type !== "compaction") {
+      return undefined;
+    }
+    const previousEvent = previous ? asOptionalRecord(events.get(previous.eventSeq)) : undefined;
+    const spanStart =
+      previous && previousEvent?.type === "compaction"
+        ? resolveKeptPrefixStart(projection, history, previous, previousEvent)
+        : 0;
+    const spanEnd = resolveKeptPrefixStart(projection, history, boundary, event);
+    const shadowedCount = Math.max(0, spanEnd - spanStart);
+    const offset = Math.min(
+      Math.max(0, Math.floor(Number.isFinite(options.offset) ? options.offset : 0)),
+      shadowedCount,
+    );
+    const maxMessages = Math.max(
+      0,
+      Math.floor(Number.isFinite(options.maxMessages) ? options.maxMessages : 0),
+    );
+    const endExclusive = spanEnd - offset;
+    const start = Math.max(spanStart, endExclusive - maxMessages);
+    return {
+      displaySource: history.displaySource,
+      events: readVisibleHistoryRange(projection, start, endExclusive, history).map((entry) => ({
+        ...entry,
+        seq: entry.seq - spanStart,
+      })),
+      offset,
+      shadowedCount,
     };
   });
 }

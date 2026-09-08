@@ -193,7 +193,9 @@ function readDirectStatusCode(err: unknown): number | undefined {
     return undefined;
   }
   const candidate =
+    // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; both asserted fields stay unknown and the result is accepted only when typeof is number.
     (err as { status?: unknown; statusCode?: unknown }).status ??
+    // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; statusCode stays unknown and the result is accepted only when typeof is number.
     (err as { statusCode?: unknown }).statusCode;
   if (typeof candidate === "number") {
     return candidate;
@@ -223,16 +225,19 @@ function readDirectErrorType(err: unknown): string | undefined {
   if (!err || typeof err !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; errorType stays unknown and is accepted only when typeof is string.
   const directType = (err as { errorType?: unknown }).errorType;
   if (typeof directType === "string") {
     const trimmed = directType.trim();
     return trimmed && isStableProviderErrorType(trimmed) ? trimmed : undefined;
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; detail is read through optional chaining and the type stays unknown until the typeof check below.
   const detailType = (err as { detail?: { type?: unknown } }).detail?.type;
   if (typeof detailType === "string") {
     const trimmed = detailType.trim();
     return trimmed && isStableProviderErrorType(trimmed) ? trimmed : undefined;
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; type stays unknown and is accepted only when typeof is string.
   const type = (err as { type?: unknown }).type;
   if (typeof type === "string") {
     const trimmed = type.trim();
@@ -252,6 +257,7 @@ function readDirectProvider(err: unknown): string | undefined {
   if (!err || typeof err !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; provider stays unknown and is accepted only when typeof is string.
   const provider = (err as { provider?: unknown }).provider;
   if (typeof provider !== "string") {
     return undefined;
@@ -268,6 +274,7 @@ function readDirectErrorDetails(err: unknown): string[] | undefined {
   if (!err || typeof err !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; every asserted field is optional unknown and each is validated before it is formatted.
   const candidate = err as {
     body?: unknown;
     detail?: unknown;
@@ -314,6 +321,7 @@ function hasSessionTranscriptWriterClaimRebound(
     return false;
   }
   seen.add(err);
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; all three asserted fields are optional unknown and are re-entered through this same guarded walk.
   const candidate = err as { error?: unknown; cause?: unknown; reason?: unknown };
   return (
     hasSessionTranscriptWriterClaimRebound(candidate.error, seen) ||
@@ -326,6 +334,7 @@ function readField(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above returns undefined for null and non-objects, so value is a non-null object; the indexed read yields unknown and every caller narrows it.
   return (value as Record<string, unknown>)[key];
 }
 
@@ -417,6 +426,8 @@ function getNestedErrorCandidates(err: unknown): unknown[] {
   if (!err || typeof err !== "object") {
     return [];
   }
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; both asserted fields are optional unknown and are passed back into findErrorProperty, which re-guards them.
+  // SAFETY: the guard above returns early for null and non-objects, so err is a non-null object; both asserted fields are optional unknown and the filter drops undefined and self-references before they are walked.
   const candidate = err as { error?: unknown; cause?: unknown };
   return [candidate.error, candidate.cause].filter(
     (value): value is unknown => value !== undefined && value !== err,
@@ -591,6 +602,7 @@ function quotePosixShellArg(value: string): string {
 /** Build the operator command for reauthenticating one provider. */
 export function buildProviderReauthCommand(
   provider: string,
+  // SAFETY: process.env is a ProcessEnv, which is structurally a Record<string, string | undefined>; the assertion only restates that for the default parameter.
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): string | undefined {
   const trimmed = provider.trim();

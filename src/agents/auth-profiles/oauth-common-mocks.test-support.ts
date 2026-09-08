@@ -57,6 +57,12 @@ vi.mock("./external-cli-sync.js", () => ({
   shouldBootstrapFromExternalCliCredential: () => false,
   shouldReplaceStoredOAuthCredential: (existing: unknown, incoming: unknown) =>
     existing !== incoming,
+  // beta.3's external-auth.ts:324 reaches into this module for the fork's
+  // #57137 env-token sync. A factory mock must declare every member the code
+  // under test touches - vitest throws on the property ACCESS, so the `?.` at
+  // that call site does not save it. Identity is the real function's no-op
+  // result: the store unchanged when nothing needs syncing.
+  syncEnvBackedTokenCredentials: (store: unknown) => store,
 }));
 
 afterAll(() => {

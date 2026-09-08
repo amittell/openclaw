@@ -30,6 +30,10 @@ import { maybeHandleUnexpectedDirectiveArguments } from "./directive-handling.ar
 import { applyModelRuntimeDirective } from "./directive-handling.model-runtime.js";
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import { maybeHandleModelDirectiveInfo } from "./directive-handling.model.js";
+import {
+  appendTemperatureAck,
+  formatTemperatureDirectiveReply,
+} from "./directive-handling.temperature.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
 import { maybeHandleQueueDirective } from "./directive-handling.queue-validation.js";
 import {
@@ -141,6 +145,20 @@ export async function handleDirectiveOnly(
   });
   if (modelInfo) {
     return acknowledgeIgnoredDirective(modelInfo, "hasModelDirective");
+  }
+  // Bare `/temperature` with no value is a query, not a mutation: answer with the
+  // session's current value instead of falling through to the persistence path.
+  if (
+    directives.hasTemperatureDirective &&
+    directives.temperature === undefined &&
+    !directives.clearTemperature
+  ) {
+    const sessionTemperature =
+      typeof sessionEntry.temperature === "number" ? sessionEntry.temperature : undefined;
+    return acknowledgeIgnoredDirective(
+      formatTemperatureDirectiveReply(directives, sessionTemperature),
+      "hasTemperatureDirective",
+    );
   }
 
   const modelResolution = resolveModelSelectionFromDirective({
@@ -600,6 +618,7 @@ export async function handleDirectiveOnly(
         : `Thinking level set to ${directives.thinkLevel}.`,
     );
   }
+  appendTemperatureAck(directives, parts);
   if (directives.clearFastMode) {
     parts.push(formatDirectiveAck("Fast mode reset to default."));
   } else if (directives.hasFastDirective && directives.fastMode !== undefined) {

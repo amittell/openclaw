@@ -180,6 +180,7 @@ export async function createGatewayKernel(
         log,
         logCron,
         shutdownRuntime,
+        postShutdownExitWatchdogEnabled: opts.postShutdownExitWatchdog === true,
       }),
     );
     lifecycleRuntime = preparedLifecycleRuntime;

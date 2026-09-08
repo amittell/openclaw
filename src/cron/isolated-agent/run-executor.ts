@@ -250,6 +250,10 @@ export type CronExecutionResult = {
   runResult: CronPromptRunResult;
   fallbackProvider: string;
   fallbackModel: string;
+  requestedProvider: string;
+  requestedModel: string;
+  /** True when a model fallback, not the configured primary, served the run. */
+  usedFallback: boolean;
   runStartedAt: number;
   runEndedAt: number;
   liveSelection: CronLiveSelection;
@@ -330,6 +334,13 @@ function createCronPromptExecutor(
   let runResult: CronPromptRunResult | undefined;
   let fallbackProvider = params.liveSelection.provider;
   let fallbackModel = params.liveSelection.model;
+  let requestedProvider = params.liveSelection.provider;
+  let requestedModel = params.liveSelection.model;
+  // Whether a fallback actually served the run. This must be tracked explicitly:
+  // the fallback path rewrites params.liveSelection to the fallback tuple, so
+  // comparing the model used against liveSelection afterwards always reports
+  // "not a fallback" and silently defeats the guard in run-finalize.
+  let usedFallback = false;
   let runEndedAt = Date.now();
   const fastModeStartedAtMs = Date.now();
   const fastModeAutoProgressState: FastModeAutoProgressState = {
@@ -399,6 +410,8 @@ function createCronPromptExecutor(
     hasNewGeneratedMediaTaskForSessionKey(params.runSessionKey, attemptMediaTaskIds);
 
   const runPrompt = async (promptText: string) => {
+    requestedProvider = params.liveSelection.provider;
+    requestedModel = params.liveSelection.model;
     // A retry can fail during preparation, before any backend start callback.
     params.lifecycle.beginAttempt();
     let candidateStarted = false;
@@ -935,11 +948,19 @@ function createCronPromptExecutor(
     fallbackModel = fallbackResult.model;
     params.liveSelection.provider = fallbackResult.provider;
     params.liveSelection.model = fallbackResult.model;
-    setCronSessionRuntimeModel({
-      entry: params.cronSession.sessionEntry,
-      provider: fallbackResult.provider,
-      model: fallbackResult.model,
-    });
+    // A fallback served this run only if the tuple that answered differs from the
+    // one THIS attempt requested. requestedProvider/Model are re-read from
+    // liveSelection at the top of runPrompt, so a deliberate live model switch
+    // (which re-enters runPrompt) compares equal and is correctly NOT a fallback,
+    // while a genuine fallback compares unequal. Do not compare against
+    // liveSelection here: the two lines above have already rewritten it.
+    usedFallback =
+      fallbackResult.provider !== requestedProvider || fallbackResult.model !== requestedModel;
+    // Deliberately NOT setCronSessionRuntimeModel here. A fallback is a transient
+    // recovery choice; writing it to the session entry pins the session to the
+    // fallback and its context budget after the primary recovers, which is the
+    // exact outcome run-finalize's guard exists to prevent. liveSelection above
+    // still carries the served tuple for continuation ownership.
     await params.persistRunContinuationSession?.();
     runEndedAt = Date.now();
     pendingUserTurn = undefined;
@@ -951,6 +972,9 @@ function createCronPromptExecutor(
       runResult,
       fallbackProvider,
       fallbackModel,
+      requestedProvider,
+      requestedModel,
+      usedFallback,
       runEndedAt,
       liveSelection: params.liveSelection,
     }),

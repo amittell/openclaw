@@ -7,6 +7,7 @@ import {
   sleepWithAbort,
   type BackoffPolicy,
 } from "openclaw/plugin-sdk/runtime-env";
+import { asSafeIntegerInRange } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveTelegramAllowedUpdates } from "./allowed-updates.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
 import { resolveTelegramTransport } from "./fetch.js";
@@ -39,6 +40,20 @@ const TELEGRAM_RETRY_BACKOFF_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0,
 };
+
+function highestUpdateId(updates: unknown[]): number | null {
+  let highest: number | null = null;
+  for (const update of updates) {
+    if (typeof update !== "object" || update === null || !("update_id" in update)) {
+      continue;
+    }
+    const id = asSafeIntegerInRange(update.update_id, { min: 0 });
+    if (id !== undefined && (highest === null || id > highest)) {
+      highest = id;
+    }
+  }
+  return highest;
+}
 
 type TelegramGetUpdatesJson = {
   ok?: unknown;
@@ -269,6 +284,18 @@ export async function runTelegramIngressWorkerRuntime(params: {
         });
         if (!Array.isArray(result)) {
           throw new Error("Telegram getUpdates returned a non-array result.");
+        }
+        // A server whose newest id is below our offset is not the queue this offset
+        // came from (local Bot API server after migration, or a rebuilt queue): it
+        // ignores the offset and replays its head, so adopt its ids or loop forever.
+        const highestServerUpdateId = highestUpdateId(result);
+        if (offset !== null && highestServerUpdateId !== null && highestServerUpdateId < offset) {
+          lastUpdateId = null;
+          port.postMessage({
+            type: "offset-rejected",
+            requestedOffset: offset,
+            adoptedUpdateId: highestServerUpdateId,
+          });
         }
         for (const update of result) {
           if (stopped) {

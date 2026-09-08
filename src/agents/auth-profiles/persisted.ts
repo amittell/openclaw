@@ -128,6 +128,7 @@ function normalizeCommonCredentialFields(entry: Record<string, unknown>): Record
 }
 
 function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<AuthProfileCredential> {
+  // SAFETY: raw is already a Record<string, unknown>; the spread copy keeps that shape and the assertion only restores it after spreading.
   const entry = { ...raw } as Record<string, unknown>;
   if (!("type" in entry) && typeof entry["mode"] === "string") {
     entry["type"] = entry["mode"];
@@ -160,6 +161,7 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
     if (metadata) {
       normalized.metadata = metadata;
     }
+    // SAFETY: normalized is assembled field-by-field on the credential variant selected by entry.type above; every property assigned belongs to that variant.
     return normalized as Partial<AuthProfileCredential>;
   }
   if (entry.type === "token") {
@@ -179,6 +181,7 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
     if (expires !== undefined) {
       normalized.expires = expires;
     }
+    // SAFETY: normalized is assembled field-by-field on the credential variant selected by entry.type above; every property assigned belongs to that variant.
     return normalized as Partial<AuthProfileCredential>;
   }
   if (entry.type === "oauth") {
@@ -203,8 +206,17 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
     if (expires !== undefined) {
       normalized.expires = expires;
     }
+    // Dead-refresh tombstones must survive reload or the external CLI re-seed
+    // gate closes again on the next auth store read. Strict normalization:
+    // normalizeExpiryField coerces invalid values to 0, which would wrongly
+    // flag a healthy grant dead — corrupt tombstones are dropped instead.
+    const refreshDeadAt = entry.refreshDeadAt;
+    if (typeof refreshDeadAt === "number" && Number.isFinite(refreshDeadAt) && refreshDeadAt > 0) {
+      normalized.refreshDeadAt = refreshDeadAt;
+    }
     return normalized;
   }
+  // SAFETY: the fall-through for an unrecognised type; the caller immediately rejects any entry whose type is not in AUTH_PROFILE_TYPES.
   return entry as Partial<AuthProfileCredential>;
 }
 
@@ -216,6 +228,7 @@ function parseCredentialEntry(
     return { ok: false, reason: "non_object" };
   }
   const typed = normalizeRawCredentialEntry(raw);
+  // SAFETY: used only as a Set membership probe: a value outside the union simply misses and the entry is rejected as invalid_type.
   if (!AUTH_PROFILE_TYPES.has(typed.type as AuthProfileCredential["type"])) {
     return { ok: false, reason: "invalid_type" };
   }
@@ -229,6 +242,7 @@ function parseCredentialEntry(
     credential: {
       ...typed,
       provider: normalizedProvider,
+      // SAFETY: reached only after AUTH_PROFILE_TYPES accepted typed.type and provider was normalised; the remaining fields come from the variant normaliser above.
     } as AuthProfileCredential,
   };
 }
@@ -737,6 +751,7 @@ export function mergeAuthProfileStores(
         : {}),
       ...runtimeExternalProfileMetadata,
     },
+    // SAFETY: the literal above adds the runtime metadata block on top of a complete store, which is exactly what RuntimeAuthProfileStore adds to AuthProfileStore.
   }) as RuntimeAuthProfileStore;
   setRuntimeExternalCliProfileIds(result, runtimeExternalCliProfileIds);
   return result;
@@ -759,17 +774,20 @@ export function buildPersistedAuthProfileSecretsStore(
         return [];
       }
       if (credential.type === "api_key" && credential.keyRef && credential.key !== undefined) {
+        // SAFETY: a shallow copy widened only so the secret field can be deleted before persisting; it is never read back as a typed credential.
         const sanitized = { ...credential } as Record<string, unknown>;
         delete sanitized.key;
         return [[profileId, sanitized]];
       }
       if (credential.type === "token" && credential.tokenRef && credential.token !== undefined) {
+        // SAFETY: a shallow copy widened only so the secret field can be deleted before persisting; it is never read back as a typed credential.
         const sanitized = { ...credential } as Record<string, unknown>;
         delete sanitized.token;
         return [[profileId, sanitized]];
       }
       return [[profileId, credential]];
     }),
+    // SAFETY: Object.fromEntries erases key and value types; every entry produced above is a [profileId, credential] pair of exactly this map's shape.
   ) as AuthProfileSecretsStore["profiles"];
 
   return {

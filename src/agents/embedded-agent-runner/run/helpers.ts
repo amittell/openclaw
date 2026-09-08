@@ -1,6 +1,8 @@
 /**
  * Shared run helpers for retry limits, model reporting, and final text.
  */
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { BackoffPolicy } from "../../../infra/backoff.js";
 import { generateSecureToken } from "../../../infra/secure-random.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { extractAssistantTextForPhase } from "../../../shared/chat-message-content.js";
@@ -38,6 +40,12 @@ export const RUNTIME_AUTH_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 export const RUNTIME_AUTH_REFRESH_RETRY_MS = 60 * 1000;
 export const RUNTIME_AUTH_REFRESH_MIN_DELAY_MS = 5 * 1000;
 
+const DEFAULT_OVERLOAD_FAILOVER_BACKOFF_MAX_MS = 30_000;
+// Same-model overload backoff shape: exponential, deterministic ceiling so the
+// retry budget survives sustained overload across many auth profiles.
+const OVERLOAD_FAILOVER_BACKOFF_INITIAL_MS = 250;
+const OVERLOAD_FAILOVER_BACKOFF_FACTOR = 2;
+const OVERLOAD_FAILOVER_BACKOFF_JITTER = 0.2;
 const DEFAULT_MAX_OVERLOAD_PROFILE_ROTATIONS = 1;
 const DEFAULT_MAX_RATE_LIMIT_PROFILE_ROTATIONS = 1;
 
@@ -45,6 +53,25 @@ export const MAX_TRANSIENT_RETRIES = 3;
 const MAX_TRANSIENT_RETRY_TIME_MS = 90_000;
 const TRANSIENT_RETRY_BASE_DELAY_MS = 1_000;
 const TRANSIENT_RETRY_MAX_DELAY_MS = 30_000;
+
+/**
+ * Exponential backoff ceiling for pre-failover overload retries. The config
+ * override may lower the ceiling or set 0 to restore the legacy no-backoff
+ * behavior; anything else falls back to the 30s default.
+ */
+export function resolveOverloadFailoverBackoffPolicy(cfg?: OpenClawConfig): BackoffPolicy {
+  const override = cfg?.agents?.defaults?.embeddedAgent?.overloadBackoffMaxMs;
+  const maxMs =
+    typeof override === "number" && Number.isFinite(override) && override >= 0
+      ? Math.floor(override)
+      : DEFAULT_OVERLOAD_FAILOVER_BACKOFF_MAX_MS;
+  return {
+    initialMs: OVERLOAD_FAILOVER_BACKOFF_INITIAL_MS,
+    maxMs,
+    factor: OVERLOAD_FAILOVER_BACKOFF_FACTOR,
+    jitter: OVERLOAD_FAILOVER_BACKOFF_JITTER,
+  };
+}
 
 export function resolveOverloadProfileRotationLimit(): number {
   return DEFAULT_MAX_OVERLOAD_PROFILE_ROTATIONS;
@@ -191,10 +218,12 @@ export function normalizeAssistantUsageForContext(
     assistant.usage &&
     typeof assistant.usage === "object" &&
     !Array.isArray(assistant.usage) &&
+    // SAFETY: the conjunction above proves usage is a non-null non-array object; contextUsage stays unknown and is only compared against undefined.
     (assistant.usage as { contextUsage?: unknown }).contextUsage === undefined
   ) {
     return { contextUsage: { state: "unavailable" } };
   }
+  // SAFETY: normalizeUsage takes an optional nullable snapshot and returns undefined for any falsy input, so the assertion only satisfies its parameter type.
   return normalizeUsage(assistant?.usage as UsageSnapshot | undefined);
 }
 
@@ -204,6 +233,7 @@ export function buildUsageAgentMetaFields(params: {
   lastRunPromptUsage: UsageSnapshot | undefined;
 }): Pick<EmbeddedAgentMeta, "usage" | "lastCallUsage" | "promptTokens" | "costUsd"> {
   const usage = toNormalizedUsage(params.usageAccumulator);
+  // SAFETY: normalizeUsage accepts null and undefined and re-validates the snapshot, so widening here cannot produce an unchecked read.
   const latestUsage = normalizeUsage(params.latestUsage as never);
   const lastCallUsage = hasNonzeroUsage(latestUsage)
     ? latestUsage

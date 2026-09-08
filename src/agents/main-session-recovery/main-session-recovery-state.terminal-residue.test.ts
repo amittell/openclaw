@@ -203,6 +203,69 @@ describe("main session recovery terminal-only residue", () => {
     }
   });
 
+  // rh-bot 2026-09-03: a fence whose run died with an earlier Gateway generation
+  // never records a terminal fact. The current Gateway is the only process that
+  // can know that generation is gone, so its admission and startup scan retire
+  // the fence; a standalone caller cannot tell a dead generation from the live one.
+  it("retires a fence from a dead Gateway generation at foreground admission", () => {
+    const entry = settledEntry({
+      restartRecoveryRuns: [{ runId: "orphan-run", lifecycleGeneration: "dead-generation" }],
+      restartRecoveryTerminalRunIds: [],
+    });
+
+    expect(claimForeground(entry)).toEqual({ kind: "applied" });
+    expect(entry).toMatchObject({ status: "running", abortedLastRun: false });
+    expect(entry.restartRecoveryRuns).toBeUndefined();
+    expect(entry.mainRestartRecovery).toBeUndefined();
+  });
+
+  // The scan runs under the real process generation; "dead-generation" is not it.
+  it("retires a dead-generation fence through the persisted startup scan", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-dead-generation-"));
+    const storePath = path.join(tempDir, "sessions.json");
+    try {
+      await replaceSessionEntry(
+        { sessionKey, storePath },
+        settledEntry({
+          restartRecoveryRuns: [{ runId: "orphan-run", lifecycleGeneration: "dead-generation" }],
+          restartRecoveryTerminalRunIds: [],
+        }),
+      );
+
+      await expect(
+        recoverStore({
+          activeSessionIds: [],
+          activeSessionKeys: [],
+          gatewayRuntime: unusedGatewayRuntime,
+          handledSessionKeys: new Set(),
+          storePath,
+        }),
+      ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
+
+      const entry = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
+      expect(entry?.mainRestartRecovery).toBeUndefined();
+      expect(entry?.restartRecoveryRuns).toBeUndefined();
+    } finally {
+      await fs.rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps blocking standalone inspect admission on a dead-generation fence", () => {
+    const entry = settledEntry({
+      restartRecoveryRuns: [{ runId: "orphan-run", lifecycleGeneration: "dead-generation" }],
+      restartRecoveryTerminalRunIds: [],
+    });
+
+    const result = transitionMainSessionRecovery(entry, {
+      kind: "inspect",
+      lifecycleGeneration: "standalone-generation",
+      sessionKey,
+    });
+
+    expect(result).toMatchObject({ kind: "observed", view: { status: "blocked" } });
+    expect(entry.mainRestartRecovery).toBeDefined();
+  });
+
   it("does not block standalone inspect admission on terminal-only residue", () => {
     const entry = settledEntry();
 

@@ -43,6 +43,7 @@ const testing = {
   },
 };
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.externalAuthTestApi")] =
     testing;
 }
@@ -274,27 +275,31 @@ export function syncPersistedExternalCliAuthProfiles(
   store: AuthProfileStore,
   params?: { agentDir?: string; env?: NodeJS.ProcessEnv } & ExternalCliOverlayOptions,
 ): AuthProfileStore {
-  if (!hasPersistableExternalCliSyncCandidate(store, params)) {
-    return store;
+  // Env-var-backed token sync applies regardless of external CLI candidates:
+  // the stale-token failure hits token profiles, not CLI OAuth profiles.
+  const base =
+    externalCliSync.syncEnvBackedTokenCredentials?.(store, { env: params?.env }) ?? store;
+  if (!hasPersistableExternalCliSyncCandidate(base, params)) {
+    return base;
   }
   const persistedProfiles = resolveAllowedExternalCliAuthProfiles({
-    store,
+    store: base,
     env: params?.env,
     externalCli: params,
   }).filter((profile) => profile.persistence === "persisted");
   if (persistedProfiles.length === 0) {
-    return store;
+    return base;
   }
 
   let next: AuthProfileStore | undefined;
   for (const profile of persistedProfiles) {
-    const target = next ?? store;
+    const target = next ?? base;
     const existing = target.profiles[profile.profileId];
     if (existing?.type === "oauth" && areOAuthCredentialsEquivalent(existing, profile.credential)) {
       continue;
     }
-    next ??= cloneAuthProfileStore(store);
+    next ??= cloneAuthProfileStore(base);
     next.profiles[profile.profileId] = profile.credential;
   }
-  return next ?? store;
+  return next ?? base;
 }

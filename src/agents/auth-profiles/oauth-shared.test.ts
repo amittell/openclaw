@@ -8,10 +8,61 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
 import {
+  mergeSuccessfulOAuthRefreshCredential,
   overlayRuntimeExternalOAuthProfiles,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
 import type { AuthProfileStore, OAuthCredential } from "./types.js";
+
+describe("mergeSuccessfulOAuthRefreshCredential", () => {
+  it("clears a permanent-refresh tombstone after a successful refresh", () => {
+    const refreshed = mergeSuccessfulOAuthRefreshCredential(
+      {
+        type: "oauth",
+        provider: "openai",
+        access: "dead-access",
+        refresh: "dead-refresh",
+        refreshDeadAt: 123,
+        accountId: "account-1",
+      },
+      {
+        access: "live-access",
+        refresh: "live-refresh",
+        expires: 456,
+      },
+    );
+    expect(refreshed).toEqual({
+      type: "oauth",
+      provider: "openai",
+      access: "live-access",
+      refresh: "live-refresh",
+      expires: 456,
+      accountId: "account-1",
+    });
+    expect(refreshed.refreshDeadAt).toBeUndefined();
+    expect("refreshDeadAt" in refreshed).toBe(false);
+  });
+
+  it("keeps stored identity fields the provider response omits", () => {
+    const refreshed = mergeSuccessfulOAuthRefreshCredential(
+      {
+        type: "oauth",
+        provider: "openai",
+        access: "old-access",
+        refresh: "old-refresh",
+        email: "user@example.com",
+        accountId: "acct-shared",
+      },
+      { access: "new-access" },
+    );
+    expect(refreshed).toMatchObject({
+      access: "new-access",
+      refresh: "old-refresh",
+      email: "user@example.com",
+      accountId: "acct-shared",
+    });
+  });
+});
 
 describe("overlayRuntimeExternalOAuthProfiles", () => {
   it("isolates runtime OAuth overlays without structuredClone", () => {
@@ -107,7 +158,7 @@ describe("overlayRuntimeExternalOAuthProfiles", () => {
     ]);
   });
 
-  it("preserves existing runtime-only provenance for authoritative overlays", () => {
+  it("replaces existing runtime-only provenance for authoritative overlays", () => {
     const store: AuthProfileStore = {
       version: 1,
       runtimeExternalProfileIds: ["minimax:minimax-cli"],
@@ -127,8 +178,40 @@ describe("overlayRuntimeExternalOAuthProfiles", () => {
       runtimeExternalProfileIdsAuthoritative: true,
     });
 
-    expect(overlaid.runtimeExternalProfileIds).toEqual(["minimax:minimax-cli"]);
+    expect(overlaid.runtimeExternalProfileIds).toEqual([]);
     expect(overlaid.runtimeExternalProfileIdsAuthoritative).toBe(true);
+  });
+
+  it("clears prior runtime-only provenance when the current overlay marks a profile persisted", () => {
+    const store: AuthProfileStore = {
+      version: 1,
+      runtimeExternalProfileIds: ["anthropic:claude-cli"],
+      profiles: {
+        "anthropic:claude-cli": {
+          type: "oauth",
+          provider: "anthropic",
+          access: "old-access",
+          refresh: "old-refresh",
+          expires: 1,
+        },
+      },
+    };
+
+    const overlaid = overlayRuntimeExternalOAuthProfiles(store, [
+      {
+        profileId: "anthropic:claude-cli",
+        persistence: "persisted",
+        credential: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "new-access",
+          refresh: "new-refresh",
+          expires: 2,
+        },
+      },
+    ]);
+
+    expect(overlaid.runtimeExternalProfileIds).toBeUndefined();
   });
 
   it("removes persisted provenance for every externally overlaid profile", () => {
@@ -176,6 +259,25 @@ describe("overlayRuntimeExternalOAuthProfiles", () => {
       provider: "openai-codex",
       access: "valid-access",
       refresh: "valid-refresh",
+      expires: Date.now() + 60_000,
+    };
+
+    expect(shouldReplaceStoredOAuthCredential(existing, incoming)).toBe(true);
+  });
+
+  it("replaces a future-dated stored credential without usable access material", () => {
+    const existing: OAuthCredential = {
+      type: "oauth",
+      provider: "openai-codex",
+      access: "   ",
+      refresh: "stored-refresh",
+      expires: Date.now() + 24 * 60 * 60_000,
+    };
+    const incoming: OAuthCredential = {
+      type: "oauth",
+      provider: "openai-codex",
+      access: "incoming-access",
+      refresh: "incoming-refresh",
       expires: Date.now() + 60_000,
     };
 
