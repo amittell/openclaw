@@ -4,6 +4,7 @@
 import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
+import type { TasksMaintenanceResult } from "../../packages/gateway-protocol/src/index.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { isRich, theme } from "../../packages/terminal-core/src/theme.js";
 import { formatCliCommand } from "../cli/command-format.js";
@@ -576,9 +577,47 @@ export async function tasksAuditCommand(
 
 /** Previews or applies task, task-flow, and backing session-registry maintenance. */
 export async function tasksMaintenanceCommand(
-  opts: { json?: boolean; apply?: boolean },
+  opts: { json?: boolean; apply?: boolean; gateway?: boolean },
   runtime: RuntimeEnv,
 ) {
+  // Remote maintenance must never combine remote task effects with local audit,
+  // flow or session snapshots. Failure also returns without a local fallback.
+  if (opts.gateway) {
+    try {
+      if (!opts.apply) {
+        throw new Error(
+          "Gateway maintenance requires --apply. Run `openclaw tasks maintenance --gateway --apply`.",
+        );
+      }
+      const { callGateway } = await import("../gateway/call.js");
+      const tasks = await callGateway<TasksMaintenanceResult>({
+        method: "tasks.maintenance",
+        params: {},
+        timeoutMs: 10_000,
+      });
+      if (opts.json) {
+        writeRuntimeJson(runtime, { mode: "apply", authority: "gateway", maintenance: { tasks } });
+      } else {
+        runtime.log(
+          info(
+            `Gateway task maintenance (applied): ${tasks.reconciled} reconcile · ${tasks.recovered} recovered · ${tasks.cleanupStamped} cleanup stamp · ${tasks.pruned} prune`,
+          ),
+        );
+      }
+    } catch (error) {
+      if (opts.json) {
+        writeRuntimeJson(runtime, formatCliJsonFailure(error));
+      } else {
+        runtime.error(
+          sanitizeTerminalText(
+            `Gateway task maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+      }
+      runtime.exit(1);
+    }
+    return;
+  }
   configureTaskMaintenanceFromConfig();
   assertTaskFlowRegistryMaintenanceReady();
   const auditBefore = getInspectableTaskAuditSummary();

@@ -176,6 +176,12 @@ describe("registerTasksCommand", () => {
       expected: { json: true, apply: true },
     },
     {
+      label: "Gateway maintenance explicitly applies with leaf JSON",
+      args: ["tasks", "maintenance", "--gateway", "--apply", "--json"],
+      handler: mocks.tasksMaintenanceCommand,
+      expected: { json: true, apply: true, gateway: true },
+    },
+    {
       label: "task show JSON before the leaf",
       args: ["tasks", "--json", "show", "run-123"],
       handler: mocks.tasksShowCommand,

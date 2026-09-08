@@ -716,10 +716,14 @@ a synthetic resume message before the aborted marker is cleared.
 Automatic restart recovery is bounded per child session. If the same
 sub-agent child is accepted for orphan recovery repeatedly inside the
 rapid re-wedge window, OpenClaw persists a recovery tombstone on that
-session and stops auto-resuming it on later restarts. Run
-`openclaw tasks maintenance --apply` to reconcile the task record, or
-`openclaw doctor --fix` to clear stale aborted recovery flags on
-tombstoned sessions.
+session and stops auto-resuming it on later restarts. With `operator.admin`
+credentials and a fully restored Gateway, run
+`openclaw tasks maintenance --gateway --apply` to request native task reconciliation.
+This applies task registry maintenance on the Gateway. It retains active runs and
+ambiguous or multi-agent ownership; a tombstone alone cannot prove that a run has
+ended. Offline maintenance retains native tasks. Use `openclaw doctor --fix` to
+clear stale aborted recovery flags on tombstoned sessions. See
+[tasks maintenance](/cli/tasks#maintenance) for output and readiness requirements.
 
 <Note>
 If a sub-agent spawn fails with Gateway `PAIRING_REQUIRED` /
