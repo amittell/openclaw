@@ -14,7 +14,7 @@ import {
   resetAgentRunRegistryForTest,
   rotateAgentRunRegistryLifecycleGeneration,
 } from "../../../infra/agent-run-registry.js";
-import { peekSystemEvents } from "../../../infra/system-events.js";
+import * as systemEvents from "../../../infra/system-events.js";
 import {
   beginSessionWorkAdmission,
   isSessionLifecycleMutationActive,
@@ -27,6 +27,7 @@ import {
   getTaskById,
   maybeDeliverTaskTerminalUpdate,
   publishTaskRecordAfterAtomicStore,
+  reloadTaskRuntimeStateFromStore,
   updateTaskNotifyPolicyById,
 } from "../../../tasks/runtime-internal.js";
 import {
@@ -40,6 +41,10 @@ import {
   listTaskRecordsInDatabase,
   upsertTaskRegistryRecordToSqlite,
 } from "../../../tasks/task-registry.store.sqlite.js";
+import {
+  maybeDeliverTaskStateChangeUpdate,
+  resetTaskRegistryForTests,
+} from "../../../tasks/task-registry.test-support.js";
 import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { addSession, deleteSession } from "../../bash-process-registry.js";
@@ -83,6 +88,7 @@ async function fixture(): Promise<TaskRecord> {
 }
 
 afterEach(() => {
+  systemEvents.resetSystemEventsForTest();
   subagentRuns.clear();
   resetAgentRunRegistryForTest();
   resetProcessRegistryForTests();
@@ -435,29 +441,182 @@ describe("native current orphan owner", () => {
     });
   });
 
-  it("preserves native delivery ownership after an orphan transition", async () => {
+  it.each([
+    ["done_only", "pending"],
+    ["state_changes", "pending"],
+    ["state_changes", "delivered"],
+    ["silent", "not_applicable"],
+  ] as const)(
+    "queues the requester outcome for %s after %s",
+    async (notifyPolicy, deliveryStatus) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const task = {
+          ...(await fixture()),
+          notifyPolicy,
+          deliveryStatus,
+        };
+        upsertTaskRegistryRecordToSqlite(task);
+        publishTaskRecordAfterAtomicStore(task);
+        if (notifyPolicy === "state_changes" && deliveryStatus === "pending") {
+          // The actual progress owner refreshes liveness. Emit it in the old
+          // window so the later census still observes the real grace period.
+          const progressClock = vi.spyOn(Date, "now").mockReturnValue(task.lastEventAt! + 1);
+          try {
+            await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+              at: task.lastEventAt! + 1,
+              kind: "progress",
+              summary: "Checking current execution owner",
+            });
+          } finally {
+            progressClock.mockRestore();
+          }
+          expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
+            expect.stringContaining("Checking current execution owner"),
+          ]);
+        }
+        const priorEvents = systemEvents.peekSystemEvents(task.ownerKey);
+        configureTaskRegistryMaintenance({
+          runtimeAuthoritative: true,
+          subagentReconciler: createSubagentTaskReconciler({ isRegistryRestored: () => true }),
+        });
+        expect((await runTaskRegistryMaintenance()).reconciled).toBe(1);
+        const lost = getTaskById(task.taskId);
+        const silent = notifyPolicy === "silent";
+        expect(lost).toMatchObject({
+          status: "lost",
+          deliveryStatus: silent ? "not_applicable" : "session_queued",
+        });
+        expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
+          ...priorEvents,
+          ...(silent
+            ? []
+            : [
+                expect.stringContaining(
+                  "No current subagent execution owner; historical outcome unknown",
+                ),
+              ]),
+        ]);
+        expect(await maybeDeliverTaskTerminalUpdate(task.taskId)).toEqual(lost);
+        expect((await runTaskRegistryMaintenance()).reconciled).toBe(0);
+        expect(systemEvents.peekSystemEvents(task.ownerKey)).toHaveLength(
+          priorEvents.length + (silent ? 0 : 1),
+        );
+        expect(listTaskRecordsInDatabase(openOpenClawStateDatabase())[0]).toEqual(lost);
+      });
+    },
+  );
+
+  it("resumes a committed pending outcome after restart without offline delivery", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const task = {
-        ...(await fixture()),
-        notifyPolicy: "done_only" as const,
-        deliveryStatus: "pending" as const,
-      };
+      const task = { ...(await fixture()), notifyPolicy: "done_only" as const };
+      upsertTaskRegistryRecordToSqlite(task);
+      publishTaskRecordAfterAtomicStore(task);
+      expect(
+        await createSubagentTaskReconciler({ isRegistryRestored: () => true }).reconcile(
+          task,
+          Date.now(),
+          async () => false,
+        ),
+      ).toMatchObject({ status: "lost", deliveryStatus: "pending" });
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
+      resetTaskRegistryForTests({ persist: false });
+      configureTaskRegistryMaintenance({ runtimeAuthoritative: false });
+      expect((await runTaskRegistryMaintenance()).pruned).toBe(0);
+      expect(getTaskById(task.taskId)).toMatchObject({ status: "lost", deliveryStatus: "pending" });
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
+      configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
+      await runTaskRegistryMaintenance();
+      expect(getTaskById(task.taskId)?.deliveryStatus).toBe("session_queued");
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
+        expect.stringContaining("historical outcome unknown"),
+      ]);
+      await runTaskRegistryMaintenance();
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toHaveLength(1);
+    });
+  });
+
+  it("retries a failed orphan enqueue after reload before retiring its record", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const task = { ...(await fixture()), notifyPolicy: "done_only" as const };
       upsertTaskRegistryRecordToSqlite(task);
       publishTaskRecordAfterAtomicStore(task);
       configureTaskRegistryMaintenance({
         runtimeAuthoritative: true,
         subagentReconciler: createSubagentTaskReconciler({ isRegistryRestored: () => true }),
       });
-      expect((await runTaskRegistryMaintenance()).reconciled).toBe(1);
-      const lost = getTaskById(task.taskId);
-      expect(lost).toMatchObject({ status: "lost", deliveryStatus: "pending" });
-      // The old generic maintenance call also delegates native lost to its
-      // existing lifecycle owner; current absence cannot invent a provider result.
-      expect(await maybeDeliverTaskTerminalUpdate(task.taskId)).toEqual(lost);
-      expect(peekSystemEvents(task.ownerKey)).toEqual([]);
-      expect(listTaskRecordsInDatabase(openOpenClawStateDatabase())[0]).toEqual(lost);
+      const failure = vi.spyOn(systemEvents, "enqueueSystemEvent").mockImplementation(() => {
+        throw new Error("owned queue admission failure");
+      });
+      await runTaskRegistryMaintenance();
+      const lost = getTaskById(task.taskId)!;
+      expect(lost.deliveryStatus).toBe("failed");
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([]);
+      reloadTaskRuntimeStateFromStore();
+      vi.spyOn(Date, "now").mockReturnValue(lost.endedAt! + 2 * 24 * 60 * 60_000);
+      expect((await runTaskRegistryMaintenance()).pruned).toBe(0);
+      expect(getTaskById(task.taskId)?.deliveryStatus).toBe("failed");
+      failure.mockRestore();
+      expect((await runTaskRegistryMaintenance()).pruned).toBe(1);
+      expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
+        expect.stringContaining("historical outcome unknown"),
+      ]);
+      expect(getTaskById(task.taskId)).toBeUndefined();
     });
   });
+
+  it.each(["silent", "progress", "cancelled", "pending", "covered", "other-owner"] as const)(
+    "delivers orphan outcomes once without confusion from a %s peer",
+    async (peerKind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const task = { ...(await fixture()), notifyPolicy: "done_only" as const };
+        upsertTaskRegistryRecordToSqlite(task);
+        publishTaskRecordAfterAtomicStore(task);
+        const lost = await createSubagentTaskReconciler({
+          isRegistryRestored: () => true,
+        }).reconcile(task, Date.now(), async () => false);
+        expect(lost).not.toBeNull();
+        const peer: TaskRecord = {
+          ...lost!,
+          taskId: "earlier-peer",
+          createdAt: task.createdAt - 1,
+          ...(peerKind === "silent" ? { notifyPolicy: "silent" } : {}),
+          ...(peerKind === "cancelled"
+            ? { status: "cancelled", error: "Cancelled by operator." }
+            : {}),
+          ...(peerKind === "progress"
+            ? {
+                status: "running",
+                error: undefined,
+                endedAt: undefined,
+                deliveryStatus: "delivered",
+              }
+            : {}),
+          ...(peerKind === "other-owner" ? { ownerKey: "agent:main:other" } : {}),
+        };
+        upsertTaskRegistryRecordToSqlite(peer);
+        publishTaskRecordAfterAtomicStore(peer);
+        configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
+        if (peerKind === "covered") {
+          await maybeDeliverTaskTerminalUpdate(peer.taskId);
+        }
+        await runTaskRegistryMaintenance();
+        await Promise.all([
+          maybeDeliverTaskTerminalUpdate(task.taskId),
+          maybeDeliverTaskTerminalUpdate(peer.taskId),
+        ]);
+        await runTaskRegistryMaintenance();
+        expect(systemEvents.peekSystemEvents(task.ownerKey)).toEqual([
+          expect.stringContaining("historical outcome unknown"),
+        ]);
+        if (peerKind === "other-owner") {
+          expect(systemEvents.peekSystemEvents(peer.ownerKey)).toHaveLength(1);
+        }
+        expect(getTaskById(task.taskId)?.deliveryStatus).toBe(
+          peerKind === "pending" || peerKind === "covered" ? "not_applicable" : "session_queued",
+        );
+      });
+    },
+  );
 
   it("retains incomplete restoration without invoking recovery or publishing a mirror", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {

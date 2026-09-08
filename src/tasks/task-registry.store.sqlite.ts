@@ -29,6 +29,7 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { SUBAGENT_ORPHAN_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { parseDeliveryContextJson, parseSqliteJsonValue } from "./task-registry.sqlite.shared.js";
 import type { TaskRegistryStoreSnapshot } from "./task-registry.store.types.js";
 import {
@@ -296,7 +297,9 @@ export function markOrphanTaskLostInDatabase(params: {
     status: "lost",
     endedAt: now,
     lastEventAt: now,
-    error: "No current subagent execution owner; historical outcome unknown",
+    error: SUBAGENT_ORPHAN_TASK_ERROR,
+    // A prior progress notification cannot acknowledge this new terminal outcome.
+    deliveryStatus: current.notifyPolicy === "silent" ? current.deliveryStatus : "pending",
   };
   next.cleanupAfter ??= resolveTaskCleanupAfter(next);
   const { task_id: _taskId, ...values } = bindTaskRecord(next);
