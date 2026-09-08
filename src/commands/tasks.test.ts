@@ -532,7 +532,7 @@ describe("tasks commands", () => {
         expect.objectContaining({
           taskId: task.taskId,
           decision: "retained",
-          reason: "backing_session_present",
+          reason: "subagent_owner_reconciliation_required",
           childSessionKey,
         }),
       );
@@ -591,7 +591,7 @@ describe("tasks commands", () => {
         expect.objectContaining({
           taskId: task.taskId,
           decision: "retained",
-          reason: "backing_session_present",
+          reason: "subagent_owner_reconciliation_required",
           childSessionKey,
         }),
       );
