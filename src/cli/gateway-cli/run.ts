@@ -508,10 +508,11 @@ async function probeGatewayHealthz(params: {
   const timeoutMs = params.timeoutMs ?? SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS;
   const result = await requestGatewayLocalHttpProbe({
     ...params,
-    // ?strict=1 opts into shutdown-aware 503 responses (see `isStrictLiveProbeRequest`
-    // in server-http-probes.ts). Public probes that hit /healthz without this marker
-    // keep receiving 200 during shutdown, so external monitors keep their contract.
-    pathname: "/healthz?strict=1",
+    pathname: "/healthz",
+    // Shutdown-aware: a draining gateway answers 503 here, which is how supervised
+    // lock recovery tells a live gateway from a zombie still holding the port.
+    // Public probes omit the marker and keep their legacy always-200 contract.
+    strictLiveProbe: true,
     timeoutMs,
   });
   return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -522,11 +523,11 @@ function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
   return async (params: { host: string; port: number }): Promise<boolean> => {
     const result = await probe.requestHttp({
       ...params,
-      // Same strict marker as probeGatewayHealthz: this is the probe the
-      // supervised-lock recovery actually runs in production (wired at the
-      // runGatewayCommandOnce call site), so without ?strict=1 a draining
-      // gateway answers 200 and the zombie/drain detection never fires.
-      pathname: "/healthz?strict=1",
+      pathname: "/healthz",
+      // This is the probe supervised-lock recovery actually runs in production
+      // (wired at the runGatewayCommandOnce call site); without the strict marker a
+      // draining gateway answers 200 and the zombie/drain detection never fires.
+      strictLiveProbe: true,
       timeoutMs: SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS,
     });
     return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");

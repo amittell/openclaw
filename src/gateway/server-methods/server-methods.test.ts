@@ -48,8 +48,8 @@ import {
   resolveEffectiveChatHistoryMaxChars,
   sanitizeChatHistoryMessages,
 } from "../chat-display-projection.js";
-import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import { bumpConfigReloadObservedGeneration } from "../config-reload-observed.js";
+import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import type { HealthSummary } from "../health/types.js";
 import { createChatAbortMarker, createChatRunState } from "../server-chat-state.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";

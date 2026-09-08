@@ -22,6 +22,12 @@ export type ConfiguredGatewayLocalProbe = {
     pathname: "/healthz" | "/readyz";
     port: number;
     timeoutMs: number;
+    /**
+     * Opt into shutdown-aware probing: adds the `strict=1` marker the gateway reads
+     * in `isStrictLiveProbeRequest`, so a draining gateway answers 503 instead of 200.
+     * Public probes omit it and keep their legacy always-200 contract.
+     */
+    strictLiveProbe?: boolean;
   }): Promise<GatewayHttpProbeResponse | null>;
   resolveWebSocketTarget(port: number): Promise<GatewayLocalProbeTarget | null>;
 };
@@ -36,6 +42,12 @@ export async function requestGatewayLocalHttpProbe(params: {
   port: number;
   timeoutMs: number;
   tlsFingerprint?: string;
+  /**
+   * Opt into shutdown-aware probing: adds the `strict=1` marker the gateway reads
+   * in `isStrictLiveProbeRequest`, so a draining gateway answers 503 instead of 200.
+   * Public probes omit it and keep their legacy always-200 contract.
+   */
+  strictLiveProbe?: boolean;
 }): Promise<GatewayHttpProbeResponse | null> {
   if (params.timeoutMs <= 0) {
     return null;
@@ -55,7 +67,7 @@ export async function requestGatewayLocalHttpProbe(params: {
       {
         hostname: normalizeGatewayHttpProbeHost(params.host),
         port: params.port,
-        path: params.pathname,
+        path: params.strictLiveProbe ? `${params.pathname}?strict=1` : params.pathname,
         method: "GET",
         timeout: params.timeoutMs,
         // Self-signed local Gateway certificates are trusted only by the exact

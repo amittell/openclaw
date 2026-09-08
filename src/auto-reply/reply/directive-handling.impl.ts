@@ -30,10 +30,6 @@ import { maybeHandleUnexpectedDirectiveArguments } from "./directive-handling.ar
 import { applyModelRuntimeDirective } from "./directive-handling.model-runtime.js";
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import { maybeHandleModelDirectiveInfo } from "./directive-handling.model.js";
-import {
-  appendTemperatureAck,
-  formatTemperatureDirectiveReply,
-} from "./directive-handling.temperature.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
 import { maybeHandleQueueDirective } from "./directive-handling.queue-validation.js";
 import {
@@ -55,6 +51,10 @@ import {
   resolveDirectiveTouchedSessionFields,
   withOptions,
 } from "./directive-handling.shared.js";
+import {
+  appendTemperatureAck,
+  formatTemperatureDirectiveReply,
+} from "./directive-handling.temperature.js";
 import { resolveDirectiveRuntimeContext } from "./directive-runtime-context.js";
 import type { ReasoningLevel, ThinkLevel } from "./directives.js";
 import {

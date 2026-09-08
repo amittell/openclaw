@@ -20,8 +20,8 @@ import {
 } from "../skills/runtime/remote.js";
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
-import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import { retireDeviceTokenClients } from "./device-token-client-lifecycle.js";
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-descriptors.js";
 import { disposeNodeConnectionNotifications } from "./node-connection-notifications.js";
 import { clearNodeWakeState } from "./node-wake-state.js";

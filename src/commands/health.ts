@@ -40,7 +40,6 @@ import {
   gatewayProbeResultWasRateLimited,
 } from "./gateway-health-auth-diagnostic.js";
 import { formatDeliveryQueueHealthLine, formatHealthChannelLines } from "./health-format.js";
-import { formatHealthChannelLines } from "./health-format.js";
 import { formatRuntimeConfigHealthLine } from "./health-runtime-config.js";
 import { logGatewayConnectionDetails } from "./status.gateway-connection.js";
 export { formatHealthChannelLines } from "./health-format.js";

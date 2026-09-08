@@ -544,13 +544,16 @@ export default definePluginEntry({
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig);
 
     const autoRecallHook = createAutoRecallHook({
-        logger: api.logger,
-        db,
-        embeddings,
-        resolveCurrentConfig: resolveCurrentHookConfig,
-        resolveEnabledAgentId,
-        readCooldown: readMemoryRecallCooldown,
-        recordCooldown: recordMemoryRecallCooldown,
+      logger: api.logger,
+      db,
+      embeddings,
+      resolveCurrentConfig: resolveCurrentHookConfig,
+      resolveEnabledAgentId,
+      readCooldown: readMemoryRecallCooldown,
+      recordCooldown: recordMemoryRecallCooldown,
+      // Same constant recordMemoryRecallCooldown parks recall for, so the hook's
+      // warn reports the real duration instead of a hardcoded guess.
+      cooldownMs: DEFAULT_RECALL_COOLDOWN_MS,
     });
 
     api.on(

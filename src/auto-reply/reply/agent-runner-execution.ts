@@ -50,12 +50,8 @@ import {
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
 } from "./agent-runner-auto-fallback.js";
 import { handleAgentExecutionError } from "./agent-runner-error-handler.js";
-import { recordAgentTurnExecutionOutcome } from "./agent-runner-execution-outcome.js";
-import {
-  handleAgentExecutionError,
-  type OverloadRetryState,
-} from "./agent-runner-error-handler.js";
 import { resolveAutoFallbackPrimaryProbeClearSelection } from "./agent-runner-execution-auto-fallback-evidence.js";
+import { recordAgentTurnExecutionOutcome } from "./agent-runner-execution-outcome.js";
 import type {
   AgentTurnCompaction,
   AgentTurnExecutionResult,

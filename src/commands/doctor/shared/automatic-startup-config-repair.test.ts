@@ -140,7 +140,7 @@ describe("automatic startup config repair", () => {
       issuePaths: ["meta"],
     });
 
-    expect(planStartupConfigRepair(snapshot)).toBeNull();
+    expect(planAutomaticConfigRepair(snapshot)).toBeNull();
   });
 
   it("admits a config whose only migration is plugin-owned", () => {

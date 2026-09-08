@@ -39,6 +39,8 @@ function createHandleParams(
   const sessionEntry = overrides.sessionEntry ?? createSessionEntry();
   return {
     cfg: baseConfig(),
+    // 9.2 made agentId required on the core params; keep the builder self-sufficient.
+    agentId: overrides.agentId ?? "main",
     directives: parseInlineSessionDirectives(""),
     sessionEntry,
     sessionStore: { [sessionKey]: sessionEntry },

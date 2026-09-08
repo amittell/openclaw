@@ -17,12 +17,6 @@ import { closePluginStateDatabase } from "../plugin-state/plugin-state-store.js"
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
-import {
-  collectGatewayProcessMemoryUsageMb,
-  markGatewayRestartTrace,
-  measureGatewayRestartTrace,
-  recordGatewayRestartTrace,
-} from "./restart-trace.js";
 // Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers that
 // only need the running / shutting-down distinction (gateway startup, HTTP probe
 // handler) do not pull in this close module's dependency graph. Re-exported below
@@ -33,6 +27,12 @@ import {
   resetGatewayShuttingDownForTest,
   resetGatewayShuttingDownState,
 } from "./gateway-shutdown-state.js";
+import {
+  collectGatewayProcessMemoryUsageMb,
+  markGatewayRestartTrace,
+  measureGatewayRestartTrace,
+  recordGatewayRestartTrace,
+} from "./restart-trace.js";
 import type { ChatRunState } from "./server-chat-state.js";
 import { WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import type { MediaCleanupStopResult } from "./server-media-cleanup-lifecycle.js";
@@ -95,6 +95,16 @@ function summarizeHandleCounts(names: readonly string[], label: string): string 
   return `${label}[${names.length}] ${parts.join(",")}`;
 }
 
+/** Constructor name for one active handle, or nothing when the handle is not an object. */
+function readHandleConstructorName(handle: unknown): string[] {
+  if (typeof handle !== "object" || handle === null) {
+    return [];
+  }
+  // SAFETY: the guard above narrows `handle` to a non-null object; the asserted shape is entirely optional and read through `?.` with an "Unknown" fallback, so a missing constructor name cannot throw.
+  const named = handle as { constructor?: { name?: string } };
+  return [named.constructor?.name ?? "Unknown"];
+}
+
 function summarizeActiveHandlesForZombieReport(): string {
   // SAFETY: widens `process` to two undocumented Node internals; both members are declared optional and every call site below guards with `?.()`, so a runtime without them yields undefined rather than an unchecked call.
   const processWithResourceAccess = process as NodeJS.Process & {
@@ -105,12 +115,7 @@ function summarizeActiveHandlesForZombieReport(): string {
   // back to getActiveResourcesInfo for newer Node where _getActiveHandles is removed.
   const handles = processWithResourceAccess["_getActiveHandles"]?.();
   if (handles && handles.length > 0) {
-    const names = handles.flatMap((handle) =>
-      typeof handle === "object" && handle !== null
-        ? // SAFETY: `handle` is `unknown` narrowed to a non-null object by the guard above; the asserted shape is entirely optional and read through `?.` with an "Unknown" fallback, so a missing constructor name cannot throw.
-          [(handle as { constructor?: { name?: string } }).constructor?.name ?? "Unknown"]
-        : [],
-    );
+    const names = handles.flatMap((handle) => readHandleConstructorName(handle));
     return summarizeHandleCounts(names, "handles");
   }
   const resources = processWithResourceAccess.getActiveResourcesInfo?.();

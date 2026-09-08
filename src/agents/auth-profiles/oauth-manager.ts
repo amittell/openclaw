@@ -19,6 +19,7 @@ import {
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import { shouldMirrorRefreshedOAuthCredential } from "./oauth-identity.js";
 import {
+  isPermanentOAuthRefreshFailure,
   OAuthRefreshFailureError,
   readProviderOAuthRefreshFailure,
 } from "./oauth-refresh-failure.js";
@@ -29,8 +30,10 @@ import {
 import {
   areOAuthCredentialsEquivalent,
   hasMatchingOAuthIdentity,
+  isOAuthRefreshDead,
   isSafeToAdoptBootstrapOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
+  isSameOAuthRefreshGrant,
   shouldBootstrapFromExternalCliCredential,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
@@ -295,7 +298,9 @@ export function resolveEffectiveOAuthCredentialCore(params: {
   if (!imported) {
     return params.credential;
   }
-  if (hasUsableOAuthCredential(params.credential)) {
+  // A tombstoned grant is "usable" by expiry alone but can never refresh again,
+  // so it must not win over an external CLI grant that can.
+  if (hasUsableOAuthCredential(params.credential) && !isOAuthRefreshDead(params.credential)) {
     authProfilesLog.debug("resolved oauth credential from canonical local store", {
       profileId: params.profileId,
       provider: params.credential.provider,
@@ -487,6 +492,34 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
       },
     });
     return result !== null && saved;
+  }
+
+  async function markStoredOAuthCredentialRefreshDeadWithStoreLock(params: {
+    agentDir?: string;
+    profileId: string;
+    attempted: readonly OAuthCredential[];
+    deadAt: number;
+  }): Promise<boolean> {
+    let marked = false;
+    const result = await updateAuthProfileStoreWithLock({
+      agentDir: params.agentDir,
+      updater: (store) => {
+        const existing = store.profiles[params.profileId];
+        if (existing?.type !== "oauth" || existing.refreshDeadAt !== undefined) {
+          return false;
+        }
+        // CAS on the refresh grant, not full equivalence: another writer may
+        // have mirrored a different access token for the same dead grant, but
+        // a NEW grant must never be tombstoned by a stale failure.
+        if (!params.attempted.some((attempt) => isSameOAuthRefreshGrant(existing, attempt))) {
+          return false;
+        }
+        store.profiles[params.profileId] = { ...existing, refreshDeadAt: params.deadAt };
+        marked = true;
+        return true;
+      },
+    });
+    return result !== null && marked;
   }
 
   async function resolveOAuthCredentialAfterPersistMiss(params: {
@@ -907,6 +940,33 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           }
         } catch {
           // keep the original refresh error below
+        }
+      }
+      // A permanently rejected grant is tombstoned in place so external CLI sync
+      // can re-seed the slot without looping on the same dead refresh token.
+      if (isPermanentOAuthRefreshFailure(error)) {
+        try {
+          const marked = await markStoredOAuthCredentialRefreshDeadWithStoreLock({
+            agentDir: resolvePersistedAuthProfileOwnerAgentDir({
+              profileId: params.profileId,
+              agentDir: params.agentDir,
+            }),
+            profileId: params.profileId,
+            attempted: [effectiveCredential, ...attemptedCredentials],
+            deadAt: Date.now(),
+          });
+          if (marked) {
+            authProfilesLog.warn(
+              "marked stored OAuth credential refresh-dead after permanent refresh failure; external CLI login can re-seed this profile",
+              { profileId: params.profileId, provider: params.credential.provider },
+            );
+          }
+        } catch (markError) {
+          // Best-effort: the refresh failure below is the actionable signal.
+          authProfilesLog.debug("failed to mark OAuth credential refresh-dead", {
+            profileId: params.profileId,
+            error: formatErrorMessage(markError),
+          });
         }
       }
       throw new OAuthManagerRefreshError({

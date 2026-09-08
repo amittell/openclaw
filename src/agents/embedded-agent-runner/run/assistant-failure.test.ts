@@ -868,7 +868,6 @@ describe("handleEmbeddedAssistantFailure", () => {
     fixture.input.fallbackConfigured = false;
     fixture.input.emptyErrorRetries = 3; // at the cap
     fixture.input.maybeRefreshRuntimeAuthForAuthError = vi.fn(async () => false);
-    fixture.input.maybeRetrySameModelRateLimit = vi.fn(async () => false);
     fixture.input.advanceAuthProfile = vi.fn(async () => false);
     fixture.input.advanceRateLimitAuthProfile = vi.fn(async () => false);
 
@@ -880,7 +879,6 @@ describe("handleEmbeddedAssistantFailure", () => {
     });
     // No profile rotation, no model fallback, no rate-limit retry.
     expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
-    expect(fixture.input.maybeRetrySameModelRateLimit).not.toHaveBeenCalled();
     // No failover trace pushed (the turn terminates, not failovers).
     expect(fixture.traceAttempts).toEqual([]);
   });
@@ -915,8 +913,11 @@ describe("handleEmbeddedAssistantFailure", () => {
     // model-fallback path, which throws a FailoverError so the outer run loop can
     // switch to the fallback model. The hard-stop only applies to single-profile
     // models (fallbackConfigured === false).
+    // 9.2 wraps the provider string in its own run-failure copy rather than
+    // surfacing the raw text, so assert on the failed model reference, which is
+    // the part that identifies WHICH model the failover is rotating away from.
     await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toThrow(
-      "unknown provider glitch",
+      /anthropic\/mock-1/,
     );
     // Pin the FailoverError class + reason (not just the message string) so a future
     // refactor cannot silently convert this into a plain Error or a different reason.

@@ -223,9 +223,15 @@ export async function handleEmbeddedAssistantFailure(input: {
   // spins to the ingress 5-min adoption-stall watchdog. Hard-stop the same-model
   // silent-error path here so the turn terminates with a visible error payload
   // instead. Reuses MAX_EMPTY_ERROR_RETRIES; no new constant.
+  // Only UNCLASSIFIED silent failures hard-stop here. A resolved auth-profile
+  // failure is classified, and both this fork and upstream expect it to carry
+  // into terminal resolution as `proceed` so the profile is marked and rotated.
+  // 9.2 classifies more of these attempts as `null`, so without this guard the
+  // hard-stop swallows auth failures that used to reach the profile path.
   if (
     !input.fallbackConfigured &&
     assistantFailoverReason === null &&
+    assistantProfileFailureReason === null &&
     replaySafeSilentErrorFailure &&
     input.emptyErrorRetries >= MAX_EMPTY_ERROR_RETRIES
   ) {

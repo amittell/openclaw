@@ -6,15 +6,12 @@ import {
   createCompactionSummaryMessage,
   createCustomMessage,
 } from "../messages.js";
-import type {
-  CompactionEntry,
-  ResetEntry,
-  SessionContext,
-  SessionTreeEntry,
-} from "../types.js";
+import type { SessionContext, SessionTreeEntry } from "../types.js";
 import { selectResetKeptEntries } from "./tool-result-pairing.js";
 
-type ContextBoundary = CompactionEntry | ResetEntry;
+// Derived from the exported union so the boundary entry types stay internal to
+// agent-core rather than being exported just for this file.
+type ContextBoundary = Extract<SessionTreeEntry, { type: "compaction" | "reset" }>;
 const SESSION_HISTORY_PRELUDE = Symbol.for("openclaw.sessionHistoryPrelude");
 
 /** The same semantic cut is used before payload acquisition and when building messages. */

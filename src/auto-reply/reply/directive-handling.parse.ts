@@ -161,7 +161,7 @@ export function parseInlineSessionDirectives(
     extractThinkDirective(value, { strict: command === "think" }),
   );
   const temperature = parseScopedDirective("temperature", (value) =>
-    extractTemperatureDirective(value, { strict: nativeCommand === "temperature" }),
+    extractTemperatureDirective(value, { strict: command === "temperature" }),
   );
   const verbose = parseScopedDirective("verbose", (value) =>
     extractVerboseDirective(value, { strict: command === "verbose" }),

@@ -1082,7 +1082,15 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     }
   }
 
-  let { runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState();
+  let {
+    runResult,
+    fallbackProvider,
+    fallbackModel,
+    requestedProvider,
+    requestedModel,
+    usedFallback,
+    runEndedAt,
+  } = executor.getState();
   if (!runResult) {
     throw new Error("cron isolated run returned no result");
   }
@@ -1139,7 +1147,15 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
         "Use tools when needed, including sessions_spawn for parallel subtasks, wait for spawned subagents to finish, then return only the final summary.",
       ].join(" ");
       await executor.runPrompt(continuationPrompt);
-      ({ runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState());
+      ({
+        runResult,
+        fallbackProvider,
+        fallbackModel,
+        requestedProvider,
+        requestedModel,
+        usedFallback,
+        runEndedAt,
+      } = executor.getState());
     }
   }
 
@@ -1150,6 +1166,9 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     runResult,
     fallbackProvider,
     fallbackModel,
+    requestedProvider,
+    requestedModel,
+    usedFallback,
     runStartedAt,
     runEndedAt,
     liveSelection: params.liveSelection,

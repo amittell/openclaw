@@ -3,4 +3,7 @@
 # Worker bundle installation no longer injects OPENCLAW_STATE_DIR into a remote npm process.
 # The internal Node-version check no longer contributes a false OPENCLAW_* name.
 # The next-turn runtime-context preface constant no longer exists as an OPENCLAW_* name.
-498
+# Raised 498 -> 499 with owner approval (2026-09-08) for the fork carry onto
+# v2026.9.2: OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS tunes the gateway
+# post-shutdown force-exit watchdog in src/gateway/server-close.ts.
+499

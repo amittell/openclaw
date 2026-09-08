@@ -22,6 +22,7 @@ describe("mergeSuccessfulOAuthRefreshCredential", () => {
         provider: "openai",
         access: "dead-access",
         refresh: "dead-refresh",
+        expires: 0,
         refreshDeadAt: 123,
         accountId: "account-1",
       },
@@ -50,10 +51,14 @@ describe("mergeSuccessfulOAuthRefreshCredential", () => {
         provider: "openai",
         access: "old-access",
         refresh: "old-refresh",
+        expires: 0,
         email: "user@example.com",
         accountId: "acct-shared",
       },
-      { access: "new-access" },
+      // A refresh response that carries the token fields but omits the identity
+      // metadata (email/accountId) - the adapter contract is a full
+      // OAuthCredentials, so the omission under test is the identity fields.
+      { access: "new-access", refresh: "old-refresh", expires: 456 },
     );
     expect(refreshed).toMatchObject({
       access: "new-access",
