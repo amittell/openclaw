@@ -18,10 +18,11 @@ const PLUGIN_SDK_SUBPATH_SEEDS = [
   {
     code: "plugin-sdk-config-runtime-subpath",
     subpath: "config-runtime",
+    status: "removal-pending",
     owner: "config",
     removeAfter: "2026-09-01",
     replacement:
-      "`api.pluginConfig`, `openclaw/plugin-sdk/config-mutation`, `openclaw/plugin-sdk/runtime-config-snapshot`, and `openclaw/plugin-sdk/config-contracts`",
+      "`api.pluginConfig`, `openclaw/plugin-sdk/config-mutation`, `openclaw/plugin-sdk/runtime-config-snapshot`, and `openclaw/plugin-sdk/config-contracts`; retain the public subpath until internal type imports migrate, a published-plugin artifact reader sweep is clean, and breaking-release removal is approved",
   },
   {
     code: "plugin-sdk-inbound-reply-dispatch-subpath",
@@ -33,17 +34,20 @@ const PLUGIN_SDK_SUBPATH_SEEDS = [
   {
     code: "plugin-sdk-channel-reply-pipeline-subpath",
     subpath: "channel-reply-pipeline",
+    status: "removal-pending",
     owner: "channel",
     removeAfter: "2026-09-01",
-    replacement: "`openclaw/plugin-sdk/channel-outbound`",
+    replacement:
+      "`openclaw/plugin-sdk/channel-outbound`; retain the public subpath until a published-plugin artifact reader sweep proves the shipped reply-pipeline exports migrated and breaking-release removal is approved",
   },
   {
     code: "plugin-sdk-infra-runtime-subpath",
     subpath: "infra-runtime",
+    status: "removal-pending",
     owner: "sdk",
     removeAfter: "2026-09-01",
     replacement:
-      "focused subpaths including `openclaw/plugin-sdk/delivery-queue-runtime`, `openclaw/plugin-sdk/diagnostic-runtime`, `openclaw/plugin-sdk/error-runtime`, `openclaw/plugin-sdk/exec-approvals-runtime`, `openclaw/plugin-sdk/fetch-runtime`, and `openclaw/plugin-sdk/ssrf-runtime`",
+      "focused subpaths including `openclaw/plugin-sdk/delivery-queue-runtime`, `openclaw/plugin-sdk/diagnostic-runtime`, `openclaw/plugin-sdk/error-runtime`, `openclaw/plugin-sdk/exec-approvals-runtime`, `openclaw/plugin-sdk/fetch-runtime`, and `openclaw/plugin-sdk/ssrf-runtime`; retain the public subpath until the shipped `ErrorKind` and `detectErrorKind` next Plugin SDK major promise is satisfied, their migration is decided, a published-plugin artifact reader sweep is clean, and breaking-release removal is approved",
   },
   {
     code: "plugin-sdk-text-runtime-subpath",
@@ -95,16 +99,20 @@ const PLUGIN_SDK_SUBPATH_SEEDS = [
   {
     code: "plugin-sdk-channel-lifecycle-subpath",
     subpath: "channel-lifecycle",
+    status: "removal-pending",
     owner: "channel",
     removeAfter: "2026-09-01",
-    replacement: "`openclaw/plugin-sdk/channel-outbound`",
+    replacement:
+      "`openclaw/plugin-sdk/channel-outbound`; retain the public subpath until migration or explicit retirement is decided for `createRunStateMachine` and `createArmableStallWatchdog`, which the replacement does not export, a published-plugin artifact reader sweep is clean, and breaking-release removal is approved",
   },
   {
     code: "plugin-sdk-channel-message-subpath",
     subpath: "channel-message",
+    status: "removal-pending",
     owner: "channel",
     removeAfter: "2026-09-01",
-    replacement: "`openclaw/plugin-sdk/channel-outbound` and `openclaw/plugin-sdk/channel-inbound`",
+    replacement:
+      "`openclaw/plugin-sdk/channel-outbound` and `openclaw/plugin-sdk/channel-inbound`; retain the public subpath until legacy dispatch-count names migrate, a published-plugin artifact reader sweep is clean, and breaking-release removal is approved",
   },
   {
     code: "plugin-sdk-group-access-subpath",
@@ -127,7 +135,7 @@ const PLUGIN_SDK_SUBPATH_SEEDS = [
 ] as const satisfies readonly PluginSdkSubpathSeed[];
 
 function buildPluginSdkSubpathRecord(seed: (typeof PLUGIN_SDK_SUBPATH_SEEDS)[number]) {
-  if ("status" in seed) {
+  if ("status" in seed && seed.status === "removed") {
     return {
       code: seed.code,
       status: seed.status,
@@ -144,7 +152,7 @@ function buildPluginSdkSubpathRecord(seed: (typeof PLUGIN_SDK_SUBPATH_SEEDS)[num
 
   return {
     code: seed.code,
-    status: "deprecated",
+    status: "status" in seed ? seed.status : "deprecated",
     owner: seed.owner,
     introduced: "2026-07-06",
     deprecated: "2026-07-06",

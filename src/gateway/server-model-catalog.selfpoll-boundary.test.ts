@@ -1,19 +1,19 @@
-// Boundary repro for PR2: a live multi-agent gateway (3+ agents, NO default:true) proves the
-// shipped TUI /models path carries the selected agentId and returns a scoped catalog (not
-// INVALID_REQUEST, not a throw), and that the unscoped self-poll model-catalog read
-// (chat-metadata projection path) degrades instead of throwing AgentSelectionRequiredError.
-//
-// Uses the real in-process gateway (startGatewayServer) + real GatewayClient WS transport and
-// the real resolveInputs producer - NOT stubs - so this exercises shipped behavior the unit
-// tests (mocked client.request + buildAllowedModelSet) cannot.
+// A real multi-agent Gateway preserves explicit model selection and keeps unscoped
+// nonblocking catalog reads unavailable instead of borrowing a configured agent.
+// The authenticated models.list transport and prepared runtime owners are real.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AgentSelectionRequiredError } from "../agents/agent-scope-config.js";
 import { clearRuntimeConfigSnapshot } from "../config/config.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import { GatewayClient } from "./client.js";
-import { loadGatewayModelCatalogSnapshot } from "./server-model-catalog.js";
+import {
+  loadGatewayModelCatalogSnapshot,
+  readPreparedGatewayModelCatalog,
+  readPreparedGatewayModelCatalogOwnerSnapshot,
+} from "./server-model-catalog.js";
 import { startGatewayServer } from "./server.js";
 import {
   connectGatewayClient,
@@ -162,7 +162,7 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     }
   }, 120_000);
 
-  it("unscoped self-poll model-catalog read on a 3-agent no-default gateway does not throw AgentSelectionRequiredError", async () => {
+  it("leaves unscoped catalog reads unavailable without borrowing a configured agent", async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pr2-selfpoll-"));
     const stateDir = path.join(tempHome, ".openclaw");
     await fs.mkdir(stateDir, { recursive: true });
@@ -190,11 +190,14 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     });
 
     try {
-      // The unscoped self-poll read (chat-metadata / chat.startup projection path in
-      // session-utils-model.ts) calls loadGatewayModelCatalogSnapshot() with NO agentId.
-      // On base resolveInputs this throws AgentSelectionRequiredError; the PR2 degrade
-      // converts it to the ambient no-owner shape so the read resolves.
-      await expect(loadGatewayModelCatalogSnapshot()).resolves.toBeDefined();
+      await expect(loadGatewayModelCatalogSnapshot({ agentId: "main" })).resolves.toMatchObject({
+        agentId: "main",
+      });
+      // Optional reads tolerate an absent owner; a load requiring a complete owner
+      // must retain canonical selection refusal even when main has a ready catalog.
+      await expect(readPreparedGatewayModelCatalog()).resolves.toBeUndefined();
+      await expect(readPreparedGatewayModelCatalogOwnerSnapshot()).resolves.toBeUndefined();
+      await expect(loadGatewayModelCatalogSnapshot()).rejects.toThrow(AgentSelectionRequiredError);
     } finally {
       await server.close();
       await fs.rm(tempHome, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);

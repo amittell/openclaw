@@ -1,6 +1,6 @@
 // Hook integration coverage for direct and queued embedded compaction.
 
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@openclaw/llm-core";
@@ -1809,6 +1809,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
 
     afterEach(() => {
+      vi.unstubAllEnvs();
       vi.mocked(summaryBridge).mockReset().mockResolvedValue("summary");
       limitHistoryTurnsMock.mockImplementation(originalHistoryLimit);
     });
@@ -1820,7 +1821,12 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         errorMessage: "429 rate limit exceeded",
         outcome: "fallback",
       },
-      { scenario: "intentional quality rejection", errorMessage: undefined, outcome: "cancel" },
+      { scenario: "quality guard exhaustion", errorMessage: undefined, outcome: "degraded" },
+      {
+        scenario: "required facts exceed summary budget",
+        errorMessage: undefined,
+        outcome: "cancel",
+      },
       { scenario: "explicit model timeout", errorMessage: "request timed out", outcome: "cancel" },
       {
         scenario: "reasoning-mandatory rejection",
@@ -1830,6 +1836,13 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     ] as const)(
       "keeps model fallback boundaries for $scenario",
       async ({ scenario, errorMessage, outcome }) => {
+        // The real session fixture owns in-memory auth even when ambient auth needs migration.
+        const ambientAgentDir = join(TEST_WORKSPACE_DIR, "ambient-agent");
+        const legacyAuthPath = join(ambientAgentDir, "auth.json");
+        const legacyAuth = "{}\n";
+        await mkdir(ambientAgentDir);
+        await writeFile(legacyAuthPath, legacyAuth);
+        vi.stubEnv("OPENCLAW_AGENT_DIR", ambientAgentDir);
         const [
           { createAgentSessionForEmbeddedRunner },
           { guardSessionManager },
@@ -1845,6 +1858,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         const primary = "summary-primary";
         const backup = "summary-backup";
         const explicitModel = scenario === "explicit model timeout";
+        const rejectsRequiredFacts = scenario === "required facts exceed summary budget";
         const fallbackSummary = [
           "## Decisions",
           "Review the deployment checklist before rollout.",
@@ -1861,7 +1875,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         const sessionManager = SessionManager.inMemory(TEST_WORKSPACE_DIR);
         for (const content of [
           "Review the deployment checklist.",
-          "Compare the remaining options.",
+          rejectsRequiredFacts
+            ? `Compare the remaining options at https://example.test/${"a".repeat(17_000)}.`
+            : "Compare the remaining options.",
           "Keep the rollout notes.",
         ]) {
           sessionManager.appendMessage({ role: "user", content, timestamp: 1 });
@@ -1892,7 +1908,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
               : createAssistant(activeModel, [
                   {
                     type: "text",
-                    text: outcome === "cancel" ? "Missing required sections." : fallbackSummary,
+                    text: outcome === "degraded" ? "Missing required sections." : fallbackSummary,
                   },
                 ]),
           );
@@ -1956,7 +1972,40 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           fallback ? [primary, backup] : [primary],
         );
         expect(config).toEqual(configBefore);
-        if (outcome !== "cancel") {
+        if (outcome === "degraded") {
+          // The fork degrades after the quality retry budget; this is not a provider fault.
+          // Exercise the real audit and persistence so a rejected draft cannot pass as fallback.
+          const expectedSummary = [
+            "## Decisions\nNo prior history.",
+            "## Open TODOs\nNone.",
+            "## Constraints/Rules\nNone.",
+            "## Pending user asks\nNone.",
+            "## Exact identifiers\nNone captured.",
+          ].join("\n\n");
+          expect(requestedModels).toEqual([primary]);
+          expect(result).toMatchObject({
+            ok: true,
+            compacted: true,
+            result: { summary: expectedSummary },
+          });
+          const compactionEntry = expectDefined(
+            sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+            "degraded compaction boundary",
+          );
+          expect(compactionEntry.summary).toBe(expectedSummary);
+          expect(
+            sessionManager
+              .getEntries()
+              .flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
+          ).toEqual(originalMessages);
+          expect(sessionManager.buildSessionContext().messages).toEqual([
+            expect.objectContaining({
+              role: "compactionSummary",
+              summary: `${expectedSummary}\n[compaction checkpoint ${compactionEntry.id}: shadows 2 earlier entries]`,
+            }),
+            expectDefined(originalMessages.at(-1), "retained user turn"),
+          ]);
+        } else if (outcome !== "cancel") {
           if (outcome === "thinking") {
             expect([...new Set(requestedThinking)]).toEqual(["off", "minimal"]);
           }
@@ -1975,12 +2024,16 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           });
         } else {
           expect(result).toMatchObject({ ok: false, compacted: false });
-          expect(result.reason).toMatch(explicitModel ? /timed out/i : /quality/i);
+          expect(result.reason).toMatch(
+            explicitModel ? /timed out/i : /required facts exceed the finalized summary budget/i,
+          );
           expect(sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(
             false,
           );
           expect(sessionManager.buildSessionContext().messages).toEqual(originalMessages);
         }
+        expect(await readdir(ambientAgentDir)).toEqual(["auth.json"]);
+        expect(await readFile(legacyAuthPath, "utf8")).toBe(legacyAuth);
       },
     );
   });

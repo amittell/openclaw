@@ -10,6 +10,8 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { flushLogger, resetLogger, setLoggerOverride } from "../../logging/logger.js";
+import { createDiagnosticLogRecordCapture } from "../../logging/test-helpers/diagnostic-log-capture.js";
 import type { CompactionProvider } from "../../plugins/compaction-provider.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { MAX_OVERFLOW_COMPACTION_ATTEMPTS } from "../agent-compaction-constants.js";
@@ -126,6 +128,16 @@ describe("AgentSession compaction", () => {
         "",
         summary,
       ].join("\n");
+      const degradedSummary = [
+        "## Decisions\nNo prior history.",
+        "## Open TODOs\nNone.",
+        "## Constraints/Rules\nNone.",
+        "## Pending user asks\nNone.",
+        "## Exact identifiers\nNone captured.",
+      ].join("\n\n");
+      const degrades = !recovers && !cancelCaller;
+      const completes = recovers || degrades;
+      const expectedSummary = recovers ? recoveredSummary : degradedSummary;
       const sessionManager = SessionManager.inMemory();
       sessionManager.appendMessage({ role: "user", content: "old prompt", timestamp: 1 });
       sessionManager.appendMessage({
@@ -156,6 +168,12 @@ describe("AgentSession compaction", () => {
         .spyOn(globalThis, "fetch")
         .mockRejectedValue(new Error("Unexpected network request in compaction test"));
       const eventBus = createEventBus();
+      const capture = createDiagnosticLogRecordCapture();
+      setLoggerOverride({
+        level: "warn",
+        consoleLevel: "silent",
+        file: path.join(tempDirs.make("compaction-provider-boundary-"), "warnings.log"),
+      });
       try {
         const resourceLoader = createResourceLoader();
         const extensions = resourceLoader.getExtensions();
@@ -230,28 +248,47 @@ describe("AgentSession compaction", () => {
           providerCalls: 1,
           callerAbortedAtProviderEntry: false,
           callerAborted: cancelCaller,
-          result: recovers
-            ? { status: "resolved", summary: recoveredSummary }
+          result: completes
+            ? { status: "resolved", summary: expectedSummary }
             : { status: "rejected" },
-          outcomes: [recovers ? "completed" : "aborted"],
-          appended: recovers ? [{ summary: recoveredSummary, fromHook: true }] : [],
+          outcomes: [completes ? "completed" : "aborted"],
+          appended: completes ? [{ summary: expectedSummary, fromHook: true }] : [],
         });
         // The guarded pipeline may chunk the history; do not pin its request count.
         if (!cancelCaller) {
           expect(streamMocks.streamSimple).toHaveBeenCalled();
         }
-        if (!recovers) {
+        if (cancelCaller) {
           expect.soft(sessionManager.getEntries()).toEqual(entriesBefore);
           expect.soft(session.messages).toEqual(messagesBefore);
-        }
-        if (!cancelCaller && !recovers) {
-          expect(getCompactionSafeguardRuntime(sessionManager)?.cancellation?.reason).toContain(
-            "failed quality checks",
+        } else {
+          const savedSummary = appended[0]?.summary ?? "";
+          expect(savedSummary).toBe(expectedSummary);
+          expect(savedSummary.length).toBeLessThanOrEqual(16_000);
+          expect(session.messages).toContainEqual(
+            expect.objectContaining({
+              role: "compactionSummary",
+              summary: expect.stringContaining(savedSummary),
+            }),
           );
+          expect(getCompactionSafeguardRuntime(sessionManager)?.cancellation).toBeUndefined();
+        }
+        await capture.flush();
+        const degradationLogs = capture.records.filter((record) =>
+          record.message?.includes("reasonCode=quality_guard_degraded_fallback"),
+        );
+        expect(degradationLogs).toHaveLength(degrades ? 1 : 0);
+        if (degrades) {
+          expect(degradationLogs[0]?.message).toContain("reasonCodes=missing_section");
+          expect(appended[0]?.summary).not.toContain(summary);
         }
         expect(network.mock.calls.length).toBe(0);
       } finally {
         releaseProvider.resolve();
+        await flushLogger();
+        capture.cleanup();
+        setLoggerOverride(null);
+        resetLogger();
         setCompactionSafeguardRuntime(sessionManager, null);
         registry.compactionProviders.splice(registry.compactionProviders.indexOf(registration), 1);
         eventBus.clear();

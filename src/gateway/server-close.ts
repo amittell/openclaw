@@ -30,13 +30,8 @@ import { abortQueuedChatTurns, type QueuedChatTurnMap } from "./chat-queued-turn
 // Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers
 // that only need the running / shutting-down distinction (gateway startup,
 // HTTP probe handler) do not pull in this close-handler module's dependency
-// graph. Re-exported here for source compatibility with prior in-tree callers.
-import {
-  isGatewayShuttingDown,
-  markGatewayShuttingDown,
-  resetGatewayShuttingDownForTest,
-  resetGatewayShuttingDownState,
-} from "./gateway-shutdown-state.js";
+// graph.
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import {
   collectGatewayProcessMemoryUsageMb,
   measureGatewayRestartTrace,
@@ -70,13 +65,6 @@ const RESTART_TERMINAL_PERSISTENCE_WAIT_TIMEOUT_MS = 1_000;
 const RESTART_MARKER_SLOW_WARNING_MS = 1_000;
 const DEFAULT_POST_SHUTDOWN_EXIT_TIMEOUT_MS = 5_000;
 const POST_SHUTDOWN_EXIT_TIMEOUT_ENV = "OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS";
-
-export {
-  isGatewayShuttingDown,
-  markGatewayShuttingDown,
-  resetGatewayShuttingDownForTest,
-  resetGatewayShuttingDownState,
-};
 
 function resolvePostShutdownExitTimeoutMs(): number {
   const raw = process.env[POST_SHUTDOWN_EXIT_TIMEOUT_ENV]?.trim();
@@ -137,11 +125,8 @@ function summarizeActiveHandlesForZombieReport(): string {
 // stray handle (HTTP keep-alive, telegram fetch, plugin native handle). Without
 // this, the parent supervisor (launchd/systemd) sees the lock dropped but the
 // PID never reaps, the HTTP listener stays bound, and the next gateway probe
-// returns 200 from the zombie. Tests inject `exitProcess` to avoid killing the
-// vitest worker.
-export function armGatewayPostShutdownExitWatchdog(opts?: {
-  timeoutMs?: number;
-  exitProcess?: (code: number) => void;
+// returns 200 from the zombie.
+function armGatewayPostShutdownExitWatchdog(opts?: {
   reason?: string;
   shutdownDurationMs?: number;
   // Terminal status for the forced exit. Defaults to 0 (clean shutdown). The
@@ -149,17 +134,15 @@ export function armGatewayPostShutdownExitWatchdog(opts?: {
   // (systemd Restart=on-failure, launchd KeepAlive.SuccessfulExit=false) still
   // relaunches when the watchdog has to force-kill a wedged failed startup.
   exitCode?: number;
-}): { cancel: () => void } {
+}): void {
   // Skip in vitest workers: any test that exercises the production close path
   // without mocking this dep would otherwise trip the watchdog and call
-  // process.exit() on the worker, killing the whole shard. Tests that want to
-  // exercise the watchdog itself (the explicit zombie-detected coverage) inject
-  // a mock exitProcess via opts. Production gateways have no VITEST set.
-  if (process.env.VITEST !== undefined && opts?.exitProcess === undefined) {
-    return { cancel: () => {} };
+  // process.exit() on the worker, killing the whole shard. Production gateways
+  // have no VITEST set.
+  if (process.env.VITEST !== undefined) {
+    return;
   }
-  const timeoutMs = Math.max(0, Math.floor(opts?.timeoutMs ?? resolvePostShutdownExitTimeoutMs()));
-  const exit = opts?.exitProcess ?? ((code: number) => process.exit(code));
+  const timeoutMs = resolvePostShutdownExitTimeoutMs();
   const reason = opts?.reason ?? "gateway stopping";
   const shutdownDurationMs = opts?.shutdownDurationMs;
   const exitCode = opts?.exitCode ?? 0;
@@ -178,16 +161,11 @@ export function armGatewayPostShutdownExitWatchdog(opts?: {
       metrics.push(["shutdownDurationMs", shutdownDurationMs]);
     }
     recordGatewayRestartTrace("gateway.shutdown.zombie_detected", timeoutMs, metrics);
-    exit(exitCode);
+    process.exit(exitCode);
   }, timeoutMs);
   // unref so this watchdog never blocks a healthy natural exit; we only want
   // it to fire when something else is keeping the loop alive.
   timer.unref?.();
-  return {
-    cancel: () => {
-      clearTimeout(timer);
-    },
-  };
 }
 
 type ShutdownResult = {
@@ -844,7 +822,7 @@ export function createGatewayCloseHandler(
       reason: string;
       shutdownDurationMs: number;
       exitCode?: number;
-    }) => { cancel: () => void } | null;
+    }) => void;
     // Process-ownership gate: only the terminal gateway CLI/daemon path may
     // arm the post-shutdown force-exit. Embedded starts (onboarding session
     // gateway, test harnesses) must stay process-neutral or a handled startup

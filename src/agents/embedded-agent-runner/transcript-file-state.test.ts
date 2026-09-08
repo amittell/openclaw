@@ -509,7 +509,10 @@ describe("readTranscriptState", () => {
     expect(kept).toBeDefined();
     expect(compaction).toMatchObject({ firstKeptEntryId: kept?.id });
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: `summary\n[compaction checkpoint ${compaction?.id}: shadows 1 earlier entries]`,
+      },
       { role: "user", content: "legacy kept suffix" },
     ]);
   });
@@ -588,7 +591,10 @@ describe("readTranscriptState", () => {
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: "summary\n[compaction checkpoint compact-1: shadows 0 earlier entries]",
+      },
       { role: "user", content: "before malformed row" },
       { role: "assistant", content: [{ type: "text", text: "after malformed row" }] },
     ]);
@@ -636,7 +642,10 @@ describe("readTranscriptState", () => {
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: "summary\n[compaction checkpoint compact-1: shadows 0 earlier entries]",
+      },
       { role: "user", content: "first valid kept turn" },
       { role: "assistant", content: [{ type: "text", text: "valid reply" }] },
     ]);
@@ -691,7 +700,10 @@ describe("readTranscriptState", () => {
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: "summary\n[compaction checkpoint compact-1: shadows 0 earlier entries]",
+      },
       { role: "user", content: "first valid kept turn" },
       { role: "assistant", content: [{ type: "text", text: "valid reply" }] },
     ]);
@@ -746,7 +758,10 @@ describe("readTranscriptState", () => {
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "branch-b-user" });
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: "summary\n[compaction checkpoint compact-1: shadows 0 earlier entries]",
+      },
       { role: "user", content: "active branch kept turn" },
       { role: "assistant", content: [{ type: "text", text: "active reply" }] },
     ]);

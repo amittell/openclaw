@@ -16,6 +16,7 @@ import {
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { handleEmbeddedAssistantFailure } from "./assistant-failure.js";
+import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 
 const providerRuntimeMocks = vi.hoisted(() => ({
@@ -260,31 +261,49 @@ describe("handleEmbeddedAssistantFailure", () => {
     providerRuntimeMocks.classifyProviderFailoverSignalWithPlugin.mockReset();
   });
 
-  it.each(["auth", "auth_permanent"] as const)(
-    "carries %s profile failures into terminal resolution",
-    async (reason) => {
-      const fixture = makeExhaustedCredentialFailureInput();
-      if (!fixture.input.attemptAssistant) {
-        throw new Error("expected assistant fixture");
-      }
-      fixture.input.attemptAssistant.provider = "openai";
-      fixture.input.attemptAssistant.model = "gpt-5.6-luna";
-      fixture.input.attemptAssistant.errorMessage = undefined;
-      Object.assign(fixture.input, {
+  it.each([
+    { reason: "auth", errorMessage: "HTTP 401: Unauthorized" },
+    { reason: "auth_permanent", errorMessage: "HTTP 403: api key revoked" },
+  ] as const)(
+    "carries $reason profile failures into terminal resolution after side effects",
+    async ({ reason, errorMessage }) => {
+      const fixture = makeExhaustedCredentialFailureInput({ replaySafe: false });
+      const assistant = buildEmbeddedRunnerAssistant({
         provider: "openai",
-        modelId: "gpt-5.6-luna",
-        model: "gpt-5.6-luna",
-        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        model: "test-model",
+        stopReason: "error",
+        errorMessage,
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        toolMetas: [{ toolName: "write", replaySafe: false }],
+      });
+      Object.assign(fixture.input, {
+        attempt,
+        attemptAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant }),
+        provider: "openai",
+        modelId: "test-model",
+        model: "test-model",
+        activeErrorContext: { provider: "openai", model: "test-model" },
         fallbackConfigured: false,
         authProfileId: undefined,
-        resolveAuthProfileFailureReason: vi.fn(() => reason),
-      });
+        resolveAuthProfileFailureReason: (failoverReason, options) =>
+          resolveAuthProfileFailureReason({ failoverReason, ...options }),
+      } satisfies Partial<AssistantFailureInput>);
       const outcome = await handleEmbeddedAssistantFailure(fixture.input);
 
       expect(outcome).toMatchObject({
         action: "proceed",
         assistantProfileFailureReason: reason,
       });
+      expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
+      expect(fixture.input.maybeRefreshRuntimeAuthForAuthError).not.toHaveBeenCalled();
+      expect(fixture.input.maybeRetrySameModelRateLimit).not.toHaveBeenCalled();
+      expect(fixture.maybeMarkAuthProfileFailure).not.toHaveBeenCalled();
+      expect(fixture.traceAttempts).toEqual([]);
     },
   );
 

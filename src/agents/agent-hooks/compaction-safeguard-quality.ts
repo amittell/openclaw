@@ -4,16 +4,21 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { extractKeywords, isQueryStopWordToken } from "../../memory-host-sdk/query.js";
 import type { CompactionSummarizationInstructions } from "../compaction.js";
-import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
+import {
+  hasPromptUnsafeControlCharacter,
+  wrapUntrustedPromptDataBlock,
+} from "../sanitize-for-prompt.js";
 
 // Compaction summary quality helpers. They define the structured summary contract
 // and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
-// The audit itself is the cap for the full corrective defect list: it carries at most
-// five missing sections plus one missing-identifiers line. The 4000-char untrusted
-// wrapper is for operator-supplied context only; never route the defect list through it.
+// Keep the existing untrusted-data boundary; count-limited identifiers can still
+// be arbitrarily long, so the audit producer must also bound its feedback.
 const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 8000;
+// Reserve the enclosing feedback sentence, all missing/duplicate section reasons,
+// both ask reasons, separators, and the omitted count for the 12-identifier audit.
+const MAX_MISSING_IDENTIFIER_REASON_CHARS = MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS - 600;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -53,10 +58,8 @@ export function wrapUntrustedInstructionBlock(label: string, text: string): stri
 
 /**
  * Wraps quality-audit feedback (missing sections, missing identifiers) as untrusted
- * prompt data for the corrective regeneration pass. The budget must fit the whole
- * defect list (up to the MAX_EXTRACTED_IDENTIFIERS missing-identifier values): a
- * list truncated mid-item hands the model defects it cannot repair, so the same
- * audit fails on retry (#721).
+ * prompt data for the corrective regeneration pass. The audit producer fits
+ * complete identifiers plus an omitted count within this existing budget.
  */
 export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): string {
   return wrapUntrustedPromptDataBlock({
@@ -455,6 +458,33 @@ function hasAskOverlap(summary: string, latestAsk: string | null): boolean {
   return overlapCount >= requiredMatches;
 }
 
+function missingIdentifierAuditReasons(identifiers: string[]): string[] {
+  const prefix = "missing_identifiers:";
+  const included: string[] = [];
+  let chars = prefix.length;
+  for (const identifier of identifiers) {
+    // The prompt boundary expands angle brackets; budget the complete escaped value.
+    const escapedChars = identifier.replace(/</g, "&lt;").replace(/>/g, "&gt;").length;
+    const nextChars = chars + (included.length > 0 ? 1 : 0) + escapedChars;
+    if (
+      nextChars > MAX_MISSING_IDENTIFIER_REASON_CHARS ||
+      hasPromptUnsafeControlCharacter(identifier)
+    ) {
+      // A later shorter identifier can still fit. Values that the wrapper would
+      // sanitize away are omitted explicitly instead of reported as complete.
+      continue;
+    }
+    included.push(identifier);
+    chars = nextChars;
+  }
+  const reasons = included.length > 0 ? [`${prefix}${included.join(",")}`] : [];
+  const omitted = identifiers.length - included.length;
+  if (omitted > 0) {
+    reasons.push(`missing_identifiers_omitted:${omitted}`);
+  }
+  return reasons;
+}
+
 /** Audits a candidate summary for required sections, pending asks, and identifier preservation. */
 export function auditSummaryQuality(params: {
   summary: string;
@@ -485,11 +515,7 @@ export function auditSummaryQuality(params: {
       (identifier) => !summaryIncludesIdentifier(params.summary, identifier),
     );
     if (missingIdentifiers.length > 0) {
-      // Feed the FULL missing list back to the corrective pass (bounded only by the
-      // MAX_EXTRACTED_IDENTIFIERS cap). A truncated defect list is unrecoverable: the
-      // model never sees which identifiers to restore and the retry fails the same
-      // audit (#721).
-      reasons.push(`missing_identifiers:${missingIdentifiers.join(",")}`);
+      reasons.push(...missingIdentifierAuditReasons(missingIdentifiers));
     }
   }
   if (!hasAskOverlap(params.summary, params.latestAsk)) {

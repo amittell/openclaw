@@ -557,6 +557,7 @@ export function buildGatewaySessionRow(params: {
     }).mode,
     modelProvider: rowModelProvider,
     model: rowModel,
+    authProfileOverride: entry?.authProfileOverride,
     modelOverrideSource: resolveSessionModelOverrideSource(entry),
     modelSelectionLocked: entry?.modelSelectionLocked,
     agentRuntime: projectWorkerPlacementAgentRuntime(thinkingProjection.agentRuntime),

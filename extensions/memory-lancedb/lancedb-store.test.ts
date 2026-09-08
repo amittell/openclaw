@@ -54,6 +54,8 @@ describe("MemoryDB agent isolation", () => {
       }),
     ).resolves.toMatchObject([{ id: alpha.id, text: "alpha private preference" }]);
 
+    await expect(db.getById("alpha", alpha.id)).resolves.toStrictEqual(alpha);
+    await expect(db.getById("beta", alpha.id)).resolves.toBeNull();
     await expect(db.delete("beta", alpha.id)).resolves.toBe(false);
     await expect(db.count("alpha")).resolves.toBe(1);
     db.close();
@@ -65,6 +67,7 @@ describe("MemoryDB agent isolation", () => {
     await expect(reopened.list("beta")).resolves.toMatchObject([
       { text: "beta private preference" },
     ]);
+    await expect(reopened.getById("alpha", alpha.id)).resolves.toStrictEqual(alpha);
     reopened.close();
   });
 

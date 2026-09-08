@@ -87,6 +87,25 @@ describe("plugin compatibility registry", () => {
     );
 
     expect(staleRemovalWindows).toEqual([]);
+    for (const [code, blocker] of [
+      ["plugin-sdk-config-runtime-subpath", /internal type imports.*published-plugin/u],
+      ["plugin-sdk-infra-runtime-subpath", /ErrorKind.*detectErrorKind.*next Plugin SDK major/u],
+      [
+        "plugin-sdk-channel-lifecycle-subpath",
+        /createRunStateMachine.*createArmableStallWatchdog/u,
+      ],
+      ["plugin-sdk-channel-reply-pipeline-subpath", /published-plugin.*breaking-release/u],
+      ["plugin-sdk-channel-message-subpath", /legacy dispatch-count.*published-plugin/u],
+    ] as const) {
+      expect(records.get(code), code).toMatchObject({
+        status: "removal-pending",
+        introduced: "2026-07-06",
+        deprecated: "2026-07-06",
+        warningStarts: "2026-07-06",
+        removeAfter: "2026-09-01",
+        replacement: expect.stringMatching(blocker),
+      });
+    }
     expect(records.get("plugin-sdk-media-understanding-public-demotion")).toMatchObject({
       status: "removal-pending",
       removeAfter: "2026-09-30",

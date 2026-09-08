@@ -14,70 +14,22 @@ const REFRESH_CONFLICT_MIN_SCORE = 0.5;
 // Raw UUID keys are globally unique, so agent namespaces cannot collide.
 const memoryLocks = new Map<string, Promise<void>>();
 
-function finiteVectorFromArrayLike(value: ArrayLike<unknown>): number[] | null {
-  const vector: number[] = [];
-  for (const item of Array.from(value)) {
-    if (typeof item !== "number" || !Number.isFinite(item)) {
-      return null;
-    }
-    vector.push(item);
-  }
-  return vector;
-}
-
-function normalizeStoredMemoryVector(value: unknown): number[] {
-  if (Array.isArray(value)) {
-    return finiteVectorFromArrayLike(value) ?? [];
-  }
-  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    // SAFETY: guarded by ArrayBuffer.isView minus DataView, so value is a TypedArray, which is ArrayLike.
-    return finiteVectorFromArrayLike(value as unknown as ArrayLike<unknown>) ?? [];
-  }
-  if (typeof value === "string") {
-    try {
-      const parsedVector = normalizeStoredMemoryVector(JSON.parse(value) as unknown);
-      if (parsedVector.length > 0) {
-        return parsedVector;
-      }
-    } catch {}
-    return [];
-  }
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-  // SAFETY: the two guards above have excluded null and every non-object type.
-  const record = value as Record<string, unknown>;
-  if (typeof record.toArray === "function") {
-    try {
-      const vector = normalizeStoredMemoryVector(record.toArray.call(value));
-      if (vector.length > 0) {
-        return vector;
-      }
-    } catch {}
-  }
-  for (const key of ["values", "data", "vector", "embedding"] as const) {
-    if (key in record) {
-      const vector = normalizeStoredMemoryVector(record[key]);
-      if (vector.length > 0) {
-        return vector;
-      }
-    }
-  }
-  if (typeof record.length === "number") {
-    // SAFETY: record is an object with a numeric length, which is the ArrayLike contract.
-    return finiteVectorFromArrayLike(record as unknown as ArrayLike<unknown>) ?? [];
-  }
-  return [];
-}
-
-function scoreStoredVectorSimilarity(existingVector: unknown, nextVector: number[]): number | null {
-  const previousVector = normalizeStoredMemoryVector(existingVector);
-  if (previousVector.length === 0 || previousVector.length !== nextVector.length) {
+function scoreStoredVectorSimilarity(
+  existingVector: number[],
+  nextVector: number[],
+): number | null {
+  // MemoryDB.getById materializes LanceDB's Arrow/typed vectors as number[].
+  // Keep malformed stored elements out of the audit score without reparsing that boundary.
+  if (existingVector.length === 0 || existingVector.length !== nextVector.length) {
     return null;
   }
   let l2sq = 0;
-  for (let index = 0; index < previousVector.length; index += 1) {
-    const diff = (previousVector[index] ?? 0) - (nextVector[index] ?? 0);
+  for (let index = 0; index < existingVector.length; index += 1) {
+    const previous = existingVector[index];
+    if (typeof previous !== "number" || !Number.isFinite(previous)) {
+      return null;
+    }
+    const diff = previous - (nextVector[index] ?? 0);
     l2sq += diff * diff;
   }
   return 1 / (1 + Math.sqrt(l2sq));

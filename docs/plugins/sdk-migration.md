@@ -1119,14 +1119,27 @@ the [Plugin SDK subpath catalog](/plugins/sdk-subpaths), and import `zod`
 directly from the `zod` package. `inbound-reply-dispatch` remains available
 until the next Plugin SDK major.
 
-| Removal gate            | Tier                               | SDK subpaths                                                                                                                                                                        |
-| ----------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `2026-09-01`            | Earlier compatibility deprecations | `channel-lifecycle`, `channel-message`, `channel-reply-pipeline`, `config-runtime`, `infra-runtime`                                                                                 |
-| `next-plugin-sdk-major` | Major-version compatibility gate   | `inbound-reply-dispatch`                                                                                                                                                            |
-| `2026-10-01`            | Media legacy projection            | `agent-media-payload`, plus the non-subpath `MsgContext Media*` fields, channel inbound media payload builders, `buildMediaPayload`, hook media aliases, and `{{Media*}}` templates |
+| Removal gate            | Tier                             | SDK subpaths                                                                                                                                                                        |
+| ----------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `2026-09-01`            | Removal pending after review     | `channel-lifecycle`, `channel-message`, `channel-reply-pipeline`, `config-runtime`, `infra-runtime`                                                                                 |
+| `next-plugin-sdk-major` | Major-version compatibility gate | `inbound-reply-dispatch`                                                                                                                                                            |
+| `2026-10-01`            | Media legacy projection          | `agent-media-payload`, plus the non-subpath `MsgContext Media*` fields, channel inbound media payload builders, `buildMediaPayload`, hook media aliases, and `{{Media*}}` templates |
 
-All core plugins have already migrated. External plugins should migrate
-before the next major release. Run `pnpm plugins:boundary-report` to see which
+The September 1 subpaths remain public with their original registry dates.
+They are `removal-pending` because a published-plugin artifact reader sweep
+and breaking-release approval remain outstanding. `config-runtime` also has
+internal type imports to migrate. `channel-lifecycle` still exports
+`createRunStateMachine` and `createArmableStallWatchdog`, which are absent from
+`channel-outbound`; their migration or explicit retirement needs a decision.
+`infra-runtime` must honor its next Plugin SDK major promise for `ErrorKind`
+and `detectErrorKind`, whose migration is unresolved. The channel facades
+also need published-reader proof for reply-pipeline exports and legacy
+dispatch-count names. See the [September SDK subpath review](/plugins/compatibility#september-sdk-subpath-review)
+for the per-surface conditions. This records pending work without claiming
+that external readers were surveyed or the compatibility APIs were removed.
+
+Bundled plugins avoid the deprecated public imports. External plugins should
+migrate before the next major release. Run `pnpm plugins:boundary-report` to see which
 compat records are due soonest for the surfaces your plugin uses.
 
 ## Related

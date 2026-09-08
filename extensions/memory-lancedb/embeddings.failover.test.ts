@@ -134,15 +134,37 @@ describe("memory-lancedb embedding endpoint failover", () => {
   });
 
   it("surfaces the last error when every endpoint fails", async () => {
+    const lastError = Object.assign(new Error("fallback exploded", { cause: new Error("EPIPE") }), {
+      status: 503,
+    });
     openAiMocks.handlers.set(PRIMARY, endpointDown);
     openAiMocks.handlers.set(FALLBACK, async () => {
-      throw new Error("fallback exploded");
+      throw lastError;
     });
     const embeddings = createEmbeddings(createApi());
 
-    await expect(embeddings.embed("main", "hello", embeddingConfig())).rejects.toThrow(
-      /fallback exploded/,
-    );
+    await expect(embeddings.embed("main", "hello", embeddingConfig())).rejects.toBe(lastError);
+    expect(openAiMocks.calls.map((c) => c.baseURL)).toEqual([PRIMARY, FALLBACK]);
+  });
+
+  it.each([
+    { name: "string", failure: "fallback unavailable" },
+    {
+      name: "error record",
+      failure: { message: "fallback unavailable", status: 503, code: "EHOSTUNREACH" },
+    },
+  ])("normalizes the last $name failure without losing details", async ({ failure }) => {
+    openAiMocks.handlers.set(PRIMARY, endpointDown);
+    openAiMocks.handlers.set(FALLBACK, vi.fn().mockRejectedValue(failure));
+    const embeddings = createEmbeddings(createApi());
+
+    const result = embeddings.embed("main", "hello", embeddingConfig());
+
+    await expect(result).rejects.toBeInstanceOf(Error);
+    await expect(result).rejects.toThrow("fallback unavailable");
+    if (typeof failure === "object") {
+      await expect(result).rejects.toMatchObject({ ...failure, cause: failure });
+    }
     expect(openAiMocks.calls.map((c) => c.baseURL)).toEqual([PRIMARY, FALLBACK]);
   });
 });

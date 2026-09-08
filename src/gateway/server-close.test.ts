@@ -3,7 +3,7 @@
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import type { InternalHookEvent } from "../hooks/internal-hooks.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -121,12 +121,9 @@ vi.mock("../logging/subsystem.js", () => ({
   })),
 }));
 
-const {
-  armGatewayPostShutdownExitWatchdog,
-  createGatewayCloseHandler,
-  isGatewayShuttingDown,
-  resetGatewayShuttingDownForTest,
-} = await import("./server-close.js");
+const { createGatewayCloseHandler } = await import("./server-close.js");
+const { isGatewayShuttingDown, resetGatewayShuttingDownState } =
+  await import("./gateway-shutdown-state.js");
 const { createChatRunState, isChatAbortMarkerCurrent } = await import("./server-chat-state.js");
 const {
   finishGatewayRestartTrace,
@@ -259,7 +256,7 @@ describe("createGatewayCloseHandler", () => {
     resetPluginRuntimeStateForTest();
     vi.useRealTimers();
     resetGatewayRestartTraceForTest();
-    resetGatewayShuttingDownForTest();
+    resetGatewayShuttingDownState();
     if (originalRestartTraceEnv === undefined) {
       delete process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
     } else {
@@ -2311,116 +2308,78 @@ describe("createGatewayCloseHandler", () => {
     await close({ reason: "gateway startup failed", postShutdownExitCode: 1 });
     expect(armPostShutdownExitWatchdog.mock.calls[0]?.[0]?.exitCode).toBe(1);
   });
-});
+  describe("post-shutdown watchdog", () => {
+    const forcedExit = new Error("watchdog process.exit intercepted");
+    let exitProcess: MockInstance<typeof process.exit>;
 
-describe("armGatewayPostShutdownExitWatchdog", () => {
-  it("forces process.exit(0) when the node process is still alive after the timeout", async () => {
-    vi.useFakeTimers();
-    const exitProcess = vi.fn();
-    const handle = armGatewayPostShutdownExitWatchdog({
-      timeoutMs: 25,
-      exitProcess,
-      reason: "gateway stopping",
-      shutdownDurationMs: 5,
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Intercept the process boundary before simulating the ordinary runtime.
+      // This exercises the real close/timeout path without exporting a test API.
+      exitProcess = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw forcedExit;
+      });
+      vi.stubEnv("VITEST", undefined);
+      vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "25");
     });
-    expect(exitProcess).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(30);
-    expect(exitProcess).toHaveBeenCalledWith(0);
-    handle.cancel();
-    vi.useRealTimers();
-  });
+    afterEach(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      exitProcess.mockRestore();
+    });
 
-  it("forces the provided nonzero exit status for a failed-startup cleanup", async () => {
-    vi.useFakeTimers();
-    const exitProcess = vi.fn();
-    const handle = armGatewayPostShutdownExitWatchdog({
-      timeoutMs: 25,
-      exitProcess,
-      reason: "gateway startup failed",
-      shutdownDurationMs: 5,
-      exitCode: 1,
-    });
-    await vi.advanceTimersByTimeAsync(30);
-    expect(exitProcess).toHaveBeenCalledWith(1);
-    handle.cancel();
-    vi.useRealTimers();
-  });
+    async function closeWithWatchdog(
+      opts?: Parameters<ReturnType<typeof createGatewayCloseHandler>>[0],
+    ) {
+      const close = createGatewayCloseHandler(
+        createGatewayCloseTestDeps({ armPostShutdownExitWatchdog: undefined }),
+      );
+      await close(opts);
+    }
 
-  it("does not call exit when the watchdog is cancelled before the timeout", async () => {
-    vi.useFakeTimers();
-    const exitProcess = vi.fn();
-    const handle = armGatewayPostShutdownExitWatchdog({
-      timeoutMs: 50,
-      exitProcess,
-      reason: "test",
-      shutdownDurationMs: 1,
+    it("forces process.exit(0) only after the shutdown timeout", async () => {
+      await closeWithWatchdog({ reason: "gateway stopping" });
+      vi.advanceTimersByTime(24);
+      expect(exitProcess).not.toHaveBeenCalled();
+      expect(() => vi.advanceTimersByTime(1)).toThrow(forcedExit);
+      expect(exitProcess).toHaveBeenCalledWith(0);
     });
-    handle.cancel();
-    await vi.advanceTimersByTimeAsync(100);
-    expect(exitProcess).not.toHaveBeenCalled();
-    vi.useRealTimers();
-  });
 
-  it("honors the public timeout env override when no explicit timeout is passed", async () => {
-    vi.useFakeTimers();
-    vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "50");
-    const exitProcess = vi.fn();
-    const handle = armGatewayPostShutdownExitWatchdog({
-      exitProcess,
-      reason: "gateway stopping",
-      shutdownDurationMs: 5,
+    it("preserves the nonzero status of failed-startup cleanup", async () => {
+      await closeWithWatchdog({ reason: "gateway startup failed", postShutdownExitCode: 1 });
+      expect(() => vi.advanceTimersByTime(25)).toThrow(forcedExit);
+      expect(exitProcess).toHaveBeenCalledWith(1);
     });
-    await vi.advanceTimersByTimeAsync(45);
-    expect(exitProcess).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(exitProcess).toHaveBeenCalledWith(0);
-    handle.cancel();
-    vi.unstubAllEnvs();
-    vi.useRealTimers();
-  });
 
-  it("warns and falls back to the 5s default when the timeout env override is invalid", async () => {
-    vi.useFakeTimers();
-    vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "0.5s");
-    mocks.logWarn.mockClear();
-    const exitProcess = vi.fn();
-    const handle = armGatewayPostShutdownExitWatchdog({
-      exitProcess,
-      reason: "gateway stopping",
-      shutdownDurationMs: 5,
+    it("honors the public timeout env override", async () => {
+      vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "50");
+      await closeWithWatchdog();
+      vi.advanceTimersByTime(49);
+      expect(exitProcess).not.toHaveBeenCalled();
+      expect(() => vi.advanceTimersByTime(1)).toThrow(forcedExit);
+      expect(exitProcess).toHaveBeenCalledWith(0);
     });
-    const warnMessages = mocks.logWarn.mock.calls.map(([message]) => String(message));
-    expect(
-      warnMessages.some(
-        (message) =>
-          message.includes("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS") &&
-          message.includes("using default 5000ms"),
-      ),
-    ).toBe(true);
-    await vi.advanceTimersByTimeAsync(4995);
-    expect(exitProcess).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(exitProcess).toHaveBeenCalledWith(0);
-    handle.cancel();
-    vi.unstubAllEnvs();
-    vi.useRealTimers();
-  });
 
-  it("emits a zombie_detected warn log with handle summary when fired", async () => {
-    vi.useFakeTimers();
-    const exitProcess = vi.fn();
-    mocks.logWarn.mockClear();
-    armGatewayPostShutdownExitWatchdog({
-      timeoutMs: 10,
-      exitProcess,
-      reason: "telegram zombie",
-      shutdownDurationMs: 7,
+    it("warns and falls back to 5s when the timeout env override is invalid", async () => {
+      vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "0.5s");
+      await closeWithWatchdog();
+      expect(mocks.logWarn).toHaveBeenCalledWith(expect.stringContaining("using default 5000ms"));
+      vi.advanceTimersByTime(4999);
+      expect(exitProcess).not.toHaveBeenCalled();
+      expect(() => vi.advanceTimersByTime(1)).toThrow(forcedExit);
+      expect(exitProcess).toHaveBeenCalledWith(0);
     });
-    await vi.advanceTimersByTimeAsync(15);
-    const warnMessages = mocks.logWarn.mock.calls.map(([message]) => String(message));
-    expect(warnMessages.some((message) => message.includes("still alive after 10ms"))).toBe(true);
-    expect(warnMessages.some((message) => message.includes("forcing process.exit(0)"))).toBe(true);
-    vi.useRealTimers();
+
+    it("logs the forced exit and handle diagnosis when a process remains alive", async () => {
+      vi.stubEnv("OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS", "10");
+      await closeWithWatchdog({ reason: "telegram zombie" });
+      expect(() => vi.advanceTimersByTime(10)).toThrow(forcedExit);
+      expect(mocks.logWarn).toHaveBeenCalledWith(expect.stringContaining("still alive after 10ms"));
+      expect(mocks.logWarn).toHaveBeenCalledWith(
+        expect.stringContaining("forcing process.exit(0)"),
+      );
+    });
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

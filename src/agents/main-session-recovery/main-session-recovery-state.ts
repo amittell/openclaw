@@ -281,11 +281,9 @@ function inspectMainSessionRecovery(params: {
   if (
     entry.status !== "running" ||
     entry.abortedLastRun !== true ||
-    !isMainRestartRecoveryCandidate(entry, params.sessionKey)
+    !isMainRestartRecoveryCandidate(entry, params.sessionKey) ||
+    !state
   ) {
-    return { status: "inactive" };
-  }
-  if (!state) {
     return { status: "inactive" };
   }
   const observation = {

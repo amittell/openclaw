@@ -17,7 +17,6 @@ type CompactionSafeguardTestApi = {
   auditSummaryQuality: CallableFunction;
   capCompactionSummary: CallableFunction;
   budgetCompactionSummary: CallableFunction;
-  resolveCompactionSummaryBudgetChars: CallableFunction;
   formatFileOperations: CallableFunction;
   computeAdaptiveChunkRatio: CallableFunction;
   readWorkspaceContextForSummary: CallableFunction;
@@ -27,8 +26,6 @@ type CompactionSafeguardTestApi = {
   MIN_CHUNK_RATIO: number;
   SAFETY_MARGIN: number;
   MAX_COMPACTION_SUMMARY_CHARS: number;
-  SUMMARIZER_CHARS_PER_TOKEN: number;
-  SUMMARIZER_OUTPUT_BUDGET_RATIO: number;
   MAX_FILE_OPS_SECTION_CHARS: number;
   MAX_FILE_OPS_LIST_CHARS: number;
   SUMMARY_TRUNCATED_MARKER: string;
