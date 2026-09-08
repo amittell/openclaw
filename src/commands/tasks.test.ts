@@ -518,14 +518,7 @@ describe("tasks commands", () => {
       await tasksMaintenanceCommand({ json: true, apply: false }, runtime);
 
       const payload = readFirstJsonLog(runtime) as {
-        diagnostics: {
-          staleRunningTasks: Array<{
-            taskId: string;
-            decision: string;
-            reason: string;
-            childSessionKey?: string;
-          }>;
-        };
+        diagnostics: taskRegistryMaintenance.TaskRegistryMaintenanceDiagnostics;
       };
 
       expect(payload.diagnostics.staleRunningTasks).toContainEqual(
@@ -567,22 +560,27 @@ describe("tasks commands", () => {
         },
       });
 
+      const collectDiagnostics = taskRegistryMaintenance.getTaskRegistryMaintenanceDiagnostics;
+      const diagnosticsSpy = vi
+        .spyOn(taskRegistryMaintenance, "getTaskRegistryMaintenanceDiagnostics")
+        .mockImplementation(() => {
+          expect(loadSessionEntry({ sessionKey: childSessionKey, storePath })).toBeDefined();
+          return collectDiagnostics();
+        });
       const runtime = createRuntime();
-      await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
+      try {
+        await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
+        expect(diagnosticsSpy).toHaveBeenCalledOnce();
+      } finally {
+        diagnosticsSpy.mockRestore();
+      }
 
       const payload = readFirstJsonLog(runtime) as {
         maintenance: {
           tasks: { reconciled: number };
           sessions: { pruned: number };
         };
-        diagnostics: {
-          staleRunningTasks: Array<{
-            taskId: string;
-            decision: string;
-            reason: string;
-            childSessionKey?: string;
-          }>;
-        };
+        diagnostics: taskRegistryMaintenance.TaskRegistryMaintenanceDiagnostics;
       };
 
       expect(payload.maintenance.tasks.reconciled).toBe(0);
