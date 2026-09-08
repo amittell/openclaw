@@ -54,6 +54,10 @@ import {
   resolveTaskForLookupToken,
   setTaskCleanupAfterById,
 } from "./runtime-internal.js";
+import {
+  isProvenSubagentOrphanTask,
+  shouldAutoDeliverTaskTerminalUpdate,
+} from "./task-executor-policy.js";
 import { runTaskFlowRegistryMaintenance } from "./task-flow-registry.maintenance.js";
 import {
   configureTaskAuditTaskProvider,
@@ -1058,6 +1062,7 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
         });
         if (next?.status === "lost") {
           reconciled += 1;
+          await taskRegistryMaintenanceRuntime.maybeDeliverTaskTerminalUpdate(next.taskId);
         }
       }
       processed += 1;
@@ -1124,10 +1129,27 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
       }
       continue;
     }
-    await cleanupTerminalAcpSession(current);
+    let cleanupTask = current;
+    if (isProvenSubagentOrphanTask(current)) {
+      // Resume commit-before-enqueue interruptions and failed delivery through
+      // the same terminal owner. Standalone maintenance has no send authority.
+      if (taskRegistryMaintenanceRuntime.isRuntimeAuthoritative()) {
+        cleanupTask =
+          (await taskRegistryMaintenanceRuntime.maybeDeliverTaskTerminalUpdate(current.taskId)) ??
+          current;
+      }
+      if (shouldAutoDeliverTaskTerminalUpdate(cleanupTask)) {
+        processed += 1;
+        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
+          await yieldToEventLoop();
+        }
+        continue;
+      }
+    }
+    await cleanupTerminalAcpSession(cleanupTask);
     if (
-      shouldPruneTerminalTask(current, now, cronHistoryOverflowTaskIds) &&
-      taskRegistryMaintenanceRuntime.deleteTaskRecordById(current.taskId)
+      shouldPruneTerminalTask(cleanupTask, now, cronHistoryOverflowTaskIds) &&
+      taskRegistryMaintenanceRuntime.deleteTaskRecordById(cleanupTask.taskId)
     ) {
       pruned += 1;
       processed += 1;
@@ -1136,11 +1158,11 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
       }
       continue;
     }
-    if (shouldStampCleanupAfter(current)) {
+    if (shouldStampCleanupAfter(cleanupTask)) {
       if (
         taskRegistryMaintenanceRuntime.setTaskCleanupAfterById({
-          taskId: current.taskId,
-          cleanupAfter: resolveTaskCleanupAfter(current),
+          taskId: cleanupTask.taskId,
+          cleanupAfter: resolveTaskCleanupAfter(cleanupTask),
         })
       ) {
         cleanupStamped += 1;

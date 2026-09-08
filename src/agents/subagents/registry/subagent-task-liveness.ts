@@ -286,7 +286,7 @@ export function createSubagentTaskReconciler(params: {
             );
             // Publish synchronously after COMMIT, before this lifecycle owner
             // yields to queued task mutations or releases successor admissions.
-            // Generic terminal delivery excludes native lost; native lifecycle owns result publication.
+            // Maintenance delivers this committed unknown outcome after admission closes.
             return next ? publishTaskRecordAfterAtomicStore(next) : null;
           },
         });

@@ -14,6 +14,7 @@ import {
   formatTaskBlockedFollowupMessage,
   formatTaskStateChangeMessage,
   formatTaskTerminalMessage,
+  isProvenSubagentOrphanTask,
   shouldAutoDeliverTaskStateChange,
   shouldAutoDeliverTaskTerminalUpdate,
   shouldSuppressDuplicateTerminalDelivery,
@@ -235,17 +236,25 @@ async function maybeDeliverTaskTerminalUpdateUnderAdmission(
       return latest ? cloneTaskRecord(latest) : null;
     }
     const peers = latest.runId ? getPeerTasksForDelivery(latest) : [];
-    const isSubagentCancellation = latest.runtime === "subagent" && latest.status === "cancelled";
+    const orphan = isProvenSubagentOrphanTask(latest);
+    const sharesNativeDelivery =
+      (latest.runtime === "subagent" && latest.status === "cancelled") || orphan;
     const preferred = pickPreferredRunIdTask(
-      isSubagentCancellation
-        ? peers.filter((candidate) => shouldAutoDeliverTaskTerminalUpdate(candidate))
+      sharesNativeDelivery
+        ? peers.filter(
+            (candidate) =>
+              (!orphan || isProvenSubagentOrphanTask(candidate)) &&
+              shouldAutoDeliverTaskTerminalUpdate(candidate),
+          )
         : peers,
     );
     const peerDeliveryCovered =
-      isSubagentCancellation &&
+      sharesNativeDelivery &&
       peers.some(
         (candidate) =>
           candidate.taskId !== latest.taskId &&
+          // Progress or another native outcome cannot cover an orphan terminal event.
+          (!orphan || isProvenSubagentOrphanTask(candidate)) &&
           (candidate.deliveryStatus === "delivered" ||
             candidate.deliveryStatus === "session_queued"),
       );

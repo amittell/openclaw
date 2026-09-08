@@ -1,5 +1,8 @@
 // Decides task executor delivery, terminal update, and follow-up message policy.
-import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
+import {
+  SUBAGENT_KILL_TASK_ERROR,
+  SUBAGENT_ORPHAN_TASK_ERROR,
+} from "./detached-task-runtime-contract.js";
 import type { TaskEventRecord, TaskRecord, TaskStatus } from "./task-registry.types.js";
 import { formatTaskStatusTitleText, sanitizeTaskStatusText } from "./task-status.js";
 
@@ -115,12 +118,21 @@ export function formatTaskStateChangeMessage(
   return null;
 }
 
+export function isProvenSubagentOrphanTask(task: TaskRecord): boolean {
+  return (
+    task.runtime === "subagent" &&
+    task.status === "lost" &&
+    task.error === SUBAGENT_ORPHAN_TASK_ERROR
+  );
+}
+
 export function shouldAutoDeliverTaskTerminalUpdate(task: TaskRecord): boolean {
   if (task.notifyPolicy === "silent") {
     return false;
   }
-  if (task.runtime === "subagent" && task.status !== "cancelled") {
-    // Subagent lifecycle owns provider-result publication.
+  const orphan = isProvenSubagentOrphanTask(task);
+  if (task.runtime === "subagent" && task.status !== "cancelled" && !orphan) {
+    // Native lifecycle owns results; a proven orphan has no such owner left.
     return false;
   }
   if (
@@ -134,7 +146,7 @@ export function shouldAutoDeliverTaskTerminalUpdate(task: TaskRecord): boolean {
   if (!isTerminalTaskStatus(task.status)) {
     return false;
   }
-  return task.deliveryStatus === "pending";
+  return task.deliveryStatus === "pending" || (orphan && task.deliveryStatus === "failed");
 }
 
 export function shouldAutoDeliverTaskStateChange(task: TaskRecord): boolean {
@@ -155,7 +167,8 @@ export function shouldSuppressDuplicateTerminalDelivery(params: {
   }
   const sharesRunDelivery =
     params.task.runtime === "acp" ||
-    (params.task.runtime === "subagent" && params.task.status === "cancelled");
+    (params.task.runtime === "subagent" && params.task.status === "cancelled") ||
+    isProvenSubagentOrphanTask(params.task);
   if (!sharesRunDelivery) {
     return false;
   }

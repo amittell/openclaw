@@ -16,6 +16,10 @@ import type {
 // Task cancellation replaces this marker once the operator request is accepted.
 export const SUBAGENT_KILL_TASK_ERROR = "Subagent run killed.";
 
+// Only the fenced current-owner census may persist this unknown-outcome marker.
+export const SUBAGENT_ORPHAN_TASK_ERROR =
+  "No current subagent execution owner; historical outcome unknown";
+
 export type DetachedTaskCreateParams = {
   runtime: TaskRuntime;
   taskKind?: string;
