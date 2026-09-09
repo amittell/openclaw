@@ -1428,3 +1428,64 @@ premise needs rethinking rather than merging.
 Also fixed and pushed today on that branch: the CJK ceiling, at `6f06c1d3f06`.
 A 60,000-char Chinese body went from 63,910 replay tokens (21.3% of the window)
 to 29,565 (9.86%), with the Latin twin unchanged as an anchor control.
+
+## Post-carry validation: full suite, and the one defect it found
+
+Full suite on `upgrade-v2026.9.2`, 297 shards, ~3h20m on the Air (Node v22.23.1).
+15 distinct test files failed. Final classification, every verdict measured:
+
+| files | verdict          | how it was established                                                      |
+| ----- | ---------------- | --------------------------------------------------------------------------- |
+| 1     | **carry defect** | fails ALONE on the branch, passes ALONE at the tag                          |
+| 11    | inherited        | fails identically on a clean `v2026.9.2` worktree, zero carry               |
+| 3     | load artifact    | passes ALONE on the branch AND at the tag; only fails inside the full suite |
+
+### The defect: trap 5, an upstream extraction kept twice
+
+`src/skills/runtime/refresh.test.ts`. 9.2 moved four Windows watcher tests into a
+new `src/skills/runtime/refresh.windows.test.ts` and deleted them from the
+original; the carry re-added the 8.1 inline copy alongside upstream's new file.
+
+    v2026.8.1          refresh.test.ts: 4 tests    refresh.windows.test.ts ABSENT
+    v2026.9.2          refresh.test.ts: 0          refresh.windows.test.ts PRESENT
+    upgrade-v2026.9.2  refresh.test.ts: 4 <- ours  refresh.windows.test.ts PRESENT
+
+The fork copy failed with `expected undefined to match object`: it creates its
+fixture dirs only at the SHORT path and relies on a realpath mock, while 9.2's
+extracted version also creates them at the expanded path and asserts `watchRoot`
+exactly. Upstream's file is a strict superset - the same four scenarios plus
+`it.runIf(process.platform === "win32")("keeps a missing drive-child root
+anchored absolutely")`, which the fork never had.
+
+**Fix: delete the fork's inline block and the `MockInstance` type import it alone
+used.** `refresh.test.ts` is then byte-identical to upstream 9.2, which is correct
+because the fork had no other delta in it. Production LOC 0, test LOC -69, zero
+coverage lost. Verified: 42 ran / 0 failed, plus 5 / 0 in the extracted file.
+
+Swept the whole carry for the same class rather than assuming it was unique:
+**71 carry-modified test files, 137 added test names, exactly 1 duplicate.**
+
+### Two instrument failures worth carrying forward
+
+**The naive control changes two variables.** A tag-worktree control runs each file
+ALONE on a quiet machine; the branch result came from a 297-shard suite under
+contention. Three `test/scripts` files passed the control and failed the suite,
+which reads as "the carry broke them". It did not - all three pass ALONE on the
+branch too. Their failures were 10115 ms, 15923 ms and a 396 ms race, i.e. all
+timing-shaped. **The discriminator is running the suspects alone on your own
+branch**, so only the tree differs.
+
+**The duplicate detector had a systematic blind spot.** Matching `it(` and
+`it.each(...)(` misses `it.runIf(...)`, `it.skipIf(...)` and multiline
+`it.each([...])` - measured at 590 of 45,491 names (1.3%) over 4,000 tag files,
+and the misses cluster on exactly the platform-conditional tests a cross-platform
+carry is most likely to duplicate. Re-run with a corrected extractor plus
+`git grep -F` for the lookup half; the answer held at 1.
+
+### Known-failing at the tag, not ours
+
+`pnpm check:changed` fails one lane, `plugin boundaries`, with
+`1 compatibility record(s) are due for removal`. Identical on a clean
+`v2026.9.2` worktree (`eligibleForRemoval=1`, exit 1, same counts): a
+date-driven deprecation window that came due. Retiring a compat record is a
+product decision, not a carry fix. All other lanes pass, format included.
