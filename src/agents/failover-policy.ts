@@ -11,6 +11,11 @@ export function shouldAllowCooldownProbeForReason(
     reason === "rate_limit" ||
     reason === "overloaded" ||
     reason === "billing" ||
+    // Untyped 5xx is probe-eligible for the same reason the other transient
+    // reasons are. Upstream main derives this list from
+    // shouldUseTransientCooldownProbeSlot, so #141843 only had to add it there;
+    // on this release base the two lists are independent and both need it.
+    reason === "server_error" ||
     reason === "unknown" ||
     reason === "empty_response" ||
     reason === "no_error_details" ||
