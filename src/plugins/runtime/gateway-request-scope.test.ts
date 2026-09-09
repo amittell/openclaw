@@ -103,21 +103,38 @@ describe("gateway request scope", () => {
     await expectPluginIdScopedGatewayScope("voice-call");
   });
 
-  it("shares only the exact same gateway resolver identity", async () => {
+  // The shared resolver matches on the RESOLVED GATEWAY INSTANCE, not on resolver
+  // identity: separate caller wrappers may legitimately own one gateway. (Through
+  // v2026.8.1 this compared resolver identity and rejected distinct wrappers; these
+  // tests track the current contract, which is the only one the runtime implements.)
+  it("shares one gateway across separate resolver wrappers that own the same instance", async () => {
     const runtimeScope = await importGatewayRequestScopeModule();
     const context = {} as NonNullable<PluginRuntimeGatewayRequestScope["context"]>;
     const firstOwner = {};
     const secondOwner = {};
-    const shared = () => context;
-    runtimeScope.bindGatewayContextResolver(firstOwner, shared);
-    runtimeScope.bindGatewayContextResolver(secondOwner, shared);
-
-    expect(runtimeScope.getSharedGatewayContextResolver([firstOwner, secondOwner])).toBe(shared);
-
+    runtimeScope.bindGatewayContextResolver(firstOwner, () => context);
     runtimeScope.bindGatewayContextResolver(secondOwner, () => context);
+
+    const shared = runtimeScope.getSharedGatewayContextResolver([firstOwner, secondOwner]);
+    expect(shared).toBeTypeOf("function");
+    expect(shared?.()).toBe(context);
+  });
+
+  it("refuses to route owners bound to different gateway instances", async () => {
+    const runtimeScope = await importGatewayRequestScopeModule();
+    const firstOwner = {};
+    const secondOwner = {};
+    runtimeScope.bindGatewayContextResolver(firstOwner, () => TEST_SCOPE.context);
+    runtimeScope.bindGatewayContextResolver(
+      secondOwner,
+      () => ({}) as NonNullable<PluginRuntimeGatewayRequestScope["context"]>,
+    );
+
+    // Ambient routing across two gateways would be a cross-instance leak, so this
+    // throws rather than silently picking one.
     const rejected = runtimeScope.getSharedGatewayContextResolver([firstOwner, secondOwner]);
     expect(rejected).toBeTypeOf("function");
-    expect(rejected?.()).toBeUndefined();
+    expect(() => rejected?.()).toThrow("incompatible Gateway instances");
   });
 
   it("fails closed for mixed bound and unbound gateway owners", async () => {
@@ -125,9 +142,10 @@ describe("gateway request scope", () => {
     const boundOwner = {};
     runtimeScope.bindGatewayContextResolver(boundOwner, () => TEST_SCOPE.context);
 
+    // An unbound owner must never inherit the bound owner's gateway by omission.
     const rejected = runtimeScope.getSharedGatewayContextResolver([boundOwner, {}]);
     expect(rejected).toBeTypeOf("function");
-    expect(rejected?.()).toBeUndefined();
+    expect(() => rejected?.()).toThrow("incompatible Gateway bindings");
   });
 
   it("resolves the owned registry while preserving gateway request facts", async () => {

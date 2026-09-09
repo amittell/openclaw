@@ -42,6 +42,16 @@ export const recentMessageToolSendsByRun = new Map<
   { sends: { route: string; normalized: string }[]; recordedAt: number }
 >();
 
+/**
+ * Clears both suppression trackers. These are module-level maps keyed by run and
+ * session, so a suite that reuses one runId across logically distinct runs would
+ * otherwise carry one case's sends into the next and suppress them.
+ */
+export function resetMessageToolSendSuppressionForTest(): void {
+  recentMessageToolSendsByRun.clear();
+  recentPollVoteBySession.clear();
+}
+
 export function resolvePollVoteEchoRoute(params: {
   action: ChannelMessageActionName;
   args: Record<string, unknown>;
