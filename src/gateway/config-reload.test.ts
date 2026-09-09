@@ -3852,9 +3852,9 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.onConfigChange).toHaveBeenCalledOnce();
     expect(harness.onHotReload).not.toHaveBeenCalled();
     const [plan] = getOnlyRestartCall(harness);
-    expect(plan.restartReasons).toEqual(["gateway.terminal.enabled"]);
+    expect(plan.restartReasons).toEqual(["gateway.port"]);
     expect(harness.log.warn).toHaveBeenCalledWith(
-      "config reload requires gateway restart; hybrid mode scheduling restart (gateway.terminal.enabled)",
+      "config reload requires gateway restart; hybrid mode scheduling restart (gateway.port)",
     );
     await harness.reloader.stop();
   });
