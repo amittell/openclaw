@@ -31,12 +31,14 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
     // provider/model than the configured primary (openai/gpt-5.4).
     runWithModelFallbackMock.mockResolvedValue({
       result: {
-        payloads: [{ text: "fallback response" }],
-        meta: {
-          agentMeta: {
-            provider: "anthropic",
-            model: "claude-sonnet-4-20250514",
-            usage: { input: 100, output: 50 },
+        result: {
+          payloads: [{ text: "fallback response" }],
+          meta: {
+            agentMeta: {
+              provider: "anthropic",
+              model: "claude-sonnet-4-20250514",
+              usage: { input: 100, output: 50 },
+            },
           },
         },
       },
@@ -79,12 +81,14 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
     // as the configured default.
     runWithModelFallbackMock.mockResolvedValue({
       result: {
-        payloads: [{ text: "primary response" }],
-        meta: {
-          agentMeta: {
-            provider: "openai",
-            model: "gpt-5.4",
-            usage: { input: 100, output: 50 },
+        result: {
+          payloads: [{ text: "primary response" }],
+          meta: {
+            agentMeta: {
+              provider: "openai",
+              model: "gpt-5.4",
+              usage: { input: 100, output: 50 },
+            },
           },
         },
       },
