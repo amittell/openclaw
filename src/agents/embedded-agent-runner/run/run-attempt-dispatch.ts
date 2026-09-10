@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
+import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import { resolveSessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import type { resolveContextEngine } from "../../../context-engine/registry.js";
 import { attachModelProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
@@ -52,6 +53,34 @@ type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
 type ContextEngine = Awaited<ReturnType<typeof resolveContextEngine>>;
 type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
 type TerminalRetryState = ReturnType<typeof createEmbeddedRunTerminalRetryState>;
+
+/**
+ * Best-effort read of the session-level sampling temperature set with /temperature.
+ * Returns undefined when the session has no override, so configured model params win.
+ *
+ * Carried onto 9.3, which deleted attempt-dispatch-preparation.ts and inlined its
+ * work here. The feature is fork-only, so nothing upstream would restore it.
+ */
+export function resolveSessionTemperatureOverride(params: {
+  agentId: string;
+  sessionKey: string | undefined;
+  storePath?: string;
+}): number | undefined {
+  const { agentId, sessionKey, storePath } = params;
+  if (!sessionKey?.trim()) {
+    return undefined;
+  }
+  try {
+    const entry = loadSessionEntryReadOnly({
+      agentId,
+      storePath: storePath ?? resolveSessionStorePathCore(undefined, { agentId }),
+      sessionKey,
+    });
+    return typeof entry?.temperature === "number" ? entry.temperature : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   runInput: PreparedEmbeddedRunInput;
@@ -170,6 +199,11 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
   }
+  const sessionTemperatureOverride = resolveSessionTemperatureOverride({
+    agentId: workspaceResolution.agentId,
+    sessionKey: resolvedSessionKey,
+    storePath: params.config?.session?.store,
+  });
   const runtimePlan = buildAgentRuntimePlan({
     provider,
     modelId,
@@ -185,7 +219,13 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     agentDir,
     agentId: workspaceResolution.agentId,
     thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel),
-    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode },
+    extraParamsOverride: {
+      ...params.streamParams,
+      fastMode: attemptFastMode,
+      ...(sessionTemperatureOverride !== undefined
+        ? { temperature: sessionTemperatureOverride }
+        : {}),
+    },
   });
   const trajectoryAttribution = resolveAttemptTrajectoryAttribution({
     model: effectiveModel,

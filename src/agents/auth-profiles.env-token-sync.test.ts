@@ -15,7 +15,7 @@ import { syncPersistedExternalCliAuthProfiles } from "./auth-profiles/external-a
 import { syncEnvBackedTokenCredentials } from "./auth-profiles/external-cli-sync.js";
 import { loadPersistedAuthProfileStore } from "./auth-profiles/persisted.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
-import { ensureAuthProfileStore, saveAuthProfileStore } from "./auth-profiles/store.js";
+import { ensureAuthProfileStore, saveAuthProfileStore } from "./auth-profiles/store-runtime.js";
 import type { AuthProfileStore, TokenCredential } from "./auth-profiles/types.js";
 
 const ENV_KEY = "ANTHROPIC_ME_COM_TOKEN";

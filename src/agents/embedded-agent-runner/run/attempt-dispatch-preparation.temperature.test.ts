@@ -1,6 +1,6 @@
 // Coverage for the session-level /temperature dispatch plumbing.
 import { describe, expect, it, vi } from "vitest";
-import { resolveSessionTemperatureOverride } from "./attempt-dispatch-preparation.js";
+import { resolveSessionTemperatureOverride } from "./run-attempt-dispatch.js";
 
 vi.mock("../../../config/sessions/session-accessor.js", async (importOriginal) => {
   const original = (await importOriginal()) as Record<string, unknown>;

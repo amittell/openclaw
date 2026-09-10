@@ -11,10 +11,10 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { testing as externalAuthTesting } from "./external-auth.test-support.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
 import {
-  clearRuntimeAuthProfileStoreSnapshot,
   ensureAuthProfileStoreWithoutExternalProfiles,
   saveAuthProfileStore,
-} from "./store.js";
+} from "./store-runtime.js";
+import { clearRuntimeAuthProfileStoreSnapshot } from "./store.js";
 import type { OAuthCredential, OAuthCredentials } from "./types.js";
 
 // Shrink the in-lock deadline so a real-timer test can observe an abandoned

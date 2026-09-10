@@ -59,7 +59,10 @@ describe("AgentSession compaction commit guards", () => {
     const result = await session[agentSessionAutomaticCompaction]();
 
     expect(requests).toBe(2);
-    expect(result.summary).toBe("condensed history");
+    // 9.2 threw on a skipped compaction, so reaching this line was itself proof of completion.
+    // 9.3 returns the settled outcome instead, so the guard asserts the completed arm here or
+    // it stops proving a summary was produced at all.
+    expect(result.status === "completed" && result.result.summary).toBe("condensed history");
     expect(
       sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
     ).toMatchObject({ summary: "condensed history" });

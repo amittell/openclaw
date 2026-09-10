@@ -6,7 +6,7 @@ import type { Model } from "openclaw/plugin-sdk/llm";
 import { expect, type Mock } from "vitest";
 import { looksLikeSecretSentinel, resolveSecretSentinel } from "../../../secrets/sentinel.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
-import { createEmbeddedRunAuthController } from "./auth-controller.js";
+import { createEmbeddedRunAuthController, type EmbeddedRunAuthState } from "./auth-controller.js";
 import type { RuntimeAuthState } from "./helpers.js";
 
 export function createTestModel(): Model {
@@ -33,15 +33,6 @@ export function getRuntimeAuthSnapshot(
   return state ? { profileId: state.profileId, refreshInFlight: state.refreshInFlight } : null;
 }
 
-export type MutableAuthControllerHarness = {
-  runtimeModel: Model;
-  effectiveModel: Model;
-  apiKeyInfo: unknown;
-  lastProfileId?: string;
-  runtimeAuthState: RuntimeAuthState | null;
-  profileIndex: number;
-};
-
 export type RuntimeApiKeySetter = Mock<(provider: string, apiKey: string) => void>;
 
 export function expectProtectedRuntimeValue(value: string | undefined, plaintext: string): void {
@@ -50,23 +41,24 @@ export function expectProtectedRuntimeValue(value: string | undefined, plaintext
   expect(resolveSecretSentinel(value ?? "")).toBe(plaintext);
 }
 
-export function createMutableAuthControllerHarness(): MutableAuthControllerHarness {
-  // Mutable harness mirrors the runner fields the auth controller updates
-  // through injected getters/setters.
+export function createMutableAuthControllerHarness(): EmbeddedRunAuthState {
+  // Mutable harness stands in for the runner-owned auth state the controller
+  // reads and writes in place; each test gets its own so state cannot leak.
   return {
-    runtimeModel: createTestModel(),
-    effectiveModel: createTestModel(),
+    models: { runtime: createTestModel(), effective: createTestModel() },
     apiKeyInfo: null,
     lastProfileId: undefined,
     runtimeAuthState: null,
+    runtimeAuthRefreshCancelled: false,
     profileIndex: 0,
+    thinkLevel: "medium",
   };
 }
 
 export function createMutableEmbeddedRunAuthController(params: {
-  harness: MutableAuthControllerHarness;
+  harness: EmbeddedRunAuthState;
   setRuntimeApiKey: RuntimeApiKeySetter;
-  profileCandidates?: string[];
+  profileCandidates?: Array<string | undefined>;
   authStore?: AuthProfileStore;
   fallbackConfigured?: boolean;
   lockedProfileId?: string;
@@ -94,38 +86,12 @@ export function createMutableEmbeddedRunAuthController(params: {
     attemptedThinking: new Set(),
     fallbackConfigured: params.fallbackConfigured ?? false,
     allowTransientCooldownProbe: params.allowTransientCooldownProbe ?? false,
-    getProvider: () => "custom-openai",
-    getModelId: () => "test-model",
-    getRuntimeModel: () => params.harness.runtimeModel,
-    setRuntimeModel: (next) => {
-      params.harness.runtimeModel = next;
-    },
-    getEffectiveModel: () => params.harness.effectiveModel,
-    setEffectiveModel: (next) => {
-      params.harness.effectiveModel = next;
-    },
-    getApiKeyInfo: () => params.harness.apiKeyInfo as never,
-    setApiKeyInfo: (next) => {
-      params.harness.apiKeyInfo = next;
-    },
-    getLastProfileId: () => params.harness.lastProfileId,
-    setLastProfileId: (next) => {
-      params.harness.lastProfileId = next;
-    },
-    getRuntimeAuthState: () => params.harness.runtimeAuthState as never,
-    setRuntimeAuthState: (next) => {
-      params.harness.runtimeAuthState = next;
-    },
-    getRuntimeAuthRefreshCancelled: () => false,
-    setRuntimeAuthRefreshCancelled: () => undefined,
-    getProfileIndex: () => params.harness.profileIndex,
-    setProfileIndex: (next) => {
-      params.harness.profileIndex = next;
-    },
+    provider: "custom-openai",
+    modelId: "test-model",
+    state: params.harness,
     ...(params.prepareModelForAuthProfile
       ? { prepareModelForAuthProfile: params.prepareModelForAuthProfile }
       : {}),
-    setThinkLevel: () => undefined,
     log: {
       debug: () => undefined,
       info: () => undefined,
