@@ -833,8 +833,11 @@ describe("handleEmbeddedAssistantFailure", () => {
     fixture.input.fallbackConfigured = false;
     fixture.input.emptyErrorRetries = 3; // at the cap
     fixture.input.maybeRefreshRuntimeAuthForAuthError = vi.fn(async () => false);
-    fixture.input.advanceAuthProfile = vi.fn(async () => false);
-    fixture.input.advanceRateLimitAuthProfile = vi.fn(async () => false);
+    // Drive the spy the fixture installed on input.failover instead of replacing it:
+    // the not-called assertion below reads this same handle, and a fresh vi.fn() here
+    // would leave it guarding an object the production path never touches.
+    fixture.advanceAuthProfile.mockResolvedValue(false);
+    fixture.input.failover.advanceRateLimitAuthProfile = vi.fn(async () => false);
 
     const outcome = await handleEmbeddedAssistantFailure(fixture.input);
 
@@ -871,8 +874,8 @@ describe("handleEmbeddedAssistantFailure", () => {
     fixture.input.terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
     fixture.input.fallbackConfigured = true;
     fixture.input.emptyErrorRetries = 3; // at the cap
-    fixture.input.advanceAuthProfile = vi.fn(async () => false);
-    fixture.input.advanceRateLimitAuthProfile = vi.fn(async () => false);
+    fixture.advanceAuthProfile.mockResolvedValue(false);
+    fixture.input.failover.advanceRateLimitAuthProfile = vi.fn(async () => false);
 
     // With a fallback configured the turn does NOT hard-stop; it proceeds to the
     // model-fallback path, which throws a FailoverError so the outer run loop can
