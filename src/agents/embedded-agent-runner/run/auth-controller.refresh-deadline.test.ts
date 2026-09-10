@@ -129,8 +129,8 @@ describe("createEmbeddedRunAuthController", () => {
 
       await controller.advanceAuthProfile();
       expect(getRuntimeAuthSnapshot(harness.runtimeAuthState)?.profileId).toBe("backup");
-      expect(harness.runtimeModel.baseUrl).toBe("https://backup-runtime.example.com/v1");
-      const backupHeader = harness.runtimeModel.headers?.["api-key"];
+      expect(harness.models.runtime.baseUrl).toBe("https://backup-runtime.example.com/v1");
+      const backupHeader = harness.models.runtime.headers?.["api-key"];
       expectProtectedRuntimeValue(backupHeader, "backup-runtime-header-token");
 
       staleRefresh.resolve({
@@ -149,8 +149,8 @@ describe("createEmbeddedRunAuthController", () => {
       await Promise.resolve();
 
       expect(getRuntimeAuthSnapshot(harness.runtimeAuthState)?.profileId).toBe("backup");
-      expect(harness.runtimeModel.baseUrl).toBe("https://backup-runtime.example.com/v1");
-      expect(harness.runtimeModel.headers?.["api-key"]).toBe(backupHeader);
+      expect(harness.models.runtime.baseUrl).toBe("https://backup-runtime.example.com/v1");
+      expect(harness.models.runtime.headers?.["api-key"]).toBe(backupHeader);
       const storedBackupApiKey = setRuntimeApiKey.mock.calls.at(-1)?.[1];
       expectProtectedRuntimeValue(storedBackupApiKey, "backup-runtime-api-key");
       controller.stopRuntimeAuthRefreshTimer();

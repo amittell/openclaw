@@ -8,7 +8,7 @@ import { sanitizeProfileIdForDisplay } from "../../agents/auth-profiles/sanitize
 import {
   loadAgentLocalAuthProfileStore,
   updateAuthProfileStoreWithLock,
-} from "../../agents/auth-profiles/store.js";
+} from "../../agents/auth-profiles/store-runtime.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import type { MediaToolsConfig, MediaUnderstandingModelConfig } from "../../config/types.tools.js";
 import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";

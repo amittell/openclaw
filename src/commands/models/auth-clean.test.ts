@@ -27,7 +27,7 @@ vi.mock("../../agents/auth-profiles.js", () => ({
   loadAuthProfileStoreWithoutExternalProfiles: mocks.loadAuthProfileStoreWithoutExternalProfiles,
 }));
 
-vi.mock("../../agents/auth-profiles/store.js", () => ({
+vi.mock("../../agents/auth-profiles/store-runtime.js", () => ({
   updateAuthProfileStoreWithLock: mocks.updateAuthProfileStoreWithLock,
   loadAgentLocalAuthProfileStore: mocks.loadAgentLocalAuthProfileStore,
 }));
