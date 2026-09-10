@@ -87,7 +87,10 @@ describe("group runtime loading", () => {
       silentToken: "NO_REPLY",
     });
     expect(channelToolOnlyContext).toContain("visible channel response");
-    expect(channelToolOnlyContext).toContain("not automatically sent to this channel");
+    // The fork rewrote this sentence: upstream's "not automatically sent" reads as a
+    // sanctioned third option and turns a decided reply into a silent non-delivery.
+    // Same meaning, fork wording, still pinned to the resolved channel label.
+    expect(channelToolOnlyContext).toContain("is never posted to this channel");
     expect(channelToolOnlyContext).not.toContain("visible group response");
     expect(channelToolOnlyContext).not.toContain("posted to the group");
     expect(
