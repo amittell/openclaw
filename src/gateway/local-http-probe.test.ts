@@ -109,3 +109,52 @@ test("cancels pending readiness requests when the repair budget expires", async 
     });
   }
 });
+
+// The strict marker is what lets supervised-lock recovery tell a draining gateway
+// (503) from a zombie still holding the port (200). It reached production through
+// two separate helpers, and an earlier port applied it to only one of them - which
+// left the production probe inert while every test still passed. These cases pin
+// BOTH call shapes and the public probe's legacy marker-free contract.
+test("carries the strict marker on both probe helpers and omits it by default", async () => {
+  const paths: string[] = [];
+  const server = createHttpServer((request, response) => {
+    paths.push(request.url ?? "");
+    response.statusCode = 200;
+    response.end(JSON.stringify({ ok: true }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address() as AddressInfo;
+
+  try {
+    // 1. bare helper, strict opted in
+    await requestGatewayLocalHttpProbe({
+      host: "127.0.0.1",
+      pathname: "/healthz",
+      port,
+      timeoutMs: 1_000,
+      strictLiveProbe: true,
+    });
+    // 2. the helper production actually wires for supervised-lock recovery
+    await createConfiguredGatewayLocalProbe({}).requestHttp({
+      host: "127.0.0.1",
+      pathname: "/healthz",
+      port,
+      timeoutMs: 1_000,
+      strictLiveProbe: true,
+    });
+    // 3. public probe: no marker, legacy always-200 contract preserved
+    await requestGatewayLocalHttpProbe({
+      host: "127.0.0.1",
+      pathname: "/healthz",
+      port,
+      timeoutMs: 1_000,
+    });
+
+    expect(paths).toEqual(["/healthz?strict=1", "/healthz?strict=1", "/healthz"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
