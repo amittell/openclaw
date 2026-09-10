@@ -66,6 +66,17 @@ type InternalReplySessionOptions = {
   /** Gateway-private optimistic-concurrency constraint for an operator-requested proposal revision. */
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
   skillLibraryAuthoring?: import("../../skills/library/authoring.js").SkillLibraryAuthoringCapability;
+  /**
+   * Fork-only: heartbeat turns ask for the general message tool to be withheld so the
+   * heartbeat response tool stays the sanctioned channel. 9.3 replaced the file that
+   * carried this (heartbeat-runner-execution.ts) wholesale, and its new call site pins
+   * InternalGetReplyOptions explicitly, so the flag needs a home on the type to survive.
+   *
+   * It records intent rather than taking effect: nothing forwards it from reply options
+   * into the agent params - not on this branch and not at the deployed fork either.
+   * requireExplicitMessageTarget is what actually constrains heartbeat targeting today.
+   */
+  disableMessageTool?: boolean;
 };
 
 export type InternalGetReplyOptions = GetReplyOptions &

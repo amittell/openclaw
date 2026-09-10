@@ -103,6 +103,9 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
           }),
           [REPLY_OPERATION_RUN_STATE]: state,
           heartbeatModelOverride: heartbeat?.model?.trim(),
+          // Carried from the fork, which set this in heartbeat-runner-execution.ts before
+          // 9.3 replaced that file. See the note on the type: it is intent, not yet wiring.
+          disableMessageTool: true,
           ...(prepared.usesHeartbeatResponseTool
             ? {
                 enableHeartbeatTool: true,
