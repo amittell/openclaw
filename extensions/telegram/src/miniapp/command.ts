@@ -21,11 +21,8 @@ function createTelegramMiniAppDashboardCommand(
   launchTickets: TelegramMiniAppLaunchTickets,
 ): OpenClawPluginCommandDefinition {
   return {
-    // Named "miniapp", not "dashboard": core registers a builtin `dashboard` command,
-    // and Telegram's menu builder refuses a plugin command whose name is already
-    // reserved, which silently left the Mini App launcher with no entry point at all.
-    name: "miniapp",
-    description: "Open the OpenClaw dashboard Mini App",
+    name: "dashboard",
+    description: "Open the OpenClaw dashboard",
     channels: ["telegram"],
     requireAuth: true,
     exposeSenderIsOwner: true,
