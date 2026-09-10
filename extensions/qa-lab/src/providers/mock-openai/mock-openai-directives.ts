@@ -143,6 +143,7 @@ export function shouldUseWhatsAppStickerMarker(prompt: string) {
     const fenceEnd = fenceStart >= 0 ? prompt.indexOf("```", fenceStart + 7) : -1;
     if (fenceStart >= 0 && fenceEnd >= 0) {
       try {
+        // SAFETY: all fields are optional and the parse is inside a try; malformed JSON throws and is caught.
         const value = JSON.parse(prompt.slice(fenceStart + 7, fenceEnd)) as {
           payload?: { kind?: unknown };
         };
@@ -227,6 +228,7 @@ function toolDefinitionMentionsName(value: unknown, name: string, depth = 0): bo
   if (Array.isArray(value)) {
     return value.some((item) => toolDefinitionMentionsName(item, name, depth + 1));
   }
+  // SAFETY: the guards above already excluded null, non-objects and arrays.
   const record = value as Record<string, unknown>;
   for (const key of ["name", "tool", "functionName"]) {
     if (record[key] === name) {
@@ -299,8 +301,27 @@ export function extractToolErrorForNamedCall(params: {
   if (!error) {
     return undefined;
   }
+  // Harnesses express tool calls either as top-level `function_call` items or
+  // as content blocks inside a message item. Match both so a mock tool error
+  // is attributed to the call it belongs to instead of leaking onto the next
+  // unrelated call.
   const namedFunctionCall = params.input.some(
-    (item) => item.type === "function_call" && item.name === params.name,
+    (item) =>
+      (item.type === "function_call" && item.name === params.name) ||
+      (Array.isArray(item.content) &&
+        item.content.some((block) => {
+          if (!block || typeof block !== "object") {
+            return false;
+          }
+          // SAFETY: the guard above already excluded null and every non-object block.
+          const record = block as Record<string, unknown>;
+          return (
+            (record.type === "toolCall" ||
+              record.type === "tool_use" ||
+              record.type === "function_call") &&
+            record.name === params.name
+          );
+        })),
   );
   if (namedFunctionCall) {
     return error;
@@ -327,6 +348,7 @@ export function extractSessionStatusSessionKey(
 ) {
   const details = toolJson?.details;
   if (details && typeof details === "object") {
+    // SAFETY: guarded by the object check above; the read is optional and string-checked before use.
     const sessionKey = (details as { sessionKey?: unknown }).sessionKey;
     if (typeof sessionKey === "string" && sessionKey.trim()) {
       return sessionKey.trim();
@@ -360,6 +382,7 @@ export function readFirstMediaPath(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "";
   }
+  // SAFETY: the guard above already excluded null, non-objects and arrays; every field is optional unknown.
   const media = value as {
     mediaUrl?: unknown;
     mediaUrls?: unknown;

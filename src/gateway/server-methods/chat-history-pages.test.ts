@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
-import { enrichChatHistoryCompactionMarkers } from "./chat-history-pages.js";
+import {
+  enrichChatHistoryCompactionMarkers,
+  shouldReadAnchoredWindow,
+} from "./chat-history-pages.js";
 
 describe("enrichChatHistoryCompactionMarkers", () => {
   it("joins checkpoint token metrics to the matching transcript marker", () => {
@@ -46,5 +49,56 @@ describe("enrichChatHistoryCompactionMarkers", () => {
     const result = enrichChatHistoryCompactionMarkers([marker], undefined);
 
     expect(result[0]).toBe(marker);
+  });
+});
+
+describe("shouldReadAnchoredWindow", () => {
+  const cli = "claude-cli-session-1";
+
+  it("reads a compaction span even when the session has a CLI import binding", () => {
+    // Regression: the span shares the anchored branch with offset/messageId, which
+    // deliberately falls through to the CLI merge. Falling through here answered a
+    // span request with the live tail and reported success, so the caller could not
+    // tell the shadowed rows were never read.
+    expect(
+      shouldReadAnchoredWindow({
+        offset: undefined,
+        messageId: undefined,
+        compactionId: "entry-compaction-1",
+        cliSessionId: cli,
+      }),
+    ).toBe(true);
+  });
+
+  it("still lets offset and messageId fall through to the CLI merge", () => {
+    for (const anchor of [
+      { offset: 0, messageId: undefined },
+      { offset: undefined, messageId: "entry-message-1" },
+    ]) {
+      expect(
+        shouldReadAnchoredWindow({ ...anchor, compactionId: undefined, cliSessionId: cli }),
+      ).toBe(false);
+    }
+  });
+
+  it("reads anchored windows directly without a CLI binding", () => {
+    for (const anchor of [
+      { offset: 0, messageId: undefined, compactionId: undefined },
+      { offset: undefined, messageId: "entry-message-1", compactionId: undefined },
+      { offset: undefined, messageId: undefined, compactionId: "entry-compaction-1" },
+    ]) {
+      expect(shouldReadAnchoredWindow({ ...anchor, cliSessionId: undefined })).toBe(true);
+    }
+  });
+
+  it("leaves an unanchored tail read to the normal path", () => {
+    expect(
+      shouldReadAnchoredWindow({
+        offset: undefined,
+        messageId: undefined,
+        compactionId: undefined,
+        cliSessionId: undefined,
+      }),
+    ).toBe(false);
   });
 });

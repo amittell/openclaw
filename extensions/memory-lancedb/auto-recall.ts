@@ -15,7 +15,14 @@ import {
 } from "./memory-policy.js";
 import { startMemoryRecall } from "./recall-service.js";
 
-const AUTO_RECALL_TIMEOUT_MS = 15_000;
+// Auto-recall runs on the prompt-build hot path, so its embed timeout doubles
+// as a startup-stall budget: a healthy embedder answers in well under a second,
+// so 5s is generous headroom while still capping the worst-case wait. A breach
+// trips the shared recall cooldown, so the next turns skip the embed instantly
+// instead of re-paying the timeout every turn. The explicit memory_recall tool
+// keeps its longer budget: the user is actively waiting on that call, so failing
+// it fast is the wrong trade.
+const AUTO_RECALL_TIMEOUT_MS = 5_000;
 const AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const AUTO_RECALL_RESULT_CAP = 3;
 
@@ -42,6 +49,9 @@ export function createAutoRecallHook(params: {
   resolveEnabledAgentId: (rawAgentId: string | undefined) => string | undefined;
   readCooldown: (agentId: string) => { error: string } | undefined;
   recordCooldown: (agentId: string, error: string) => void;
+  // How long recordCooldown parks recall for; the warn below reports it, so it
+  // must come from the same constant rather than a hardcoded duration.
+  cooldownMs: number;
 }) {
   return async (event: AutoRecallHookEvent, ctx: AutoRecallHookContext) => {
     const currentCfg = params.resolveCurrentConfig();
@@ -100,7 +110,9 @@ export function createAutoRecallHook(params: {
           );
         }
         params.logger.warn?.(
-          `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
+          recallPhase === "embedding"
+            ? `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; pausing recall for ${Math.round(params.cooldownMs / 1000)}s to avoid restalling prompt build`
+            : `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
         );
         return undefined;
       }

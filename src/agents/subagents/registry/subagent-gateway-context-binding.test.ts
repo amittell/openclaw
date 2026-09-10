@@ -86,6 +86,31 @@ describe("subagent Gateway context binding", () => {
     expect(shared?.()).toBeUndefined();
   });
 
+  it("shares one gateway across sibling runs bound by separate resolver wrappers", () => {
+    const first = createSubagentRunRecord({ runId: "run-first" });
+    const second = createSubagentRunRecord({ runId: "run-second" });
+    const context = { owner: "gateway-a" } as never;
+    bindGatewayContextResolver(first, () => context);
+    bindGatewayContextResolver(second, () => context);
+
+    // Siblings announce through separate wrappers but settle on one gateway; the
+    // shared resolver matches on the resolved instance, so the batch stays routable.
+    const shared = getSharedGatewayContextResolver([first, second]);
+    expect(shared).toBeTypeOf("function");
+    expect(shared?.()).toBe(context);
+  });
+
+  it("refuses a sibling batch spanning two gateway instances", () => {
+    const first = createSubagentRunRecord({ runId: "run-first" });
+    const second = createSubagentRunRecord({ runId: "run-second" });
+    bindGatewayContextResolver(first, () => ({ owner: "gateway-a" }) as never);
+    bindGatewayContextResolver(second, () => ({ owner: "gateway-b" }) as never);
+
+    const rejected = getSharedGatewayContextResolver([first, second]);
+    expect(rejected).toBeTypeOf("function");
+    expect(() => rejected?.()).toThrow("incompatible Gateway instances");
+  });
+
   it("preserves a shared owner and leaves wholly unbound batches unbound", () => {
     const first = {};
     const second = {};

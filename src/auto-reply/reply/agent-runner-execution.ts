@@ -51,6 +51,7 @@ import {
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
 } from "./agent-runner-auto-fallback.js";
 import { handleAgentExecutionError } from "./agent-runner-error-handler.js";
+import { resolveAutoFallbackPrimaryProbeClearSelection } from "./agent-runner-execution-auto-fallback-evidence.js";
 import { recordAgentTurnExecutionOutcome } from "./agent-runner-execution-outcome.js";
 import type {
   AgentTurnCompaction,
@@ -324,9 +325,13 @@ async function executeAgentTurnInternalLoop(
     provider: string;
     model: string;
   }): Promise<void> =>
-    clearRecoveredAutoFallbackPrimaryProbeSelection({
+    await clearRecoveredAutoFallbackPrimaryProbeSelection({
       run: effectiveRun,
-      ...paramsForClear,
+      ...resolveAutoFallbackPrimaryProbeClearSelection({
+        activeProbe: effectiveRun.autoFallbackPrimaryProbe,
+        settled: paramsForClear,
+        attempts: fallbackAttempts,
+      }),
       sessionKey: params.sessionKey,
       activeSessionStore: params.activeSessionStore,
       getActiveSessionEntry: params.getActiveSessionEntry,

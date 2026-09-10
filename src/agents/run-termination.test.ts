@@ -256,7 +256,10 @@ describe("resolveAgentRunErrorLifecycleFields", () => {
         status: 500,
         message: "500 Fixture request needs a task header",
       });
-      expect(failure).toMatchObject({ reason: "timeout", status: 500 });
+      // Precondition, not the point of the test: an untyped 5xx now coerces to
+      // `server_error` (#141843). The assertion below is what this guards - a
+      // retryable 500 must not produce provider-timeout lifecycle fields either way.
+      expect(failure).toMatchObject({ reason: "server_error", status: 500 });
       const error =
         wrapper === "direct"
           ? failure

@@ -26,6 +26,7 @@ import {
 } from "./changed-lanes.mts";
 import type { ChangedLaneResult } from "./changed-lanes.mts";
 import { detectChangedScope, isMacosToolingPath } from "./ci-changed-scope.mjs";
+import { chunkFilesForCommand } from "./format-docs.mts";
 import {
   booleanFlag,
   isOpenEndedTruthyValue,
@@ -658,12 +659,19 @@ export function createChangedCheckPlan(
   broadAudits.add(add("coercion helper declaration guard", ["check:coercion-helpers"]));
   add("dependency pin guard", ["deps:pins:check"]);
   if (result.paths.length > 0) {
-    add("format changed files", [
-      "format:check",
-      "--no-error-on-unmatched-pattern",
-      "--",
-      ...result.paths,
-    ]);
+    // A release-branch carry can differ from the base by tens of thousands of paths, and
+    // spreading them all into one argv exits E2BIG before the formatter runs, so the gate
+    // reports failure without ever checking a file. Chunk to keep each spawn under the
+    // command-line budget.
+    const formatPrefixArgs = ["format:check", "--no-error-on-unmatched-pattern", "--"];
+    const formatChunks = chunkFilesForCommand(result.paths, formatPrefixArgs);
+    for (const [index, formatChunk] of formatChunks.entries()) {
+      const name =
+        formatChunks.length > 1
+          ? `format changed files (${index + 1}/${formatChunks.length})`
+          : "format changed files";
+      add(name, [...formatPrefixArgs, ...formatChunk]);
+    }
   }
   const npmLockGuardCommand = createNpmLockGuardCommand(result.paths);
   if (npmLockGuardCommand) {

@@ -19,6 +19,7 @@ import {
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import { shouldMirrorRefreshedOAuthCredential } from "./oauth-identity.js";
 import {
+  isPermanentOAuthRefreshFailure,
   OAuthRefreshFailureError,
   readProviderOAuthRefreshFailure,
 } from "./oauth-refresh-failure.js";
@@ -29,8 +30,10 @@ import {
 import {
   areOAuthCredentialsEquivalent,
   hasMatchingOAuthIdentity,
+  isOAuthRefreshDead,
   isSafeToAdoptBootstrapOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
+  isSameOAuthRefreshGrant,
   shouldBootstrapFromExternalCliCredential,
   shouldReplaceStoredOAuthCredential,
 } from "./oauth-shared.js";
@@ -69,6 +72,9 @@ type ResolvedOAuthAccess = {
 };
 
 /** Refresh failure that preserves a redacted refreshed store and credential. */
+/** Live ownership of a bounded in-lock refresh section; flips when the deadline fires. */
+type RefreshSectionOwnership = { state: "owned" | "abandoned" };
+
 export class OAuthManagerRefreshError extends OAuthRefreshFailureError {
   override readonly profileId: string;
   readonly code?: string;
@@ -292,7 +298,9 @@ export function resolveEffectiveOAuthCredentialCore(params: {
   if (!imported) {
     return params.credential;
   }
-  if (hasUsableOAuthCredential(params.credential)) {
+  // A tombstoned grant is "usable" by expiry alone but can never refresh again,
+  // so it must not win over an external CLI grant that can.
+  if (hasUsableOAuthCredential(params.credential) && !isOAuthRefreshDead(params.credential)) {
     authProfilesLog.debug("resolved oauth credential from canonical local store", {
       profileId: params.profileId,
       provider: params.credential.provider,
@@ -381,15 +389,20 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
   async function withRefreshCallTimeout<T>(
     label: string,
     timeoutMs: number,
-    fn: () => Promise<T>,
+    fn: (ownership: RefreshSectionOwnership) => Promise<T>,
   ): Promise<T> {
     let timeoutHandle: NodeJS.Timeout | undefined;
+    // The deadline cannot cancel the body it bounds. Once it fires the lock is
+    // released and a successor may own this key, so the body re-checks ownership
+    // before any write-back and a stale continuation no-ops instead of clobbering.
+    const ownership: RefreshSectionOwnership = { state: "owned" };
     try {
       return await new Promise<T>((resolve, reject) => {
         timeoutHandle = setTimeout(() => {
+          ownership.state = "abandoned";
           reject(new Error(`OAuth refresh call "${label}" exceeded hard timeout (${timeoutMs}ms)`));
         }, timeoutMs);
-        fn().then(resolve, reject);
+        fn(ownership).then(resolve, reject);
       });
     } finally {
       if (timeoutHandle) {
@@ -479,6 +492,34 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
       },
     });
     return result !== null && saved;
+  }
+
+  async function markStoredOAuthCredentialRefreshDeadWithStoreLock(params: {
+    agentDir?: string;
+    profileId: string;
+    attempted: readonly OAuthCredential[];
+    deadAt: number;
+  }): Promise<boolean> {
+    let marked = false;
+    const result = await updateAuthProfileStoreWithLock({
+      agentDir: params.agentDir,
+      updater: (store) => {
+        const existing = store.profiles[params.profileId];
+        if (existing?.type !== "oauth" || existing.refreshDeadAt !== undefined) {
+          return false;
+        }
+        // CAS on the refresh grant, not full equivalence: another writer may
+        // have mirrored a different access token for the same dead grant, but
+        // a NEW grant must never be tombstoned by a stale failure.
+        if (!params.attempted.some((attempt) => isSameOAuthRefreshGrant(existing, attempt))) {
+          return false;
+        }
+        store.profiles[params.profileId] = { ...existing, refreshDeadAt: params.deadAt };
+        marked = true;
+        return true;
+      },
+    });
+    return result !== null && marked;
   }
 
   async function resolveOAuthCredentialAfterPersistMiss(params: {
@@ -650,10 +691,12 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         if (normalizeSecretInputString(credentialToRefresh.refresh) === undefined) {
           return null;
         }
+        let refreshSectionOwnership: RefreshSectionOwnership | undefined;
         const refreshedCredentials = await withRefreshCallTimeout(
           `refreshOAuthCredential(${cred.provider})`,
           OAUTH_REFRESH_CALL_TIMEOUT_MS,
-          async () => {
+          async (ownership) => {
+            refreshSectionOwnership = ownership;
             params.attemptedCredentials?.push(credentialToRefresh);
             const refreshed = await adapter.refreshCredential(credentialToRefresh, {
               cfg: params.cfg,
@@ -669,6 +712,16 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           },
         );
         if (!refreshedCredentials) {
+          return null;
+        }
+        // A refresh that settled after the section deadline no longer owns this key:
+        // a successor refresher may already hold it, so discard the write-back rather
+        // than clobbering the successor's credentials.
+        if (refreshSectionOwnership && refreshSectionOwnership.state !== "owned") {
+          authProfilesLog.debug(
+            "discarded abandoned OAuth refresh write-back after in-lock deadline",
+            { profileId: params.profileId, provider: cred.provider },
+          );
           return null;
         }
         store.profiles[params.profileId] = refreshedCredentials;
@@ -887,6 +940,33 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           }
         } catch {
           // keep the original refresh error below
+        }
+      }
+      // A permanently rejected grant is tombstoned in place so external CLI sync
+      // can re-seed the slot without looping on the same dead refresh token.
+      if (isPermanentOAuthRefreshFailure(error)) {
+        try {
+          const marked = await markStoredOAuthCredentialRefreshDeadWithStoreLock({
+            agentDir: resolvePersistedAuthProfileOwnerAgentDir({
+              profileId: params.profileId,
+              agentDir: params.agentDir,
+            }),
+            profileId: params.profileId,
+            attempted: [effectiveCredential, ...attemptedCredentials],
+            deadAt: Date.now(),
+          });
+          if (marked) {
+            authProfilesLog.warn(
+              "marked stored OAuth credential refresh-dead after permanent refresh failure; external CLI login can re-seed this profile",
+              { profileId: params.profileId, provider: params.credential.provider },
+            );
+          }
+        } catch (markError) {
+          // Best-effort: the refresh failure below is the actionable signal.
+          authProfilesLog.debug("failed to mark OAuth credential refresh-dead", {
+            profileId: params.profileId,
+            error: formatErrorMessage(markError),
+          });
         }
       }
       throw new OAuthManagerRefreshError({

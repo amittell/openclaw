@@ -271,6 +271,103 @@ describe("telegram ingress worker durable-before-offset", () => {
   });
 });
 
+describe("telegram ingress worker foreign offset", () => {
+  it("adopts the server's update ids when getUpdates ignores a foreign offset", async () => {
+    // A local Bot API server answers a cloud-era offset from its own queue head.
+    // Measured on mac-mini 2026-09-02: offset 760546623 -> update 592426180, forever.
+    vi.useFakeTimers();
+    const messages: TelegramIngressWorkerMessage[] = [];
+    const listeners = new Set<(message: TelegramIngressWorkerCommand) => void>();
+    const sendCommand = (message: TelegramIngressWorkerCommand) => {
+      for (const listener of listeners) {
+        listener(message);
+      }
+    };
+    const pollBodies: Array<Record<string, unknown>> = [];
+    let pollCount = 0;
+    const port: RuntimePort = {
+      postMessage(message) {
+        messages.push(message);
+        if (message.type === "update") {
+          const updateId = (message.update as { update_id: number }).update_id;
+          sendCommand({
+            type: "spool-ack",
+            requestId: message.requestId,
+            result: { ok: true, updateId },
+          });
+        }
+        if (message.type === "poll-success" && pollCount >= 2) {
+          sendCommand({ type: "stop" });
+        }
+      },
+      onMessage(listener) {
+        listeners.add(listener);
+      },
+      close() {},
+    };
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      pollCount += 1;
+      const body = JSON.parse((init?.body as string | undefined) ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      pollBodies.push(body);
+      if (pollCount === 1) {
+        return jsonResponse(200, {
+          ok: true,
+          result: [{ update_id: 592_426_180, message: { text: "head" } }],
+        });
+      }
+      return jsonResponse(200, { ok: true, result: [] });
+    };
+    const done = runTelegramIngressWorkerRuntime({
+      options: {
+        token: "test-auth-token",
+        accountId: "acct",
+        initialUpdateId: 760_546_622,
+        spoolDir: "/tmp/openclaw-telegram-ingress-worker-foreign-offset-test",
+        apiRoot: "http://localhost:8081",
+        timeoutSeconds: 1,
+      },
+      port,
+      deps: {
+        fetch: fetchImpl,
+        closeTransport: async () => {},
+      },
+    });
+
+    await flushRuntime();
+    await vi.advanceTimersByTimeAsync(0);
+    await done;
+
+    expect(pollBodies[0]?.offset).toBe(760_546_623);
+    expect(messages).toContainEqual({
+      type: "offset-rejected",
+      requestedOffset: 760_546_623,
+      adoptedUpdateId: 592_426_180,
+    });
+    // The rejection is announced before the update is spooled, so the parent can
+    // reset its persisted watermark before the adopted id is persisted.
+    const rejectedIndex = messages.findIndex((m) => m.type === "offset-rejected");
+    const updateIndex = messages.findIndex((m) => m.type === "update");
+    expect(rejectedIndex).toBeLessThan(updateIndex);
+    // Next poll confirms the server's head instead of re-fetching it forever.
+    expect(pollBodies[1]?.offset).toBe(592_426_181);
+  });
+
+  it("keeps a higher-than-offset batch on the normal path without announcing a rejection", async () => {
+    const runtime = createRuntime(
+      [
+        jsonResponse(200, { ok: true, result: [{ update_id: 43, message: { text: "hi" } }] }),
+        jsonResponse(200, { ok: true, result: [] }),
+      ],
+      { stopAfterPollSuccesses: 2 },
+    );
+    await runtime.done;
+    expect(runtime.messages.some((m) => m.type === "offset-rejected")).toBe(false);
+  });
+});
+
 describe("telegram ingress worker retry policy", () => {
   it("honors Telegram retry_after for getUpdates 429 responses", async () => {
     vi.useFakeTimers();

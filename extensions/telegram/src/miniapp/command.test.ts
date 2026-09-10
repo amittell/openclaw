@@ -37,7 +37,7 @@ function commandContext(overrides: Partial<PluginCommandContext>): PluginCommand
   return {
     channel: "telegram",
     isAuthorizedSender: true,
-    commandBody: "/dashboard",
+    commandBody: "/miniapp",
     config: {},
     requestConversationBinding: async () => ({ status: "error", message: "unused" }),
     detachConversationBinding: async () => ({ removed: false }),

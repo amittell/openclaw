@@ -36,6 +36,7 @@ import {
 import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
+import { bumpConfigReloadObservedGeneration } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   isNoopGatewayReloadPlan,
@@ -720,6 +721,18 @@ export function startGatewayConfigReloader(opts: {
       plan.restartReasons.push(followUp.reason);
     }
     if (plan.restartGateway) {
+      // Read nextSettings, not the stale `settings` binding: the incoming
+      // config owns this decision (same source as the mode==="off" check
+      // above), otherwise a config that switches modes logs nothing.
+      // "hybrid" is the hot-capable mode (legacy "hot" resolves to it), so a
+      // restart-required plan here is the case operators need explained.
+      if (nextSettings.mode === "hybrid") {
+        opts.log.warn(
+          `config reload requires gateway restart; hybrid mode scheduling restart (${plan.restartReasons.join(
+            ", ",
+          )})`,
+        );
+      }
       await opts.onConfigChange?.(plan, nextConfig);
       await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
@@ -824,6 +837,10 @@ export function startGatewayConfigReloader(opts: {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
+    // Every disk or in-process config observation funnels through here, so
+    // this bump is the invalidation signal for downstream single-slot caches
+    // (health runtime-config drift) that must not poll the file themselves.
+    bumpConfigReloadObservedGeneration();
     let attemptedCandidate: InProcessConfigCandidate | null = null;
     try {
       if (pendingInProcessConfig) {
