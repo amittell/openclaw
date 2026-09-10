@@ -110,7 +110,7 @@ export function createAutoRecallHook(params: {
           );
         }
         params.logger.warn?.(
-          recallPhase === "embedding"
+          recallOperation.phase === "embedding"
             ? `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; pausing recall for ${Math.round(params.cooldownMs / 1000)}s to avoid restalling prompt build`
             : `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
         );
