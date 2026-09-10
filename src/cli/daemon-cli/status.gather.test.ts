@@ -1917,9 +1917,7 @@ describe("gatherDaemonStatus", () => {
       url: "wss://127.0.0.1:19001",
     });
 
-    const status = await gatherStatus({
-      rpc: { url: "wss://gateway.example:19001" },
-    });
+    const status = await gatherStatus();
 
     expect(status.rpc?.ok).toBe(false);
     expect(status.rpc?.authWarning).toContain(

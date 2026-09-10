@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { resetGatewayShuttingDownState } from "./gateway-shutdown-state.js";
 import {
   createGatewayKernel,
   gatewayKernelLogs,
@@ -30,8 +31,9 @@ export async function startGatewayServerCore(
   // without process exit) starts answering /healthz as 200 again. Pull from
   // the lightweight `gateway-shutdown-state` module instead of the close
   // runtime so startup does not load shutdown-only agent/channel/plugin
-  // cleanup code.
-  const { resetGatewayShuttingDownState } = await import("./gateway-shutdown-state.js");
+  // cleanup code. Imported statically and called synchronously: an await here
+  // yields before the remote catalog snapshot is captured, which lets a catalog
+  // that changes during startup win over the one present at start.
   resetGatewayShuttingDownState();
   let releasePostReadyWork: () => void = () => {};
   const postReadyWorkBarrier = new Promise<void>((resolve) => {
