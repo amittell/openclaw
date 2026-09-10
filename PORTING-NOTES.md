@@ -1489,3 +1489,122 @@ carry is most likely to duplicate. Re-run with a corrected extractor plus
 `v2026.9.2` worktree (`eligibleForRemoval=1`, exit 1, same counts): a
 date-driven deprecation window that came due. Retiring a compat record is a
 product decision, not a carry fix. All other lanes pass, format included.
+
+---
+
+# Carrying onto v2026.9.3 — measured plan
+
+Measured 2026-09-10 from `a2cd501130c` (the fork head on the 9.2 base, both bots
+deployed and verified). **Every number below is measured, not estimated.** An earlier
+figure of "70 files need hand resolution" was published and is WRONG — see the
+instrument note at the end.
+
+## Topology: 9.3 is not a patch bump, and not ancestral
+
+    merge-base(9.2, 9.3)        b6a2e5b4eff   2026-09-05
+    commits only in v2026.9.3   1899
+    commits only in v2026.9.2      5          all release scaffolding
+    9.2 -> 9.3                  10681 files, +682k / -376k
+    commit mix in 9.3           913 fix, 435 refactor, 201 perf, 148 test, 55 feat
+    top areas                   src/agents 1267, ui/src 1188, src/gateway 842, src/infra 456
+
+Neither tag is an ancestor of the other. They are sibling release branches that
+diverged 2026-09-05, so this is a re-anchor exactly like 8.1 -> 9.2, not a fast-forward.
+
+## Cost: SMALLER than the carry we just completed
+
+Replaying our delta per file with the ledger's method
+(`git merge-file -p --diff3 <9.3> <9.2> <ours>`):
+
+    files with a carry delta vs 9.2 .... 258
+    replays CLEAN onto 9.3 ............. 189
+    needs HAND resolution ..............  28
+    relocated/absent in 9.3 ............   1
+    fork-only files (copy over) ........  42
+
+    8.1 -> 9.2   45 files hand-resolved   (what the 2026-09-09 carry actually cost)
+    9.2 -> 9.3   28 files hand-resolved   (projected, same method)
+
+**And the true hand count is 23, not 28**, because five of them are not hand work:
+
+    3  test/fixtures/agents/prompt-snapshots/**   regenerate: pnpm prompt:snapshots:gen
+    2  config/assertion-safety-baseline.txt       mechanical; --prune is shrink-only
+       config/env-var-count-budget.txt            mechanical; owner approval to raise
+
+## The 23 real files, by difficulty (conflict hunks | our added lines)
+
+    6 |  74 | src/agents/embedded-agent-runner/run/auth-controller.ts      <- the only hard one
+    3 |  18 | src/agents/embedded-agent-runner/run/failover-retry-controller.ts
+    3 |  12 | extensions/telegram/src/monitor.ts
+    2 |  40 | src/agents/auth-profiles/store.ts
+    2 |  30 | src/agents/embedded-agent-runner/run/helpers.ts
+    2 |  13 | src/gateway/local-http-probe.ts
+    2 |   7 | src/agents/embedded-agent-runner/run/auth-controller.test.ts
+    1 | 145 | src/agents/agent-hooks/compaction-safeguard.ts               <- big delta, ONE hunk
+    1 |  50 | src/gateway/local-http-probe.test.ts
+    1 |  42 | src/auto-reply/reply/groups.ts
+    1 |  35 | packages/agent-core/src/harness/compaction/compaction.ts
+    1 |  34 | src/cli/gateway-cli/run.ts
+    1 |  32 | src/cli/plugins-cli-test-helpers.ts
+    1 |  28 | src/tui/gateway-chat.test.ts
+    1 |  27 | src/agents/embedded-agent-runner/run/assistant-failure.ts
+    1 |  23 | src/tui/embedded-backend.test.ts
+    1 |  16 | src/gateway/server-lifecycle.ts
+    1 |  13 | src/agents/sessions/agent-session-compaction.ts
+    1 |  13 | extensions/telegram/src/polling-session.ts
+    1 |   9 | src/infra/heartbeat-runner.tool-response.test.ts
+    1 |   6 | src/commands/doctor-config-flow.ts
+    1 |   6 | src/agents/failover-policy.ts
+    1 |   1 | src/infra/heartbeat-runner-execution.ts
+
+One file with 6 hunks; everything else is 1-3. `compaction-safeguard.ts` looks alarming
+at +145 but is a single hunk — a block insertion, not interleaved edits.
+
+## The one relocation, and it is trap 3 in reverse
+
+`src/agents/embedded-agent-runner/run/attempt-dispatch-preparation.ts` is absent at 9.3.
+Upstream **inlined it back** into `run-loop.ts` — `prepareAndDispatchEmbeddedRunAttempt`
+lives there now. Our +41/-2 must be re-anchored into the new home and the orphan dropped.
+Not a product question: the capability moved, it was not retired.
+
+## What moving to 9.3 costs us
+
+The 5 commits unique to 9.2 are release scaffolding: release notes, release prep, and
+two `fix(release)` commits touching only test files, a shell script, and dependency
+version bumps from the security qualification. **No product logic is lost.** The
+dependency bumps want re-checking against whatever 9.3 pins.
+
+## Method, and the traps that already cost time on 8.1 -> 9.2
+
+Read the trap list before starting. All five were paid for once already:
+
+1. "Keep both sides" on an import collision -> duplicate-identifier PARSE ERROR.
+2. Auto-merge keeps the fork's identifier inside upstream's renamed scope; only the
+   typecheck catches it. Run all three lanes.
+3. A fork-local EXTRACTION where upstream rewrote the original silently discards
+   upstream's work.
+4. Applying the fork's diff faithfully can land it on the WRONG HELPER — verify the
+   PRODUCTION call site, not just that tests pass.
+5. Upstream EXTRACTS and the carry keeps both copies -> duplicate test names.
+
+Classify every failure with THREE cells, not two:
+
+    alone on the branch | alone at the new tag | alone at the DEPLOYED sha
+
+The third cell is what separates "we introduced this" from "we have always shipped
+this". Without it, two-cell comparison overclaimed three times on 2026-09-09.
+
+## Recommendation
+
+9.3 is roughly half the carry we just finished, from a base that is now clean and fully
+classified. It is a day of work, not a week. It is not urgent: both bots are healthy on
+the 9.2 base and 9.3 is two days newer.
+
+## Instrument note on the retracted figure
+
+The first projection said 70 hand-resolutions and "many files 9.3 deleted", listing
+`PORTING-NOTES.md`, `.qmdignore` and `memory-refresh.ts` among the deletions. That
+script counted **fork-only files as deletions** — files absent at the 9.2 base because
+WE created them. They have no delta to replay and simply copy over. 42 files were
+scored as product decisions and every one was a non-event. Skip a file when it is
+absent at the BASE.
