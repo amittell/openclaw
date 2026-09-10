@@ -18,6 +18,18 @@ import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-s
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./auth-profiles/store-runtime.js";
 import type { AuthProfileStore, TokenCredential } from "./auth-profiles/types.js";
 
+const mocks = vi.hoisted(() => ({
+  resolveExternalAuthProfilesWithPlugins: vi.fn(() => []),
+}));
+
+// Vitest 5 hoists vi.hoisted/vi.mock to the top of the module and now errors when
+// they are written inside a describe, because the nesting misstates their real
+// execution order. Kept at module scope for that reason; 4.1.11 tolerated the
+// nested form this fork's test was written against.
+vi.mock("../plugins/provider-runtime.js", () => ({
+  resolveExternalAuthProfilesWithPlugins: mocks.resolveExternalAuthProfilesWithPlugins,
+}));
+
 const ENV_KEY = "ANTHROPIC_ME_COM_TOKEN";
 const PROFILE_ID = "anthropic:me.com";
 
@@ -25,7 +37,11 @@ function tokenStore(token: string): AuthProfileStore {
   return {
     version: 1,
     profiles: {
-      [PROFILE_ID]: { type: "token", provider: "anthropic", token } as TokenCredential,
+      [PROFILE_ID]: {
+        type: "token",
+        provider: "anthropic",
+        token,
+      } as TokenCredential,
     },
   };
 }
@@ -51,7 +67,9 @@ describe("syncEnvBackedTokenCredentials", () => {
 
   it("skips sync when the env var matches the stored token", () => {
     const store = tokenStore("same-token");
-    const next = syncEnvBackedTokenCredentials(store, { env: { [ENV_KEY]: "same-token" } });
+    const next = syncEnvBackedTokenCredentials(store, {
+      env: { [ENV_KEY]: "same-token" },
+    });
     expect(next).toBeNull();
   });
 
@@ -137,14 +155,6 @@ describe("syncPersistedExternalCliAuthProfiles env-token composition", () => {
 });
 
 describe("ensureAuthProfileStore env-token persistence", () => {
-  const mocks = vi.hoisted(() => ({
-    resolveExternalAuthProfilesWithPlugins: vi.fn(() => []),
-  }));
-
-  vi.mock("../plugins/provider-runtime.js", () => ({
-    resolveExternalAuthProfilesWithPlugins: mocks.resolveExternalAuthProfilesWithPlugins,
-  }));
-
   async function withAgentDirEnv(prefix: string, run: (agentDir: string) => void | Promise<void>) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     const agentDir = path.join(root, "agents", "main", "agent");
