@@ -186,6 +186,7 @@ async function executeAgentTurnInternalLoop(
       verboseLevel: params.resolvedVerboseLevel,
       isHeartbeat: params.isHeartbeat,
       isControlUiVisible: shouldSurfaceToControlUi,
+      completionSource: params.completionSource,
     });
   }
   if (isDiagnosticsEnabled(runtimeConfig)) {
