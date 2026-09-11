@@ -432,13 +432,10 @@ export function createTelegramInboundPipeline({
   message: TelegramMessagePipeline;
   authorization: TelegramHandlerAuthorization;
 }): TelegramInboundPipeline {
-  const handlers = createTelegramInboundHandlers(
-    params,
-    message,
-    authorization,
-    createTelegramInboundProcessing({ params, message }),
-  );
+  const processing = createTelegramInboundProcessing({ params, message });
+  const handlers = createTelegramInboundHandlers(params, message, authorization, processing);
   return {
+    cancelPending: processing.cancelPending,
     handle: async (ctx) => {
       if (ctx.message) {
         return await handlers.handleMessage(ctx);
@@ -462,7 +459,7 @@ export function registerTelegramInboundHandlers({
   pipeline,
 }: {
   bot: RegisterTelegramHandlerParams["bot"];
-  pipeline: TelegramInboundPipeline;
+  pipeline: Pick<TelegramInboundPipeline, "handle">;
 }): void {
   bot.on("message", pipeline.handle);
   bot.on("edited_message", pipeline.handle);
