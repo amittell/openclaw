@@ -351,8 +351,14 @@ describe("recoverEmbeddedRunOverflow", () => {
     );
     const input = makeInput({
       state,
-      provider: "anthropic",
-      modelId: "claude-opus-4-8",
+      // 9.4 nests provider/model under modelSelection; the warn copy this test
+      // asserts is built from modelSelection.provider/model in
+      // overflow-context-recovery.ts.
+      modelSelection: {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        authProfileIdSource: "auto",
+      },
       promptError,
     });
 
