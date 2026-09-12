@@ -304,6 +304,17 @@ type SessionEntryCore = SessionRestartRecoveryState &
     /** Timestamp (ms) when lastHeartbeatText was delivered. */
     lastHeartbeatSentAt?: number;
     /**
+     * Last content projected into this session by the heartbeat
+     * target-awareness event ("A heartbeat delivered this message to this
+     * channel:"). Stored on the target session entry; suppresses
+     * re-projection of identical content within the 24h heartbeat duplicate
+     * window, where each repeat otherwise triggers an extra agent turn in the
+     * originating conversation (2026-09-11 repeated-relay incident).
+     */
+    lastHeartbeatAwarenessText?: string;
+    /** Timestamp (ms) when lastHeartbeatAwarenessText was projected. */
+    lastHeartbeatAwarenessSentAt?: number;
+    /**
      * Base session key for heartbeat-created isolated sessions.
      * When present, `<base>:heartbeat` is a synthetic isolated session rather than
      * a real user/session-scoped key that merely happens to end with `:heartbeat`.
