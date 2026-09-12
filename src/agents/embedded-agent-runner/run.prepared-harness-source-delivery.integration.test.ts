@@ -109,6 +109,7 @@ describe("prepared harness source delivery", () => {
     },
     {
       name: "suppresses live output when preparation changes automatic ownership to tool",
+      expectedStreamingAttempts: 2,
       candidatePath: "embedded" as const,
       preliminaryVisibleReplies: "automatic" as const,
       preparedVisibleReplies: "message_tool" as const,
@@ -120,6 +121,7 @@ describe("prepared harness source delivery", () => {
     },
     {
       name: "lets implicit built-in automatic ownership yield to a prepared tool owner",
+      expectedStreamingAttempts: 2,
       candidatePath: "embedded" as const,
       preliminaryVisibleReplies: undefined,
       preparedVisibleReplies: "message_tool" as const,
@@ -131,6 +133,7 @@ describe("prepared harness source delivery", () => {
     },
     {
       name: "keeps prepared tool ownership after a failed CLI primary",
+      expectedStreamingAttempts: 2,
       candidatePath: "cli-failure-embedded" as const,
       preliminaryVisibleReplies: "automatic" as const,
       preparedVisibleReplies: "message_tool" as const,
@@ -551,7 +554,16 @@ describe("prepared harness source delivery", () => {
     }
     const cliSucceeded =
       testCase.candidatePath === "cli" || testCase.candidatePath === "embedded-failure-cli";
-    expect(emittedStreamingCallbacks).toEqual(cliSucceeded ? [] : ["partial", "block"]);
+    // emittedStreamingCallbacks counts ATTEMPTS that streamed, not deliveries: the generic
+    // runEmbeddedAttempt mock and the prepared tool owner's own runAttempt each push a pair.
+    // Where preparation hands ownership to the prepared owner, both run, so the pair appears
+    // twice while nothing is delivered. Deliveries are asserted separately below, and stay 0.
+    const streamingAttempts = testCase.expectedStreamingAttempts ?? 1;
+    expect(emittedStreamingCallbacks).toEqual(
+      cliSucceeded
+        ? []
+        : Array.from({ length: streamingAttempts }, () => ["partial", "block"]).flat(),
+    );
     expect(onPartialReply).toHaveBeenCalledTimes(testCase.expectedPartials);
     expect(result.queuedFinal).toBe(testCase.expectedDeliveries === 1);
     expect(deliver).toHaveBeenCalledTimes(testCase.expectedDeliveries + testCase.expectedBlocks);
