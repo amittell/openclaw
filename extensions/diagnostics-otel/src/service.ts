@@ -556,6 +556,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const tracer = active.traceProvider
         ? active.traceProvider.getTracer("openclaw")
         : trace.getTracer("openclaw");
+      ctx.logger.info(
+        `diagnostics-otel: DEBUG-TRACES tracesEnabled=${tracesEnabled} sdkPreloaded=${sdkPreloaded} sdkDisabled=${sdkDisabled} tracesToOtlp=${tracesToOtlp} tracesActive=${tracesActive} metricsToOtlp=${metricsToOtlp} traceProvider=${Boolean(active.traceProvider)} tracerImpl=${(tracer as { constructor?: { name?: string } }).constructor?.name ?? "?"} traceUrl=${traceUrl ?? "none"}`,
+      );
       const diagnosticsTrace = createDiagnosticsTraceRuntime(tracer);
       active.stopActiveTrustedSpans = diagnosticsTrace.stopActiveTrustedSpans;
       const diagnosticMetrics = createDiagnosticsMetrics(meter, otel.metricNamePrefix);
