@@ -21,6 +21,7 @@ import {
 } from "../../embedded-agent-helpers.js";
 import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assistant-message-failures.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
+import { isPreDispatchToolCallRejectionMessage } from "../../failover/message-patterns.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import { classifyRateLimitWindow } from "../../failover/retry-evidence.js";
 import {
@@ -217,10 +218,18 @@ export async function handleEmbeddedAssistantFailure(input: {
   // This release base classifies more of these attempts as `null` than upstream
   // main does, so without this guard the hard-stop swallows auth failures that
   // used to reach the profile path.
+  // A pre-dispatch tool-call rejection is a CLASSIFIED transport diagnostic, not a
+  // silent model: the provider named why it rejected the call. Upstream expects it
+  // to reach terminal resolution as `proceed` even with the budget spent and no
+  // fallback, and this hard-stop would otherwise swallow it, because this release
+  // base classifies the message as null. Excluded here using the same predicate
+  // `incomplete-turn-recovery.ts` uses to recognise the category, so the two stay
+  // in agreement rather than drifting apart on separate wording lists.
   if (
     !input.fallbackConfigured &&
     assistantFailoverReason === null &&
     assistantProfileFailureReason === null &&
+    !isPreDispatchToolCallRejectionMessage(failedAssistant?.errorMessage) &&
     replaySafeSilentErrorFailure &&
     input.emptyErrorRetries >= MAX_EMPTY_ERROR_RETRIES
   ) {
