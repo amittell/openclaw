@@ -27,7 +27,6 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import { rewriteTranscriptEntriesInSessionManager } from "../embedded-agent-runner/transcript-rewrite.js";
 import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import { SessionManager } from "./session-manager.js";
 
