@@ -33,8 +33,44 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     string,
     { spanContext: SpanContext; owner?: TrustedSpanAliasOwner }
   >();
+  // Long-lived lifecycle roots (openclaw.run / openclaw.harness.run /
+  // openclaw.message.processed) only export when they end. If a turn is
+  // interrupted or abandoned, the completion event never fires, the root is
+  // never ended, and its already-exported children are left orphaned in Tempo.
+  // This watchdog force-ends roots that outlive the threshold so the parent
+  // chain always closes.
+  const STALE_TRUSTED_SPAN_LIFETIME_MS = 15 * 60 * 1000;
+  const STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS = 60 * 1000;
+  const activeTrustedSpanStartTimes = new Map<string, number>();
+  let staleSpanWatchdog: ReturnType<typeof setInterval> | null = null;
+  const runStaleSpanWatchdog = () => {
+    const now = Date.now();
+    for (const [spanId, span] of activeTrustedSpans) {
+      const startedAt = activeTrustedSpanStartTimes.get(spanId);
+      if (startedAt === undefined || now - startedAt <= STALE_TRUSTED_SPAN_LIFETIME_MS) {
+        continue;
+      }
+      // span.end() is idempotent; keep the span tracked so late completion
+      // events and children can still resolve its (now-ended) context.
+      span.end(now);
+    }
+  };
+  const startStaleSpanWatchdog = () => {
+    if (staleSpanWatchdog) {
+      return;
+    }
+    staleSpanWatchdog = setInterval(runStaleSpanWatchdog, STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS);
+    staleSpanWatchdog.unref?.();
+  };
+  const stopStaleSpanWatchdog = () => {
+    if (staleSpanWatchdog) {
+      clearInterval(staleSpanWatchdog);
+      staleSpanWatchdog = null;
+    }
+  };
   const stopActiveTrustedSpans = () => {
     const stopAt = Date.now();
+    stopStaleSpanWatchdog();
     retainedTrustedSpanContexts.clear();
     for (const span of new Set([
       ...activeTrustedSpans.values(),
@@ -44,6 +80,7 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     activeTrustedSpans.clear();
     activeTrustedSpanAliases.clear();
+    activeTrustedSpanStartTimes.clear();
   };
   const spanWithDuration = (
     name: string,
@@ -246,6 +283,8 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanId = trustedTraceContext(evt, metadata)?.spanId;
     if (spanId) {
       activeTrustedSpans.set(spanId, span);
+      activeTrustedSpanStartTimes.set(spanId, evt.ts);
+      startStaleSpanWatchdog();
     }
     return span;
   };
@@ -257,6 +296,8 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanId = internalOrTrustedTraceContext(evt, metadata)?.spanId;
     if (spanId) {
       activeTrustedSpans.set(spanId, span);
+      activeTrustedSpanStartTimes.set(spanId, evt.ts);
+      startStaleSpanWatchdog();
     }
     return span;
   };
@@ -333,6 +374,7 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     if (activeTrustedSpans.get(spanId) === span) {
       activeTrustedSpans.delete(spanId);
+      activeTrustedSpanStartTimes.delete(spanId);
     }
     for (const aliasKey of retainedAliasKeys) {
       if (activeTrustedSpanAliases.get(aliasKey)?.span === span) {
