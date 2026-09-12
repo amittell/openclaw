@@ -16,7 +16,11 @@ import { syncEnvBackedTokenCredentials } from "./auth-profiles/external-cli-sync
 import { loadPersistedAuthProfileStore } from "./auth-profiles/persisted.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./auth-profiles/store-runtime.js";
-import type { AuthProfileStore, TokenCredential } from "./auth-profiles/types.js";
+import type { AuthProfileCredential, AuthProfileStore } from "./auth-profiles/types.js";
+
+// 9.4 narrowed TokenCredential to module-local in auth-profiles/types.ts. Derive
+// it from the exported union instead of widening upstream's public surface.
+type TokenCredential = Extract<AuthProfileCredential, { type: "token" }>;
 
 const mocks = vi.hoisted(() => ({
   resolveExternalAuthProfilesWithPlugins: vi.fn(() => []),
