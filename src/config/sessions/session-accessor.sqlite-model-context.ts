@@ -4,6 +4,7 @@ import { sql } from "kysely";
 import {
   iterateSessionContextEntries,
   iterateSessionContextMessages,
+  withCompactionCheckpointHandle,
 } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   executeSqliteQueryTakeFirstSync,
@@ -193,7 +194,12 @@ export function readSessionTranscriptContextMessages<T>(
   ) => T,
 ): T {
   const result = withTranscriptContextSnapshot(scope, ({ header, entries, readEntry, version }) => {
-    const messages = iterateSessionContextMessages(entries, readEntry);
+    // The detached reader renders the same read-time checkpoint line as buildSessionContext;
+    // without it a Codex-backed context read shows a compaction summary naming no handle.
+    const messages = iterateSessionContextMessages(
+      entries,
+      withCompactionCheckpointHandle(entries, readEntry),
+    );
     try {
       return read(messages, header, version);
     } finally {

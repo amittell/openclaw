@@ -9,6 +9,7 @@ import {
 } from "../extensions/qa-channel/api.js";
 import { createQaBusState, startQaBusServer } from "../extensions/qa-lab/api.js";
 import { createMessageTool } from "../src/agents/tools/message-tool-execution.js";
+import { resetMessageToolSendSuppressionForTest } from "../src/agents/tools/message-tool-execution.send-suppression.js";
 import { buildThreadingToolContext } from "../src/auto-reply/reply/agent-runner-utils.js";
 import { resolveReplyToMode } from "../src/auto-reply/reply/reply-threading.js";
 import * as bootstrapRegistry from "../src/channels/plugins/bootstrap-registry.js";
@@ -27,6 +28,10 @@ import { withOpenClawTestState } from "../src/test-utils/openclaw-test-state.js"
 afterEach(() => {
   vi.restoreAllMocks();
   setActivePluginRegistry(createTestRegistry([]));
+  // Every case here shares one conversationId, one nonce, and (when trusted) one
+  // runId, so this fork's intra-run duplicate-send tracker would otherwise carry a
+  // prior case's sends into the next one and suppress them outright.
+  resetMessageToolSendSuppressionForTest();
 });
 
 const conversationId = "qa-shared-id";
@@ -481,7 +486,15 @@ describe("QA message-tool current conversation delivery", () => {
         }
         const snapshot = await getQaBusState(baseUrl);
         const outbound = snapshot.messages.filter((message) => message.direction === "outbound");
-        expect(outbound).toHaveLength(2);
+        // FORK DIVERGENCE: this fork suppresses intra-run near-duplicate sends
+        // (message-tool-execution.send-suppression.ts) so an agent cannot re-narrate
+        // its own last message into the same route. Both sends here carry the same
+        // nonce on the same route, so under a trusted turn - the only case that
+        // supplies a runId, which is what scopes the guard - the second is a recorded
+        // non-outcome: the model receives a suppression verdict and the run logs
+        // `duplicate_send suppressed`. Untrusted cases pass no runId, so the guard
+        // cannot engage and both sends land, matching upstream.
+        expect(outbound).toHaveLength(scope.trusted ? 1 : 2);
         for (const message of outbound) {
           expect(message).toMatchObject({
             conversation: inbound.conversation,

@@ -10534,6 +10534,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let unread: Bool?
     public let contextwindow: AnyCodable?
     public let thinkinglevel: AnyCodable?
+    public let temperature: AnyCodable?
     public let fastmode: AnyCodable?
     public let tooloverrides: AnyCodable?
     public let verboselevel: AnyCodable?
@@ -10576,6 +10577,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         unread: Bool? = nil,
         contextwindow: AnyCodable? = nil,
         thinkinglevel: AnyCodable? = nil,
+        temperature: AnyCodable? = nil,
         fastmode: AnyCodable? = nil,
         tooloverrides: AnyCodable? = nil,
         verboselevel: AnyCodable? = nil,
@@ -10617,6 +10619,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.unread = unread
         self.contextwindow = contextwindow
         self.thinkinglevel = thinkinglevel
+        self.temperature = temperature
         self.fastmode = fastmode
         self.tooloverrides = tooloverrides
         self.verboselevel = verboselevel
@@ -10660,6 +10663,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case unread
         case contextwindow = "contextWindow"
         case thinkinglevel = "thinkingLevel"
+        case temperature
         case fastmode = "fastMode"
         case tooloverrides = "toolOverrides"
         case verboselevel = "verboseLevel"
@@ -10697,6 +10701,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
     public let unread: Bool?
     public let contextwindow: AnyCodable?
     public let thinkinglevel: AnyCodable?
+    public let temperature: AnyCodable?
     public let fastmode: AnyCodable?
     public let tooloverrides: AnyCodable?
     public let verboselevel: AnyCodable?
@@ -10732,6 +10737,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         unread: Bool? = nil,
         contextwindow: AnyCodable? = nil,
         thinkinglevel: AnyCodable? = nil,
+        temperature: AnyCodable? = nil,
         fastmode: AnyCodable? = nil,
         tooloverrides: AnyCodable? = nil,
         verboselevel: AnyCodable? = nil,
@@ -10766,6 +10772,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         self.unread = unread
         self.contextwindow = contextwindow
         self.thinkinglevel = thinkinglevel
+        self.temperature = temperature
         self.fastmode = fastmode
         self.tooloverrides = tooloverrides
         self.verboselevel = verboselevel
@@ -10802,6 +10809,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         case unread
         case contextwindow = "contextWindow"
         case thinkinglevel = "thinkingLevel"
+        case temperature
         case fastmode = "fastMode"
         case tooloverrides = "toolOverrides"
         case verboselevel = "verboseLevel"
@@ -23567,6 +23575,7 @@ public struct ChatHistoryParams: Codable, Sendable {
     public let pendingbefore: Int?
     public let inputrunids: [String]?
     public let messageid: String?
+    public let compactionid: String?
     public let sessionid: String?
     public let maxchars: Int?
 
@@ -23580,6 +23589,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         pendingbefore: Int? = nil,
         inputrunids: [String]? = nil,
         messageid: String? = nil,
+        compactionid: String? = nil,
         sessionid: String? = nil,
         maxchars: Int? = nil)
     {
@@ -23592,6 +23602,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         self.pendingbefore = pendingbefore
         self.inputrunids = inputrunids
         self.messageid = messageid
+        self.compactionid = compactionid
         self.sessionid = sessionid
         self.maxchars = maxchars
     }
@@ -23606,6 +23617,7 @@ public struct ChatHistoryParams: Codable, Sendable {
         case pendingbefore = "pendingBefore"
         case inputrunids = "inputRunIds"
         case messageid = "messageId"
+        case compactionid = "compactionId"
         case sessionid = "sessionId"
         case maxchars = "maxChars"
     }

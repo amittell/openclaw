@@ -63,12 +63,15 @@ Explicit path variables such as `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, an
 
 ### Gateway and authentication
 
-| Variable                    | Purpose                                                         |
-| --------------------------- | --------------------------------------------------------------- |
-| `OPENCLAW_GATEWAY_URL`      | Override the remote Gateway URL used by clients.                |
-| `OPENCLAW_GATEWAY_PORT`     | Override the local Gateway port.                                |
-| `OPENCLAW_GATEWAY_TOKEN`    | Supply token authentication for Gateway servers and clients.    |
-| `OPENCLAW_GATEWAY_PASSWORD` | Supply password authentication for Gateway servers and clients. |
+| Variable                                         | Purpose                                                                                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_GATEWAY_URL`                           | Override the remote Gateway URL used by clients.                                                                           |
+| `OPENCLAW_GATEWAY_PORT`                          | Override the local Gateway port.                                                                                           |
+| `OPENCLAW_GATEWAY_TOKEN`                         | Supply token authentication for Gateway servers and clients.                                                               |
+| `OPENCLAW_GATEWAY_PASSWORD`                      | Supply password authentication for Gateway servers and clients.                                                            |
+| `OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS` | Override how long the terminal Gateway daemon waits after a completed shutdown before forcing process exit (milliseconds). |
+
+The post-shutdown exit watchdog only arms on the terminal Gateway daemon path (`openclaw gateway`), never on embedded gateways started by onboarding or test harnesses. It defaults to 5000 ms; values that are not strict positive integers are ignored with a logged warning and the default applies.
 
 ### Provider credentials
 

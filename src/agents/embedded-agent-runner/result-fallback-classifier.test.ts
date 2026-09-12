@@ -355,7 +355,7 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
     expect(result).toBeNull();
   });
 
-  it("does not retry non-business transport error payloads", () => {
+  it("falls back on untyped 5xx transport error payloads", () => {
     const result = classifyEmbeddedAgentRunResultForModelFallback({
       provider: "custom",
       model: "llama-3.1",
@@ -372,7 +372,10 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
       },
     });
 
-    expect(result).toBeNull();
+    // An untyped 5xx is a provider-side failure, so it is exactly the case model
+    // fallback exists for. It used to return null only because a 500 was
+    // mislabelled "timeout"; #141843 classifies it as server_error.
+    expect(result).toMatchObject({ reason: "server_error" });
   });
 
   it("keeps tool-authored incomplete summaries fallback-eligible", () => {

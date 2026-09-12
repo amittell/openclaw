@@ -275,3 +275,23 @@ export function normalizeReasoningLevel(raw?: string | null): ReasoningLevel | u
   }
   return undefined;
 }
+
+/** Sampling temperature range accepted by session-level /temperature overrides. */
+export const TEMPERATURE_MIN = 0;
+export const TEMPERATURE_MAX = 2;
+
+/** Normalizes a user-provided sampling temperature to a finite value in [0, 2]. */
+export function normalizeTemperature(raw?: string | null): number | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  const key = normalizeOptionalLowercaseString(raw);
+  if (!key) {
+    return undefined;
+  }
+  const parsed = Number(key);
+  if (!Number.isFinite(parsed) || parsed < TEMPERATURE_MIN || parsed > TEMPERATURE_MAX) {
+    return undefined;
+  }
+  return parsed;
+}

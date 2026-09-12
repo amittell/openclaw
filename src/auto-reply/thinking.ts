@@ -22,12 +22,15 @@ export {
   normalizeElevatedLevel,
   normalizeFastMode,
   normalizeReasoningLevel,
+  normalizeTemperature,
   normalizeTraceLevel,
   normalizeThinkLevel,
   normalizeUsageDisplay,
   normalizeVerboseLevel,
   resolveEffectiveResponseUsage,
   resolveResponseUsageMode,
+  TEMPERATURE_MAX,
+  TEMPERATURE_MIN,
 } from "./thinking.shared.js";
 export type {
   ElevatedLevel,

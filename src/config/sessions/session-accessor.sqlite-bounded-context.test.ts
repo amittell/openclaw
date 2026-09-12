@@ -2,6 +2,7 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { expectedCompactionSummary } from "../../agents/test-helpers/compaction-checkpoint.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -452,11 +453,17 @@ it.each(["cold", "warm"])(
         expectHistory([freshUserId]);
       }
 
-      manager.appendCompaction("fresh-only summary", freshUserId, 100);
+      const freshCompactionId = manager.appendCompaction("fresh-only summary", freshUserId, 100);
       await settle();
       expectHistory([freshUserId]);
       expect(manager.buildSessionContext().messages).toMatchObject([
-        { role: "compactionSummary", summary: "fresh-only summary" },
+        {
+          role: "compactionSummary",
+          summary: expectedCompactionSummary("fresh-only summary", {
+            entryId: freshCompactionId,
+            shadowedEntryCount: 1,
+          }),
+        },
         { role: "user", content: "fresh user" },
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);
@@ -477,12 +484,18 @@ it.each(["cold", "warm"])(
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);
 
-      manager.appendCompaction("newest-only summary", newestUserId, 100);
+      const newestCompactionId = manager.appendCompaction("newest-only summary", newestUserId, 100);
       await settle();
       expectHistory([nextUserId, newestUserId]);
       const reopened = SessionManager.open(scope);
       expect(reopened.buildSessionContext().messages).toMatchObject([
-        { role: "compactionSummary", summary: "newest-only summary" },
+        {
+          role: "compactionSummary",
+          summary: expectedCompactionSummary("newest-only summary", {
+            entryId: newestCompactionId,
+            shadowedEntryCount: 2,
+          }),
+        },
         { role: "user", content: "after second reset" },
       ]);
       expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(2);

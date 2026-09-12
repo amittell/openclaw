@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseSessionEntries, SessionManager } from "../sessions/index.js";
+import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import { textToolResult, textAssistant } from "../test-helpers/sparse-transcript.test-support.js";
 
 const roots: string[] = [];
@@ -500,8 +501,17 @@ describe("readTranscriptState", () => {
 
     expect(kept).toBeDefined();
     expect(compaction).toMatchObject({ firstKeptEntryId: kept?.id });
+    if (!compaction) {
+      throw new Error("missing compaction fixture");
+    }
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("summary", {
+          entryId: compaction.id,
+          shadowedEntryCount: 1,
+        }),
+      },
       { role: "user", content: "legacy kept suffix" },
     ]);
   });
@@ -579,8 +589,17 @@ describe("readTranscriptState", () => {
     const compaction = state.getEntries().find((entry) => entry.type === "compaction");
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
+    if (!compaction) {
+      throw new Error("missing compaction fixture");
+    }
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("summary", {
+          entryId: compaction.id,
+          shadowedEntryCount: 0,
+        }),
+      },
       { role: "user", content: "before malformed row" },
       { role: "assistant", content: [{ type: "text", text: "after malformed row" }] },
     ]);
@@ -627,8 +646,17 @@ describe("readTranscriptState", () => {
     const compaction = state.getEntries().find((entry) => entry.type === "compaction");
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
+    if (!compaction) {
+      throw new Error("missing compaction fixture");
+    }
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("summary", {
+          entryId: compaction.id,
+          shadowedEntryCount: 0,
+        }),
+      },
       { role: "user", content: "first valid kept turn" },
       { role: "assistant", content: [{ type: "text", text: "valid reply" }] },
     ]);
@@ -682,8 +710,17 @@ describe("readTranscriptState", () => {
     const compaction = state.getEntries().find((entry) => entry.type === "compaction");
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "user-1" });
+    if (!compaction) {
+      throw new Error("missing compaction fixture");
+    }
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("summary", {
+          entryId: compaction.id,
+          shadowedEntryCount: 0,
+        }),
+      },
       { role: "user", content: "first valid kept turn" },
       { role: "assistant", content: [{ type: "text", text: "valid reply" }] },
     ]);
@@ -737,8 +774,17 @@ describe("readTranscriptState", () => {
     const compaction = state.getEntries().find((entry) => entry.type === "compaction");
 
     expect(compaction).toMatchObject({ firstKeptEntryId: "branch-b-user" });
+    if (!compaction) {
+      throw new Error("missing compaction fixture");
+    }
     expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("summary", {
+          entryId: compaction.id,
+          shadowedEntryCount: 0,
+        }),
+      },
       { role: "user", content: "active branch kept turn" },
       { role: "assistant", content: [{ type: "text", text: "active reply" }] },
     ]);

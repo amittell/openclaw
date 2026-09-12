@@ -114,6 +114,9 @@ describe("monitorTelegramProvider", () => {
       accountId: "default",
       updateId: 42,
       botToken: "test-token",
+      // Fork-only: the Bot API root is part of the offset's identity, so a root
+      // change rotates the stale offset instead of replaying against a new server.
+      apiRoot: "https://telegram.example.test",
     });
   });
 

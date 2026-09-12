@@ -8,6 +8,12 @@ export type TelegramMessageProcessingResult =
 
 type TelegramUpdateProcessingFrame = {
   result?: TelegramMessageProcessingResult;
+  /**
+   * Set once this attempt has put a reply in front of the user. A retryable
+   * failure after that point is NOT safely retryable: the spool would replay a
+   * turn that already spoke, and the user sees the answer twice.
+   */
+  visibleReplyDelivered?: boolean;
 };
 
 type TelegramSpooledReplayLifecycle = {
@@ -72,6 +78,31 @@ export function ensureTelegramMessageProcessingResult(
   if (frame && !frame.result) {
     frame.result = result;
   }
+}
+
+/**
+ * Records that this attempt delivered a user-visible reply, from the durable
+ * send funnel's success log — the point that knows a send actually landed. A
+ * no-op outside an update frame, so sends with no turn in flight never set it.
+ */
+export function markTelegramVisibleReplyDelivered(): void {
+  const frame = telegramUpdateProcessingFrames.getStore();
+  if (frame) {
+    frame.visibleReplyDelivered = true;
+  }
+}
+
+/**
+ * Binds the fact to the frame owning the caller's dispatch, while that frame is
+ * still the current async context. Settlement is also reached from contexts the
+ * attempt does not own (the reply queue's retained `onAbandoned`, the ingress
+ * drain chain); reading ambiently there resolves whichever update's frame is
+ * current, so it both misses this attempt's own reply and can read another
+ * attempt's reply and drop a message that was never answered.
+ */
+export function captureTelegramVisibleReplyDelivered(): () => boolean {
+  const frame = telegramUpdateProcessingFrames.getStore();
+  return () => frame?.visibleReplyDelivered === true;
 }
 
 export function recordTelegramMessageProcessingResult(

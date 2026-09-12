@@ -156,6 +156,75 @@ describe("buildExternalRunFailureReply", () => {
     ).toBe(reply.text);
   });
 
+  it("names a transport failure instead of claiming a timeout with a synthetic HTTP 408", () => {
+    // A macOS Local Network denial fails the connect in milliseconds. The classifier keeps
+    // it as `timeout` for retry, but the reply must not say the provider timed out.
+    const rawError = "fetch failed: connect EHOSTUNREACH 192.168.210.123:80";
+    const reply = buildExternalRunFailureReply(
+      {
+        message: rawError,
+        error: new FailoverError(rawError, {
+          reason: "timeout",
+          status: 408,
+          rawError,
+          provider: "gpufarm",
+          model: "qwen3.8-27b",
+        }),
+      },
+      { includeDetails: false },
+    );
+
+    expect(reply).toEqual({
+      text: "⚠️ gpufarm/qwen3.8-27b request failed: the provider endpoint is unreachable from this host.",
+      isGenericRunnerFailure: false,
+    });
+    expect(reply.text).not.toContain("timed out");
+    expect(reply.text).not.toContain("HTTP 408");
+    expect(reply.text).not.toContain("usually temporary");
+    expect(reply.text).not.toContain("192.168.210.123");
+  });
+
+  it("keeps a bare connection error neutral rather than calling it a timeout", () => {
+    const rawError = "Connection error.";
+    const reply = buildExternalRunFailureReply(
+      {
+        message: rawError,
+        error: new FailoverError(rawError, {
+          reason: "timeout",
+          status: 408,
+          rawError,
+          provider: "gpufarm",
+          model: "qwen3.8-27b",
+        }),
+      },
+      { includeDetails: false },
+    );
+
+    expect(reply.text).toBe("⚠️ gpufarm/qwen3.8-27b request failed: network connection error.");
+  });
+
+  it("still reports a genuine provider timeout as a timeout", () => {
+    const rawError = "Request timed out after 120000ms";
+    const reply = buildExternalRunFailureReply(
+      {
+        message: rawError,
+        error: new FailoverError(rawError, {
+          reason: "timeout",
+          status: 408,
+          rawError,
+          provider: "gpufarm",
+          model: "qwen3.8-27b",
+        }),
+      },
+      { includeDetails: false },
+    );
+
+    expect(reply.text).toBe(
+      "⚠️ gpufarm/qwen3.8-27b request failed (request timed out, HTTP 408). " +
+        "This is usually temporary — try again shortly.",
+    );
+  });
+
   it("forwards classified provider copy when verbose detail is off", () => {
     const message = "opaque provider response with secret-canary";
     const reply = buildExternalRunFailureReply(

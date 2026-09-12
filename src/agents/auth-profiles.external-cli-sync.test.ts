@@ -261,6 +261,35 @@ describe("external cli oauth resolution", () => {
     expect(mocks.readCodexCliCredentialsCached).not.toHaveBeenCalled();
   });
 
+  it("does not create an explicitly scoped default beside a named managed OpenAI profile", () => {
+    mocks.readCodexCliCredentialsCached.mockReturnValue(
+      makeOAuthCredential({
+        provider: "openai",
+        access: "codex-cli-access",
+        refresh: "codex-cli-refresh",
+      }),
+    );
+
+    const profiles = resolveExternalCliAuthProfiles(
+      makeStore(
+        "openai:user@example.com",
+        makeOAuthCredential({
+          provider: "openai",
+          access: "managed-access",
+          refresh: "managed-refresh",
+          accountId: "acct-sibling",
+        }),
+      ),
+      {
+        providerIds: ["openai"],
+        profileIds: [OPENAI_CODEX_DEFAULT_PROFILE_ID],
+      },
+    );
+
+    expect(profiles).toStrictEqual([]);
+    expect(mocks.readCodexCliCredentialsCached).not.toHaveBeenCalled();
+  });
+
   it("does not fill an empty default slot beside a named managed OpenAI profile", () => {
     mocks.readCodexCliCredentialsCached.mockReturnValue(
       makeOAuthCredential({

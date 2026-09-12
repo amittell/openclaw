@@ -129,6 +129,20 @@ describe("automatic startup config repair", () => {
     ).toBe(false);
   });
 
+  it("refuses another invalid key reported at the same schema parent", () => {
+    const snapshot = invalidSnapshot({
+      config: {
+        meta: {
+          lastTouchedAt: "2026-08-01T00:00:00.000Z",
+          unrelatedRetiredKey: true,
+        },
+      } as OpenClawConfig,
+      issuePaths: ["meta"],
+    });
+
+    expect(planAutomaticConfigRepair(snapshot)).toBeNull();
+  });
+
   it("plans a config whose only migration is plugin-owned after state admission", () => {
     // The full planner owns plugin contracts; pre-bootstrap uses core-only selection.
     const snapshot = invalidSnapshot({

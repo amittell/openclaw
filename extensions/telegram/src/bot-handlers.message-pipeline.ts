@@ -33,6 +33,7 @@ import type {
   TelegramMessageContextOptions,
 } from "./bot-message-context.types.js";
 import {
+  captureTelegramVisibleReplyDelivered,
   createTelegramSpooledReplayDeferredParticipant,
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
@@ -44,10 +45,15 @@ import {
   type TelegramSpooledReplaySettlementHold,
 } from "./bot-processing-outcome.js";
 import { resolveMedia } from "./bot/delivery.resolve-media.js";
-import { resolveTelegramMessageThreadSpec, type TelegramThreadSpec } from "./bot/helpers.js";
+import {
+  resolveTelegramMessageThreadSpec,
+  resolveTelegramPrimaryMedia,
+  type TelegramThreadSpec,
+} from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import type { TelegramResolvedMedia } from "./message-cache-persistence.js";
+import { isTelegramMessageFromCurrentBot } from "./message-cache.js";
 import type { TelegramCachedMessageNode, TelegramReplyChainEntry } from "./message-cache.js";
 import {
   claimTelegramMessageDispatchReplay,
@@ -158,6 +164,7 @@ function resolveRetainedTelegramMedia(params: {
     ? {
         path,
         kind: media.kind,
+        fileUniqueId: media.fileUniqueId,
         ...(media.contentType ? { contentType: media.contentType } : {}),
         ...(fileName ? { fileName } : {}),
         ...(media.stickerMetadata ? { stickerMetadata: media.stickerMetadata } : {}),
@@ -308,6 +315,7 @@ export function createTelegramMessagePipeline({
   const resolveReplyMediaForChain = async (
     ctx: TelegramContext,
     chain: TelegramCachedMessageNode[],
+    currentMedia: readonly TelegramMediaRef[],
     shouldHydrateMedia: (node: TelegramCachedMessageNode, index: number) => Promise<boolean>,
     durableMediaReplay: boolean,
     ...participantSignals: AbortSignal[]
@@ -315,12 +323,24 @@ export function createTelegramMessagePipeline({
     const mediaRuntime = resolveMediaRuntime(...participantSignals);
     const replyMedia: TelegramMediaRef[] = [];
     const replyChain: TelegramReplyChainEntry[] = [];
+    const seenFileUniqueIds = new Set(
+      currentMedia.flatMap((media) => (media.fileUniqueId ? [media.fileUniqueId] : [])),
+    );
     for (const [index, node] of chain.entries()) {
       let mediaRef: TelegramMediaRef | undefined;
       const replyFileId = resolveInboundMediaFileId(node.sourceMessage);
+      const replyFileUniqueId =
+        node.resolvedMedia?.fileUniqueId ??
+        resolveTelegramPrimaryMedia(node.sourceMessage)?.fileRef.file_unique_id;
       if (
         replyFileId &&
         hasInboundMedia(node.sourceMessage) &&
+        // Do not re-ingest media from messages sent by this bot (re-derive of
+        // upstream PR #57280; the beta.2 layout has no bot-handlers.buffers/runtime).
+        !isTelegramMessageFromCurrentBot(node.sourceMessage, ctx.me?.id) &&
+        // file_unique_id is Telegram's source identity. Check it before hydration,
+        // because each save assigns a fresh path even when the bytes are the same.
+        (!replyFileUniqueId || !seenFileUniqueIds.has(replyFileUniqueId)) &&
         (await shouldHydrateMedia(node, index))
       ) {
         try {
@@ -345,6 +365,7 @@ export function createTelegramMessagePipeline({
               mediaRef = {
                 path: media.path,
                 kind: media.kind,
+                fileUniqueId: media.fileUniqueId,
                 ...(media.contentType ? { contentType: media.contentType } : {}),
                 ...(media.fileName ? { fileName: media.fileName } : {}),
                 ...(media.stickerMetadata ? { stickerMetadata: media.stickerMetadata } : {}),
@@ -372,6 +393,9 @@ export function createTelegramMessagePipeline({
       }
       if (mediaRef) {
         replyMedia.push(mediaRef);
+        if (mediaRef.fileUniqueId) {
+          seenFileUniqueIds.add(mediaRef.fileUniqueId);
+        }
       }
       replyChain.push(toReplyChainEntry(node, ctx, mediaRef));
     }
@@ -392,6 +416,10 @@ export function createTelegramMessagePipeline({
     let dispatchDedupeCommitted = false;
     let spooledReplayFinalResult: TelegramMessageProcessingResult | undefined;
     let spooledReplayFinalization: Promise<TelegramMessageProcessingResult> | undefined;
+    // Settlement below is also invoked from contexts this dispatch does not own
+    // (the reply queue's retained onAbandoned runs on the followup drain chain),
+    // so bind the visible-reply fact here while this attempt's frame is current.
+    const hasDeliveredVisibleReply = captureTelegramVisibleReplyDelivered();
     // Callback-submit retries also set options.spooledReplay without durable ingress.
     // Media aborts retry only when the update frame or a buffered participant owns replay.
     const durableMediaReplay =
@@ -443,7 +471,14 @@ export function createTelegramMessagePipeline({
       }
       const finalization = (async () => {
         const finalized = result;
-        if (result.kind === "completed") {
+        // A retryable failure that ALREADY delivered a reply is not safely
+        // retryable: releasing the guard lets the spool replay a turn that has
+        // spoken, and the user sees the answer twice. Commit the guard instead so
+        // the replay is duplicate-suppressed. Only the guard is committed - the
+        // spool row still follows its own retry/dead-letter policy.
+        const repliedBeforeFailing =
+          result.kind === "failed-retryable" && hasDeliveredVisibleReply();
+        if (result.kind === "completed" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
           const releaseSettlementHolds = beginSpooledReplaySettlementHolds(
@@ -534,6 +569,7 @@ export function createTelegramMessagePipeline({
       const { replyMedia, replyChain } = await resolveReplyMediaForChain(
         params.ctx,
         replyChainNodes,
+        params.allMedia,
         shouldHydrateReplyMedia,
         durableMediaReplay,
         ...spooledReplayParticipants.map((participant) => participant.abortSignal),
@@ -542,14 +578,18 @@ export function createTelegramMessagePipeline({
       const promptContextMediaByMessageId = new Map<string, TelegramMediaRef>();
       const currentMessageId =
         typeof params.msg.message_id === "number" ? String(params.msg.message_id) : undefined;
+      const mediaPathKeys = new Set<string>();
       for (const [index, media] of params.allMedia.entries()) {
         const messageId = media.sourceMessageId ?? (index === 0 ? currentMessageId : undefined);
         const promptMediaPath = media.path ? resolveTelegramPromptMediaPath(media.path) : undefined;
         if (messageId && promptMediaPath) {
-          promptContextMediaByMessageId.set(messageId, {
-            ...media,
-            path: promptMediaPath,
-          });
+          if (!mediaPathKeys.has(promptMediaPath)) {
+            mediaPathKeys.add(promptMediaPath);
+            promptContextMediaByMessageId.set(messageId, {
+              ...media,
+              path: promptMediaPath,
+            });
+          }
         }
       }
       for (const entry of replyChain) {
@@ -563,6 +603,13 @@ export function createTelegramMessagePipeline({
           entry.mediaKind ??
           (inferredKind && inferredKind !== "unknown" ? inferredKind : "document");
         if (entry.messageId && entry.mediaPath && promptMediaPath) {
+          // One staged file must not be attached twice to a single prompt: the
+          // reply chain can hydrate media that the current message already carries
+          // (same media id, different source message ids).
+          if (mediaPathKeys.has(promptMediaPath)) {
+            continue;
+          }
+          mediaPathKeys.add(promptMediaPath);
           promptContextMediaByMessageId.set(entry.messageId, {
             path: promptMediaPath,
             kind: mediaKind,

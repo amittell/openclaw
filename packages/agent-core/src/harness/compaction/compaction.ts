@@ -20,7 +20,12 @@ import {
 import type { AgentMessage, ThinkingLevel } from "../../types.js";
 import { convertToLlm, type HarnessMessage, isRuntimeContextCarrier } from "../messages.js";
 import { buildSessionContext, projectSessionEntryMessage } from "../session/session.js";
-import { selectResetKeptEntries } from "../session/tool-result-pairing.js";
+import {
+  createToolCallOccurrenceQueue,
+  extractToolCallsFromAssistant,
+  extractToolResultId,
+  selectResetKeptEntries,
+} from "../session/tool-result-pairing.js";
 import {
   CompactionError,
   err,
@@ -159,12 +164,20 @@ export function capCompactionSummary(
   return `${truncateUtf16Safe(prefix, budget)}${SUMMARY_TRUNCATED_MARKER}${suffix}`;
 }
 
-/** Let each summary owner preserve its structure before checking the foreground token budget. */
+/**
+ * Let each summary owner preserve its structure before checking the foreground token budget.
+ *
+ * `maxSummaryChars` is the owner's own ceiling, defaulting to the legacy fixed bound. #723:
+ * the safeguard resolves a session-scaled ceiling instead, because a large session's summary
+ * truncated at a fixed 16k loses the tail sections its own audit then fails on. Fitting only
+ * ever shrinks from that ceiling, so a smaller foreground budget still wins.
+ */
 export function fitCompactionSummary<T extends { summary: string }>(
   tokenBudget: number | undefined,
   render: (maxChars: number) => T | undefined,
+  maxSummaryChars: number = MAX_COMPACTION_SUMMARY_CHARS,
 ): Result<T, CompactionError> {
-  const full = render(MAX_COMPACTION_SUMMARY_CHARS);
+  const full = render(maxSummaryChars);
   if (
     full &&
     (tokenBudget === undefined ||
@@ -173,7 +186,7 @@ export function fitCompactionSummary<T extends { summary: string }>(
     return ok(full);
   }
   let low = 1;
-  let high = MAX_COMPACTION_SUMMARY_CHARS - 1;
+  let high = maxSummaryChars - 1;
   let fitted: T | undefined;
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
@@ -496,6 +509,13 @@ export function findCutPoint(
   constraints?: CompactionRetentionConstraints,
 ): CutPointResult {
   const retention = constraints?.budget;
+  // Tool calls still awaiting results. A cut inside that window would split a call
+  // from its results across the summary boundary; the next assistant closes it because
+  // the provider only produced that message after the frame was completed or repaired.
+  const openToolCalls = createToolCallOccurrenceQueue<true>();
+  // Only a cut-point message that lands inside an open frame is stored, which is rare,
+  // so the reverse walks below can reject it without materializing every valid cut point.
+  const blockedCutIndices = new Set<number>();
   // Projection validates persisted custom/branch timestamps even outside the
   // retained tail. Keep that eager validation without storing every cut point.
   let cutIndex: number | undefined;
@@ -506,13 +526,35 @@ export function findCutPoint(
     if (entry && entry.id === constraints?.preserveFromEntryId) {
       lastAllowedCut = i;
     }
-    if (message && isCutPointMessage(message)) {
+    if (!message) {
+      continue;
+    }
+    if (message.role === "assistant") {
+      openToolCalls.clear();
+      for (const toolCall of extractToolCallsFromAssistant(message)) {
+        openToolCalls.add(toolCall.id, true);
+      }
+    } else if (message.role === "toolResult") {
+      const id = extractToolResultId(message);
+      if (id) {
+        openToolCalls.claim(id);
+      }
+      continue;
+    } else if (openToolCalls.size > 0) {
+      if (isCutPointMessage(message)) {
+        blockedCutIndices.add(i);
+      }
+      continue;
+    }
+    if (isCutPointMessage(message)) {
       cutIndex = i;
     }
   }
   if (cutIndex === undefined) {
     return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
   }
+  const isValidCut = (index: number, message: AgentMessage): boolean =>
+    isCutPointMessage(message) && !blockedCutIndices.has(index);
   let accumulatedTokens = 0;
 
   // The latest valid cut also handles an oversized trailing tool result that
@@ -526,7 +568,7 @@ export function findCutPoint(
     if (!message) {
       continue;
     }
-    if (isCutPointMessage(message)) {
+    if (isValidCut(i, message)) {
       cutIndex = i;
     }
     accumulatedTokens += retention?.estimateTokens(message) ?? estimateTokens(message);
@@ -546,7 +588,7 @@ export function findCutPoint(
       if (retainedTokens > tailLimit) {
         break;
       }
-      if (i <= lastAllowedCut && message && isCutPointMessage(message)) {
+      if (i <= lastAllowedCut && message && isValidCut(i, message)) {
         if (fittingCut === endIndex) {
           // The summary maximum is a reservation, not a minimum: small windows
           // retain one complete atom and give the summary the remaining room.
@@ -742,6 +784,13 @@ async function runSummarizationCompletion(params: {
         "summarization_failed",
         `${params.errorLabel} failed: ${response.errorMessage || "Unknown error"}`,
       ),
+    );
+  }
+  // A summary cut off at the output budget is structurally incomplete. Classify it
+  // like empty output so the host's retry-once policy covers it instead of committing it.
+  if (response.stopReason === "length") {
+    return err(
+      new InvalidSummaryOutputError(`${params.errorLabel} failed: summary exceeded max tokens`),
     );
   }
 
