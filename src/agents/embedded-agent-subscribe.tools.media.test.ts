@@ -6,7 +6,7 @@ import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { mergeSessionTranscriptContext } from "../channels/inbound-event/session-transcript-context.runtime.js";
@@ -324,6 +324,26 @@ describe("extractToolResultMediaArtifact", () => {
     };
     expect(extractToolResultMediaArtifact(result)).toEqual({
       mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("applies acceptMediaUrl to the legacy details.path fallback", () => {
+    // The structured details.media path filters every candidate through acceptMediaUrl.
+    // This legacy branch returned the raw path, so an untrusted tool's image reached
+    // replay through the one route that skipped the caller's trust predicate.
+    const result = {
+      content: [
+        { type: "text", text: "Read image file [image/png]" },
+        { type: "image", data: "base64data", mimeType: "image/png" },
+      ],
+      details: { path: "/tmp/untrusted.png" },
+    };
+    const acceptMediaUrl = vi.fn(() => false);
+    expect(extractToolResultMediaArtifact(result, { acceptMediaUrl })).toBeUndefined();
+    expect(acceptMediaUrl).toHaveBeenCalledWith("/tmp/untrusted.png");
+    // The same path still survives when the caller accepts it.
+    expect(extractToolResultMediaArtifact(result, { acceptMediaUrl: () => true })).toEqual({
+      mediaUrls: ["/tmp/untrusted.png"],
     });
   });
 
