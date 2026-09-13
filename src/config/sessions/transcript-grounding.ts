@@ -22,6 +22,23 @@ function endsReference(text: string, end: number): boolean {
   return !char || TOKEN_BOUNDARY.test(char);
 }
 
+/**
+ * Lowercase without changing length. `String.prototype.toLowerCase` can expand a
+ * character (U+0130 becomes two code units), and the matcher below indexes the folded
+ * text with offsets taken from the ORIGINAL text. One expanding character anywhere
+ * earlier in a prompt would shift every later comparison and silently stop grounding
+ * from matching at all. Characters whose lowercase is not the same length keep their
+ * original form, so the fold is length-preserving by construction.
+ */
+function foldCasePreservingLength(value: string): string {
+  let folded = "";
+  for (const char of value) {
+    const lower = char.toLowerCase();
+    folded += lower.length === char.length ? lower : char;
+  }
+  return folded;
+}
+
 export function invalidateUngroundedMediaPrefixes(
   text: string,
   grounding: ManagedMediaGrounding,
@@ -32,13 +49,15 @@ export function invalidateUngroundedMediaPrefixes(
   let cursor = 0,
     tokenStart = 0;
   const output: string[] = [];
-  const comparisonText = grounding.caseInsensitivePaths ? text.toLowerCase() : text;
+  const comparisonText = grounding.caseInsensitivePaths ? foldCasePreservingLength(text) : text;
   const comparable = (alias: string) =>
-    grounding.caseInsensitivePaths ? alias.toLowerCase() : alias;
-  const lowercaseText = grounding.caseInsensitivePaths ? comparisonText : text.toLowerCase();
+    grounding.caseInsensitivePaths ? foldCasePreservingLength(alias) : alias;
+  const lowercaseText = grounding.caseInsensitivePaths
+    ? comparisonText
+    : foldCasePreservingLength(text);
   type AliasCandidate = { alias: string; lower: string; split?: { prefix: string; rest: string } };
   const candidates = (aliases: readonly string[]): AliasCandidate[] =>
-    aliases.map((alias) => ({ alias, lower: alias.toLowerCase() }));
+    aliases.map((alias) => ({ alias, lower: foldCasePreservingLength(alias) }));
   const rootCandidates = candidates(grounding.rootAliases);
   const uriRootCandidates = candidates(grounding.uriRoots);
   const authorizedCandidates = candidates(grounding.authorizedAliases);
@@ -51,7 +70,7 @@ export function invalidateUngroundedMediaPrefixes(
     if (!candidate.split) {
       const prefix = URI_PREFIX.exec(candidate.alias)?.[0] ?? "";
       candidate.split = {
-        prefix: prefix.toLowerCase(),
+        prefix: foldCasePreservingLength(prefix),
         rest: comparable(candidate.alias.slice(prefix.length)),
       };
     }

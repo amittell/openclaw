@@ -170,6 +170,27 @@ describe("invalidateUngroundedMediaPrefixes", () => {
       ).toBe(`${REDACTED}/generated/fake.png`);
     },
   );
+  it("grounds a managed reference that follows a character whose lowercase is longer", () => {
+    // U+0130 lowercases to two code units. The matcher folds the prompt for
+    // case-insensitive comparison but walks it with offsets from the ORIGINAL text,
+    // so an expanding character anywhere earlier used to shift every later comparison
+    // and let the reference through unredacted.
+    const expanding = "\u0130";
+    expect(expanding.toLowerCase().length).toBe(2);
+    const input = `${expanding} ${root}/secret.png`;
+    expect(invalidateUngroundedMediaPrefixes(input, grounding([root], [], true))).toBe(
+      `${expanding} ${REDACTED}/secret.png`,
+    );
+  });
+
+  it("keeps an authorized reference intact behind the same expanding character", () => {
+    const expanding = "\u0130";
+    const authorized = `${root}/kept.png`;
+    const input = `${expanding}${expanding} ${authorized}`;
+    expect(invalidateUngroundedMediaPrefixes(input, grounding([root], [authorized], true))).toBe(
+      input,
+    );
+  });
 });
 
 describe("prepareManagedMediaGrounding", () => {

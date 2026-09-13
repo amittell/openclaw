@@ -487,7 +487,10 @@ export function extractToolResultMediaArtifact(
   if (hasImageContentBlock(content)) {
     const details = record.details as Record<string, unknown> | undefined;
     const p = normalizeOptionalString(details?.path) ?? "";
-    if (p) {
+    // The structured path above filters every candidate through acceptMediaUrl. This
+    // legacy branch returned the raw path, so an untrusted tool's image reached replay
+    // through the one route that skipped the check the caller asked for.
+    if (p && (options.acceptMediaUrl?.(p) ?? true)) {
       return { mediaUrls: [p] };
     }
   }
