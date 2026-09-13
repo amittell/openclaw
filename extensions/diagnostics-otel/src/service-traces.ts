@@ -1,4 +1,5 @@
 import {
+  ROOT_CONTEXT,
   context as otelContextApi,
   isSpanContextValid,
   trace,
@@ -20,7 +21,10 @@ import {
 } from "./service-trace-context.js";
 import type { TrustedSpanAliasOwner } from "./service-types.js";
 
-export function createDiagnosticsTraceRuntime(tracer: Tracer) {
+export function createDiagnosticsTraceRuntime(
+  tracer: Tracer,
+  logger: { info(message: string): void } = { info: () => {} },
+) {
   const activeTrustedSpans = new Map<string, ReturnType<typeof tracer.startSpan>>();
   const activeTrustedSpanAliases = new Map<
     string,
@@ -33,12 +37,13 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     string,
     { spanContext: SpanContext; owner?: TrustedSpanAliasOwner }
   >();
-  // Long-lived lifecycle roots (openclaw.run / openclaw.harness.run /
-  // openclaw.message.processed) only export when they end. If a turn is
-  // interrupted or abandoned, the completion event never fires, the root is
-  // never ended, and its already-exported children are left orphaned in Tempo.
-  // This watchdog force-ends roots that outlive the threshold so the parent
-  // chain always closes.
+  // Long-lived spans (lifecycle roots openclaw.run / openclaw.harness.run /
+  // openclaw.message.processed, and materialized scope spans openclaw.turn.root /
+  // openclaw.turn.scope) only export when they end. If a turn is interrupted or
+  // abandoned, the completion event never fires, the span is never ended, and its
+  // already-exported children are left orphaned in Tempo. This watchdog force-ends
+  // any tracked span (including materialized scope spans) that outlives the
+  // threshold so the parent chain always closes and the span is exported.
   const STALE_TRUSTED_SPAN_LIFETIME_MS = 15 * 60 * 1000;
   const STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS = 60 * 1000;
   const activeTrustedSpanStartTimes = new Map<string, number>();
@@ -53,6 +58,11 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       // span.end() is idempotent; keep the span tracked so late completion
       // events and children can still resolve its (now-ended) context.
       span.end(now);
+      logger.info(
+        `diagnostics-otel: stale-span watchdog force-ended span ${spanId} (age ${Math.round(
+          (now - startedAt) / 1000,
+        )}s > threshold ${Math.round(STALE_TRUSTED_SPAN_LIFETIME_MS / 1000)}s)`,
+      );
     }
   };
   const startStaleSpanWatchdog = () => {
@@ -228,18 +238,21 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     const isRoot = !traceContext.parentSpanId;
     const name = isRoot ? "openclaw.turn.root" : "openclaw.turn.scope";
-    // A root scope has no upstream parent, so parent to its own incoming remote
-    // context to inherit the diagnostic trace id; a child scope parents to its
-    // own parent's remote context.
-    const parentSpanId = isRoot ? scopeSpanId : traceContext.parentSpanId;
-    // Carry the diagnostic trace's sampling flags into the remote parent so the
-    // ParentBased sampler records this materialized span (and its children). Without
-    // them the context defaults to NONE and the whole subtree is dropped as unsampled.
-    const parentContext = contextForTraceContext({
-      traceId: traceContext.traceId,
-      spanId: parentSpanId,
-      traceFlags: traceContext.traceFlags,
-    });
+    // A root scope has no upstream parent, so make the materialized span a true
+    // root (ROOT_CONTEXT) to avoid a missing parent in Tempo. It carries the
+    // diagnostic trace id as an attribute. A child scope parents to its own
+    // parent's remote context to inherit the diagnostic trace id and stay linked
+    // to any upstream distributed context. Carry the diagnostic trace's sampling
+    // flags into the remote parent so the ParentBased sampler records this
+    // materialized span (and its children). Without them the context defaults to
+    // NONE and the whole subtree is dropped as unsampled.
+    const parentContext = isRoot
+      ? ROOT_CONTEXT
+      : contextForTraceContext({
+          traceId: traceContext.traceId,
+          spanId: traceContext.parentSpanId,
+          traceFlags: traceContext.traceFlags,
+        });
     const span = spanWithDuration(
       name,
       {
