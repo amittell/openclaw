@@ -47,6 +47,7 @@ export function createDiagnosticsTraceRuntime(
   const STALE_TRUSTED_SPAN_LIFETIME_MS = 15 * 60 * 1000;
   const STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS = 60 * 1000;
   const activeTrustedSpanStartTimes = new Map<string, number>();
+  const forceEndedStaleSpanIds = new Set<string>();
   let staleSpanWatchdog: ReturnType<typeof setInterval> | null = null;
   const runStaleSpanWatchdog = () => {
     const now = Date.now();
@@ -55,6 +56,13 @@ export function createDiagnosticsTraceRuntime(
       if (startedAt === undefined || now - startedAt <= STALE_TRUSTED_SPAN_LIFETIME_MS) {
         continue;
       }
+      // Force-end and log once per span: the span stays tracked so late children
+      // can resolve its context and the watchdog keeps ticking, so re-logging would
+      // spam the gateway log for every abandoned turn, every minute, forever.
+      if (forceEndedStaleSpanIds.has(spanId)) {
+        continue;
+      }
+      forceEndedStaleSpanIds.add(spanId);
       // span.end() is idempotent; keep the span tracked so late completion
       // events and children can still resolve its (now-ended) context.
       span.end(now);
@@ -82,6 +90,7 @@ export function createDiagnosticsTraceRuntime(
     const stopAt = Date.now();
     stopStaleSpanWatchdog();
     retainedTrustedSpanContexts.clear();
+    forceEndedStaleSpanIds.clear();
     for (const span of new Set([
       ...activeTrustedSpans.values(),
       ...Array.from(activeTrustedSpanAliases.values(), (entry) => entry.span),
