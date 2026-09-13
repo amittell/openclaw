@@ -231,9 +231,12 @@ export async function stageSessionPendingInput(
         "scan",
       );
       if (committed) {
-        // Committed transcript replay keeps its existing contract and never creates new custody.
+        // Committed replay of an already-executed source turn is terminal at
+        // admission: report it consumed so stageApproved does not admit a fresh
+        // agent turn for the re-presentation. No new custody is minted; the
+        // idempotent transcript append still resolves to the committed message.
         return {
-          state: "queued",
+          state: "consumed",
           inputId: committed.messageId,
           message: parseSessionPendingInputMessage(JSON.stringify(committed.message)),
           run: (operation) => operation(),
