@@ -206,13 +206,64 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       spanId: traceContext.parentSpanId,
     });
   };
+  // Materializes a real recording span for a diagnostic scope that no recorder
+  // created one for (the turn-root scope, or an intermediate scope a child
+  // references). Without this, children parent to a remote span context whose
+  // span id never exports, leaving them orphaned in the backend. The span is
+  // parented to the scope's incoming remote context so it inherits the
+  // diagnostic trace id and stays linked to any upstream distributed context,
+  // and is tracked under the diagnostic scope span id so the child's parent
+  // lookup now resolves to this real span's spanContext(). First-wins: a scope
+  // may be materialized by multiple racing children; only the first creates it.
+  // Ended by the stale-span watchdog (no completion event exists for a bare
+  // scope), or by stopActiveTrustedSpans on shutdown.
+  const materializeScopeSpan = (
+    traceContext: DiagnosticTraceContext,
+    scopeSpanId: string,
+    evt: DiagnosticEventPayload,
+  ) => {
+    const existing = activeTrustedSpans.get(scopeSpanId);
+    if (existing) {
+      return existing.spanContext();
+    }
+    const isRoot = !traceContext.parentSpanId;
+    const name = isRoot ? "openclaw.turn.root" : "openclaw.turn.scope";
+    // A root scope has no upstream parent, so parent to its own incoming remote
+    // context to inherit the diagnostic trace id; a child scope parents to its
+    // own parent's remote context.
+    const parentSpanId = isRoot ? scopeSpanId : traceContext.parentSpanId;
+    // Carry the diagnostic trace's sampling flags into the remote parent so the
+    // ParentBased sampler records this materialized span (and its children). Without
+    // them the context defaults to NONE and the whole subtree is dropped as unsampled.
+    const parentContext = contextForTraceContext({
+      traceId: traceContext.traceId,
+      spanId: parentSpanId,
+      traceFlags: traceContext.traceFlags,
+    });
+    const span = spanWithDuration(
+      name,
+      {
+        "openclaw.traceId": traceContext.traceId,
+        "openclaw.scopeSpanId": scopeSpanId,
+      },
+      undefined,
+      {
+        parentContext,
+        startTimeMs: evt.ts,
+      },
+    );
+    activeTrustedSpans.set(scopeSpanId, span);
+    activeTrustedSpanStartTimes.set(scopeSpanId, evt.ts);
+    startStaleSpanWatchdog();
+    return span.spanContext();
+  };
   const activeTrustedParentContext = (
     evt: DiagnosticEventPayload,
     metadata: DiagnosticEventMetadata,
   ) => {
     const traceContext = trustedTraceContext(evt, metadata);
     const parentSpanId = traceContext?.parentSpanId;
-    if (!parentSpanId) {
+    if (!traceContext || !parentSpanId) {
       return undefined;
     }
     const owner = trustedSpanAliasOwner(evt);
@@ -221,10 +272,13 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanContext =
       activeParentSpan?.spanContext() ??
       retainedTrustedSpanContext(traceContext, parentSpanId, owner);
-    if (!spanContext) {
-      return undefined;
+    if (spanContext) {
+      return trace.setSpanContext(otelContextApi.active(), spanContext);
     }
-    return trace.setSpanContext(otelContextApi.active(), spanContext);
+    // Parent scope has no real span in this process: materialize it so the
+    // child links to an exported span id instead of an orphaned remote context.
+    const materialized = materializeScopeSpan(traceContext, parentSpanId, evt);
+    return materialized ? trace.setSpanContext(otelContextApi.active(), materialized) : undefined;
   };
   // Resolves only spans this process actually exported, so a miss leaves the caller
   // parentless rather than pointing at a span id no backend will ever receive.
@@ -252,9 +306,20 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const retainedSpanContext =
       retainedTrustedSpanContext(traceContext, traceContext.spanId, owner) ??
       retainedTrustedSpanContext(traceContext, traceContext.parentSpanId, owner);
-    return retainedSpanContext
-      ? trace.setSpanContext(otelContextApi.active(), retainedSpanContext)
-      : undefined;
+    if (retainedSpanContext) {
+      return trace.setSpanContext(otelContextApi.active(), retainedSpanContext);
+    }
+    // No real span or retained context for the referenced scope: materialize it
+    // so internal children (e.g. message.delivery) link to an exported span id
+    // instead of an orphaned remote context in the diagnostic trace.
+    const scopeSpanId = traceContext.parentSpanId ?? traceContext.spanId;
+    if (scopeSpanId) {
+      const materialized = materializeScopeSpan(traceContext, scopeSpanId, evt);
+      if (materialized) {
+        return trace.setSpanContext(otelContextApi.active(), materialized);
+      }
+    }
+    return undefined;
   };
   const exportedSpanContextForDiagnosticTraceContext = (
     traceContext: DiagnosticTraceContext,
