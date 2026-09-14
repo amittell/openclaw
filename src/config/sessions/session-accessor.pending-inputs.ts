@@ -232,23 +232,30 @@ export async function stageSessionPendingInput(
       );
       if (committed) {
         const committedMessage = parseSessionPendingInputMessage(JSON.stringify(committed.message));
-        // A committed RE-PRESENTATION of the same source turn is terminal at
-        // admission: report it consumed so stageApproved does not admit a fresh
-        // agent turn for the replay. No new custody is minted; the idempotent
-        // transcript append still resolves to the committed message.
+        // A committed source turn is terminal at admission only when it is a genuine
+        // RE-PRESENTATION of a turn that already executed - not merely a second
+        // arrival of the same idempotency key.
         //
-        // Reusing an idempotency key is NOT by itself a re-presentation. A new
-        // turn may legitimately carry a key whose chat run already committed
-        // (agent.wait following a finished chat.send with the same runId), and
-        // that turn must still be admitted. Compare the source bytes rather than
-        // the key: a replay repeats role and content and varies only in volatile
-        // fields such as timestamp, so an unequal body keeps the pre-existing
-        // "queued" contract.
-        const isSourceTurnReplay =
-          committedMessage.role === options.message.role &&
-          JSON.stringify(committedMessage.content) === JSON.stringify(options.message.content);
+        // The two cases are told apart by who OWNS the key, which is the distinction
+        // this fix's own contract describes: "the channel source turn id is the
+        // message idempotency key; the run id is distinct and randomized per
+        // execution". So:
+        //
+        //   re-presentation  key is a channel source turn id, arriving under a NEW
+        //                    unrelated run id            -> terminal (consumed)
+        //   retry            key is derived from this run's own id ("<runId>" or
+        //                    "<runId>:user"), i.e. the run is re-driving itself after
+        //                    a restart interruption, a dispatch rejection or a
+        //                    post-admission routing rejection -> must still be admitted
+        //
+        // Measured at this call site: retries arrive as key "<runId>:user" with
+        // runId "<runId>"; a re-drive arrives as key "channel-user:v1:..." with an
+        // unrelated runId. A resumable pending-input row is NOT a usable signal here -
+        // all of these reach this branch with `existing` null and identical bodies.
+        const keyBelongsToThisRun =
+          idempotencyKey === options.runId || idempotencyKey.startsWith(`${options.runId}:`);
         return {
-          state: isSourceTurnReplay ? "consumed" : "queued",
+          state: keyBelongsToThisRun ? "queued" : "consumed",
           inputId: committed.messageId,
           message: committedMessage,
           run: (operation) => operation(),
