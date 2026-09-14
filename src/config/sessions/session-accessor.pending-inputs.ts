@@ -231,14 +231,26 @@ export async function stageSessionPendingInput(
         "scan",
       );
       if (committed) {
-        // Committed replay of an already-executed source turn is terminal at
+        const committedMessage = parseSessionPendingInputMessage(JSON.stringify(committed.message));
+        // A committed RE-PRESENTATION of the same source turn is terminal at
         // admission: report it consumed so stageApproved does not admit a fresh
-        // agent turn for the re-presentation. No new custody is minted; the
-        // idempotent transcript append still resolves to the committed message.
+        // agent turn for the replay. No new custody is minted; the idempotent
+        // transcript append still resolves to the committed message.
+        //
+        // Reusing an idempotency key is NOT by itself a re-presentation. A new
+        // turn may legitimately carry a key whose chat run already committed
+        // (agent.wait following a finished chat.send with the same runId), and
+        // that turn must still be admitted. Compare the source bytes rather than
+        // the key: a replay repeats role and content and varies only in volatile
+        // fields such as timestamp, so an unequal body keeps the pre-existing
+        // "queued" contract.
+        const isSourceTurnReplay =
+          committedMessage.role === options.message.role &&
+          JSON.stringify(committedMessage.content) === JSON.stringify(options.message.content);
         return {
-          state: "consumed",
+          state: isSourceTurnReplay ? "consumed" : "queued",
           inputId: committed.messageId,
-          message: parseSessionPendingInputMessage(JSON.stringify(committed.message)),
+          message: committedMessage,
           run: (operation) => operation(),
           finish: () => {},
         };
