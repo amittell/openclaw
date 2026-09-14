@@ -4892,6 +4892,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 3),
@@ -4981,6 +4982,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5115,6 +5117,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5190,6 +5193,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 0),
@@ -5291,6 +5295,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5400,6 +5405,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5487,6 +5493,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5597,6 +5604,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
@@ -5680,6 +5688,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 0),
@@ -5796,6 +5805,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 3),
@@ -5894,6 +5904,7 @@ describe("memory plugin e2e", () => {
           tableNames: vi.fn(async () => ["memories"]),
           openTable: vi.fn(async () => ({
             schema: createAgentScopedSchemaMock(),
+            checkoutLatest: vi.fn(async () => undefined),
             vectorSearch,
             query: vi.fn(() => ({ where: queryWhere })),
             countRows: vi.fn(async () => 1),
