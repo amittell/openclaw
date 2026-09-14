@@ -20,6 +20,7 @@ import {
   hasSessionPendingInputsSchema,
 } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import { hasRestartRecoveryTerminalRun } from "./restart-recovery-state.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import {
@@ -244,9 +245,30 @@ export async function stageSessionPendingInput(
         // the key: a replay repeats role and content and varies only in volatile
         // fields such as timestamp, so an unequal body keeps the pre-existing
         // "queued" contract.
-        const isSourceTurnReplay =
-          committedMessage.role === options.message.role &&
-          JSON.stringify(committedMessage.content) === JSON.stringify(options.message.content);
+        //
+        // A channel-bound key (channel-user:v1:<hash>) is deterministic per inbound
+        // messageId - one message. A committed hit under it is a re-drive (ghost) by
+        // definition, and the re-queued update may have LOST its body (empty content),
+        // which the byte-compare below cannot see. So a channel-bound committed hit is
+        // terminal unless a pending, non-terminal restart-recovery claim must re-deliver
+        // this exact source. Run-id keys keep the byte-compare (a same-runId new turn,
+        // e.g. agent.wait, is legitimate and must still be admitted).
+        const isChannelBoundKey = idempotencyKey.startsWith("channel-user:v1:");
+        const recoveryEntry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
+        const claimSource = recoveryEntry?.restartRecoveryDeliverySourceRunId;
+        const claimRunId = recoveryEntry?.restartRecoveryDeliveryRunId;
+        const requiresRedelivery =
+          isChannelBoundKey &&
+          typeof claimSource === "string" &&
+          claimSource.length > 0 &&
+          claimSource === idempotencyKey &&
+          typeof claimRunId === "string" &&
+          claimRunId.length > 0 &&
+          !hasRestartRecoveryTerminalRun(recoveryEntry, idempotencyKey);
+        const isSourceTurnReplay = isChannelBoundKey
+          ? !requiresRedelivery
+          : committedMessage.role === options.message.role &&
+            JSON.stringify(committedMessage.content) === JSON.stringify(options.message.content);
         return {
           state: isSourceTurnReplay ? "consumed" : "queued",
           inputId: committed.messageId,
