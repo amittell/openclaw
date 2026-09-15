@@ -35,7 +35,21 @@ export function isMessagingToolDuplicateNormalized(
     if (!normalizedSent || normalizedSent.length < MIN_DUPLICATE_TEXT_LENGTH) {
       return false;
     }
+    if (normalized === normalizedSent) {
+      return true;
+    }
     if (normalized.includes(normalizedSent)) {
+      // A follow-up that EXTENDS a prior send carries text the user has never
+      // seen, and no length ratio can separate "<prior>. All good!" from
+      // "<prior>. Actually it failed." - both are the prior plus a short tail.
+      // Suppressing the pair swallows a CORRECTION because it quotes the thing
+      // it corrects, and the model is then told the message was delivered.
+      // A prior that is merely a PREFIX is therefore never a duplicate; a prior
+      // that appears later in the text is re-narration ("I sent the message:
+      // ...") and keeps the original ratio rule.
+      if (normalized.startsWith(normalizedSent)) {
+        return false;
+      }
       return normalizedSent.length >= normalized.length * MIN_SUBSTRING_DUPLICATE_RATIO;
     }
     return (
