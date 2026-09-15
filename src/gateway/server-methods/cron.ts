@@ -1218,12 +1218,15 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     const callerScope = readCronCallerScope(client);
     const job = await context.cron.readJob(jobId);
-    if (!job) {
+    if (!job && !callerScope) {
       // Idempotent delete: a second, racing remove of an already-gone job is a no-op success.
+      // Only an unscoped caller sees every job, so only it may learn that an id is absent;
+      // a scoped caller gets the same not-found as for another agent's job.
       respond(true, { removed: false, reason: "already-gone" }, undefined);
       return;
     }
     if (
+      !job ||
       !cronJobMatchesCallerScope({
         job,
         callerScope,

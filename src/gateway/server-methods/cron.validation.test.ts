@@ -810,6 +810,25 @@ describe("cron method validation", () => {
     });
   });
 
+  it("answers caller-scoped cron.remove of a missing id exactly like a foreign job", async () => {
+    const foreign = await invokeCron(
+      "cron.remove",
+      { id: "cron-1" },
+      {
+        context: createCronContext(createCronJob({ id: "cron-1", agentId: "worker" })),
+        client: callerClient("ops"),
+      },
+    );
+    const missing = await invokeCron(
+      "cron.remove",
+      { id: "cron-1" },
+      { context: createCronContext(), client: callerClient("ops") },
+    );
+
+    expect(missing.context.cron.remove).not.toHaveBeenCalled();
+    expect(missing.respond.mock.calls).toEqual(foreign.respond.mock.calls);
+  });
+
   it("hides operator command cron jobs from caller-scoped cron.remove", async () => {
     const context = createCronContext(
       createCronJob({
