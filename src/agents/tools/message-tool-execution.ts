@@ -30,6 +30,7 @@ import type {
 } from "../../infra/outbound/message-action-contracts.js";
 import { projectGatewayQueuedDeliveryResult } from "../../infra/outbound/message-action-execution.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
+import { hasSendMediaPayload } from "../../infra/outbound/message-action-send-payload.js";
 import { isDeliveredCurrentSourceReply } from "../../infra/outbound/source-reply-mirror.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
@@ -473,14 +474,9 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       // is legitimate; only intra-run re-narration is the pathology.
       const duplicateSendKey = options?.runId?.trim() || undefined;
       // Text-only guard: a media send with a repeated caption is a distinct
-      // deliverable and must never be suppressed.
-      const duplicateSendHasMedia = [
-        readToolStringParam(params, "media"),
-        readToolStringParam(params, "mediaUrl"),
-        readToolStringParam(params, "path"),
-        readToolStringParam(params, "filePath"),
-        readToolStringParam(params, "fileUrl"),
-      ].some((value) => value !== undefined);
+      // deliverable and must never be suppressed. Media detection is shared with
+      // the send path so every param it delivers from also bypasses the guard.
+      const duplicateSendHasMedia = hasSendMediaPayload(params);
       const duplicateSendText =
         action === "send" && !duplicateSendHasMedia
           ? (readToolStringParam(params, "text") ??

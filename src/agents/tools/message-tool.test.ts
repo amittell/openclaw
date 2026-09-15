@@ -5323,5 +5323,61 @@ describe("duplicate send guard", () => {
     expect(result.details).not.toMatchObject({ status: "suppressed" });
     expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
   });
+
+  // Every media source the send path reads must bypass the guard: a captioned
+  // attachment is a distinct deliverable, not a re-narration of its caption.
+  it.each([
+    { name: "a buffer data URL", media: { buffer: "data:image/png;base64,iVBORw0KGgo=" } },
+    {
+      name: "attachments[].media",
+      media: { attachments: [{ media: "https://example.com/r.png" }] },
+    },
+    { name: "attachments[].path", media: { attachments: [{ path: "/tmp/restock.png" }] } },
+    { name: "a mediaUrls array", media: { mediaUrls: ["https://example.com/r.png"] } },
+    { name: "a bare mediaUrls string", media: { mediaUrls: "https://example.com/r.png" } },
+    { name: "image", media: { image: "https://example.com/r.png" } },
+    { name: "voiceText", media: { voiceText: "Flux stock is 37 units." } },
+    { name: "media", media: { media: "https://example.com/r.png" } },
+  ])("delivers a repeated caption sent with $name", async ({ media }) => {
+    const tool = createSendTool();
+    const caption = "Restock alert: flux stock is 37 units, reorder soon.";
+    const first = await tool.execute("send-1", {
+      action: "send",
+      channel: "imessage",
+      message: caption,
+    });
+    expect(first.details).not.toMatchObject({ status: "suppressed" });
+
+    const second = await tool.execute("send-2", {
+      action: "send",
+      channel: "imessage",
+      message: caption,
+      ...media,
+    });
+    expect(second.details).not.toMatchObject({ status: "suppressed" });
+    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
+    expect(lastRunMessageActionInput()?.params).toMatchObject(media);
+  });
+
+  it("delivers consecutive buffer sends that share a caption", async () => {
+    const tool = createSendTool();
+    const caption = "Restock alert: flux stock is 37 units, reorder soon.";
+    const first = await tool.execute("send-1", {
+      action: "send",
+      channel: "imessage",
+      message: caption,
+      buffer: "data:image/png;base64,iVBORw0KGgo=",
+    });
+    expect(first.details).not.toMatchObject({ status: "suppressed" });
+
+    const second = await tool.execute("send-2", {
+      action: "send",
+      channel: "imessage",
+      message: caption,
+      buffer: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+    });
+    expect(second.details).not.toMatchObject({ status: "suppressed" });
+    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

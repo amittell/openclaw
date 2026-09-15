@@ -1,9 +1,11 @@
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import { readToolStringParam } from "../../agents/tools/common.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type {
   MessageActionNormalization,
   MessageActionResult,
 } from "./message-action-contracts.js";
+import { hasExplicitSendMediaSource } from "./message-action-params.js";
 
 export type SendPayloadParts = {
   message: string;
@@ -76,4 +78,17 @@ export function withSendNormalization(
   normalization?: MessageActionNormalization,
 ): MessageActionResult {
   return normalization && result.kind === "send" ? { ...result, normalization } : result;
+}
+
+/**
+ * Reports whether send args carry anything the send path delivers as media: an
+ * explicit source, `mediaUrls`, a structured attachment, a base64 `buffer`, or a
+ * synthesized `voiceText` note.
+ */
+export function hasSendMediaPayload(args: Record<string, unknown>): boolean {
+  return (
+    Boolean(readToolStringParam(args, "buffer", { trim: false })) ||
+    Boolean(readToolStringParam(args, "voiceText")) ||
+    hasExplicitSendMediaSource(args)
+  );
 }
