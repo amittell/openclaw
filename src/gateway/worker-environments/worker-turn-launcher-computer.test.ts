@@ -279,7 +279,13 @@ describe("worker launch capabilities", () => {
           : primary === "overload"
             ? ({ reason: "overloaded", status: 503 } as const)
             : primary === "http-507"
-              ? ({ reason: "timeout", status: 507 } as const)
+              ? // FORK DIVERGENCE: upstream classifies every untyped 5xx as "timeout".
+                // This fork splits them at classification-rules.ts:284 -
+                // isTimingHttpStatus(status) ? timeout : server_error - so a 507,
+                // which is not a timing status, resolves as "server_error". The split
+                // was carried deliberately (see the 9.4 port commit's failover note);
+                // this fixture is upstream's and lagged behind it.
+                ({ reason: "server_error", status: 507 } as const)
               : undefined;
       const primaryError = providerFailure
         ? primary === "http-507"
