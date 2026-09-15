@@ -842,7 +842,8 @@ describe("reply turn admission", () => {
   // other than the live Gateway's - such a run died with an earlier process and can
   // never record a terminal fact, so the fence would otherwise hold a healthy session
   // at "changed while starting work" forever (main-session-recovery-state.ts:218-228,
-  // rh-bot 2026-09-03, 106 retries; upstream #118873). The fixture pins
+  // rh-bot: the dead generation came from the 2026-09-02
+  // restarts and surfaced 2026-09-04, 106 retries over 3.5h; upstream #118873). The fixture pins
   // lifecycleGeneration "generation-1" and the admission runs under the live one, so
   // the fence is settled and the followup is admitted.
   it("admits a queued followup whose recovery fence belongs to a dead Gateway generation", async () => {
