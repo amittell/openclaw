@@ -1046,4 +1046,107 @@ describe("media store", () => {
       await expectSavedOriginalFilenameCase(testCase);
     });
   });
+
+  describe("inbound media scope stamp", () => {
+    async function expectScopeCase(params: {
+      originalFilename?: string;
+      scope?: string;
+      expectedIdPattern: RegExp;
+    }) {
+      const saved = await store.saveMediaBuffer(
+        Buffer.from("scoped bytes"),
+        "text/plain",
+        "inbound",
+        5 * 1024 * 1024,
+        params.originalFilename,
+        undefined,
+        params.scope,
+      );
+      expect(saved.id).toMatch(params.expectedIdPattern);
+      // Round-trip: the stamped id must resolve back to the exact file written.
+      const resolved = await store.resolveMediaBufferPath(saved.id, "inbound");
+      expect(path.basename(resolved)).toBe(saved.id);
+      await expect(fs.realpath(resolved)).resolves.toBe(await fs.realpath(saved.path));
+    }
+
+    it("stamps the id with the scope between the original name and uuid", () =>
+      expectScopeCase({
+        originalFilename: "report.txt",
+        scope: "tg--5240776892",
+        expectedIdPattern: /^report---tg--5240776892---[a-f0-9-]{36}\.txt$/,
+      }));
+
+    it("stamps the id with the scope when there is no original filename", () =>
+      expectScopeCase({
+        scope: "tg--5240776892",
+        expectedIdPattern: /^tg--5240776892---[a-f0-9-]{36}\.txt$/,
+      }));
+
+    it("keeps the scope and thread id in the stamp", () =>
+      expectScopeCase({
+        originalFilename: "clip.mp4",
+        scope: "tg--5240776892-t123",
+        // The buffer is plain text, so the stored extension follows the detected
+        // MIME (text/plain -> .txt); the assertion is about the scope stamp.
+        expectedIdPattern: /^clip---tg--5240776892-t123---[a-f0-9-]{36}\.txt$/,
+      }));
+
+    it.each([
+      { name: "slash", scope: "tg/5240776892" },
+      { name: "backslash", scope: "tg\\5240776892" },
+      { name: "null byte", scope: "tg\u00005240776892" },
+      { name: "dot-dot", scope: ".." },
+      { name: "absolute unix", scope: "/etc/passwd" },
+      { name: "traversal prefix", scope: "../escape" },
+    ] as const)("omits an unsafe scope ($name) and falls back to the original format", (tc) =>
+      expectScopeCase({
+        originalFilename: "report.txt",
+        scope: tc.scope,
+        expectedIdPattern: /^report---[a-f0-9-]{36}\.txt$/,
+      }),
+    );
+
+    it("omits an empty scope and falls back to the original format", () =>
+      expectScopeCase({
+        originalFilename: "report.txt",
+        scope: "   ",
+        expectedIdPattern: /^report---[a-f0-9-]{36}\.txt$/,
+      }));
+
+    it("stamps the id for streamed saves", async () => {
+      const stream = new Readable({
+        read() {
+          this.push(Buffer.from("streamed"));
+          this.push(null);
+        },
+      });
+      const saved = await store.saveMediaStream(
+        stream,
+        "text/plain",
+        "inbound",
+        5 * 1024 * 1024,
+        undefined,
+        undefined,
+        "tg--5240776892",
+      );
+      expect(saved.id).toMatch(/^tg--5240776892---[a-f0-9-]{36}\.txt$/);
+      const resolved = await store.resolveMediaBufferPath(saved.id, "inbound");
+      expect(path.basename(resolved)).toBe(saved.id);
+    });
+
+    it("preserves backwards-compatible ids when no scope is provided", async () => {
+      const saved = await store.saveMediaBuffer(
+        Buffer.from("legacy bytes"),
+        "text/plain",
+        "inbound",
+        5 * 1024 * 1024,
+        "legacy.txt",
+      );
+      // No scope => identical shape to the pre-change id.
+      expect(saved.id).toMatch(/^legacy---[a-f0-9-]{36}\.txt$/);
+      expect(saved.id).not.toContain("tg-");
+      const resolved = await store.resolveMediaBufferPath(saved.id, "inbound");
+      expect(path.basename(resolved)).toBe(saved.id);
+    });
+  });
 });

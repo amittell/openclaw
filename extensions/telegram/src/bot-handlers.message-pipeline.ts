@@ -44,7 +44,7 @@ import {
   type TelegramSpooledReplayDeferredParticipant,
   type TelegramSpooledReplaySettlementHold,
 } from "./bot-processing-outcome.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   resolveTelegramMessageThreadSpec,
   resolveTelegramPrimaryMedia,
@@ -360,6 +360,10 @@ export function createTelegramMessagePipeline({
               },
               maxBytes: mediaMaxBytes,
               ...mediaRuntime,
+              scope: buildTelegramMediaScope(
+                node.sourceMessage.chat?.id,
+                node.sourceMessage.message_thread_id,
+              ),
             });
             if (media) {
               mediaRef = {

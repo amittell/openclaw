@@ -36,7 +36,7 @@ import {
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
 } from "./bot-processing-outcome.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   buildTelegramThreadParams,
   getTelegramTextParts,
@@ -247,6 +247,7 @@ export function createTelegramInboundProcessing({
         ctx,
         maxBytes: mediaMaxBytes,
         ...mediaRuntime,
+        scope: buildTelegramMediaScope(chatId, threadSpec.id),
       });
       if (mediaRuntime.abortSignal?.aborted) {
         const abortError =
