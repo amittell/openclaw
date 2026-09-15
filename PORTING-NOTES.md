@@ -179,9 +179,18 @@ into a cohesive sibling — no baseline rows, no `oxlint-disable`.
 > `settled-turn.ts`) and none of those four exists on the 9.3 line either, so they
 > were dropped when 9.3 and 9.4 took upstream's file layout rather than lost in one
 > carry. One survives renamed: `auth-controller.cooldown-probe.ts`. The splits'
-> PURPOSE is also undone — `oxlint` reports 2 `max-lines` errors on this branch
-> today, including `message-tool-execution.ts` at 713 against a cap of 700. Treat
-> every row below as history, not as a claim about files you can open.
+> PURPOSE is also undone — `oxlint` reports **9** `max-lines` errors across
+> `src ui packages extensions` on this branch, including `server-close.ts` 724,
+> `terminal-resolution.ts` 725 and `message-tool-execution.ts` 721, all against a
+> cap of 700. (An earlier revision of this note said 2: that count came from
+> linting only the two files being edited at the time and was a property of the
+> command, not of the repo. The 9 and their provenance were measured by
+> `claude-air-opus5-f8e98e`, who also established that all nine were UNDER cap at
+> `v2026.9.2` and the fork's own diff tipped every one — `get-reply-inline-actions.ts`
+> crossed on a single added line.) Note `scripts/check-max-lines-ratchet.mts` exits
+> 0 on all nine: it enforces shrink-only on `config/max-lines-baseline.txt` and
+> never asks whether an unledgered file is under budget. Treat every row below as
+> history, not as a claim about files you can open.
 
 | file                                     | before | after   | sibling                                                |
 | ---------------------------------------- | ------ | ------- | ------------------------------------------------------ |
