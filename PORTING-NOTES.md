@@ -172,6 +172,17 @@ Seven files carried fork additions past `max-lines`. The baseline is shrink-only
 and its header says "Split files", so each was split by **pure code motion**
 into a cohesive sibling — no baseline rows, no `oxlint-disable`.
 
+> **SCOPE, measured 2026-09-15 on `upgrade-v2026.9.4`.** This table describes the
+> **8.1** tree it was written for. It is NOT a description of this branch, and the
+> later carries did not preserve it: of the eight sibling files it names, four are
+> absent here (`ack-parts.ts`, `cooldown-probe.ts`, `run-loop.exhaustion.ts`,
+> `settled-turn.ts`) and none of those four exists on the 9.3 line either, so they
+> were dropped when 9.3 and 9.4 took upstream's file layout rather than lost in one
+> carry. One survives renamed: `auth-controller.cooldown-probe.ts`. The splits'
+> PURPOSE is also undone — `oxlint` reports 2 `max-lines` errors on this branch
+> today, including `message-tool-execution.ts` at 713 against a cap of 700. Treat
+> every row below as history, not as a claim about files you can open.
+
 | file                                     | before | after   | sibling                                                |
 | ---------------------------------------- | ------ | ------- | ------------------------------------------------------ |
 | `directive-handling.impl.ts`             | 717    | **613** | `ack-parts.ts` 158                                     |
