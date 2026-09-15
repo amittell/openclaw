@@ -3,7 +3,6 @@ import type { Message } from "grammy/types";
 import { recordChannelBotPairLoopAndCheckSuppression } from "openclaw/plugin-sdk/channel-inbound";
 import type { TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { mergeTelegramAccountConfig } from "./account-config.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import type { TelegramHandlerAuthorization } from "./bot-handlers.inbound-authorization.js";
 import { createTelegramInboundProcessing } from "./bot-handlers.inbound-processing.js";
@@ -14,6 +13,7 @@ import type {
   TelegramInboundDisposition,
   TelegramInboundPipeline,
 } from "./bot-handlers.types.js";
+import { buildTelegramBotPairLoopFacts } from "./bot-pair-loop-facts.js";
 import {
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
@@ -97,28 +97,17 @@ function createTelegramInboundHandlers(
   // loop this bounds. Suppression is per pair and time-boxed by the configured cooldown, so
   // a one-shot bot reply under the budget is unaffected.
   const isSuppressedBotPairLoop = (msg: Message, botUserId: number): boolean => {
-    const sender = msg.from;
-    if (sender?.is_bot !== true || sender.id === botUserId) {
+    const cfg = telegramDeps.getRuntimeConfig();
+    const facts = buildTelegramBotPairLoopFacts({ cfg, accountId, msg, botUserId });
+    if (!facts) {
       return false;
     }
-    const cfg = telegramDeps.getRuntimeConfig();
-    const accountConfig = mergeTelegramAccountConfig(cfg, accountId);
-    const result = recordChannelBotPairLoopAndCheckSuppression({
-      scopeId: accountId,
-      conversationId: String(msg.chat.id),
-      senderId: String(sender.id),
-      receiverId: String(botUserId),
-      eventId: msg.message_id != null ? String(msg.message_id) : undefined,
-      config: accountConfig.botLoopProtection,
-      defaultsConfig: cfg.channels?.defaults?.botLoopProtection,
-      defaultEnabled: true,
-      nowMs: typeof msg.date === "number" ? msg.date * 1000 : undefined,
-    });
+    const result = recordChannelBotPairLoopAndCheckSuppression(facts);
     if (!result.suppressed) {
       return false;
     }
     logVerbose(
-      `telegram: bot-to-bot loop suppressed for pair ${sender.id}->${botUserId} in ${msg.chat.id} for ${Math.max(0, Math.ceil((result.cooldownUntilMs - Date.now()) / 1000))}s`,
+      `telegram: bot-to-bot loop suppressed for pair ${facts.senderId}->${facts.receiverId} in ${facts.conversationId} for ${Math.max(0, Math.ceil((result.cooldownUntilMs - Date.now()) / 1000))}s`,
     );
     return true;
   };
