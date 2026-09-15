@@ -478,28 +478,29 @@ describe("QA message-tool current conversation delivery", () => {
             ).rejects.toThrow("Completion source replies");
           }
         }
-        for (const args of [
+        // Distinct text per send: this case measures routing, accounts and
+        // threading, not the fork's intra-run duplicate-send guard, which has its
+        // own coverage in message-tool.test.ts. Sending one nonce twice let that
+        // guard swallow the second delivery and cost the upstream assertion.
+        const withinSourceArgs = [
           {},
           { target: `dm:${conversationId}`, accountId: "SECONDARY", replyTo: inbound.id },
-        ]) {
-          await tool.execute("within-source", { action: "send", message: nonce, ...args });
+        ];
+        for (const [index, args] of withinSourceArgs.entries()) {
+          await tool.execute("within-source", {
+            action: "send",
+            message: `${nonce} ${index + 1}`,
+            ...args,
+          });
         }
         const snapshot = await getQaBusState(baseUrl);
         const outbound = snapshot.messages.filter((message) => message.direction === "outbound");
-        // FORK DIVERGENCE: this fork suppresses intra-run near-duplicate sends
-        // (message-tool-execution.send-suppression.ts) so an agent cannot re-narrate
-        // its own last message into the same route. Both sends here carry the same
-        // nonce on the same route, so under a trusted turn - the only case that
-        // supplies a runId, which is what scopes the guard - the second is a recorded
-        // non-outcome: the model receives a suppression verdict and the run logs
-        // `duplicate_send suppressed`. Untrusted cases pass no runId, so the guard
-        // cannot engage and both sends land, matching upstream.
-        expect(outbound).toHaveLength(scope.trusted ? 1 : 2);
+        expect(outbound).toHaveLength(2);
         for (const message of outbound) {
           expect(message).toMatchObject({
             conversation: inbound.conversation,
             accountId: "secondary",
-            text: nonce,
+            text: expect.stringContaining(nonce),
           });
           expect.soft(message.threadId).toBe("topic");
           expect(message.replyToId).toBe(inbound.id);
