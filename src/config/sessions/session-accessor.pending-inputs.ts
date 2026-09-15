@@ -251,7 +251,10 @@ export async function stageSessionPendingInput(
         // definition, and the re-queued update may have LOST its body (empty content),
         // which the byte-compare below cannot see. So a channel-bound committed hit is
         // terminal unless a pending, non-terminal restart-recovery claim must re-deliver
-        // this exact source. Run-id keys keep the byte-compare (a same-runId new turn,
+        // this exact source. A delivered-terminal receipt is a durable "already
+        // delivered" outcome that can coexist with the live claim until cleanup, so it
+        // does NOT authorize a re-drive (terminal-pending / delivery-ambiguous still
+        // does, by design). Run-id keys keep the byte-compare (a same-runId new turn,
         // e.g. agent.wait, is legitimate and must still be admitted).
         const isChannelBoundKey = idempotencyKey.startsWith("channel-user:v1:");
         const recoveryEntry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
@@ -264,6 +267,7 @@ export async function stageSessionPendingInput(
           claimSource === idempotencyKey &&
           typeof claimRunId === "string" &&
           claimRunId.length > 0 &&
+          recoveryEntry?.restartRecoveryDeliveryReceiptState !== "delivered-terminal" &&
           !hasRestartRecoveryTerminalRun(recoveryEntry, idempotencyKey);
         const isSourceTurnReplay = isChannelBoundKey
           ? !requiresRedelivery
