@@ -478,10 +478,12 @@ describe("QA message-tool current conversation delivery", () => {
             ).rejects.toThrow("Completion source replies");
           }
         }
-        // Distinct text per send: this case measures routing, accounts and
-        // threading, not the fork's intra-run duplicate-send guard, which has its
-        // own coverage in message-tool.test.ts. Sending one nonce twice let that
-        // guard swallow the second delivery and cost the upstream assertion.
+        // INTENTIONAL DIVERGENCE FROM UPSTREAM INPUT: upstream sends one nonce
+        // twice. This case measures routing, accounts and threading, not the fork's
+        // intra-run duplicate-send guard, which has its own coverage in
+        // message-tool.test.ts, so the two sends carry distinct text. Restoring the
+        // shared nonce to "match upstream" re-weakens this case to `trusted ? 1 : 2`,
+        // which is the regression this exists to prevent.
         const withinSourceArgs = [
           {},
           { target: `dm:${conversationId}`, accountId: "SECONDARY", replyTo: inbound.id },
@@ -496,15 +498,17 @@ describe("QA message-tool current conversation delivery", () => {
         const snapshot = await getQaBusState(baseUrl);
         const outbound = snapshot.messages.filter((message) => message.direction === "outbound");
         expect(outbound).toHaveLength(2);
-        for (const message of outbound) {
+        outbound.forEach((message, index) => {
+          // Exact text per index pins ordering with content: a containment check
+          // would pass even if both sends carried the same index.
           expect(message).toMatchObject({
             conversation: inbound.conversation,
             accountId: "secondary",
-            text: expect.stringContaining(nonce),
+            text: `${nonce} ${index + 1}`,
           });
           expect.soft(message.threadId).toBe("topic");
           expect(message.replyToId).toBe(inbound.id);
-        }
+        });
       },
     );
   });
