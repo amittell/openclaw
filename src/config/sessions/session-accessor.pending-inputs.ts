@@ -252,10 +252,17 @@ export async function stageSessionPendingInput(
         // which the byte-compare below cannot see. So a channel-bound committed hit is
         // terminal unless a pending, non-terminal restart-recovery claim must re-deliver
         // this exact source. A delivered-terminal receipt is a durable "already
-        // delivered" outcome that can coexist with the live claim until cleanup, so it
-        // does NOT authorize a re-drive (terminal-pending / delivery-ambiguous still
-        // does, by design). Run-id keys keep the byte-compare (a same-runId new turn,
-        // e.g. agent.wait, is legitimate and must still be admitted).
+        // delivered" outcome that coexists with the live claim until the atomic
+        // claim/tombstone cleanup patch (restart-recovery-state.ts), so it does NOT
+        // authorize a re-drive (terminal-pending / delivery-ambiguous still does, by
+        // design). Run-id keys keep the byte-compare (a same-runId new turn, e.g.
+        // agent.wait, is legitimate and must still be admitted).
+        //
+        // Acknowledged window (adversarial review 2026-09-15): while a claim is live,
+        // this seam cannot distinguish the ingress watchdog's re-queue of that source
+        // from the recovery dispatch's own redelivery, so it fails open (admit) toward
+        // recovery. The ambiguity self-resolves once the claim clears (delivered-
+        // terminal / tombstone), after which the same committed hit is terminal.
         const isChannelBoundKey = idempotencyKey.startsWith("channel-user:v1:");
         const recoveryEntry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
         const claimSource = recoveryEntry?.restartRecoveryDeliverySourceRunId;
