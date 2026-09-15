@@ -1078,6 +1078,21 @@ describe("isMessagingToolDuplicate", () => {
       sentTexts: ["Deployment finished."],
       expected: true,
     },
+    {
+      input: "Deployment finished.",
+      sentTexts: ["Deployment finished"],
+      expected: true,
+    },
+    {
+      input: "Deployment finished!!!",
+      sentTexts: ["Deployment finished"],
+      expected: true,
+    },
+    {
+      input: "Deployment finished. 2 hosts restarted.",
+      sentTexts: ["Deployment finished."],
+      expected: false,
+    },
   ])("returns $expected for duplicate check", ({ input, sentTexts, expected }) => {
     expect(isMessagingToolDuplicate(input, sentTexts)).toBe(expected);
   });
