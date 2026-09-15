@@ -48,7 +48,10 @@ export function isMessagingToolDuplicateNormalized(
       // nothing readable: "deployment finished" -> "deployment finished." is the
       // same message again, while "...Actually it failed." is not. An emoji-only
       // tail normalizes away and already compares equal above, so without this
-      // check a "." tail would deliver while an emoji tail suppressed. A prior
+      // check a "." tail would deliver while an emoji tail suppressed. Deliberate
+      // consequence: a change of terminal punctuation alone ("finished" ->
+      // "finished?") counts as no new content and stays suppressed, which is what
+      // the rule did before this branch existed too. A prior
       // that appears later in the text is re-narration ("I sent the message:
       // ...") and keeps the original ratio rule.
       if (normalized.startsWith(normalizedSent)) {
