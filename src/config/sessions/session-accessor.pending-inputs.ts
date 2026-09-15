@@ -20,6 +20,10 @@ import {
   hasSessionPendingInputsSchema,
 } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import {
+  hasRestartRecoverySourceClaim,
+  hasRestartRecoveryTerminalRun,
+} from "./restart-recovery-state.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import {
@@ -183,7 +187,11 @@ export async function stageSessionPendingInput(
     async () => {
       options.assertCurrent();
       const database = openOpenClawAgentDatabase(databaseOptions);
-      if (readSessionEntryRow(database, resolved.sessionKey)?.entry.sessionId !== scope.sessionId) {
+      // Read the row ONCE: the committed-replay branch below needs the same entry for the
+      // restart-recovery claim, and re-reading it there asks this exclusive write for the
+      // same row twice.
+      const sessionEntry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
+      if (sessionEntry?.sessionId !== scope.sessionId) {
         return undefined;
       }
       const existing = readSessionPendingInputByKey(database, resolved, idempotencyKey);
@@ -254,8 +262,35 @@ export async function stageSessionPendingInput(
         // all of these reach this branch with `existing` null and identical bodies.
         const keyBelongsToThisRun =
           idempotencyKey === options.runId || idempotencyKey.startsWith(`${options.runId}:`);
+        // Key ownership alone is not sufficient: restart recovery re-drives a source turn
+        // under a NEW recovery run id, so its key belongs to the ORIGINAL run and never to
+        // this one. Consuming it there drops the legitimate re-delivery (#9's P1, and the
+        // case PR #10's guard exists for). So a pending claim that still owes THIS source
+        // keeps the replay admitted.
+        //
+        // A delivered-terminal receipt is a durable "already delivered" outcome that
+        // coexists with the live claim until the atomic claim/tombstone cleanup, so it does
+        // NOT authorize a re-drive; terminal-pending and delivery-ambiguous still do, by
+        // design.
+        //
+        // Acknowledged window (adversarial review 2026-09-15): while a claim is live this
+        // seam cannot tell the ingress watchdog's re-queue of that source from the recovery
+        // dispatch's own redelivery, so it fails open (admit) toward recovery. The ambiguity
+        // self-resolves once the claim clears (delivered-terminal / tombstone).
+        //
+        // Both key forms are matched because a claim records the source TURN id while the
+        // replay may arrive as "<sourceTurnId>:user".
+        const sourceTurnId = idempotencyKey.endsWith(":user")
+          ? idempotencyKey.slice(0, -":user".length)
+          : idempotencyKey;
+        const requiresRecoveryRedelivery =
+          sessionEntry?.restartRecoveryDeliveryReceiptState !== "delivered-terminal" &&
+          (hasRestartRecoverySourceClaim(sessionEntry, idempotencyKey) ||
+            hasRestartRecoverySourceClaim(sessionEntry, sourceTurnId)) &&
+          !hasRestartRecoveryTerminalRun(sessionEntry, idempotencyKey) &&
+          !hasRestartRecoveryTerminalRun(sessionEntry, sourceTurnId);
         return {
-          state: keyBelongsToThisRun ? "queued" : "consumed",
+          state: keyBelongsToThisRun || requiresRecoveryRedelivery ? "queued" : "consumed",
           inputId: committed.messageId,
           message: committedMessage,
           run: (operation) => operation(),
