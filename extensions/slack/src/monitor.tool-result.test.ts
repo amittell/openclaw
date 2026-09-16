@@ -859,7 +859,23 @@ describe("monitorSlackProvider tool results", () => {
     mockGeneralChannelInfo();
     await expect(runMentionGatedChannelMessage()).rejects.toThrow("boom");
 
-    expect(sendMock).not.toHaveBeenCalled();
+    // The fork sends a visible non-outcome fallback when a dispatch produces nothing the user
+    // can see (core src/channels/turn/delivery-visibility.ts, fork-only and absent at the
+    // v2026.9.4 tag), fired from lifecycle.ts once the dispatch error leaves nothing visible.
+    // Upstream asserts silence here because it has no such fallback, so this file's failure was
+    // correct fork behaviour meeting an upstream assertion written without it. Slack reaches the
+    // fallback because it wires a direct `deliver:` adapter (monitor/message-handler/dispatch.ts);
+    // channels using deliverWithProviderMessageSending declare `deliver?: never` and never see it.
+    //
+    // Reconciled per the convention established for the identical Signal case in 790064e52c2:
+    // pin the exact send rather than relax to a containment match, so an unexpected SECOND send
+    // still fails this test. The text is inlined rather than imported because an extension test
+    // may not reach into core internals (lint:plugins:no-extension-test-core-imports) and the
+    // user-visible string is precisely what is being asserted.
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(sendMock, "send", 1)).toBe(
+      "I hit a problem handling that message. Please try again, or use /new.",
+    );
     await vi.waitFor(
       () =>
         expectReactionFlow({
