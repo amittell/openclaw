@@ -191,6 +191,22 @@ into a cohesive sibling — no baseline rows, no `oxlint-disable`.
 > 0 on all nine: it enforces shrink-only on `config/max-lines-baseline.txt` and
 > never asks whether an unledgered file is under budget. Treat every row below as
 > history, not as a claim about files you can open.
+>
+> **CORRECTED 2026-09-16.** The sentence above is true and was read as more than it
+> says. The ratchet is **not** the cap check and never was: `scripts/check-changed.mts`
+> schedules a targeted oxlint run for changed `src/` paths
+> (`createTargetedCoreLintCommands`, with a `lint:core` fallback), and oxlint enforces
+> the 700-line cap, so the changed-files lane **fails** an over-cap commit. A green
+> ratchet is not a green cap; neither is it evidence that nothing checks the cap. The
+> open question is why over-cap files landed past a lane that would reject them - a
+> candidate, unconfirmed, is that nothing currently runs that lane on this branch.
+>
+> **The count above is also stale.** Whole-repo scan at `1d541021b78`
+> (`node scripts/run-oxlint.mjs src ui packages extensions`, 31,434 files): **12
+> production files** over the 700 cap plus `src/media/store.test.ts` over the 1000
+> test cap, none in the baseline, all with fork deltas against `v2026.9.4`. Largest:
+> `server-close.ts` 777, `session-accessor.sqlite-history-events.ts` 746,
+> `chat-history-handler.ts` 720. Tracked in issue #9.
 
 | file                                     | before | after   | sibling                                                |
 | ---------------------------------------- | ------ | ------- | ------------------------------------------------------ |
