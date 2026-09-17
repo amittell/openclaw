@@ -315,6 +315,15 @@ type SessionEntryCore = SessionRestartRecoveryState &
     /** Timestamp (ms) when lastHeartbeatAwarenessText was projected. */
     lastHeartbeatAwarenessSentAt?: number;
     /**
+     * Request hash of the most recent user turn whose run reached `final`.
+     * ONE slot: a later completed turn overwrites it. Read only at pending-input
+     * admission, to tell a re-presentation of an already-ANSWERED turn from a
+     * re-drive of a turn that died before answering.
+     */
+    lastCompletedTurnRequestHash?: string;
+    /** Timestamp (ms) when lastCompletedTurnRequestHash reached `final`. */
+    lastCompletedTurnAt?: number;
+    /**
      * Base session key for heartbeat-created isolated sessions.
      * When present, `<base>:heartbeat` is a synthetic isolated session rather than
      * a real user/session-scoped key that merely happens to end with `:heartbeat`.

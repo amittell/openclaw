@@ -203,6 +203,8 @@ export type UserTurnTranscriptRecorder = {
   /** Durable input custody leaves the active transcript unchanged until execution owns it. */
   stageApproved?: (options: { runId: string; assertCurrent: () => void }) => Promise<boolean>;
   getPendingInputMessage?: () => PersistedUserTurnMessage | undefined;
+  /** Stage-time request identity for the admitted turn; undefined when nothing staged. */
+  getPendingInputRequestHash?: () => string | undefined;
   isPendingInputConsumed?: () => boolean;
   withPendingInput?: <T>(run: () => T) => T;
   finishPendingInput?: (disposition: "cancelled" | "interrupted") => void;

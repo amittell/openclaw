@@ -9,6 +9,8 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "lastHeartbeatSentAt",
   "lastHeartbeatAwarenessText",
   "lastHeartbeatAwarenessSentAt",
+  "lastCompletedTurnRequestHash",
+  "lastCompletedTurnAt",
   "heartbeatIsolatedBaseSessionKey",
   "heartbeatTaskState",
   "pluginExtensions",

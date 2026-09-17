@@ -20,6 +20,7 @@ import {
   setChannelSourceTurnSameThreadRequired,
 } from "../../auto-reply/reply/source-turn-id.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { recordSessionPendingInputCompletedTurn } from "../../config/sessions/session-accessor.pending-inputs.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import type { MediaFact } from "../../media/media-facts.js";
@@ -158,6 +159,31 @@ export function startAgentRunExecution(params: {
       );
     const recorder = prepared.userTurn.recorder;
     return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
+  };
+  /**
+   * Fire-and-forget answered-turn marker. Reached only from the success exit below
+   * (`await execution` returned without throwing and without an abort), so a run that
+   * died, threw or was cancelled leaves no marker and stays re-drivable.
+   */
+  const recordCompletedTurnMarker = () => {
+    const requestHash = prepared.userTurn.recorder?.getPendingInputRequestHash?.();
+    const sessionKey = params.resolvedSessionKey;
+    const expectedSessionId = params.resolvedSessionId;
+    if (!requestHash || !sessionKey || !expectedSessionId) {
+      return;
+    }
+    void recordSessionPendingInputCompletedTurn(
+      {
+        agentId: params.activeSessionAgentId,
+        sessionKey,
+        ...(params.storePath ? { storePath: params.storePath } : {}),
+      },
+      { expectedSessionId, requestHash },
+    ).catch((error: unknown) => {
+      params.context.logGateway.warn(
+        `failed to record answered agent turn marker: ${formatForLog(error)}`,
+      );
+    });
   };
   return prepared.activeGatewayWorkAdmission.run(async () => {
     await yieldAfterAgentAcceptedAck();
@@ -516,6 +542,7 @@ export function startAgentRunExecution(params: {
       );
       dispatched = true;
       await execution;
+      recordCompletedTurnMarker();
     } catch (err) {
       if (prepared.activeRunAbort.controller.signal.aborted && isAbortError(err)) {
         await finishUndispatchedAbort();
