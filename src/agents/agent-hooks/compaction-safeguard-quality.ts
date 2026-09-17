@@ -14,6 +14,14 @@ const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
 // five missing sections plus one missing-identifiers line. The 4000-char untrusted
 // wrapper is for operator-supplied context only; never route the defect list through it.
 const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 8000;
+// Identifier length is unbounded (extractOpaqueIdentifiers' URL branch matches greedily to
+// whitespace), so no budget can always name all MAX_EXTRACTED_IDENTIFIERS values. Every other
+// audit reason is a fixed string from a closed set (<=530 chars joined), so this reserve keeps
+// a wrapper cap from ever being what cuts the list. Sized against the block the defect list
+// actually travels in here (wrapUntrustedQualityFeedbackBlock, not the narrower operator-text
+// block upstream uses), so this port omits nothing that the fork already delivered whole. The
+// reserve covers the other reasons (<=530 chars joined) plus the sentence around them.
+const MAX_MISSING_IDENTIFIER_REASON_CHARS = MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS - 800;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -486,6 +494,30 @@ function hasAskOverlap(summary: string, latestAsk: string | null): boolean {
   return overlapCount >= requirement.requiredMatches;
 }
 
+/**
+ * Names only the missing identifiers that fit whole, and counts the rest. A value cut
+ * mid-string is a wrong value: the corrective pass restores something the source never
+ * contained and fails the same audit, so the omitted count records the gap instead.
+ */
+function missingIdentifierAuditReasons(missing: string[]): string[] {
+  const named: string[] = [];
+  let used = 0;
+  for (const identifier of missing) {
+    // Skip rather than stop: one pathological value must not hide the short ones behind it.
+    const cost = named.length === 0 ? identifier.length : identifier.length + 1;
+    if (used + cost > MAX_MISSING_IDENTIFIER_REASON_CHARS) {
+      continue;
+    }
+    used += cost;
+    named.push(identifier);
+  }
+  const omitted = missing.length - named.length;
+  return [
+    ...(named.length > 0 ? [`missing_identifiers:${named.join(",")}`] : []),
+    ...(omitted > 0 ? [`missing_identifiers_omitted:${omitted}`] : []),
+  ];
+}
+
 /** Audits a candidate summary for required sections, pending asks, and identifier preservation. */
 export function auditSummaryQuality(params: {
   summary: string;
@@ -516,13 +548,11 @@ export function auditSummaryQuality(params: {
     const missingIdentifiers = params.identifiers.filter(
       (identifier) => !summaryIncludesIdentifier(params.summary, identifier),
     );
-    if (missingIdentifiers.length > 0) {
-      // Feed the FULL missing list back to the corrective pass (bounded only by the
-      // MAX_EXTRACTED_IDENTIFIERS cap). A truncated defect list is unrecoverable: the
-      // model never sees which identifiers to restore and the retry fails the same
-      // audit (#721).
-      reasons.push(`missing_identifiers:${missingIdentifiers.join(",")}`);
-    }
+    // The FULL list used to go out joined, bounded only by MAX_EXTRACTED_IDENTIFIERS, so a
+    // dozen long URLs overran the wrapper and the list was cut mid-identifier: unrecoverable,
+    // because the model never learns which identifier to restore and the retry fails the same
+    // audit (#721). Name what fits WHOLE and count the rest instead.
+    reasons.push(...missingIdentifierAuditReasons(missingIdentifiers));
   }
   const leadingPendingAsk = extractLeadingPendingAsk(params.structuralSummary);
   if (
