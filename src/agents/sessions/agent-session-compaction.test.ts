@@ -255,8 +255,10 @@ describe("AgentSession compaction", () => {
         // Deterministic for this fixture (the history is empty), so it is pinned in full rather
         // than relaxed to a containment match - per the same precedent, a changed fallback still
         // fails this test.
+        // The degrade carries the pending ask (cad37985e06); before it, this section read
+        // "None." because the fallback was finalized with no retention plan.
         const degradedFallbackSummary =
-          "## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nNone.\n\n## Exact identifiers\nNone captured.";
+          '## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nLatest user request context:\n"old prompt"\n\n## Exact identifiers\nNone captured.';
         expect.soft(observation).toMatchObject({
           providerCalls: 1,
           callerAbortedAtProviderEntry: false,

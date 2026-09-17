@@ -2229,7 +2229,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
             compacted: true,
             result: {
               summary:
-                "## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nNone.\n\n## Exact identifiers\nNone captured.",
+                // The degrade carries the pending ask (cad37985e06): finalizing the fallback
+                // without the retention plan stored the empty template and dropped it.
+                '## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nLatest user request context: "Keep the rollout notes."\n\n## Exact identifiers\nNone captured.',
             },
           });
           expect(sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(
