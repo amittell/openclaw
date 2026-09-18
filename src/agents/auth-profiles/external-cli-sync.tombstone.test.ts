@@ -5,9 +5,6 @@ import type { AuthProfileStore, OAuthCredential } from "./types.js";
 const readCodexCliCredentialsCachedMock = vi.hoisted(() =>
   vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
 );
-const readClaudeCliCredentialsCachedMock = vi.hoisted(() =>
-  vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
-);
 const readMiniMaxCliCredentialsCachedMock = vi.hoisted(() =>
   vi.fn<(options?: unknown) => OAuthCredential | null>(() => null),
 );
@@ -16,7 +13,6 @@ vi.mock("../cli-credentials.js", async (importActual) => {
   const actual = await importActual<typeof import("../cli-credentials.js")>();
   return {
     ...actual,
-    readClaudeCliCredentialsCached: readClaudeCliCredentialsCachedMock,
     readCodexCliCredentialsCached: readCodexCliCredentialsCachedMock,
     readMiniMaxCliCredentialsCached: readMiniMaxCliCredentialsCachedMock,
   };
@@ -81,18 +77,11 @@ function expectCredentialFields(
 
 describe("external cli permanent-refresh tombstones", () => {
   beforeEach(() => {
-    readClaudeCliCredentialsCachedMock.mockReset().mockReturnValue(null);
     readCodexCliCredentialsCachedMock.mockReset().mockReturnValue(null);
     readMiniMaxCliCredentialsCachedMock.mockReset().mockReturnValue(null);
   });
 
   it.each([
-    {
-      profileId: "anthropic:claude-cli",
-      provider: "claude-cli",
-      importedProvider: "anthropic",
-      reader: readClaudeCliCredentialsCachedMock,
-    },
     {
       profileId: "minimax-portal:minimax-cli",
       provider: "minimax-portal",
