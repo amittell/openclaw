@@ -44,7 +44,12 @@ import { formatError } from "../../server-utils.js";
 import { allowedSessionVisibilities } from "../../session-sharing.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { shouldScheduleBackgroundHealthRefresh } from "../health-refresh-admission.js";
-import { buildGatewaySnapshot, getHealthCache, getHealthVersion } from "../health-state.js";
+import {
+  buildGatewaySnapshot,
+  getHealthCache,
+  getHealthVersion,
+  readCurrentRuntimeConfigHealth,
+} from "../health-state.js";
 import { broadcastPresenceSnapshot } from "../presence-events.js";
 import { emitGatewayAuthSecurityEvent } from "./connect-auth-security.js";
 import type {
@@ -122,11 +127,6 @@ export async function sendGatewayHello(
     includeUpdateDetails: canReadDetailedUpdateMetadata(role, scopes),
     revisionProjector: buildRequestContext().configRevisionProjector,
   });
-  const cachedHealth = getHealthCache();
-  if (cachedHealth) {
-    snapshot.health = cachedHealth;
-    snapshot.stateVersion.health = getHealthVersion();
-  }
   const controlUiTabs = listControlUiPluginTabs(scopes, {
     requireGatewayAuthGrant: resolvedAuth.mode !== "none",
   });
@@ -249,6 +249,19 @@ export async function sendGatewayHello(
       setCloseCause("bootstrap-token-consume-failed", { error: formatForLog(err) });
       close();
       return;
+    }
+  }
+  // Bootstrap bookkeeping above can await durable state. Finalize health only
+  // after it completes so hello cannot serialize an earlier config generation.
+  const cachedHealth = getHealthCache();
+  snapshot.stateVersion.health = getHealthVersion();
+  if (cachedHealth) {
+    snapshot.health = cachedHealth;
+  } else {
+    snapshot.health = {};
+    const runtimeConfig = readCurrentRuntimeConfigHealth();
+    if (runtimeConfig) {
+      snapshot.health.runtimeConfig = runtimeConfig;
     }
   }
   try {
