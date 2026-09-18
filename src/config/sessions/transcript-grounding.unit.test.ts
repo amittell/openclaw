@@ -572,6 +572,92 @@ describe("invalidateUngroundedMediaPrefixes", () => {
       input,
     );
   });
+
+  it("follows a managed path through a boundary that a later .. discards", () => {
+    // Whitespace, quotes and brackets end a token but are legal inside a file name. The
+    // resolver folds "x y/.." away, so each input names a file under the root while neither
+    // of its tokens folds onto the root alone.
+    const g = grounding([root], [], false, [`file://${root}`]);
+    for (const [input, expected] of [
+      ["/managed/state/x y/../media/x.png", `${REDACTED}/x.png`],
+      [`see "/managed/state/(a) [b]/c d/../../media/x.png" now`, `see "${REDACTED}/x.png" now`],
+      ["/managed/state/x\ny/../media/x.png", `${REDACTED}/x.png`],
+      ["file:///managed/state/x y/../media/x.png", `${REDACTED}/x.png`],
+    ] as const) {
+      expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+    }
+  });
+
+  it("folds dot-segment spellings of a root whose own path has a space", () => {
+    // The literal matcher crosses the space in "John Doe"; the fold stopped at it, so every
+    // dot-segment spelling of such a root replayed. A macOS home directory is enough.
+    const spaced = "/Users/John Doe/.openclaw/media";
+    for (const input of [
+      "/Users/John Doe/.openclaw/./media/x.png",
+      "/Users/./John Doe/.openclaw/media/x.png",
+      "/Users/John Doe/tmp/../.openclaw/media/x.png",
+    ]) {
+      expect(invalidateUngroundedMediaPrefixes(input, grounding([spaced], [], false, []))).toBe(
+        `${REDACTED}/x.png`,
+      );
+    }
+    expect(
+      invalidateUngroundedMediaPrefixes(
+        "C:/Users/John Doe/./.openclaw/media/x.png",
+        grounding(["C:/Users/John Doe/.openclaw/media"], [], false, []),
+      ),
+    ).toBe(`${REDACTED}/x.png`);
+  });
+
+  it("does not carry a path into text that nothing discards", () => {
+    const g = grounding([root], [], false, []);
+    for (const benign of [
+      "/managed/state/x y/media/x.png",
+      "/managed/state/x y/../other/media/x.png",
+      "/managed/state/x then ../media/x.png",
+      "saved in /managed/state/cache and then media/x.png",
+      `${"/tmp/a b ".repeat(2_000)}/../media`,
+    ]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
+
+  it("refuses a boundary-crossing spelling longer than the walk can decide", () => {
+    // Past MAX_NORMALIZED_SEGMENTS the fold cannot decide either. Stopping the walk there and
+    // replaying would turn the cap into the bypass, so a root that claims the range refuses it.
+    const long = `/managed/state/${"a b/".repeat(40)}${"../".repeat(40)}media/x.png`;
+    expect(invalidateUngroundedMediaPrefixes(long, grounding([root], [], false, []))).toContain(
+      REDACTED,
+    );
+  });
+
+  it("bounds the walk past a token on a flood of discarded segments", () => {
+    // Every token here may continue past its end, and a walk capped only by length re-read up
+    // to 4 KiB per token: 4.8s for 128 KiB. Capping it at the fold's segment budget keeps the
+    // flood linear. The timeout is the assertion, as for the other floods in this file.
+    const flood = "/a /../".repeat(75_000);
+    expect(invalidateUngroundedMediaPrefixes(flood, grounding([root], [], false, []))).toBe(flood);
+  }, 10_000);
+
+  it("keeps one token's extent across the redactions inside it", () => {
+    // Each redaction re-anchored the token and discarded its extent, so a token holding N
+    // comma-separated managed paths rescanned its remaining suffix N times: the boundary scan
+    // plus a remote-URI regex over a fresh slice. Counting both pins the scan, not a clock.
+    const paths = Array.from({ length: 1_000 }, (_unused, index) => `${root}/${index}.png`);
+    const token = paths.join(",");
+    const test = vi.spyOn(RegExp.prototype, "test");
+    const slice = vi.spyOn(String.prototype, "slice");
+    const out = invalidateUngroundedMediaPrefixes(token, grounding([root], [], false, []));
+    const tests = test.mock.calls.length;
+    const sliced = slice.mock.results.reduce(
+      (total, result) => total + (typeof result.value === "string" ? result.value.length : 0),
+      0,
+    );
+    test.mockRestore();
+    slice.mockRestore();
+    expect(out).toBe(paths.map((entry) => entry.replace(root, REDACTED)).join(","));
+    expect(tests + sliced).toBeLessThan(token.length * 16);
+  });
 });
 
 describe("prepareManagedMediaGrounding", () => {
