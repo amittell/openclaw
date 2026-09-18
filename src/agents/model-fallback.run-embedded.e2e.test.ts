@@ -10,8 +10,17 @@ import { markFallbackCandidateSkipped } from "./fallback-skip-cache.js";
 import { resetFallbackSkipCacheForTest } from "./fallback-skip-cache.test-support.js";
 import type { ModelFallbackStepFields } from "./model-fallback-observation.js";
 import {
+  CLOUDFLARE_502_ERROR_PAYLOAD,
+  type EmbeddedAttemptParams,
+  LONG_RATE_LIMIT_ERROR_MESSAGE,
+  makeFallbackSuccessAttempt,
   makeModelFallbackConfig,
+  NO_ENDPOINTS_FOUND_ERROR_MESSAGE,
+  NO_ERROR_DETAILS_MESSAGE,
+  OVERLOADED_ERROR_PAYLOAD,
+  RATE_LIMIT_ERROR_MESSAGE,
   readFallbackUsageStats,
+  REAL_TRANSPORT_PER_DAY_CAP_ERROR_MESSAGE,
   withModelFallbackWorkspace,
   writeFallbackAuthStore,
   writeFallbackMultiProfileAuthStore,
@@ -107,29 +116,6 @@ beforeEach(() => {
   computeBackoffMock.mockClear();
   sleepWithAbortMock.mockClear();
 });
-
-const OVERLOADED_ERROR_PAYLOAD =
-  '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
-const CLOUDFLARE_502_ERROR_PAYLOAD =
-  "502 <!doctype html><html><head><title>502 Bad Gateway</title></head>" +
-  "<body><h1>502 Bad Gateway</h1><p>cloudflare-nginx</p></body></html>";
-const RATE_LIMIT_ERROR_MESSAGE = "rate limit exceeded";
-const LONG_RATE_LIMIT_ERROR_MESSAGE = "429 Too Many Requests: subscription usage limit reached";
-const NO_ENDPOINTS_FOUND_ERROR_MESSAGE = "404 No endpoints found for deepseek/deepseek-r1:free.";
-// Captured verbatim from a real local HTTP 429 round-tripped through the real
-// OpenRouter transport (streamOpenAICompletions) carrying the exact body reported
-// in #147546 — not hand-typed. See test/plugins/openrouter-per-day-rate-limit.integration.test.ts
-// and src/agents/embedded-agent-runner/run/attempt-recovery.test.ts, which independently
-// verify a real HTTP round-trip produces this exact string.
-const REAL_TRANSPORT_PER_DAY_CAP_ERROR_MESSAGE =
-  "429 Rate limit exceeded: free-models-per-day-high-balance.";
-const NO_ERROR_DETAILS_MESSAGE = "Unknown error (no error details in response)";
-
-type EmbeddedAttemptParams = {
-  provider: string;
-  modelId?: string;
-  authProfileId?: string;
-};
 
 async function runEmbeddedFallback(params: {
   agentDir: string;
@@ -257,18 +243,6 @@ async function runEmbeddedEntryFallback(params: {
 
 function mockPrimaryOverloadedThenFallbackSuccess() {
   mockPrimaryErrorThenFallbackSuccess(OVERLOADED_ERROR_PAYLOAD);
-}
-
-function makeFallbackSuccessAttempt(): EmbeddedRunAttemptResult {
-  return makeEmbeddedRunnerAttempt({
-    assistantTexts: ["fallback ok"],
-    lastAssistant: buildEmbeddedRunnerAssistant({
-      provider: "groq",
-      model: "mock-2",
-      stopReason: "stop",
-      content: [{ type: "text", text: "fallback ok" }],
-    }),
-  });
 }
 
 function mockPrimaryFailureThenFallbackSuccess(
