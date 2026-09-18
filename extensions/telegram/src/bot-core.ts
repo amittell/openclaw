@@ -76,6 +76,7 @@ import {
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
+import { TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS } from "./request-timeouts.js";
 import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
 import { getTelegramSequentialConstraints } from "./sequential-key.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
@@ -143,7 +144,7 @@ export function createTelegramBotCore(
   });
 
   const timeoutSeconds = resolveTelegramClientTimeoutSeconds({
-    value: undefined,
+    value: finalFetch ? TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS : undefined,
     minimum: resolveTelegramClientTimeoutMinimumSeconds([
       opts.minimumClientTimeoutSeconds,
       resolveTelegramOutboundClientTimeoutFloorSeconds(undefined),

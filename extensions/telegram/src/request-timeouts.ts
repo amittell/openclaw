@@ -18,6 +18,13 @@ const TELEGRAM_MEDIA_UPLOAD_RATE_BYTES_PER_SECOND = 2 * 1024 * 1024;
 const TELEGRAM_MEDIA_UPLOAD_FIXED_MARGIN_MS = 60_000;
 const TELEGRAM_MEDIA_UPLOAD_TIMEOUT_FLOOR_MS = 30_000;
 const TELEGRAM_MEDIA_UPLOAD_TIMEOUT_CEILING_MS = 3_600_000;
+// grammY races every API call against one client-wide timer (500 s unless
+// client.timeoutSeconds is set) and has no per-call override, and undici waits
+// 300 s for response headers after the request body. Clients that install
+// createTelegramClientFetch set both past the upload ceiling, so the per-method
+// guard decides: 45 s for getUpdates, up to the ceiling for media uploads.
+export const TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS =
+  TELEGRAM_MEDIA_UPLOAD_TIMEOUT_CEILING_MS / 1000 + 60;
 const TELEGRAM_MEDIA_UPLOAD_METHODS = new Set([
   "sendanimation",
   "sendaudio",

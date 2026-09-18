@@ -568,7 +568,7 @@ describe("createTelegramBot", () => {
       },
     });
     createTelegramBot({ token: "tok" });
-    expectBotClientFields({ timeoutSeconds: undefined });
+    expectBotClientFields({ timeoutSeconds: 3660 });
     botCtorSpy.mockClear();
 
     loadConfig.mockReturnValue({
@@ -584,7 +584,7 @@ describe("createTelegramBot", () => {
       },
     });
     createTelegramBot({ token: "tok", accountId: "foo" });
-    expectBotClientFields({ timeoutSeconds: undefined });
+    expectBotClientFields({ timeoutSeconds: 3660 });
   });
 
   it("keeps low timeoutSeconds above the outbound request guard", () => {
@@ -594,7 +594,7 @@ describe("createTelegramBot", () => {
       },
     });
     createTelegramBot({ token: "tok" });
-    expectBotClientFields({ timeoutSeconds: undefined });
+    expectBotClientFields({ timeoutSeconds: 3660 });
   });
 
   it("keeps polling client timeout above the outbound request guard", () => {
@@ -604,7 +604,7 @@ describe("createTelegramBot", () => {
       },
     });
     createTelegramBot({ token: "tok", minimumClientTimeoutSeconds: 45 });
-    expectBotClientFields({ timeoutSeconds: undefined });
+    expectBotClientFields({ timeoutSeconds: 3660 });
   });
 
   it("passes startup probe botInfo to grammY", () => {

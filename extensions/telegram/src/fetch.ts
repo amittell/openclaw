@@ -38,6 +38,7 @@ import {
 } from "./network-config.js";
 import { TelegramRequestNotStartedError } from "./network-errors.js";
 import { getProxyUrlFromFetch, makeProxyFetch } from "./proxy.js";
+import { TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS } from "./request-timeouts.js";
 
 const log = createSubsystemLogger("telegram/network");
 
@@ -67,6 +68,7 @@ type TelegramAgentPoolOptions = {
   keepAliveMaxTimeout: number;
   connections: number;
   pipelining: number;
+  headersTimeout: number;
 };
 
 function telegramAgentPoolOptions(): TelegramAgentPoolOptions {
@@ -76,6 +78,11 @@ function telegramAgentPoolOptions(): TelegramAgentPoolOptions {
     keepAliveMaxTimeout: TELEGRAM_DISPATCHER_KEEP_ALIVE_MAX_TIMEOUT_MS,
     connections: TELEGRAM_DISPATCHER_CONNECTIONS_PER_ORIGIN,
     pipelining: TELEGRAM_DISPATCHER_PIPELINING,
+    // undici gives up on response headers 300 s after the request body is
+    // sent. A self-hosted Bot API server answers an upload only after relaying
+    // the file to Telegram, so leave the deadline to the per-method guard in
+    // createTelegramClientFetch.
+    headersTimeout: TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS * 1000,
   };
 }
 
