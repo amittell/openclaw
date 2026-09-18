@@ -67,15 +67,24 @@ Look for:
 - The response contains the exact long-context sentence above. Nonmatching 429
   responses retain their normal classification, including billing or ordinary
   rate limiting.
-- Whether the failure persists after OpenClaw compacts the active session.
+- On embedded runs, whether the failure persists after OpenClaw compacts the
+  active session.
 
-When Anthropic returns this exact body, OpenClaw treats it as the provider's
-long-context rejection rather than a transient rate limit. The runtime attempts
-**compact + retry** to refit the prompt before surfacing the error. If repeated
-retries receive the same response, the run ends **blocked** with a visible reset
-hint instead of silently moving the turn to a fallback model. The internal
-compaction call can still use configured fallback models if it encounters a
-separate eligible provider failure.
+What OpenClaw does with this exact body depends on the runtime:
+
+- **Embedded runs** (OpenClaw's own agent runner calling Anthropic): OpenClaw
+  treats it as the provider's long-context rejection rather than a transient
+  rate limit and attempts **compact + retry** to refit the prompt before
+  surfacing the error. If repeated retries receive the same response, the run
+  ends **blocked** with a visible reset hint instead of silently moving the turn
+  to a fallback model. The internal compaction call can still use configured
+  fallback models if it encounters a separate eligible provider failure. A
+  plugin harness that owns its own transport skips this compaction.
+- **Claude CLI runs** (`claude-cli/*`, or an Anthropic model whose runtime or
+  auth profile selects the Claude CLI backend): the CLI backend runs the turn
+  and OpenClaw does not compact it. The backend starts a fresh CLI session only
+  for an expired session, and this response is not treated as one, so start a
+  fresh session yourself or use a standard context window.
 
 Fix options:
 
@@ -90,8 +99,9 @@ Fix options:
     status/support. Enable Claude extra usage only when you intend to use it.
   </Step>
   <Step title="Configure fallback models">
-    Configure fallback models for ordinary Anthropic rate-limit errors. They do
-    not continue a run blocked by this specific long-context response.
+    Configure fallback models for ordinary Anthropic rate-limit errors. On
+    embedded runs they do not continue a run blocked by this specific
+    long-context response.
   </Step>
 </Steps>
 

@@ -21,13 +21,14 @@ first-run failures see
     check usage/billing in the Anthropic Console and raise limits as needed.
 
     If the message is specifically `Extra usage is required for long context requests`,
-    Anthropic rejected the selected long-context route. OpenClaw treats this exact
-    body as a context overflow and automatically attempts **compact + retry**. If
-    repeated retries receive the same response, the run ends blocked with a visible
-    hint rather than silently falling back (though the internal compaction call can
-    itself fall back on an eligible, separate provider error). Start a fresh session
-    with `/reset` (or `/new`), select a 200K Claude CLI context option when available,
-    or check the long-context route with Anthropic.
+    Anthropic rejected the selected long-context route. On embedded runs (OpenClaw's
+    own agent runner calling Anthropic), OpenClaw treats this exact body as a context
+    overflow and automatically attempts **compact + retry**. If repeated retries receive
+    the same response, the run ends blocked with a visible hint rather than silently
+    falling back (though the internal compaction call can itself fall back on an
+    eligible, separate provider error). Runs on the Claude CLI backend do not get this
+    compaction. Start a fresh session with `/reset` (or `/new`), select a 200K Claude
+    CLI context option when available, or check the long-context route with Anthropic.
 
     For ordinary rate-limit errors (not the long-context body above), set a **fallback model**
     so OpenClaw keeps replying while a provider is rate-limited.
