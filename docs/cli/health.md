@@ -58,6 +58,8 @@ The `runtimeConfig` object in JSON output compares the configuration loaded by t
 
 Gateway health snapshots are shared by health RPC, connection hello, and health broadcasts. The `runtimeConfig` diagnostic therefore never includes config fingerprints or detailed source-observation errors that could reveal paths or parse excerpts, including for admin-scoped clients.
 
+`runtimeConfig` reaches only clients that advertise the `runtime-config-health` capability, because strict protocol v4 decoders that predate the field reject it inside the closed health snapshot. `openclaw health` advertises it; other clients receive the same health payloads without `runtimeConfig`.
+
 For recovery commands and log guidance, see [Gateway troubleshooting](/gateway/troubleshooting).
 
 ## Related
