@@ -369,7 +369,7 @@ describe("createTelegramIngressMonitor", () => {
       const started = deferred();
       const monitor = createTelegramIngressMonitor({
         queue,
-        getConfig: () => cfg,
+        cfg,
         accountId: "default",
         dispatch: async (_update, lifecycle) => {
           const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
@@ -414,7 +414,7 @@ describe("createTelegramIngressMonitor", () => {
       const release = vi.spyOn(queue, "release");
       const monitor = createTelegramIngressMonitor({
         queue,
-        getConfig: () => cfg,
+        cfg,
         accountId: "default",
         dispatch: async () => {
           const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
@@ -456,7 +456,7 @@ describe("createTelegramIngressMonitor", () => {
       const finishDispatch = deferred();
       const monitor = createTelegramIngressMonitor({
         queue,
-        getConfig: () => cfg,
+        cfg,
         accountId: "default",
         dispatch: async (_update, lifecycle) => {
           await lifecycle.onAdopted();
