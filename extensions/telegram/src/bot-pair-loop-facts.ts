@@ -12,6 +12,16 @@ import { mergeTelegramAccountConfig } from "./account-config.js";
  * As a pure function the "which messages are recorded" rule is directly testable, and the
  * counting/suppression half stays covered by the guard's own tests.
  */
+/**
+ * Whether this message is another bot's, i.e. a loop candidate at all. Exported so the
+ * inbound pipeline can answer it BEFORE reading the runtime config: every human message
+ * takes this path, and reading config first added a config read per inbound message.
+ */
+export function isTelegramBotPairLoopCandidate(msg: Message, botUserId: number): boolean {
+  const sender = msg.from;
+  return sender?.is_bot === true && sender.id !== botUserId;
+}
+
 export function buildTelegramBotPairLoopFacts(params: {
   cfg: OpenClawConfig;
   accountId: string;
@@ -21,7 +31,7 @@ export function buildTelegramBotPairLoopFacts(params: {
   const sender = params.msg.from;
   // Only another bot's message is a loop candidate. Our own id is already handled upstream,
   // and re-checking here keeps this function correct on its own terms.
-  if (sender?.is_bot !== true || sender.id === params.botUserId) {
+  if (!sender || !isTelegramBotPairLoopCandidate(params.msg, params.botUserId)) {
     return undefined;
   }
   const accountConfig = mergeTelegramAccountConfig(params.cfg, params.accountId);

@@ -13,7 +13,10 @@ import type {
   TelegramInboundDisposition,
   TelegramInboundPipeline,
 } from "./bot-handlers.types.js";
-import { buildTelegramBotPairLoopFacts } from "./bot-pair-loop-facts.js";
+import {
+  buildTelegramBotPairLoopFacts,
+  isTelegramBotPairLoopCandidate,
+} from "./bot-pair-loop-facts.js";
 import {
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
@@ -97,6 +100,10 @@ function createTelegramInboundHandlers(
   // loop this bounds. Suppression is per pair and time-boxed by the configured cooldown, so
   // a one-shot bot reply under the budget is unaffected.
   const isSuppressedBotPairLoop = (msg: Message, botUserId: number): boolean => {
+    // Human traffic is the common case: decide it before touching the runtime config.
+    if (!isTelegramBotPairLoopCandidate(msg, botUserId)) {
+      return false;
+    }
     const cfg = telegramDeps.getRuntimeConfig();
     const facts = buildTelegramBotPairLoopFacts({ cfg, accountId, msg, botUserId });
     if (!facts) {
