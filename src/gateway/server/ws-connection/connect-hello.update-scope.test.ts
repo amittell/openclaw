@@ -1,10 +1,14 @@
 import { EventEmitter, once } from "node:events";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
+import { GATEWAY_CLIENT_CAPS } from "../../../../packages/gateway-protocol/src/client-info.js";
 import {
   GATEWAY_SERVER_CAPS,
   type HelloOk,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import { closedObject } from "../../../../packages/gateway-protocol/src/schema/closed-object.js";
+import { SnapshotSchema } from "../../../../packages/gateway-protocol/src/schema/snapshot.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
@@ -116,7 +120,19 @@ vi.mock("../../../infra/tailscale.js", () => ({
 
 import { sendGatewayHello } from "./connect-hello.js";
 
-function makeContext(role: "operator" | "node", scopes: string[]) {
+const RUNTIME_CONFIG_CAPS = [GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH];
+
+// The strict v4 snapshot decoder that shipped before runtimeConfig existed.
+function preChangeV4SnapshotSchema() {
+  const health = Object.fromEntries(
+    Object.entries(SnapshotSchema.properties.health.properties).filter(
+      ([key]) => key !== "runtimeConfig",
+    ),
+  );
+  return closedObject({ ...SnapshotSchema.properties, health: closedObject(health) });
+}
+
+function makeContext(role: "operator" | "node", scopes: string[], caps?: string[]) {
   return {
     handler: {
       socket: new EventEmitter(),
@@ -139,6 +155,7 @@ function makeContext(role: "operator" | "node", scopes: string[]) {
       client: { id: "gateway-client", version: "dev", platform: "test", mode: "backend" },
       role,
       scopes,
+      ...(caps ? { caps } : {}),
     },
     configSnapshot: {},
     sendFrame: vi.fn(async () => undefined),
@@ -218,7 +235,7 @@ describe("sendGatewayHello update detail scope", () => {
           "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
       },
     });
-    const context = makeContext("operator", ["operator.admin"]);
+    const context = makeContext("operator", ["operator.admin"], RUNTIME_CONFIG_CAPS);
 
     await sendGatewayHello(
       context as never,
@@ -253,7 +270,7 @@ describe("sendGatewayHello update detail scope", () => {
       message:
         "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
-    const context = makeContext("operator", ["operator.read"]);
+    const context = makeContext("operator", ["operator.read"], RUNTIME_CONFIG_CAPS);
 
     await sendGatewayHello(context as never, makeState("operator", ["operator.read"]) as never, {});
 
@@ -299,7 +316,7 @@ describe("sendGatewayHello update detail scope", () => {
       });
     });
     getHealthCacheMock.mockReturnValue(oldHealth);
-    const context = makeContext("operator", ["operator.read"]);
+    const context = makeContext("operator", ["operator.read"], RUNTIME_CONFIG_CAPS);
     const state = {
       ...makeState("operator", ["operator.read"]),
       device: { id: "device-a" },
@@ -335,6 +352,64 @@ describe("sendGatewayHello update detail scope", () => {
     expect(readCurrentRuntimeConfigHealthMock.mock.invocationCallOrder[0]).toBeLessThan(
       context.sendFrame.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
+  });
+
+  it("sends runtimeConfig only to clients that advertise runtime-config-health", async () => {
+    const runtimeConfig = {
+      state: "drift" as const,
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      observedDefaultModel: "openai/gpt-5.6-terra",
+      driftPaths: ["agents.defaults.model"],
+      message:
+        "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.",
+    };
+    const cachedHealth: HelloOk["snapshot"]["health"] = {
+      ok: true,
+      ts: 1,
+      durationMs: 1,
+      channels: {},
+      channelOrder: [],
+      channelLabels: {},
+      heartbeatSeconds: 0,
+      defaultAgentId: "main",
+      agents: [],
+      sessions: { path: "sessions.db", count: 0, recent: [] },
+      runtimeConfig,
+    };
+    const hello = async (caps?: string[]) => {
+      const context = makeContext("operator", ["operator.read"], caps);
+      await sendGatewayHello(
+        context as never,
+        makeState("operator", ["operator.read"]) as never,
+        {},
+      );
+      return helloSnapshot(context);
+    };
+    const preChangeV4 = preChangeV4SnapshotSchema();
+
+    getHealthCacheMock.mockReturnValue(cachedHealth);
+    const cachedLegacy = await hello();
+    const cachedAdvertised = await hello(RUNTIME_CONFIG_CAPS);
+    getHealthCacheMock.mockReturnValue(null);
+    readCurrentRuntimeConfigHealthMock.mockReturnValue(runtimeConfig);
+    const projectedLegacy = await hello();
+    const projectedAdvertised = await hello(RUNTIME_CONFIG_CAPS);
+
+    // A client that does not advertise the capability gets the pre-change shape,
+    // which a strict v4 decoder built before runtimeConfig existed accepts.
+    expect(Value.Check(preChangeV4, cachedLegacy)).toBe(true);
+    expect(Value.Check(preChangeV4, projectedLegacy)).toBe(true);
+    expect(cachedLegacy?.health).not.toHaveProperty("runtimeConfig");
+    expect(projectedLegacy?.health).toEqual({});
+    expect(readCurrentRuntimeConfigHealthMock).toHaveBeenCalledOnce();
+    expect(cachedHealth.runtimeConfig).toBe(runtimeConfig);
+    // The advertising client keeps the diagnostic under the current schema; the
+    // pre-change decoder rejects exactly that, which is why it is gated.
+    for (const snapshot of [cachedAdvertised, projectedAdvertised]) {
+      expect(snapshot?.health.runtimeConfig).toEqual(runtimeConfig);
+      expect(Value.Check(SnapshotSchema, snapshot)).toBe(true);
+      expect(Value.Check(preChangeV4, snapshot)).toBe(false);
+    }
   });
 
   it.each([

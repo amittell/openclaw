@@ -1,5 +1,9 @@
 // Gateway WebSocket connect completion sends hello-ok and commits post-handshake state.
 import {
+  GATEWAY_CLIENT_CAPS,
+  hasGatewayClientCap,
+} from "../../../../packages/gateway-protocol/src/client-info.js";
+import {
   GATEWAY_SERVER_CAPS,
   PROTOCOL_VERSION,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -30,6 +34,7 @@ import {
   type SetupHandoff,
 } from "../../device-pair-setup-completion.js";
 import { canReadDetailedUpdateMetadata } from "../../events.js";
+import { omitRuntimeConfigHealthForClient } from "../../health/runtime-config-cap.js";
 import { ADMIN_SCOPE } from "../../method-scopes.js";
 import { scheduleNodeConnectionNotification } from "../../node-connection-notifications.js";
 import { resolveBrowserAuthOrigin } from "../../provider-browser-auth.js";
@@ -249,10 +254,15 @@ export async function sendGatewayHello(
   const cachedHealth = getHealthCache();
   snapshot.stateVersion.health = getHealthVersion();
   if (cachedHealth) {
-    snapshot.health = cachedHealth;
+    snapshot.health = omitRuntimeConfigHealthForClient(cachedHealth, connectParams.caps);
   } else {
     snapshot.health = {};
-    const runtimeConfig = readCurrentRuntimeConfigHealth();
+    const runtimeConfig = hasGatewayClientCap(
+      connectParams.caps,
+      GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH,
+    )
+      ? readCurrentRuntimeConfigHealth()
+      : undefined;
     if (runtimeConfig) {
       snapshot.health.runtimeConfig = runtimeConfig;
     }
