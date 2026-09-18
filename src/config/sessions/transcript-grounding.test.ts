@@ -385,6 +385,7 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
       sessionKey,
       storePath,
       limit: 10,
+      boundReplayBytes: true,
     });
 
     expect(replay.some((entry) => entry.text.includes(`${REDACTED}/generated/fake.jpg`))).toBe(
@@ -397,6 +398,37 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
     ).toBeLessThanOrEqual(128 * 1024);
     expect(replay.some((entry) => entry.text.startsWith("entry-0"))).toBe(false);
     expect(replay.some((entry) => entry.text.startsWith("entry-4"))).toBe(true);
+  });
+
+  it("keeps complete user text for upstream provenance reads", async () => {
+    // session-upstream-monitor.ts reads exactly this shape and compares whole normalized
+    // strings, so a clamped or dropped prompt would read as external human activity.
+    const prompts = Array.from(
+      { length: 5 },
+      (_, index) => `prompt-${index} ${"x".repeat(40_000)}`,
+    );
+    const { sessionKey, storePath } = await createSession(
+      "provenance-complete",
+      prompts.map((text, index) => ({
+        message: {
+          role: "user" as const,
+          timestamp: index + 1,
+          content: text,
+          __openclaw: { upstreamUserText: text },
+        },
+      })),
+    );
+
+    const read = await readRecentUserAssistantTextForSession({
+      agentId: "main",
+      sessionKey,
+      storePath,
+      limit: 10,
+      preferUpstreamUserText: true,
+      role: "user",
+    });
+
+    expect(read.map((entry) => entry.text)).toEqual(prompts);
   });
 
   it("does not borrow provenance from another session", async () => {
