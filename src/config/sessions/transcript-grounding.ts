@@ -24,6 +24,8 @@ const UNDECIDABLE_PREFIX = -1;
 // A non-ASCII root segment has NFC and NFD spellings APFS folds; see canonicalForCompare.
 const NON_ASCII = /[^\u0020-\u007e]/u;
 const URI_PREFIX = /^[a-z][a-z0-9+.-]*:(?:\/\/[^/]*)?/iu;
+// A ".." segment in any spelling a resolver parser folds; over-matching only widens a search.
+const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -55,20 +57,6 @@ function foldCasePreservingLength(value: string): string {
   return folded;
 }
 
-/**
- * Length of the raw prefix of `token` whose lexical normalization equals `root`, or 0
- * when the token never resolves into the root.
- *
- * The matcher below compares alias spellings literally, and the media resolver
- * canonicalizes before it resolves. Any spelling the resolver folds away and the matcher
- * does not is a replay bypass: `/state/./media/x` and `/state/a/../media/x` both name a
- * file under `/state/media` while matching no alias. Enumerating those spellings cannot
- * terminate, so equivalence is decided here instead.
- *
- * Lexical only. Never touches the filesystem: this runs on every replayed prompt, and a
- * symlink read per candidate would be both a hot-path cost and a new I/O dependency.
- * Symlinked spellings stay the alias preparer's job, which resolves the real path once.
- */
 /**
  * A root the platform parsers can fold tokens against.
  *
@@ -288,28 +276,43 @@ export function invalidateUngroundedMediaPrefixes(
   // before the fold could look at it. Folding deletes segments and never invents a segment
   // NAME, so a token that cannot fold onto the root unless it spells the root's last segment
   // - or hides it behind an escape - is safe to skip.
-  // indexOf would scan to the end of the PROMPT, not the end of the token, so a prompt of
-  // many one-character absolute tokens ("/ " repeated) paid two full-text scans each. Reads
-  // in place: a prompt with no managed root must not spend a single String.slice.
-  const containsWithin = (needle: string, at: number, end: number): boolean => {
-    const limit = end - needle.length;
-    for (let scan = at; scan <= limit; scan += 1) {
-      if (lowercaseText.startsWith(needle, scan)) {
-        return true;
+  const firstAtOrAfter = (sorted: readonly number[], value: number): number => {
+    let low = 0;
+    let high = sorted.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if ((sorted[middle] ?? value) < value) {
+        low = middle + 1;
+      } else {
+        high = middle;
       }
     }
-    return false;
+    return low;
+  };
+  // indexOf from the token start scanned to the end of the PROMPT, so a prompt of many
+  // one-character absolute tokens ("/ " repeated) paid two full-text scans each, and a scan of
+  // the range cost a range per query. Each needle is located once per call instead, without a
+  // single String.slice, and a range query is two binary searches.
+  const occurrences = new Map<string, number[]>();
+  const containsWithin = (needle: string, at: number, end: number): boolean => {
+    let starts = occurrences.get(needle);
+    if (!starts) {
+      starts = [];
+      for (let found = lowercaseText.indexOf(needle); found !== -1;) {
+        starts.push(found);
+        found = lowercaseText.indexOf(needle, found + 1);
+      }
+      occurrences.set(needle, starts);
+    }
+    const first = starts[firstAtOrAfter(starts, at)];
+    return first !== undefined && first + needle.length <= end;
   };
   // Memoized per token: whether the token could still name this root does not depend on WHICH
   // position inside it is being tried, and recomputing per position is what made the scan
   // quadratic. Searching the token's whole extent admits at least as much as searching from
   // `at`, and this gate must only ever over-admit.
   let admitMemo: (boolean | undefined)[] = [];
-  const admitsToken = (root: NormalizableRoot, rootIndex: number): boolean => {
-    const cached = admitMemo[rootIndex];
-    if (cached !== undefined) {
-      return cached;
-    }
+  const admitsRange = (root: NormalizableRoot, end: number): boolean => {
     // The segment scan is byte-literal, so it cannot see across an NFC/NFD difference in
     // EITHER direction: an NFD token against an NFC root, or an NFC token against an NFD root.
     // Screening on the token's own form got the first and missed the second. Any root path
@@ -321,15 +324,14 @@ export function invalidateUngroundedMediaPrefixes(
     // would fold onto the root - and it is what keeps ordinary content away from the caps
     // below. Matching on the last segment alone admitted any absolute-path list containing
     // the word "media", and a 41-entry PATH then lost its tail to a cost cap.
-    const admitted =
+    return (
       !root.pathIsAscii ||
-      containsWithin("%", cachedTokenStart, cachedTokenEnd) ||
-      root.lowerSegments.every((segment) =>
-        containsWithin(segment, cachedTokenStart, cachedTokenEnd),
-      );
-    admitMemo[rootIndex] = admitted;
-    return admitted;
+      containsWithin("%", cachedTokenStart, end) ||
+      root.lowerSegments.every((segment) => containsWithin(segment, cachedTokenStart, end))
+    );
   };
+  const admitsToken = (root: NormalizableRoot, rootIndex: number): boolean =>
+    (admitMemo[rootIndex] ??= admitsRange(root, cachedTokenEnd));
   const matchesAt = (candidate: AliasCandidate, at: number): boolean => {
     // An all-lowercase match is necessary for any match, and costs one startsWith. Splitting
     // scheme from path is deferred so a prompt carrying no managed reference never pays for it.
@@ -358,7 +360,15 @@ export function invalidateUngroundedMediaPrefixes(
   let cachedTokenStart = -1;
   let cachedTokenEnd = -1;
   let phase2Walks = 0;
+  let cachedRemoteUriStart = -1;
   let cachedRemoteUriEnd: number | undefined;
+  type PathWalk = {
+    cleanCuts: number[];
+    /** Stopped by a cap while the spelling could still resolve past it. */
+    truncatedAt: number;
+    admits: Map<number, (boolean | undefined)[]>;
+  };
+  let pathWalks: { lastSlash: number; exact?: PathWalk; loose?: PathWalk } | undefined;
   const tokenEndFrom = (start: number): number => {
     if (start === cachedTokenStart) {
       return cachedTokenEnd;
@@ -372,16 +382,37 @@ export function invalidateUngroundedMediaPrefixes(
     phase2Walks = 0;
     admitMemo = [];
     cachedRemoteUriEnd = undefined;
+    pathWalks = undefined;
     return end;
   };
   // A redaction jump can carry the cursor past a boundary INSIDE a matched alias - user
-  // directories contain spaces - and the memo above is keyed on a tokenStart that no longer
-  // describes where the cursor is. Left stale, the token extent can end up behind the cursor
-  // and the walk cap hands back a negative length, which moves the cursor BACKWARD and emits
-  // text twice. Every jump re-anchors instead.
+  // directories contain spaces - and then the memo above no longer describes where the cursor
+  // is. Left stale, the extent could end behind the cursor and the walk cap handed back a
+  // negative length, moving the cursor BACKWARD. A jump that stays inside the token keeps the
+  // extent: nothing in it is a boundary, so a rescan only repeats the answer, and rescanning
+  // after every redaction made one token of N comma-separated managed paths cost O(N^2).
   const reanchorToken = (at: number) => {
     tokenStart = at;
-    cachedTokenStart = -1;
+    if (cachedTokenStart === -1 || at < cachedTokenStart || at > cachedTokenEnd) {
+      cachedTokenStart = -1;
+      return;
+    }
+    // Per-start state resets exactly as a rescan would, except where the old answer provably
+    // holds for the suffix: a root refused over the wider extent is refused over this one, and
+    // a remote URI starting at or after `at` is still the first one in it.
+    cachedTokenStart = at;
+    phase2Walks = 0;
+    const keepRefusals = (memo: (boolean | undefined)[]) =>
+      memo.map((admitted) => (admitted === false ? false : undefined));
+    admitMemo = keepRefusals(admitMemo);
+    for (const walk of [pathWalks?.exact, pathWalks?.loose]) {
+      for (const [end, admits] of walk?.admits ?? []) {
+        walk?.admits.set(end, keepRefusals(admits));
+      }
+    }
+    if (cachedRemoteUriEnd !== Number.MAX_SAFE_INTEGER && cachedRemoteUriStart < at) {
+      cachedRemoteUriEnd = undefined;
+    }
   };
   const startsAbsolutePath = (at: number): boolean => {
     const first = text.charAt(at);
@@ -392,26 +423,138 @@ export function invalidateUngroundedMediaPrefixes(
     const third = text.charAt(at + 2);
     return /[a-z]/iu.test(first) && second === ":" && (third === "/" || third === "\\");
   };
-  // KNOWN GAP, and it is wider than a root's own spelling. The fold is confined to one token,
-  // so any token boundary reaching a managed path defeats it - including one an author puts
-  // INSIDE a segment that normalization then discards:
-  //
-  //   /managed/state/x y/../media/x.png   splits at the space; "x y/.." folds away for the
-  //                                       resolver, so it names the root and is replayed here
-  //   C:/Users/John Doe/.openclaw/./media literal spelling is caught, dot-segment one is not
-  //
-  // Widening the extent is a change to the token model, not to this walk - the boundary set
-  // is what keeps the matcher from running across prose - so it is a named follow-up. Stated
-  // here in full because the narrower version of this comment read as if only exotic root
-  // spellings were affected.
+  // A token ends at whitespace, quotes and brackets, all legal in a file name. That matters
+  // where the resolver still lands in a root: the boundary sits in a segment a later ".."
+  // discards ("/state/x y/../media") or in a root segment ("/Users/John Doe/..."). pathExtent
+  // finds how far such a spelling reaches and the parser decides it. Its model only over-reaches:
+  // "/" splits, "."/".." fold in either %2e spelling, and a segment holding "\\", %2F or %5C
+  // may split and pop once decoded, so it clears all before it. It crosses a boundary only while
+  // enough ".." lie ahead to discard what it holds or a root segment could still be spelled,
+  // which keeps it out of prose, and never past MAX_GROUNDING_TOKEN_CHARS (isValidMedia's cap).
+  const rootSegments = new Set(
+    normalizableRoots.flatMap((root) =>
+      root.path
+        .split("/")
+        .filter(Boolean)
+        .map((segment) => canonicalForCompare(comparable(segment))),
+    ),
+  );
+  // 12 raw characters per code point covers a root segment spelled fully percent-encoded.
+  const rootSegmentReach = Math.max(
+    0,
+    ...[...rootSegments]
+      .filter((segment) => TOKEN_BOUNDARY.test(segment))
+      .map((segment) => 12 * segment.length),
+  );
+  const spellsRootSegment = (raw: string): boolean => {
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      // An undecodable escape leaves only the raw spelling to compare.
+    }
+    return [raw, decoded].some((form) => rootSegments.has(canonicalForCompare(comparable(form))));
+  };
+  let dotDotStarts: number[] | undefined;
+  const dotDotsBetween = (from: number, to: number) => {
+    dotDotStarts ??= Array.from(lowercaseText.matchAll(DOT_DOT_SEGMENT), (match) => match.index);
+    return firstAtOrAfter(dotDotStarts, to) - firstAtOrAfter(dotDotStarts, from);
+  };
+  // One walk per token past its end, from the start of the segment the end interrupts. `loose`
+  // serves attempts that begin after the token's last "/": their first segment starts with "\\",
+  // a drive or a scheme and can spell no root segment, so it is taken as discardable - reaching
+  // further, never less. Every clean cut is kept so each attempt can stop within its own cap.
+  // A walk covers at most MAX_NORMALIZED_SEGMENTS segments, the fold's own budget, which bounds
+  // how far neighbouring walks overlap. A walk stopped by a cap refuses what a root claims.
+  const walkPastToken = (segmentStart: number, tokenEnd: number, loose: boolean): PathWalk => {
+    const limit = Math.min(text.length, tokenEnd + MAX_GROUNDING_TOKEN_CHARS);
+    const cleanCuts: number[] = [];
+    const unresolved: boolean[] = [];
+    let pending = 0;
+    let deepestPending = -1;
+    let from = segmentStart;
+    let truncatedAt = -1;
+    let segments = 0;
+    for (let pos = tokenEnd; pos <= limit; pos += 1) {
+      if (pos === limit && limit < text.length) {
+        truncatedAt = pos;
+        break;
+      }
+      const char = text.charAt(pos);
+      if (pos < limit && char !== "/") {
+        const popsNeeded = (pending > 0 ? unresolved.length - deepestPending : 0) + 1;
+        if (
+          !TOKEN_BOUNDARY.test(char) ||
+          pos - from < rootSegmentReach ||
+          dotDotsBetween(pos, limit) >= popsNeeded
+        ) {
+          continue;
+        }
+      }
+      // [from, pos) is a whole segment, ended by "/", the text end, or a boundary not crossed.
+      const raw = lowercaseText.slice(from, pos);
+      const segment = raw.replaceAll("%2e", ".");
+      if (segment === "..") {
+        pending -= unresolved.pop() ? 1 : 0;
+      } else if (/\\|%2f|%5c/u.test(raw)) {
+        unresolved.fill(false);
+        unresolved.push(false);
+        pending = 0;
+      } else if (segment !== "" && segment !== ".") {
+        const held =
+          !(loose && from === segmentStart) &&
+          TOKEN_BOUNDARY.test(raw) &&
+          !(rootSegmentReach > 0 && spellsRootSegment(text.slice(from, pos)));
+        deepestPending = pending === 0 && held ? unresolved.length : deepestPending;
+        unresolved.push(held);
+        pending += held ? 1 : 0;
+      }
+      deepestPending = pending === 0 ? -1 : deepestPending;
+      if (pos > tokenEnd && pending === 0) {
+        cleanCuts.push(pos);
+      }
+      const popsNeeded = pending > 0 ? unresolved.length - deepestPending : 0;
+      if (char !== "/" || dotDotsBetween(pos, limit) < popsNeeded) {
+        break;
+      }
+      if ((segments += 1) > MAX_NORMALIZED_SEGMENTS) {
+        truncatedAt = pos;
+        break;
+      }
+      from = pos + 1;
+    }
+    return { cleanCuts, truncatedAt, admits: new Map() };
+  };
+  const pathExtent = (at: number, tokenEnd: number) => {
+    if (!pathWalks) {
+      let scan = tokenEnd - 1;
+      while (scan >= cachedTokenStart && text.charAt(scan) !== "/") {
+        scan -= 1;
+      }
+      pathWalks = { lastSlash: scan };
+    }
+    const walk =
+      at <= pathWalks.lastSlash + 1
+        ? (pathWalks.exact ??= walkPastToken(pathWalks.lastSlash + 1, tokenEnd, false))
+        : (pathWalks.loose ??= walkPastToken(tokenEnd, tokenEnd, true));
+    const cut = firstAtOrAfter(walk.cleanCuts, at + MAX_GROUNDING_TOKEN_CHARS + 1) - 1;
+    const end = walk.cleanCuts[cut] ?? tokenEnd;
+    // A truncated walk could continue anywhere in its window, so it is admitted over all of it.
+    const admitEnd =
+      walk.truncatedAt === -1 ? end : Math.min(text.length, tokenEnd + MAX_GROUNDING_TOKEN_CHARS);
+    const admits = walk.admits.get(admitEnd) ?? [];
+    walk.admits.set(admitEnd, admits);
+    return { end, admitEnd, admits, truncated: walk.truncatedAt !== -1 };
+  };
   const equivalentRootMatch = (at: number): { length: number; undecidable: boolean } | null => {
     if (normalizableRoots.length === 0) {
       return null;
     }
-    const end = tokenEndFrom(tokenStart);
-    if (end <= at) {
+    const tokenEnd = tokenEndFrom(tokenStart);
+    if (tokenEnd <= at) {
       return null;
     }
+    let extent: ReturnType<typeof pathExtent> | undefined;
     for (const [rootIndex, root] of normalizableRoots.entries()) {
       // Every gate below reads the text in place. A prompt carrying no managed root must not
       // pay a single String.slice, which is what the rescan guard measures.
@@ -421,7 +564,13 @@ export function invalidateUngroundedMediaPrefixes(
       if (!root.uri && !startsAbsolutePath(at)) {
         continue;
       }
-      if (!admitsToken(root, rootIndex)) {
+      extent ??= pathExtent(at, tokenEnd);
+      const end = extent.end;
+      const admitted =
+        extent.admitEnd > tokenEnd
+          ? (extent.admits[rootIndex] ??= admitsRange(root, extent.admitEnd))
+          : admitsToken(root, rootIndex);
+      if (!admitted) {
         continue;
       }
       // Counted here, NOT at entry: a cap applied before the gates redacted the tail of any
@@ -445,6 +594,9 @@ export function invalidateUngroundedMediaPrefixes(
       if (length > 0) {
         return { length, undecidable: false };
       }
+      if (extent.truncated) {
+        return { length: end - at, undecidable: true };
+      }
     }
     return null;
   };
@@ -465,6 +617,7 @@ export function invalidateUngroundedMediaPrefixes(
     const end = tokenEndFrom(tokenStart);
     if (cachedRemoteUriEnd === undefined) {
       const match = REMOTE_URI.exec(text.slice(tokenStart, end));
+      cachedRemoteUriStart = match ? tokenStart + match.index : -1;
       cachedRemoteUriEnd = match
         ? tokenStart + match.index + match[0].length
         : Number.MAX_SAFE_INTEGER;
