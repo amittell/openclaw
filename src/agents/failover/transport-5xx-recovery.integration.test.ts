@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type RequestListener, type Server } from "node:http";
 import { createOpenAIResponsesTransportStreamFn } from "@openclaw/ai/transports";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ const CLOUDFLARE_ERROR_PAGE = (status: number) =>
 
 const FALLBACK_REPLY = "recovered on the fallback model";
 
-async function startServer(handler: Parameters<typeof createServer>[0]): Promise<{
+async function startServer(handler: RequestListener): Promise<{
   port: number;
   close: () => Promise<void>;
   server: Server;
@@ -52,7 +52,7 @@ function failingWith(status: number) {
       response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
       response.end(CLOUDFLARE_ERROR_PAGE(status));
     });
-  }) satisfies Parameters<typeof createServer>[0];
+  }) satisfies RequestListener;
 }
 
 function completingWith(text: string) {
@@ -83,7 +83,7 @@ function completingWith(text: string) {
       response.write(`event: response.completed\ndata: ${JSON.stringify(event)}\n\n`);
       response.end();
     });
-  }) satisfies Parameters<typeof createServer>[0];
+  }) satisfies RequestListener;
 }
 
 function modelAt(port: number, id: string) {
