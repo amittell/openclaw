@@ -147,6 +147,11 @@ type ReadRecentSessionConversationTextOptions = {
   minTimestampMs?: number;
   role?: "user" | "assistant";
   preferUpstreamUserText?: boolean;
+  /**
+   * Channel replay only: clamp each entry to 32 KiB and the whole read to 128 KiB. Provenance
+   * readers such as session-upstream-monitor.ts compare complete text and leave this unset.
+   */
+  boundReplayBytes?: boolean;
 };
 
 type ReadRecentSessionConversationTextParams = ReadRecentSessionConversationTextOptions & {
@@ -375,9 +380,10 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
     });
     let groundingRoot: ManagedMediaGroundingRoot | undefined;
     const selected: SessionRecentConversationText[] = [];
+    const budgeted = options.boundReplayBytes === true;
     let remainingBytes = MAX_RECENT_TRANSCRIPT_WINDOW_BYTES;
     for (const { entry, references } of collected) {
-      if (remainingBytes <= 0) {
+      if (budgeted && remainingBytes <= 0) {
         break;
       }
       if (entry.role === "assistant") {
@@ -385,11 +391,14 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
         const grounding = await prepareManagedMediaGrounding(groundingRoot, references);
         entry.text = invalidateUngroundedMediaPrefixes(entry.text, grounding);
       }
-      const text = truncateUtf8Prefix(
-        entry.text,
-        Math.min(remainingBytes, MAX_RECENT_TRANSCRIPT_ENTRY_BYTES),
-      );
-      remainingBytes -= Buffer.byteLength(text);
+      let text = entry.text;
+      if (budgeted) {
+        text = truncateUtf8Prefix(
+          text,
+          Math.min(remainingBytes, MAX_RECENT_TRANSCRIPT_ENTRY_BYTES),
+        );
+        remainingBytes -= Buffer.byteLength(text);
+      }
       if (text) {
         selected.push({ ...entry, text });
         if (selected.length >= limit) {
