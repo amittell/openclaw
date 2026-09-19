@@ -19,7 +19,21 @@ import { mergeTelegramAccountConfig } from "./account-config.js";
  */
 export function isTelegramBotPairLoopCandidate(msg: Message, botUserId: number): boolean {
   const sender = msg.from;
-  return sender?.is_bot === true && sender.id !== botUserId;
+  if (sender?.is_bot !== true || sender.id === botUserId) {
+    return false;
+  }
+  // A message sent ON BEHALF OF a chat carries `sender_chat`, and its `from` is then a
+  // backward-compatibility placeholder rather than the author: anonymous group admins,
+  // linked-channel forwards and unattributed channel posts all arrive with `is_bot: true`
+  // under a placeholder id. Counting those spends the pair budget on traffic no bot wrote,
+  // and can suppress a human posting as the group. A channel post that genuinely carries a
+  // bot `from` still counts. Ported from upstream #151924's `isOtherBotAuthor`, which is
+  // the same rule this fork's guard needs; the wiring here stays the fork's own.
+  const senderChat = msg.sender_chat;
+  if (sender.id === senderChat?.id || (msg.chat.type !== "private" && sender.id === msg.chat.id)) {
+    return false;
+  }
+  return !senderChat || (senderChat.type === "channel" && senderChat.id === msg.chat.id);
 }
 
 export function buildTelegramBotPairLoopFacts(params: {

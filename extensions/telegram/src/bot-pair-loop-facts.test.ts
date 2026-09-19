@@ -50,6 +50,69 @@ describe("buildTelegramBotPairLoopFacts", () => {
     expect(facts).toBeUndefined();
   });
 
+  // A message sent ON BEHALF OF a chat carries `sender_chat`, and its `from` is a
+  // backward-compatibility placeholder with `is_bot: true` rather than the author. Counting
+  // those spends the pair budget on traffic no bot wrote (upstream #151924).
+  const onBehalfOf = (
+    from: Partial<NonNullable<Message["from"]>>,
+    senderChat: Record<string, unknown> | undefined,
+    chat: Record<string, unknown> = { id: -100123, type: "supergroup" },
+  ): Message =>
+    ({
+      message_id: 77,
+      date: 1_700_000_000,
+      chat,
+      from,
+      ...(senderChat ? { sender_chat: senderChat } : {}),
+    }) as unknown as Message;
+
+  it("records nothing for an anonymous admin posting as the group", () => {
+    const facts = buildTelegramBotPairLoopFacts({
+      cfg: cfg(),
+      accountId: "default",
+      // GroupAnonymousBot: is_bot, but the author is the group, not a bot.
+      msg: onBehalfOf(
+        { id: 1087968824, is_bot: true, first_name: "Group" },
+        {
+          id: -100123,
+          type: "supergroup",
+        },
+      ),
+      botUserId: BOT_USER_ID,
+    });
+    expect(facts).toBeUndefined();
+  });
+
+  it("records nothing for a linked-channel forward into the discussion group", () => {
+    const facts = buildTelegramBotPairLoopFacts({
+      cfg: cfg(),
+      accountId: "default",
+      msg: onBehalfOf(
+        { id: 777000, is_bot: true, first_name: "Telegram" },
+        {
+          id: -100999,
+          type: "channel",
+        },
+      ),
+      botUserId: BOT_USER_ID,
+    });
+    expect(facts).toBeUndefined();
+  });
+
+  it("still records a channel post that carries a real bot author", () => {
+    const facts = buildTelegramBotPairLoopFacts({
+      cfg: cfg(),
+      accountId: "default",
+      msg: onBehalfOf(
+        { id: 99, is_bot: true, first_name: "Other" },
+        { id: -100555, type: "channel" },
+        { id: -100555, type: "channel" },
+      ),
+      botUserId: BOT_USER_ID,
+    });
+    expect(facts).toMatchObject({ senderId: "99", receiverId: String(BOT_USER_ID) });
+  });
+
   it("records another bot as a pair against this bot, in this chat", () => {
     const facts = buildTelegramBotPairLoopFacts({
       cfg: cfg(),
