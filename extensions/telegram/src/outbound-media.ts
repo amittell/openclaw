@@ -7,6 +7,7 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import { resolveTelegramPlainCaption, splitTelegramCaption } from "./caption.js";
 import { renderTelegramHtmlText, telegramHtmlToPlainTextFallback } from "./format.js";
+import { withTelegramMediaUploadSize } from "./media-upload-size.js";
 import type { TelegramOutboundPromptContextMessage } from "./outbound-message-context.js";
 import { isTelegramEmptyContentError, isTelegramHtmlParseError } from "./rich-plain-fallback.js";
 import type { TelegramApi } from "./send-context.js";
@@ -153,17 +154,20 @@ export function resolveTelegramOutboundMediaSenders<
       file: InputFile,
       options: Record<string, unknown>,
     ) => Promise<T>;
+    const uploadSizeBytes = params.media.buffer.byteLength;
     return {
       label,
       operation,
       send: (effectiveParams) =>
-        method.call(
-          params.api,
-          params.chatId,
-          params.plan.file,
-          label === "document" && params.forceDocument
-            ? { ...effectiveParams, disable_content_type_detection: true }
-            : effectiveParams,
+        withTelegramMediaUploadSize(uploadSizeBytes, () =>
+          method.call(
+            params.api,
+            params.chatId,
+            params.plan.file,
+            label === "document" && params.forceDocument
+              ? { ...effectiveParams, disable_content_type_detection: true }
+              : effectiveParams,
+          ),
         ),
     };
   };

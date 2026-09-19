@@ -271,6 +271,22 @@ function isTrustedLocalTelegramFileMissing(error: unknown): boolean {
   );
 }
 
+/**
+ * Builds the media-store provenance scope for a Telegram chat, e.g. "tg--5240776892" or
+ * "tg--5240776892-t123" for a forum topic / DM thread. Chat ids are numeric and may be
+ * negative; the leading hyphen in the prefix is intentional.
+ */
+export function buildTelegramMediaScope(
+  chatId: number | undefined,
+  threadId?: number,
+): string | undefined {
+  if (typeof chatId !== "number" || !Number.isFinite(chatId)) {
+    return undefined;
+  }
+  const base = `tg-${chatId}`;
+  return typeof threadId === "number" && Number.isFinite(threadId) ? `${base}-t${threadId}` : base;
+}
+
 async function downloadAndSaveTelegramFile(params: {
   filePath: string;
   token: string;
@@ -282,6 +298,7 @@ async function downloadAndSaveTelegramFile(params: {
   trustedLocalFileRoots?: readonly string[];
   dangerouslyAllowPrivateNetwork?: boolean;
   abortSignal?: AbortSignal;
+  scope?: string;
 }) {
   const trustedLocalFile = resolveTrustedLocalTelegramRoot(
     params.filePath,
@@ -307,6 +324,8 @@ async function downloadAndSaveTelegramFile(params: {
       "inbound",
       params.maxBytes,
       params.telegramFileName ?? path.basename(localFile.realPath),
+      undefined,
+      params.scope,
     );
   }
   const containerRelativePaths = resolveTelegramBotApiContainerRelativePaths(
@@ -335,6 +354,8 @@ async function downloadAndSaveTelegramFile(params: {
         "inbound",
         params.maxBytes,
         params.telegramFileName ?? path.basename(localFile.realPath),
+        undefined,
+        params.scope,
       );
     }
   }
@@ -363,6 +384,7 @@ async function downloadAndSaveTelegramFile(params: {
     ssrfPolicy: buildTelegramMediaSsrfPolicy(params.apiRoot, params.dangerouslyAllowPrivateNetwork),
     fallbackContentType: params.mimeType,
     originalFilename: params.telegramFileName,
+    scope: params.scope,
   });
 }
 
@@ -376,6 +398,7 @@ async function resolveStickerMedia(params: {
   trustedLocalFileRoots?: readonly string[];
   dangerouslyAllowPrivateNetwork?: boolean;
   abortSignal?: AbortSignal;
+  scope?: string;
 }): Promise<(TelegramResolvedMedia & { path: string }) | null | undefined> {
   const { msg, ctx, maxBytes, token, transport, abortSignal } = params;
   if (!msg.sticker) {
@@ -404,6 +427,7 @@ async function resolveStickerMedia(params: {
     trustedLocalFileRoots: params.trustedLocalFileRoots,
     dangerouslyAllowPrivateNetwork: params.dangerouslyAllowPrivateNetwork,
     abortSignal,
+    scope: params.scope,
   });
 
   // Check sticker cache for existing description
@@ -467,6 +491,7 @@ export async function resolveMedia(params: {
   trustedLocalFileRoots?: readonly string[];
   dangerouslyAllowPrivateNetwork?: boolean;
   abortSignal?: AbortSignal;
+  scope?: string;
 }): Promise<(TelegramResolvedMedia & { path: string; fileName?: string }) | null> {
   const {
     ctx,
@@ -489,6 +514,7 @@ export async function resolveMedia(params: {
     trustedLocalFileRoots,
     dangerouslyAllowPrivateNetwork,
     abortSignal,
+    scope: params.scope,
   });
   if (stickerResolved !== undefined) {
     return stickerResolved;
@@ -515,6 +541,7 @@ export async function resolveMedia(params: {
     trustedLocalFileRoots,
     dangerouslyAllowPrivateNetwork,
     abortSignal,
+    scope: params.scope,
   });
   const nativeKind = resolveTelegramPrimaryMedia(msg)?.kind ?? "document";
   const kind =

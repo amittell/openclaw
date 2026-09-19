@@ -1062,9 +1062,36 @@ describe("isMessagingToolDuplicate", () => {
       expected: false,
     },
     {
+      // A follow-up that extends a prior send carries text the user has not
+      // seen, and no length ratio separates it from the correction below.
       input: "Checking the deploy logs now. All good!",
       sentTexts: ["Checking the deploy logs now."],
+      expected: false,
+    },
+    {
+      input: "Deployment finished. Actually it failed.",
+      sentTexts: ["Deployment finished."],
+      expected: false,
+    },
+    {
+      input: "Deployment finished.",
+      sentTexts: ["Deployment finished."],
       expected: true,
+    },
+    {
+      input: "Deployment finished.",
+      sentTexts: ["Deployment finished"],
+      expected: true,
+    },
+    {
+      input: "Deployment finished!!!",
+      sentTexts: ["Deployment finished"],
+      expected: true,
+    },
+    {
+      input: "Deployment finished. 2 hosts restarted.",
+      sentTexts: ["Deployment finished."],
+      expected: false,
     },
   ])("returns $expected for duplicate check", ({ input, sentTexts, expected }) => {
     expect(isMessagingToolDuplicate(input, sentTexts)).toBe(expected);

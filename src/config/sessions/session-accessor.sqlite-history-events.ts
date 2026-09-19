@@ -13,6 +13,10 @@ import {
   readSessionTranscriptHistoryEventPageFromProjection,
   type SessionTranscriptDisplayDeltaResult,
 } from "./session-accessor.sqlite-history-query.js";
+export {
+  readSessionTranscriptCompactionShadowPage,
+  type SessionTranscriptCompactionShadowPage,
+} from "./session-accessor.sqlite-history-query.js";
 
 export function readTranscriptDisplayDelta(
   scope: SessionTranscriptReadScope,

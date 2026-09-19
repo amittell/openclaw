@@ -25,6 +25,7 @@ export function buildRestartRecoveryExpectedState(
     restartRecoveryDeliveryToolCallId: entry.restartRecoveryDeliveryToolCallId,
     restartRecoveryDeliveryRequestFingerprint: entry.restartRecoveryDeliveryRequestFingerprint,
     restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
+    restartRecoveryDeliveryLifecycleGeneration: entry.restartRecoveryDeliveryLifecycleGeneration,
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
@@ -68,6 +69,8 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
           expectedState.restartRecoveryDeliveryRequestFingerprint &&
         selected.entry.restartRecoveryDeliveryRunId ===
           expectedState.restartRecoveryDeliveryRunId &&
+        selected.entry.restartRecoveryDeliveryLifecycleGeneration ===
+          expectedState.restartRecoveryDeliveryLifecycleGeneration &&
         selected.entry.restartRecoveryDeliverySourceRunId ===
           expectedState.restartRecoveryDeliverySourceRunId &&
         selected.entry.restartRecoveryRequesterAccountId ===

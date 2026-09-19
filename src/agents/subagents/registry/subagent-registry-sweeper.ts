@@ -40,7 +40,7 @@ import { hasSubagentRunEnded, isStaleUnendedSubagentRun } from "./subagent-run-l
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import {
   loadSubagentSessionEntry,
-  resolveCompletionFromSessionEntry,
+  resolveSubagentRecoveryCompletion,
   resolveSubagentRunOrphanReason,
 } from "./subagent-session-reconciliation.js";
 export { retireSupersededSubagentRun } from "./subagent-registry-sweeper-retire.js";
@@ -398,10 +398,12 @@ export function createSubagentRegistrySweeper(params: {
           const activeAgeMs = now - (entry.execution.startedAt ?? entry.createdAt);
           if (!notStale && activeAgeMs >= STALE_ACTIVE_SUBAGENT_GRACE_MS) {
             const orphanReason = resolveSubagentRunOrphanReason({ entry });
-            const sessionEntry = loadSubagentSessionEntry({
+            // Entry status can lag the run's real completion (restart mid-flush);
+            // the recovery seam falls back to a transcript tail scan before the
+            // run is error-finalized as lost context.
+            const completion = resolveSubagentRecoveryCompletion({
               childSessionKey: entry.childSessionKey,
-            });
-            const completion = resolveCompletionFromSessionEntry(sessionEntry, now, {
+              fallbackEndedAt: now,
               notBeforeMs: entry.execution.startedAt ?? entry.createdAt,
             });
             if (completion) {

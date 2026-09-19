@@ -1,4 +1,5 @@
 import {
+  ROOT_CONTEXT,
   context as otelContextApi,
   isSpanContextValid,
   trace,
@@ -20,7 +21,10 @@ import {
 } from "./service-trace-context.js";
 import type { TrustedSpanAliasOwner } from "./service-types.js";
 
-export function createDiagnosticsTraceRuntime(tracer: Tracer) {
+export function createDiagnosticsTraceRuntime(
+  tracer: Tracer,
+  logger: { info(message: string): void } = { info: () => {} },
+) {
   const activeTrustedSpans = new Map<string, ReturnType<typeof tracer.startSpan>>();
   const activeTrustedSpanAliases = new Map<
     string,
@@ -33,9 +37,60 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     string,
     { spanContext: SpanContext; owner?: TrustedSpanAliasOwner }
   >();
+  // Long-lived spans (lifecycle roots openclaw.run / openclaw.harness.run /
+  // openclaw.message.processed, and materialized scope spans openclaw.turn.root /
+  // openclaw.turn.scope) only export when they end. If a turn is interrupted or
+  // abandoned, the completion event never fires, the span is never ended, and its
+  // already-exported children are left orphaned in Tempo. This watchdog force-ends
+  // any tracked span (including materialized scope spans) that outlives the
+  // threshold so the parent chain always closes and the span is exported.
+  const STALE_TRUSTED_SPAN_LIFETIME_MS = 15 * 60 * 1000;
+  const STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS = 60 * 1000;
+  const activeTrustedSpanStartTimes = new Map<string, number>();
+  const forceEndedStaleSpanIds = new Set<string>();
+  let staleSpanWatchdog: ReturnType<typeof setInterval> | null = null;
+  const runStaleSpanWatchdog = () => {
+    const now = Date.now();
+    for (const [spanId, span] of activeTrustedSpans) {
+      const startedAt = activeTrustedSpanStartTimes.get(spanId);
+      if (startedAt === undefined || now - startedAt <= STALE_TRUSTED_SPAN_LIFETIME_MS) {
+        continue;
+      }
+      // Force-end and log once per span: the span stays tracked so late children
+      // can resolve its context and the watchdog keeps ticking, so re-logging would
+      // spam the gateway log for every abandoned turn, every minute, forever.
+      if (forceEndedStaleSpanIds.has(spanId)) {
+        continue;
+      }
+      forceEndedStaleSpanIds.add(spanId);
+      // span.end() is idempotent; keep the span tracked so late completion
+      // events and children can still resolve its (now-ended) context.
+      span.end(now);
+      logger.info(
+        `diagnostics-otel: stale-span watchdog force-ended span ${spanId} (age ${Math.round(
+          (now - startedAt) / 1000,
+        )}s > threshold ${Math.round(STALE_TRUSTED_SPAN_LIFETIME_MS / 1000)}s)`,
+      );
+    }
+  };
+  const startStaleSpanWatchdog = () => {
+    if (staleSpanWatchdog) {
+      return;
+    }
+    staleSpanWatchdog = setInterval(runStaleSpanWatchdog, STALE_TRUSTED_SPAN_CHECK_INTERVAL_MS);
+    staleSpanWatchdog.unref?.();
+  };
+  const stopStaleSpanWatchdog = () => {
+    if (staleSpanWatchdog) {
+      clearInterval(staleSpanWatchdog);
+      staleSpanWatchdog = null;
+    }
+  };
   const stopActiveTrustedSpans = () => {
     const stopAt = Date.now();
+    stopStaleSpanWatchdog();
     retainedTrustedSpanContexts.clear();
+    forceEndedStaleSpanIds.clear();
     for (const span of new Set([
       ...activeTrustedSpans.values(),
       ...Array.from(activeTrustedSpanAliases.values(), (entry) => entry.span),
@@ -44,6 +99,7 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     activeTrustedSpans.clear();
     activeTrustedSpanAliases.clear();
+    activeTrustedSpanStartTimes.clear();
   };
   const spanWithDuration = (
     name: string,
@@ -169,13 +225,67 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       spanId: traceContext.parentSpanId,
     });
   };
+  // Materializes a real recording span for a diagnostic scope that no recorder
+  // created one for (the turn-root scope, or an intermediate scope a child
+  // references). Without this, children parent to a remote span context whose
+  // span id never exports, leaving them orphaned in the backend. The span is
+  // parented to the scope's incoming remote context so it inherits the
+  // diagnostic trace id and stays linked to any upstream distributed context,
+  // and is tracked under the diagnostic scope span id so the child's parent
+  // lookup now resolves to this real span's spanContext(). First-wins: a scope
+  // may be materialized by multiple racing children; only the first creates it.
+  // Ended by the stale-span watchdog (no completion event exists for a bare
+  // scope), or by stopActiveTrustedSpans on shutdown.
+  const materializeScopeSpan = (
+    traceContext: DiagnosticTraceContext,
+    scopeSpanId: string,
+    evt: DiagnosticEventPayload,
+  ) => {
+    const existing = activeTrustedSpans.get(scopeSpanId);
+    if (existing) {
+      return existing.spanContext();
+    }
+    const isRoot = !traceContext.parentSpanId;
+    const name = isRoot ? "openclaw.turn.root" : "openclaw.turn.scope";
+    // A root scope has no upstream parent, so make the materialized span a true
+    // root (ROOT_CONTEXT) to avoid a missing parent in Tempo. It carries the
+    // diagnostic trace id as an attribute. A child scope parents to its own
+    // parent's remote context to inherit the diagnostic trace id and stay linked
+    // to any upstream distributed context. Carry the diagnostic trace's sampling
+    // flags into the remote parent so the ParentBased sampler records this
+    // materialized span (and its children). Without them the context defaults to
+    // NONE and the whole subtree is dropped as unsampled.
+    const parentContext = isRoot
+      ? ROOT_CONTEXT
+      : contextForTraceContext({
+          traceId: traceContext.traceId,
+          spanId: traceContext.parentSpanId,
+          traceFlags: traceContext.traceFlags,
+        });
+    const span = spanWithDuration(
+      name,
+      {
+        "openclaw.traceId": traceContext.traceId,
+        "openclaw.scopeSpanId": scopeSpanId,
+      },
+      undefined,
+      {
+        parentContext,
+        startTimeMs: evt.ts,
+      },
+    );
+    activeTrustedSpans.set(scopeSpanId, span);
+    activeTrustedSpanStartTimes.set(scopeSpanId, evt.ts);
+    startStaleSpanWatchdog();
+    return span.spanContext();
+  };
   const activeTrustedParentContext = (
     evt: DiagnosticEventPayload,
     metadata: DiagnosticEventMetadata,
   ) => {
     const traceContext = trustedTraceContext(evt, metadata);
     const parentSpanId = traceContext?.parentSpanId;
-    if (!parentSpanId) {
+    if (!traceContext || !parentSpanId) {
       return undefined;
     }
     const owner = trustedSpanAliasOwner(evt);
@@ -184,10 +294,13 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanContext =
       activeParentSpan?.spanContext() ??
       retainedTrustedSpanContext(traceContext, parentSpanId, owner);
-    if (!spanContext) {
-      return undefined;
+    if (spanContext) {
+      return trace.setSpanContext(otelContextApi.active(), spanContext);
     }
-    return trace.setSpanContext(otelContextApi.active(), spanContext);
+    // Parent scope has no real span in this process: materialize it so the
+    // child links to an exported span id instead of an orphaned remote context.
+    const materialized = materializeScopeSpan(traceContext, parentSpanId, evt);
+    return materialized ? trace.setSpanContext(otelContextApi.active(), materialized) : undefined;
   };
   // Resolves only spans this process actually exported, so a miss leaves the caller
   // parentless rather than pointing at a span id no backend will ever receive.
@@ -215,9 +328,20 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const retainedSpanContext =
       retainedTrustedSpanContext(traceContext, traceContext.spanId, owner) ??
       retainedTrustedSpanContext(traceContext, traceContext.parentSpanId, owner);
-    return retainedSpanContext
-      ? trace.setSpanContext(otelContextApi.active(), retainedSpanContext)
-      : undefined;
+    if (retainedSpanContext) {
+      return trace.setSpanContext(otelContextApi.active(), retainedSpanContext);
+    }
+    // No real span or retained context for the referenced scope: materialize it
+    // so internal children (e.g. message.delivery) link to an exported span id
+    // instead of an orphaned remote context in the diagnostic trace.
+    const scopeSpanId = traceContext.parentSpanId ?? traceContext.spanId;
+    if (scopeSpanId) {
+      const materialized = materializeScopeSpan(traceContext, scopeSpanId, evt);
+      if (materialized) {
+        return trace.setSpanContext(otelContextApi.active(), materialized);
+      }
+    }
+    return undefined;
   };
   const exportedSpanContextForDiagnosticTraceContext = (
     traceContext: DiagnosticTraceContext,
@@ -246,6 +370,8 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanId = trustedTraceContext(evt, metadata)?.spanId;
     if (spanId) {
       activeTrustedSpans.set(spanId, span);
+      activeTrustedSpanStartTimes.set(spanId, evt.ts);
+      startStaleSpanWatchdog();
     }
     return span;
   };
@@ -257,6 +383,8 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     const spanId = internalOrTrustedTraceContext(evt, metadata)?.spanId;
     if (spanId) {
       activeTrustedSpans.set(spanId, span);
+      activeTrustedSpanStartTimes.set(spanId, evt.ts);
+      startStaleSpanWatchdog();
     }
     return span;
   };
@@ -333,6 +461,7 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     if (activeTrustedSpans.get(spanId) === span) {
       activeTrustedSpans.delete(spanId);
+      activeTrustedSpanStartTimes.delete(spanId);
     }
     for (const aliasKey of retainedAliasKeys) {
       if (activeTrustedSpanAliases.get(aliasKey)?.span === span) {

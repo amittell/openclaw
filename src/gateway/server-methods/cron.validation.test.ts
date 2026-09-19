@@ -705,16 +705,33 @@ describe("cron method validation", () => {
     expectCronSuccess(respond);
   });
 
-  it("returns invalid-request error when cron.remove target id is missing", async () => {
+  it("returns no-op success when cron.remove target id is missing", async () => {
     const { respond } = await invokeCronRemove(
       { id: "missing-id" },
       { removeResult: { ok: true, removed: false } },
     );
-    expectResponseError(respond, {
-      code: "INVALID_REQUEST",
-      messageIncludes: "Automation not found: missing-id",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-id" },
-    });
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      { removed: false, reason: "already-gone" },
+      undefined,
+    );
+  });
+
+  it("returns no-op success when cron.remove remove() reports a concurrent delete", async () => {
+    const context = createCronContext(createCronJob({ id: "cron-1", agentId: "ops" }));
+    context.cron.remove.mockResolvedValueOnce({ ok: true, removed: false });
+
+    const { respond } = await invokeCron(
+      "cron.remove",
+      { id: "cron-1" },
+      { context, client: callerClient("ops") },
+    );
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      { removed: false, reason: "already-gone" },
+      undefined,
+    );
   });
 
   it("allows caller-scoped cron.remove for the same agent", async () => {
@@ -746,6 +763,25 @@ describe("cron method validation", () => {
       code: "INVALID_REQUEST",
       messageIncludes: "Automation not found: cron-1",
     });
+  });
+
+  it("answers caller-scoped cron.remove of a missing id exactly like a foreign job", async () => {
+    const foreign = await invokeCron(
+      "cron.remove",
+      { id: "cron-1" },
+      {
+        context: createCronContext(createCronJob({ id: "cron-1", agentId: "worker" })),
+        client: callerClient("ops"),
+      },
+    );
+    const missing = await invokeCron(
+      "cron.remove",
+      { id: "cron-1" },
+      { context: createCronContext(), client: callerClient("ops") },
+    );
+
+    expect(missing.context.cron.remove).not.toHaveBeenCalled();
+    expect(missing.respond.mock.calls).toEqual(foreign.respond.mock.calls);
   });
 
   it("hides operator command cron jobs from caller-scoped cron.remove", async () => {

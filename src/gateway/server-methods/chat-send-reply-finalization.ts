@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { recordSessionPendingInputCompletedTurn } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import {
   appendLocalMediaParentRoots,
@@ -133,6 +134,34 @@ function buildChatSendBtwSideResult(deliveredReplies: readonly DeliveredReply[])
   };
 }
 
+/**
+ * Stamp the answered-turn marker for chat.send. Best-effort after the turn settled:
+ * a lost write only re-admits a later re-presentation of the same committed source turn.
+ */
+export function recordChatSendCompletedTurn(params: {
+  agentId?: string;
+  expectedSessionId?: string;
+  logGateway: GatewayRequestContext["logGateway"];
+  requestHash?: string;
+  sessionKey: string;
+  storePath?: string;
+}): void {
+  const { expectedSessionId, requestHash } = params;
+  if (!expectedSessionId || !requestHash) {
+    return;
+  }
+  void recordSessionPendingInputCompletedTurn(
+    {
+      sessionKey: params.sessionKey,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      ...(params.storePath ? { storePath: params.storePath } : {}),
+    },
+    { expectedSessionId, requestHash },
+  ).catch((error: unknown) => {
+    params.logGateway.warn(`failed to record answered chat turn marker: ${formatForLog(error)}`);
+  });
+}
+
 /** Finalize settled reply payloads, retaining the runtime's transcript ownership and outcome. */
 export async function finalizeChatSendDispatchedReplies(params: {
   accountId: string | undefined;
@@ -149,6 +178,8 @@ export async function finalizeChatSendDispatchedReplies(params: {
   runtimeOwnsTranscript?: boolean;
   state: "final" | "aborted";
   stopReason?: string;
+  /** Answered-turn marker; invoked only when this turn actually reached `final`. */
+  recordCompletedTurn?: () => void;
 }): Promise<void> {
   const {
     accountId,
@@ -162,6 +193,9 @@ export async function finalizeChatSendDispatchedReplies(params: {
   } = params;
   const { agentId, backingSessionId, cfg, clientRunId, sessionKey, sessionLoadOptions } = session;
   const stopReason = params.state === "aborted" ? "aborted" : "stop";
+  if (params.state === "final") {
+    params.recordCompletedTurn?.();
+  }
   const btwResult = buildChatSendBtwSideResult(deliveredReplies);
   if (btwResult) {
     broadcastSideResult({

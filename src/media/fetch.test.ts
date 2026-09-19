@@ -964,6 +964,33 @@ describe("readRemoteMediaBuffer", () => {
     await expect(fs.readFile(saved.path)).resolves.toStrictEqual(Buffer.from([1, 2, 3, 4]));
   });
 
+  it("stamps the saved id with the originating chat scope when provided", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(makeStream([new Uint8Array([1, 2, 3]), new Uint8Array([4])]), {
+          status: 200,
+          headers: {
+            "content-disposition": 'attachment; filename="photo"',
+            "content-type": "image/png",
+          },
+        }),
+    );
+
+    const saved = await saveRemoteMedia({
+      url: "https://example.com/download",
+      fetchImpl,
+      lookupFn: makeLookupFn(),
+      maxBytes: 8,
+      originalFilename: "photo.png",
+      scope: "tg--5240776892",
+    });
+
+    expect(saved.contentType).toBe("image/png");
+    // The scope stamp sits between the original name and the uuid.
+    expect(path.basename(saved.path)).toMatch(/^photo---tg--5240776892---[a-f0-9-]{36}\.png$/);
+    await expect(fs.readFile(saved.path)).resolves.toStrictEqual(Buffer.from([1, 2, 3, 4]));
+  });
+
   it("preserves content-disposition CSV detection for streamed downloads", async () => {
     const csv = Buffer.from("name,value\nopenclaw,1\n");
     const fetchImpl = vi.fn(

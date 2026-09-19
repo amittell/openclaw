@@ -123,6 +123,7 @@ type SaveResponseMediaOptions = {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 /** Options for guarded URL fetches that are saved directly into the media store. */
@@ -130,6 +131,7 @@ type SaveRemoteMediaOptions = FetchMediaOptions & {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 type GuardedMediaResponse = {
@@ -555,6 +557,7 @@ async function saveOkMediaResponse(params: {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 }): Promise<SavedRemoteMedia> {
   assertMediaContentLength({
     res: params.res,
@@ -582,6 +585,7 @@ async function saveOkMediaResponse(params: {
       params.maxBytes,
       params.originalFilename,
       detectionFilePathHint,
+      params.scope,
     );
     return { ...saved, ...(fileName ? { fileName } : {}) };
   } catch (err) {
@@ -664,6 +668,7 @@ export async function saveResponseMedia(
     fallbackContentType: options.fallbackContentType,
     subdir: options.subdir,
     originalFilename: options.originalFilename,
+    scope: options.scope,
   });
 }
 
@@ -707,6 +712,7 @@ async function saveRemoteMediaOnce(options: SaveRemoteMediaOptions): Promise<Sav
       fallbackContentType: options.fallbackContentType,
       subdir: options.subdir,
       originalFilename: options.originalFilename,
+      scope: options.scope,
     });
   } finally {
     await release();

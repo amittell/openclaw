@@ -219,6 +219,8 @@ export type UserTurnTranscriptRecorder = {
   getProcessingCompletion?: () => AgentRunTerminalOutcome | undefined;
   completeProcessing?: (outcome: AgentRunTerminalOutcome) => AgentRunTerminalOutcome | undefined;
   getPendingInputMessage?: () => PersistedUserTurnMessage | undefined;
+  /** Stage-time request identity for the admitted turn; undefined when nothing staged. */
+  getPendingInputRequestHash?: () => string | undefined;
   isPendingInputConsumed?: () => boolean;
   withPendingInput?: <T>(run: () => T) => T;
   finishPendingInput?: (disposition: "cancelled" | "interrupted") => void;

@@ -4,6 +4,7 @@ import {
   buildChannelExecApprovalsSchema,
   buildChannelReactionShape,
   buildChannelAccountSchemaParts,
+  ChannelBotLoopProtectionSchema,
   buildGroupEntrySchema,
   ChannelPreviewStreamingConfigSchema,
   ChannelStreamingPreviewSchema,
@@ -174,6 +175,12 @@ const TelegramAccountSchemaBase = z
   .object({
     ...accountShape,
     joinIntro: z.boolean().optional(),
+    // The account schema is .strict(): until this leaf existed a config setting
+    // channels.telegram.botLoopProtection was REJECTED outright, so the guard could not
+    // be configured at all. allowBots is deliberately NOT declared here - Telegram has no
+    // allowBots enforcement, and a leaf that reads as policy while changing nothing is
+    // worse than its absence.
+    botLoopProtection: ChannelBotLoopProtectionSchema.optional(),
     execApprovals: buildChannelExecApprovalsSchema(z.union([z.string(), z.number()])),
     commands: ProviderCommandsSchema,
     customCommands: z.array(TelegramCustomCommandSchema).optional(),

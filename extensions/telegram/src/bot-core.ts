@@ -76,6 +76,7 @@ import {
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
+import { TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS } from "./request-timeouts.js";
 import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
 import { getTelegramSequentialConstraints } from "./sequential-key.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
@@ -143,7 +144,7 @@ export function createTelegramBotCore(
   });
 
   const timeoutSeconds = resolveTelegramClientTimeoutSeconds({
-    value: undefined,
+    value: finalFetch ? TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS : undefined,
     minimum: resolveTelegramClientTimeoutMinimumSeconds([
       opts.minimumClientTimeoutSeconds,
       resolveTelegramOutboundClientTimeoutFloorSeconds(undefined),
@@ -235,7 +236,7 @@ export function createTelegramBotCore(
         if (isTelegramSpooledReplayUpdate(ctx.update)) {
           throw new TelegramSpooledReplayProcessingError(result.error);
         }
-        updateTracker.finishUpdate(begin.update, { completed: true });
+        updateTracker.finishUpdate(begin.update, { completed: false });
         return;
       }
       updateTracker.finishUpdate(begin.update, { completed: true });
@@ -478,6 +479,7 @@ export function createTelegramBotCore(
     threadBindingManager?.stop();
     unregisterOutboundGroupHistoryRecorder();
     return originalStop(...args);
+    // SAFETY: the wrapper forwards the original parameter tuple and return value unchanged; only the overload set is re-attached.
   }) as typeof bot.stop;
 
   return bot;

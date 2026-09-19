@@ -34,6 +34,7 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { recordGatewayRestartTrace } from "../../gateway/restart-trace.js";
 import { isGatewayEffectiveConfigConflictError } from "../../gateway/server-runtime-config.js";
 import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
@@ -406,6 +407,10 @@ async function probeGatewayHealthz(params: {
   const result = await requestGatewayLocalHttpProbe({
     ...params,
     pathname: "/healthz",
+    // Shutdown-aware: a draining gateway answers 503 here, which is how supervised
+    // lock recovery tells a live gateway from a zombie still holding the port.
+    // Public probes omit the marker and keep their legacy always-200 contract.
+    strictLiveProbe: true,
     timeoutMs,
   });
   return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -417,6 +422,10 @@ function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
     const result = await probe.requestHttp({
       ...params,
       pathname: "/healthz",
+      // This is the probe supervised-lock recovery actually runs in production
+      // (wired at the runGatewayCommandOnce call site); without the strict marker a
+      // draining gateway answers 200 and the zombie/drain detection never fires.
+      strictLiveProbe: true,
       timeoutMs: SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS,
     });
     return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -452,6 +461,10 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
   const retryMs = params.retryMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_MS;
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS;
   const startedAt = now();
+  // Dedup the zombie_detected signal across the recovery cycle. Cleared when
+  // the cycle resolves (either the prior gateway becomes healthy and we defer,
+  // or we time out and throw); a fresh recovery later starts a new cycle.
+  const zombieDetection = { loggedThisCycle: false };
 
   for (;;) {
     try {
@@ -482,7 +495,24 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
       }
 
       const elapsedMs = now() - startedAt;
-      if (elapsedMs >= timeoutMs) {
+      const shouldRetry = elapsedMs < timeoutMs;
+      // Probe came back unhealthy while the lock is held: either the previous
+      // gateway is mid-shutdown (503 from /healthz?strict=1) or it is a zombie that
+      // lost the close path but kept the HTTP listener. Log once per recovery cycle,
+      // not every retry tick, so a normal 30s drain cannot inflate telemetry.
+      if (!zombieDetection.loggedThisCycle) {
+        recordGatewayRestartTrace("gateway.preflight.zombie_detected", elapsedMs, [
+          ["supervisor", supervisor],
+          ["port", params.port],
+        ]);
+        params.log.warn(
+          `gateway.preflight.zombie_detected supervisor=${supervisor} port=${params.port}; lock held but /healthz reported unhealthy (likely zombie or draining)`,
+        );
+        if (shouldRetry) {
+          zombieDetection.loggedThisCycle = true;
+        }
+      }
+      if (!shouldRetry) {
         if (lifecycleContention) {
           throw err;
         }
@@ -1087,6 +1117,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
           tailscale: tailscaleOverride,
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           startupStartedAt,
+          // This CLI daemon path owns the node process, so it alone opts into
+          // the post-shutdown force-exit watchdog.
+          postShutdownExitWatchdog: true,
           hostLifecycle,
           startupOperation,
           prepareConfigSnapshot: snapshotPreparation.prepareHostConfigSnapshot,

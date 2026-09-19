@@ -6,6 +6,7 @@ import type {
   GroupPolicy,
   SessionThreadBindingsConfig,
 } from "./types.base.js";
+import type { ChannelBotLoopProtectionConfig } from "./types.bot-loop-protection.js";
 import type {
   ChannelExecApprovalConfig,
   ChannelExecApprovalTarget,
@@ -83,6 +84,8 @@ export type TelegramAccountConfig = CommonChannelMessagingConfig<
   ChannelReactionConfig<"off" | "own" | "all", "off" | "ack" | "minimal" | "extensive", string> & {
     /** Post a room-specific introduction when joining a group. Default: true. */
     joinIntro?: boolean;
+    /** Shared bot-pair loop budget; inherits channels.defaults.botLoopProtection. */
+    botLoopProtection?: ChannelBotLoopProtectionConfig;
     /** Telegram-native exec approval delivery + approver authorization. */
     execApprovals?: TelegramExecApprovalConfig;
     /** Override native command registration for Telegram (bool or "auto"). */

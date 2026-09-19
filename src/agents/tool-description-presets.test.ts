@@ -52,7 +52,7 @@ const SESSION_DESCRIPTIONS = [
     tool: "sessions_history",
     describe: describeSessionsHistoryTool,
     original:
-      "Read sanitized visible-session history. Before reply/debug/resume. Use messageId (optionally sessionId) for anchored history; offset is ignored when messageId is set. Without messageId, use offset for plain pagination. limit bounds either mode. Include tool messages with includeTools. pendingInputs are accepted inputs outside model history; page with pendingBefore=nextBefore. Cancelled/interrupted inputs never replay automatically. Lower limit for richer pending previews.",
+      "Read sanitized visible-session history. Before reply/debug/resume. Use messageId (optionally sessionId) for anchored history; offset is ignored when messageId is set. Without messageId, use offset for plain pagination. limit bounds either mode. Include tool messages with includeTools. compactionId reads the rows a compaction checkpoint summarized, paged with offset/limit. pendingInputs are accepted inputs outside model history; page with pendingBefore=nextBefore. Cancelled/interrupted inputs never replay automatically. Lower limit for richer pending previews.",
   },
   {
     tool: "sessions_search",

@@ -252,6 +252,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     // again after health repairs, when the retired owner marker is no longer available to recover it.
     const migrated = migratePersistedImplicitMainRoster(state.candidate, {
       materializeWorkspace: true,
+      // SAFETY: migratePersistedImplicitMainRoster returns the same config shape it was given.
     }).config as OpenClawConfig;
     const migratedRoster = readAgentRosterProperty(migrated);
     const migratedEntries = migratedRoster?.kind === "entries" ? migratedRoster.value : undefined;
@@ -263,6 +264,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
         agents: {
           ...candidateAgents,
           ...(stampsExplicitOwnership ? { ownership: "explicit" as const } : {}),
+          // SAFETY: migratedEntries was produced by the roster migration above, so it is the entries map.
           entries: migratedEntries as NonNullable<OpenClawConfig["agents"]>["entries"],
         },
       },
@@ -632,6 +634,9 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     note,
   });
   const cfg = finalized.cfg;
+  if (legacyDefaultAgentId) {
+    retainLegacyDefaultAgentId(cfg, legacyDefaultAgentId);
+  }
   const shouldWriteConfig = finalized.shouldWriteConfig && legacyStep.blocksWrite !== true;
   const includeBoundaryWrite =
     shouldWriteConfig &&

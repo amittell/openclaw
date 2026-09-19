@@ -4497,6 +4497,8 @@ describe("session accessor seam", () => {
         restartRecoveryDeliveryRequestFingerprint:
           retryable.restartRecoveryDeliveryRequestFingerprint,
         restartRecoveryDeliveryRunId: retryable.restartRecoveryDeliveryRunId,
+        restartRecoveryDeliveryLifecycleGeneration:
+          retryable.restartRecoveryDeliveryLifecycleGeneration,
         restartRecoveryDeliverySourceRunId: retryable.restartRecoveryDeliverySourceRunId,
         restartRecoveryRequesterAccountId: retryable.restartRecoveryRequesterAccountId,
         restartRecoveryRequesterSenderId: retryable.restartRecoveryRequesterSenderId,
@@ -4717,6 +4719,7 @@ describe("session accessor seam", () => {
       restartRecoveryDeliveryToolCallId: stored.restartRecoveryDeliveryToolCallId,
       restartRecoveryDeliveryRequestFingerprint: stored.restartRecoveryDeliveryRequestFingerprint,
       restartRecoveryDeliveryRunId: stored.restartRecoveryDeliveryRunId,
+      restartRecoveryDeliveryLifecycleGeneration: stored.restartRecoveryDeliveryLifecycleGeneration,
       restartRecoveryDeliverySourceRunId: stored.restartRecoveryDeliverySourceRunId,
       restartRecoveryRequesterAccountId: stored.restartRecoveryRequesterAccountId,
       restartRecoveryRequesterSenderId: stored.restartRecoveryRequesterSenderId,

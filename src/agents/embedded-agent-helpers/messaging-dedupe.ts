@@ -35,7 +35,28 @@ export function isMessagingToolDuplicateNormalized(
     if (!normalizedSent || normalizedSent.length < MIN_DUPLICATE_TEXT_LENGTH) {
       return false;
     }
+    if (normalized === normalizedSent) {
+      return true;
+    }
     if (normalized.includes(normalizedSent)) {
+      // A follow-up that EXTENDS a prior send carries text the user has never
+      // seen, and no length ratio can separate "<prior>. All good!" from
+      // "<prior>. Actually it failed." - both are the prior plus a short tail.
+      // Suppressing the pair swallows a CORRECTION because it quotes the thing
+      // it corrects, and the model is then told the message was delivered.
+      // A prior that is a PREFIX is therefore a duplicate only when the tail adds
+      // nothing readable: "deployment finished" -> "deployment finished." is the
+      // same message again, while "...Actually it failed." is not. An emoji-only
+      // tail normalizes away and already compares equal above, so without this
+      // check a "." tail would deliver while an emoji tail suppressed. Deliberate
+      // consequence: a change of terminal punctuation alone ("finished" ->
+      // "finished?") counts as no new content and stays suppressed, which is what
+      // the rule did before this branch existed too. A prior
+      // that appears later in the text is re-narration ("I sent the message:
+      // ...") and keeps the original ratio rule.
+      if (normalized.startsWith(normalizedSent)) {
+        return !/[\p{L}\p{N}]/u.test(normalized.slice(normalizedSent.length));
+      }
       return normalizedSent.length >= normalized.length * MIN_SUBSTRING_DUPLICATE_RATIO;
     }
     return (

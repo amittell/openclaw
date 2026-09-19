@@ -230,6 +230,10 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     }
 
     const pathEntries = this.sessionManager.getBranch();
+    // The branch prepared here and the leaf committed onto below must be the same leaf:
+    // the awaited hook/summarizer can outlive an append, and a compaction committed under
+    // a moved leaf would shadow entries it never summarized.
+    const preparedLeafId = this.sessionManager.getLeafId();
     const requestBudget = options.requestBudget;
     const pendingUserIdempotencyKey = requestBudget?.pendingTokens
       ? requestBudget.pendingUserIdempotencyKey
@@ -434,6 +438,12 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       // Revalidate after admission too. In-memory transcripts have no SQLite
       // writer fence, and cancellation must not publish a replaced context.
       assertContextReplacementActive?.();
+      // Re-check the leaf captured before the awaited hook/summarizer: committing under a
+      // moved leaf would shadow entries this summary never covered. Complementary to the
+      // owner revalidation above, which proves liveness but not leaf identity.
+      if (this.sessionManager.getLeafId() !== preparedLeafId) {
+        return "leaf-moved" as const;
+      }
       const entryId = this.sessionManager.appendCompaction(
         completedCompaction.summary,
         completedCompaction.firstKeptEntryId,
@@ -457,6 +467,12 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     });
     if (committed === undefined) {
       return { status: "aborted" };
+    }
+    if (committed === "leaf-moved") {
+      return {
+        status: "skipped",
+        reason: "Session leaf moved during compaction; nothing committed",
+      };
     }
     const { entryId: compactionEntryId, tokensAfter } = committed;
 

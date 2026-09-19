@@ -506,7 +506,13 @@ test("uses the real preloaded model span as the mid-turn propagation root", asyn
   await service.stop?.(ctx);
 
   const modelSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.model.call");
-  expect(modelSpan?.parentSpanContext).toBeUndefined();
+  const scopeSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.turn.scope");
+  // The model span now parents to the materialized turn scope (a real, exported,
+  // sampled span) instead of being a bare root, so its outbound traceparent still
+  // resolves to a span the backend receives.
+  expect(scopeSpan).toBeDefined();
+  expect(modelSpan?.parentSpanContext?.spanId).toBe(scopeSpan?.spanContext().spanId);
+  expect(modelSpan?.spanContext().traceId).toBe(scopeSpan?.spanContext().traceId);
   expect(outboundTraceparent).toBe(
     `00-${modelSpan?.spanContext().traceId}-${modelSpan?.spanContext().spanId}-01`,
   );
@@ -686,8 +692,14 @@ test("leaves exec spans parentless rather than naming a span nobody exported", a
   await service.stop?.(ctx);
 
   const execSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.exec");
+  const scopeSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.turn.scope");
   expect(execSpan).toBeDefined();
-  expect(execSpan?.parentSpanContext).toBeUndefined();
+  // The exec span now parents to the materialized turn scope (a real, exported,
+  // sampled span) instead of being parentless, so it no longer names a span nobody
+  // exported.
+  expect(scopeSpan).toBeDefined();
+  expect(execSpan?.parentSpanContext?.spanId).toBe(scopeSpan?.spanContext().spanId);
+  expect(execSpan?.spanContext().traceId).toBe(scopeSpan?.spanContext().traceId);
 }, 30_000);
 
 const OTEL_ENDPOINT_SIGNAL_CASES = [

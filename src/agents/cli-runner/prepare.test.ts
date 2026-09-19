@@ -130,6 +130,7 @@ import { createAgentCleanupScope } from "../run-cleanup-timeout.js";
 import type { SandboxWorkspaceInfo } from "../sandbox/types.js";
 import { beginForegroundSessionMaintenance } from "../session-maintenance/coordinator.js";
 import { SessionManager } from "../sessions/session-manager.js";
+import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import {
   captureRoutingDecisionWork,
   createModelRoutingTestAdmission,
@@ -6656,11 +6657,17 @@ describe("prepareCliRunContext", () => {
     const durable = SessionManager.open(sessionTarget, dir);
     durable.appendMessage({ role: "user", content: "BORROWED_PREFIX", timestamp: 1 });
     const retained = durable.appendMessage(makeUserMessage("BORROWED_RETAINED", 2));
-    durable.appendCompaction("BORROWED_SUMMARY", retained, 1000);
+    const borrowedCompactionId = durable.appendCompaction("BORROWED_SUMMARY", retained, 1000);
     durable.appendMessage({ role: "user", content: "BORROWED_TAIL", timestamp: 3 });
     durable.flushPendingPersistence();
     expect(SessionManager.open(sessionTarget).buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "BORROWED_SUMMARY" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("BORROWED_SUMMARY", {
+          entryId: borrowedCompactionId,
+          shadowedEntryCount: 1,
+        }),
+      },
       { content: "BORROWED_RETAINED" },
       { content: "BORROWED_TAIL" },
     ]);

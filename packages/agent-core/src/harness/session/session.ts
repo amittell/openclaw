@@ -9,6 +9,9 @@ import {
 import type { SessionContext, SessionTreeEntry } from "../types.js";
 import { selectResetKeptEntries } from "./tool-result-pairing.js";
 
+// Derived from the exported union so the boundary entry types stay internal to
+// agent-core rather than being exported just for this file.
+type ContextBoundary = Extract<SessionTreeEntry, { type: "compaction" | "reset" }>;
 const SESSION_HISTORY_PRELUDE = Symbol.for("openclaw.sessionHistoryPrelude");
 
 /** The same semantic cut is used before payload acquisition and when building messages. */
@@ -100,6 +103,60 @@ export function* iterateSessionContextEntries<T extends SessionTreeEntry>(
   }
 }
 
+// Hard cap for the one model-visible line appended to a compaction summary.
+const CHECKPOINT_HANDLE_MAX_CHARS = 160;
+
+export type CompactionCheckpointHandle = { entryId: string; shadowedEntryCount: number };
+
+export type BuildSessionContextOptions = {
+  /** Hosts inject read-tool wording here; the default names no tool. */
+  formatCheckpointHandle?: (handle: CompactionCheckpointHandle) => string;
+};
+
+/** Render the checkpoint line the model sees after a compaction summary. */
+export function formatCompactionCheckpointHandle(
+  handle: CompactionCheckpointHandle,
+  readHint?: string,
+): string {
+  const shadows = `shadows ${handle.shadowedEntryCount} earlier entries`;
+  return `[compaction checkpoint ${handle.entryId}: ${shadows}${readHint ? `; ${readHint}` : ""}]`;
+}
+
+function isBoundaryEntry(entry: SessionTreeEntry): entry is ContextBoundary {
+  return entry.type === "compaction" || entry.type === "reset";
+}
+
+/** Index where a boundary's kept prefix starts; the boundary itself when it kept nothing. */
+function resolveKeptPrefixIndex(
+  pathEntries: readonly SessionTreeEntry[],
+  boundary: ContextBoundary,
+  boundaryIdx: number,
+): number {
+  const firstKeptIdx = pathEntries.findIndex((entry) => entry.id === boundary.firstKeptEntryId);
+  return firstKeptIdx >= 0 && firstKeptIdx < boundaryIdx ? firstKeptIdx : boundaryIdx;
+}
+
+/**
+ * Rows this summary replaced: the previous boundary's kept prefix (or the path start) up to this
+ * one's. The kept prefix is excluded because it still replays verbatim, and only transcript-visible
+ * rows count so the figure matches what a history reader can page through.
+ */
+function resolveShadowedEntryCount(
+  pathEntries: readonly SessionTreeEntry[],
+  boundary: ContextBoundary,
+  boundaryIdx: number,
+): number {
+  const previousIdx = pathEntries.slice(0, boundaryIdx).findLastIndex(isBoundaryEntry);
+  const previous = pathEntries[previousIdx];
+  const spanStart =
+    previous && isBoundaryEntry(previous)
+      ? resolveKeptPrefixIndex(pathEntries, previous, previousIdx)
+      : 0;
+  return pathEntries
+    .slice(spanStart, resolveKeptPrefixIndex(pathEntries, boundary, boundaryIdx))
+    .filter((entry) => entry.type === "message" || isBoundaryEntry(entry)).length;
+}
+
 /** Hydrate selected messages lazily so bounded consumers can stop before later payloads. */
 export function* iterateSessionContextMessages<T extends SessionTreeEntry>(
   pathEntries: readonly T[],
@@ -136,8 +193,52 @@ export function* iterateSessionContextMessages<T extends SessionTreeEntry>(
   }
 }
 
+/**
+ * Wraps a caller's `readEntry` so the active compaction boundary renders its read-time checkpoint
+ * line. Persisted summary bytes stay untouched and the handle follows the boundary entry across
+ * transcript rewrites.
+ *
+ * Exported because there are TWO context readers over the same iterator: `buildSessionContext`
+ * here, and the SQLite detached reader behind `readSessionTranscriptContextMessages` (which feeds
+ * `readCodexSessionContext`). Injecting the line in only one of them made the two disagree about
+ * what the model sees after a compaction.
+ */
+export function withCompactionCheckpointHandle<T extends SessionTreeEntry>(
+  pathEntries: readonly T[],
+  readEntry: (entry: T) => SessionTreeEntry = (entry) => entry,
+  options?: BuildSessionContextOptions,
+): (entry: T) => SessionTreeEntry {
+  let boundary: ContextBoundary | null = null;
+  for (const entry of pathEntries) {
+    if (isBoundaryEntry(entry)) {
+      boundary = entry;
+    }
+  }
+  if (boundary?.type !== "compaction") {
+    return readEntry;
+  }
+  const activeBoundary = boundary;
+  const boundaryIdx = pathEntries.findIndex((item) => item.id === activeBoundary.id);
+  return (entry: T): SessionTreeEntry => {
+    // Hydrate first: the SQLite reader's own readEntry is what materializes the summary text.
+    const hydrated = readEntry(entry);
+    if (entry.id !== activeBoundary.id || hydrated.type !== "compaction") {
+      return hydrated;
+    }
+    const format = options?.formatCheckpointHandle ?? formatCompactionCheckpointHandle;
+    const handleLine = format({
+      entryId: activeBoundary.id,
+      shadowedEntryCount: resolveShadowedEntryCount(pathEntries, activeBoundary, boundaryIdx),
+    }).slice(0, CHECKPOINT_HANDLE_MAX_CHARS);
+    return { ...hydrated, summary: `${hydrated.summary}\n${handleLine}` };
+  };
+}
+
 /** Build model context from an ordered session branch and its latest state markers. */
-export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionContext {
+export function buildSessionContext(
+  pathEntries: SessionTreeEntry[],
+  options?: BuildSessionContextOptions,
+): SessionContext {
   let thinkingLevel = "off";
   let model: { provider: string; modelId: string } | null = null;
   for (const entry of pathEntries) {
@@ -149,5 +250,10 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
       model = { provider: entry.message.provider, modelId: entry.message.model };
     }
   }
-  return { messages: Array.from(iterateSessionContextMessages(pathEntries)), thinkingLevel, model };
+  const readEntry = withCompactionCheckpointHandle(pathEntries, undefined, options);
+  return {
+    messages: Array.from(iterateSessionContextMessages(pathEntries, readEntry)),
+    thinkingLevel,
+    model,
+  };
 }
