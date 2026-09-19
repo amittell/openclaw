@@ -568,6 +568,7 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       // Same inherited-option hazard as `compact` above: a parent `--store`
       // would suggest the operator chose the store, while the gateway resolves
       // it from <key> + --agent. Reject rather than silently drop it.
+      // SAFETY: this subcommand's parent is the sessions command, whose options are SessionsListCliOptions.
       const parentOpts = command.parent?.opts() as SessionsListCliOptions | undefined;
       rejectUnsupportedSessionsParentOptions(
         "abort",
@@ -584,12 +585,17 @@ export function registerStatusHealthSessionsCommands(program: Command) {
         await sessionsAbortCommand(
           {
             key,
+            // SAFETY: commander yields a string for a declared <value> option and undefined when it is absent.
             agent: (opts.agent as string | undefined) ?? parentOpts?.agent,
+            // SAFETY: commander yields a string for a declared <value> option and undefined when it is absent.
             runId: opts.runId as string | undefined,
             clearQueued: Boolean(opts.clearQueued),
             timeout: timeoutMs !== undefined ? String(timeoutMs) : undefined,
+            // SAFETY: commander yields a string for a declared <value> option and undefined when it is absent.
             url: opts.url as string | undefined,
+            // SAFETY: commander yields a string for a declared <value> option and undefined when it is absent.
             token: opts.token as string | undefined,
+            // SAFETY: commander yields a string for a declared <value> option and undefined when it is absent.
             password: opts.password as string | undefined,
             json: Boolean(opts.json || parentOpts?.json),
           },

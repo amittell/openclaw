@@ -23,7 +23,7 @@ describe("runDescendantWake", () => {
     const dispatchGatewayMethodInProcessMock = vi.fn(async () => ({ runId: "wake-run" }));
     const dispatchGatewayMethodInProcess =
       dispatchGatewayMethodInProcessMock as unknown as typeof import("./subagent-announce.runtime.js").dispatchGatewayMethodInProcess;
-    const replaceSubagentRunAfterSteer = vi.fn(async () => true);
+    const replaceSubagentRunAfterSteer = vi.fn(() => true);
 
     await expect(
       runDescendantWake({

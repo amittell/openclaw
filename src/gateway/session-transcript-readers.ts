@@ -94,7 +94,7 @@ export async function readSessionMessagesShadowedByCompactionAsync(
   scope: SessionTranscriptReadScope,
   opts: { compactionId: string; maxMessages: number; offset: number },
 ): Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined> {
-  const target = resolveTranscriptReadTarget(scope);
+  const target = await resolveTranscriptReadTarget(scope);
   const page = readSessionTranscriptCompactionShadowPage(toTranscriptReadScope(target), opts);
   return page
     ? {

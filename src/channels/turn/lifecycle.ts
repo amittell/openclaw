@@ -77,8 +77,6 @@ type RoutedAssembledChannelTurn = Omit<
   delivery: ChannelTurnDeliveryAdapter;
 };
 
-type AnyChannelDeliveryAdapter = ChannelEventDeliveryAdapter | ChannelTurnDeliveryAdapter;
-
 type PendingChannelDeliveryAttempt = {
   payload: ReplyPayload;
   info: ChannelDeliveryInfo;

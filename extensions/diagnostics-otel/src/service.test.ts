@@ -5838,9 +5838,11 @@ describe("diagnostics-otel service", () => {
     // The retained run contexts are cleared on stop, so the late usage no longer parents to
     // the run span; it links to a materialized scope span (a real, exported span) instead.
     const runSpanContext = spanByName("openclaw.run").spanContext();
-    const scopeSpanContext = telemetryState.spans
-      .findLast((span) => span.name === "openclaw.turn.scope")
-      .spanContext();
+    const scopeSpan = telemetryState.spans.findLast((span) => span.name === "openclaw.turn.scope");
+    if (!scopeSpan) {
+      throw new Error("expected a materialized openclaw.turn.scope span");
+    }
+    const scopeSpanContext = scopeSpan.spanContext();
     const usageParent = (
       startedSpanCall("openclaw.model.usage")?.[2] as
         | {

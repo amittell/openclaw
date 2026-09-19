@@ -77,7 +77,7 @@ export async function sessionsAbortCommand(
   try {
     result = (await callGatewayFromCliWithTransport("sessions.abort", rpcOpts, params, {
       defaultTimeoutMs: 10_000,
-    })) as SessionsAbortResult;
+    })) as SessionsAbortResult; // SAFETY: sessions.abort answers with SessionsAbortResult per its protocol schema.
   } catch (err) {
     rethrowExpectedCliError(err);
     const message = formatErrorMessage(err);

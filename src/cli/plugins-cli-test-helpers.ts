@@ -115,7 +115,7 @@ const loadInstalledPluginIndexInstallRecords: AsyncUnknownMock = vi.fn(async () 
   clonePluginInstallRecords(mockInstalledPluginIndexInstallRecords),
 );
 const readPersistedInstalledPluginIndexInstallRecords: Mock<ReadPersistedInstalledPluginIndexInstallRecordsFn> =
-  vi.fn<ReadPersistedInstalledPluginIndexInstallRecordsFn>(async () =>
+  vi.fn<ReadPersistedInstalledPluginIndexInstallRecordsFn>(() =>
     clonePluginInstallRecords(mockPersistedPluginInstallRecords),
   );
 export const readPersistedInstalledPluginIndexMock: Mock<ReadPersistedInstalledPluginIndexFn> =
@@ -1058,7 +1058,7 @@ export function resetPluginsCliTestState() {
   loadInstalledPluginIndexInstallRecords.mockImplementation(async () =>
     clonePluginInstallRecords(mockInstalledPluginIndexInstallRecords),
   );
-  readPersistedInstalledPluginIndexInstallRecords.mockImplementation(async () =>
+  readPersistedInstalledPluginIndexInstallRecords.mockImplementation(() =>
     clonePluginInstallRecords(mockPersistedPluginInstallRecords),
   );
   readPersistedInstalledPluginIndexMock.mockResolvedValue(null);
