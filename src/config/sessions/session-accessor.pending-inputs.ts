@@ -465,9 +465,15 @@ export async function stageSessionPendingInput(
           completedTurnAt >= committedAt &&
           completedTurnAt <= now &&
           now - completedTurnAt < COMPLETED_TURN_MARKER_WINDOW_MS;
+        // 9.5's private-completion retries (trackCompletion) keep 9.5's contract and are
+        // always admitted: the check above already proved the retry is the committed input,
+        // and their completion is owned by the input-completion receipt, not by this seam.
+        // The terminal rule below is for re-presented USER turns only.
         return {
           state:
-            requiresRecoveryRedelivery || (!channelBoundKey && !answeredAlready)
+            options.trackCompletion ||
+            requiresRecoveryRedelivery ||
+            (!channelBoundKey && !answeredAlready)
               ? "queued"
               : "consumed",
           inputId: committed.messageId,
