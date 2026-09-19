@@ -445,7 +445,13 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
     expect(result).toBeNull();
   });
 
-  it("retries transient transport error payloads via the shared timeout lane (#138531)", () => {
+  // FORK DIVERGENCE from upstream #138531. Upstream labels an untyped HTTP 500 payload
+  // "timeout" so it retries in the shared timeout lane. The fork classifies untyped 5xx as
+  // "server_error" (the #141843 carry, an owner ruling): a "timeout" label takes the timeout
+  // carve-outs in resolveRunFailoverDecision that skip retry-limit model fallback, and a 5xx is
+  // a provider failure, not a timing one. Payload-only failures without a status (the
+  // "LLM request failed." case below) keep upstream's timeout lane.
+  it("falls back on an untyped HTTP 500 transport payload as server_error (fork, not #138531)", () => {
     const result = classifyEmbeddedAgentRunResultForModelFallback({
       provider: "custom",
       model: "llama-3.1",
@@ -464,7 +470,7 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
 
     expect(result).toEqual({
       message: "custom/llama-3.1 ended with a provider error: HTTP 500: internal server error",
-      reason: "timeout",
+      reason: "server_error",
       code: "embedded_error_payload",
       rawError: "HTTP 500: internal server error",
     });
