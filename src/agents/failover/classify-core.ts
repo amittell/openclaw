@@ -310,21 +310,14 @@ export function classifyFailoverSignalCore(
     isTransportHtmlErrorStatus(inferredStatus) &&
     isHtmlErrorResponse(signal.message, inferredStatus)
   ) {
-    // An HTML body means a CDN or proxy answered instead of the provider, so the
-    // page text carries no provider error type and must not classify (#67517).
-    // Decide from the status alone through the canonical mapper so HTML and
-    // non-HTML bodies cannot disagree: 529 stays overloaded, the timing statuses
-    // stay timeout, and the rest are upstream server errors.
-    const htmlStatusClassification = classifyFailoverClassificationFromHttpStatus(
+    // CDN page text is not a provider signal; classify its HTTP status through the shared owner.
+    return classifyFailoverClassificationFromHttpStatus(
       inferredStatus,
       undefined,
       null,
       signal.status,
       signal.provider,
     );
-    if (htmlStatusClassification) {
-      return htmlStatusClassification;
-    }
   }
   // Message/detail semantics stay ahead of generic structured types so an
   // invalid-request wrapper cannot hide billing, context, or provider policy.
