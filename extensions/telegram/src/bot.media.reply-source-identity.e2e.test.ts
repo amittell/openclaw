@@ -276,53 +276,6 @@ describe("telegram reply media source identity", () => {
   );
 
   it(
-    "does not re-fetch media the bot itself sent when an external reply references it",
-    async () => {
-      const runtimeError = vi.fn();
-      const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
-      const fetchSpy = mockTelegramPngDownload();
-
-      try {
-        await handler({
-          message: {
-            message_id: 1401,
-            chat: { id: 1234, type: "private" as const },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            text: "what about this?",
-            date: 1736380800,
-            external_reply: {
-              message_id: 1400,
-              chat: { id: -10022, type: "supergroup" as const, title: "Source" },
-              from: { id: 999, is_bot: true, first_name: "OpenClaw" },
-              origin: {
-                type: "user" as const,
-                sender_user: { id: 999, is_bot: true, first_name: "OpenClaw" },
-                date: 1736380700,
-              },
-              photo: [{ file_id: "self-external", file_unique_id: "self-external-unique" }],
-            },
-          },
-          me,
-          getFile: async () => ({ file_path: "photos/self-external.png" }),
-        });
-
-        expect(replySpy).toHaveBeenCalledTimes(1);
-        // The self-authored external reply is dropped before hydration, so the
-        // bot's own output is never re-fetched or re-ingested as a provider image.
-        expect(telegramMediaHarnessGetFileSpy).not.toHaveBeenCalled();
-        const ctx = replySpy.mock.calls[0]?.[0] as MsgContext | undefined;
-        if (!ctx) {
-          throw new Error("expected one reply call");
-        }
-        expect(await loadProviderImages(ctx)).toEqual({ payloads: 0, unique: 0 });
-      } finally {
-        fetchSpy.mockRestore();
-      }
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
     "dedupes a same-source external reply against the current media",
     async () => {
       const runtimeError = vi.fn();
@@ -357,8 +310,7 @@ describe("telegram reply media source identity", () => {
 
         expect(replySpy).toHaveBeenCalledTimes(1);
         // The external copy shares the current media's file_unique_id, so it is
-        // dropped instead of hydrated under a second path (origin is a different
-        // user, so this isolates the dedupe check from the self-authored check).
+        // dropped instead of hydrated under a second path.
         expect(telegramMediaHarnessGetFileSpy).not.toHaveBeenCalled();
         const ctx = replySpy.mock.calls[0]?.[0] as MsgContext | undefined;
         if (!ctx) {

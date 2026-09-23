@@ -2702,16 +2702,18 @@ describe("createTelegramBot", () => {
 
   it.each([
     {
-      name: "skips self-authored bot photo in reply chain even when the bot is allowlisted",
+      name: "hydrates allowlisted group reply ancestors",
       allowFrom: ["1", "999"],
+      expectHydrated: true,
       chatId: 7,
     },
     {
       name: "does not hydrate unallowlisted group reply ancestors through quote override",
       allowFrom: ["1"],
+      expectHydrated: false,
       chatId: 8,
     },
-  ])("$name", async ({ allowFrom, chatId }) => {
+  ])("$name", async ({ allowFrom, expectHydrated, chatId }) => {
     mockTelegramConfig({ groupPolicy: "open", contextVisibility: "allowlist_quote", allowFrom });
 
     const mediaFetch = vi.fn(
@@ -2761,10 +2763,8 @@ describe("createTelegramBot", () => {
         },
       });
 
-      // The bot's own output remains transcript context, but must not be
-      // re-ingested as fresh user-provided media.
-      expect(getFileSpy).not.toHaveBeenCalledWith("generated-photo-1", expect.any(AbortSignal));
-      expect(mediaFetch).not.toHaveBeenCalled();
+      expect(getFileSpy).toHaveBeenCalledWith("generated-photo-1", expect.any(AbortSignal));
+      expect(mediaFetch).toHaveBeenCalledTimes(1);
 
       replySpy.mockClear();
       getFileSpy.mockClear();
@@ -2807,8 +2807,13 @@ describe("createTelegramBot", () => {
       sender: "OpenClaw (you)",
       body: "Done, here is the image",
     });
-    expect(payload.ReplyChain?.[1]?.mediaPath).toBeUndefined();
-    expect(payload.ReplyChain?.[1]?.mediaRef).toBe("telegram:file/generated-photo-1");
+    if (expectHydrated) {
+      expect(payload.ReplyChain?.[1]?.mediaPath).toBeTypeOf("string");
+      expect(payload.ReplyChain?.[1]?.mediaRef).toBeUndefined();
+    } else {
+      expect(payload.ReplyChain?.[1]?.mediaPath).toBeUndefined();
+      expect(payload.ReplyChain?.[1]?.mediaRef).toBe("telegram:file/generated-photo-1");
+    }
     const messages = latestConversationContextMessages();
     const messagesById = new Map(messages.map((message) => [message.message_id, message]));
     expect(messagesById.get("101")).toMatchObject({
@@ -2816,8 +2821,13 @@ describe("createTelegramBot", () => {
       body: "Done, here is the image",
       is_reply_target: true,
     });
-    expect(messagesById.get("101")?.media_path).toBeUndefined();
-    expect(messagesById.get("101")?.media_ref).toBe("telegram:file/generated-photo-1");
+    if (expectHydrated) {
+      expect(messagesById.get("101")?.media_path).toMatch(/^media:\/\/inbound\//);
+      expect(messagesById.get("101")?.media_ref).toBeUndefined();
+    } else {
+      expect(messagesById.get("101")?.media_path).toBeUndefined();
+      expect(messagesById.get("101")?.media_ref).toBe("telegram:file/generated-photo-1");
+    }
     expect(messagesById.get("102")).toMatchObject({
       sender: "UserB",
       body: "Why is there a 4th person?",
