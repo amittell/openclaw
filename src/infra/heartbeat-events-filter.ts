@@ -19,6 +19,14 @@ type StructuredExecCompletionEvent = {
   result: string;
   output: string;
   succeeded: boolean;
+  /**
+   * The process was terminated by a signal (e.g. SIGTERM at gateway drain, a
+   * timeout, or a cancel) rather than exiting with a code. Without captured
+   * output this carries no user-facing content: the completion wake would
+   * only produce a "terminated by signal N" report for an internal process
+   * the owner never started (see #141973).
+   */
+  killed: boolean;
 };
 
 function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompletionEvent | null {
@@ -29,13 +37,15 @@ function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompleti
   }
   const action = match[1] ?? "";
   const result = match[3] ?? "";
+  const succeeded = action.toLowerCase() === "completed" && result.toLowerCase() === "code 0";
   return {
     raw: trimmed,
     action,
     id: match[2] ?? "",
     result,
     output: (match[4] ?? "").trim(),
-    succeeded: action.toLowerCase() === "completed" && result.toLowerCase() === "code 0",
+    succeeded,
+    killed: !succeeded && /^signal /i.test(result.trim()),
   };
 }
 
@@ -46,6 +56,9 @@ export function isRelayableExecCompletionEvent(evt: string): boolean {
   }
   if (parsed.output) {
     return true;
+  }
+  if (parsed.killed) {
+    return false;
   }
   return !parsed.succeeded;
 }
@@ -64,7 +77,7 @@ function formatExecEventPromptText(pendingEvents: string[]): {
     if (parsed.output) {
       return [parsed.raw];
     }
-    if (parsed.succeeded) {
+    if (parsed.succeeded || parsed.killed) {
       return [];
     }
     hasMissingOutputFailure = true;

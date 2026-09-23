@@ -95,6 +95,13 @@ describe("heartbeat event prompts", () => {
       ],
       unexpected: ["Please relay the command output to the user"],
     },
+    {
+      name: "suppresses metadata-only signal-killed exec completions",
+      events: ["Exec failed (abc12345, signal SIGTERM)"],
+      opts: undefined,
+      expected: ["no command output was found", "Reply NO_REPLY only"],
+      unexpected: ["Please relay the command output to the user", "abc12345"],
+    },
   ])("$name", ({ events, opts, expected, unexpected }) => {
     const prompt = buildExecEventPrompt(events, opts);
     for (const part of expected) {
@@ -173,7 +180,9 @@ describe("heartbeat event classification", () => {
     { value: "Exec completed (abc12345, code 0)", expected: false },
     { value: "Exec completed (abc12345, code 0) :: some output", expected: true },
     { value: "Exec failed (abc12345, code 1)", expected: true },
-    { value: "Exec failed (abc12345, signal SIGTERM)", expected: true },
+    { value: "Exec failed (abc12345, signal SIGTERM)", expected: false },
+    { value: "Exec failed (abc12345, signal SIGTERM) :: error output", expected: true },
+    { value: "Exec failed (abc12345, signal 15)", expected: false },
     { value: "exec finished: ok", expected: true },
   ])("classifies relayable exec completion events for %j", ({ value, expected }) => {
     expect(isRelayableExecCompletionEvent(value)).toBe(expected);
