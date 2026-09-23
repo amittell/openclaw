@@ -67,7 +67,6 @@ function stubSessionManager(): ExtensionContext["sessionManager"] {
   return stub;
 }
 
-/** A 32,000-token window: small enough that no window-derived budget exceeds 16,000. */
 const model: Model = {
   id: "sonnet-4.6",
   name: "Sonnet 4.6",
@@ -139,7 +138,7 @@ describe("compaction-safeguard mixed-script summary budget", () => {
   it("keeps an affordable ASCII request when dense CJK prose overruns the budget", async () => {
     // The generated prose alone costs 24,000 estimated chars and the summary omits the
     // request, so finalization has to add ~1,850 ASCII chars of required ask context and
-    // cut the CJK prose, not price the ASCII at the CJK rate and give up.
+    // cut the CJK prose, not settle on a smaller head cut that drops the ask.
     mockSummarizeInStages.mockResolvedValue(
       [
         "## Decisions",

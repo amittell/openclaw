@@ -1023,11 +1023,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       });
       const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) => {
         const candidate = budgetCompactionSummary(body, suffix, maxChars, qualityRetention);
-        // Below the owner's cap the fit is searching for a cheaper artifact. A candidate
-        // under the plan's minimum has dropped the required facts, and the audited path
-        // cancels on it. Dense CJK prose makes those truncated candidates cheap enough that
-        // the search settled on one even when the facts fit; skipping them makes it pay for
-        // the required facts at their own cost and trim the discardable prose instead.
+        // Below the owner's cap the fit bisects on maxChars and assumes cost grows with it.
+        // A candidate under the plan's minimum is one the audited path cancels on, usually a
+        // head cut without the required facts. Leading dense CJK prose can price that cut
+        // above retained candidates just over the minimum, so the search settled on a smaller
+        // cut. Report those candidates as too small so the search stays above the minimum.
         return candidate.qualityRetentionInfeasible && maxChars < MAX_COMPACTION_SUMMARY_CHARS
           ? undefined
           : candidate;
