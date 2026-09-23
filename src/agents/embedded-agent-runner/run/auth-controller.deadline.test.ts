@@ -2,11 +2,18 @@
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import { drainFileLockStateForTest } from "../../../infra/file-lock.js";
 import { resolveSecretSentinel } from "../../../secrets/sentinel.js";
+import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import {
   OAUTH_REFRESH_CALL_TIMEOUT_MS,
   OAUTH_REFRESH_LOCK_OPTIONS,
 } from "../../auth-profiles/constants.js";
+import { createOAuthManager } from "../../auth-profiles/oauth-manager.js";
+import { isPendingOAuthRefreshFence } from "../../auth-profiles/oauth-refresh-marker.js";
+import { loadPersistedAuthProfileStore } from "../../auth-profiles/persisted.js";
+import { ensureAuthProfileStoreWithoutExternalProfiles } from "../../auth-profiles/store-runtime.js";
+import type { OAuthCredential } from "../../auth-profiles/types.js";
 import type { ResolvedProviderAuth } from "../../model-auth.js";
 import {
   RUNTIME_AUTH_HARD_TIMEOUT_MS,
@@ -64,11 +71,12 @@ function createController(params: {
   harness: EmbeddedRunAuthState;
   setRuntimeApiKey: (provider: string, apiKey: string) => void;
   profileCandidates?: string[];
+  agentDir?: string;
   warn?: (message: string) => void;
 }) {
   return createEmbeddedRunAuthController({
     config: undefined,
-    agentDir: "/tmp/agent",
+    agentDir: params.agentDir ?? "/tmp/agent",
     workspaceDir: "/tmp/workspace",
     authStore: { version: 1, profiles: {} },
     authStorage: { setRuntimeApiKey: params.setRuntimeApiKey },
@@ -219,5 +227,110 @@ describe("embedded run auth hard deadline", () => {
     expect(mocks.prepareProviderRuntimeAuth).toHaveBeenCalledOnce();
     expect(setRuntimeApiKey).toHaveBeenCalledOnce();
     expect(lastRuntimeKey(setRuntimeApiKey)).toBe("backup-runtime-key");
+  });
+
+  it("leaves a hung OAuth refresh to its durable owner and adopts the settled rotation", async () => {
+    await withOpenClawTestState(
+      { label: "auth-controller-deadline", agentEnv: "main" },
+      async (state) => {
+        const profileId = "synthetic:owner";
+        const expired: OAuthCredential = {
+          type: "oauth",
+          provider: "synthetic",
+          access: "synthetic-expired-access",
+          refresh: "synthetic-expired-refresh",
+          expires: Date.now() - 60_000,
+        };
+        const rotated: OAuthCredential = {
+          ...expired,
+          access: "synthetic-rotated-access",
+          refresh: "synthetic-rotated-refresh",
+          expires: Date.now() + 60 * 60_000,
+        };
+        await state.writeAuthProfiles({ version: 1, profiles: { [profileId]: expired } });
+        const agentDir = state.agentDir();
+        const providerStarted = createDeferred();
+        const providerResult = createDeferred<OAuthCredential>();
+        const refreshCredential = vi.fn(async () => {
+          providerStarted.resolve();
+          return await providerResult.promise;
+        });
+        const manager = createOAuthManager({
+          buildApiKey: async (_provider, credential) => credential.access,
+          canRefreshCredential: async () => true,
+          refreshCredential,
+          readBootstrapCredential: () => null,
+        });
+        mocks.getApiKeyForModelCore.mockImplementation(async () => {
+          const store = ensureAuthProfileStoreWithoutExternalProfiles(agentDir);
+          const credential = store.profiles[profileId];
+          if (credential?.type !== "oauth") {
+            throw new Error("synthetic OAuth profile missing");
+          }
+          const resolved = await manager.resolveOAuthAccess({
+            store,
+            profileId,
+            credential,
+            agentDir,
+          });
+          return {
+            apiKey: resolved?.apiKey,
+            mode: "oauth",
+            profileId,
+            source: `profile:${profileId}`,
+          };
+        });
+        mocks.prepareProviderRuntimeAuth.mockResolvedValue(undefined);
+        const readRow = () => loadPersistedAuthProfileStore(agentDir)?.profiles[profileId];
+        const rowIsPendingFence = () => {
+          const row = readRow();
+          return row?.type === "oauth" && isPendingOAuthRefreshFence(row);
+        };
+
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const harness = createHarness();
+        const setRuntimeApiKey = vi.fn();
+        const controller = createController({
+          harness,
+          setRuntimeApiKey,
+          profileCandidates: [profileId],
+          agentDir,
+        });
+        const init = track(controller.initializeAuthProfile());
+        try {
+          await providerStarted.promise;
+          expect(rowIsPendingFence()).toBe(true);
+
+          // The owner's observation deadline releases the caller first; the backstop sits above it.
+          await vi.advanceTimersByTimeAsync(OAUTH_REFRESH_CALL_TIMEOUT_MS);
+          expect(init.settled).toBe(true);
+          expect(String(init.error)).toContain(`(${OAUTH_REFRESH_CALL_TIMEOUT_MS}ms)`);
+          expect(String(init.error)).not.toContain(`${RUNTIME_AUTH_HARD_TIMEOUT_MS}ms`);
+          expect(rowIsPendingFence()).toBe(true);
+        } finally {
+          // Test-state cleanup drains the owner, so let the provider answer on every path.
+          vi.useRealTimers();
+          providerResult.resolve(rotated);
+        }
+
+        await vi.waitFor(() =>
+          expect(readRow()).toMatchObject({ access: rotated.access, refresh: rotated.refresh }),
+        );
+        expect(setRuntimeApiKey).not.toHaveBeenCalled();
+        expect(harness.apiKeyInfo).toBeNull();
+
+        const nextHarness = createHarness();
+        const nextSetRuntimeApiKey = vi.fn();
+        await createController({
+          harness: nextHarness,
+          setRuntimeApiKey: nextSetRuntimeApiKey,
+          profileCandidates: [profileId],
+          agentDir,
+        }).initializeAuthProfile();
+        expect(nextSetRuntimeApiKey).toHaveBeenCalledWith("custom-openai", rotated.access);
+        expect(refreshCredential).toHaveBeenCalledOnce();
+        await drainFileLockStateForTest();
+      },
+    );
   });
 });
