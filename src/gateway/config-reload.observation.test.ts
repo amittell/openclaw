@@ -1,16 +1,20 @@
 // Config reload observation tests: the reloader publishes the source config each
 // completed transaction read, which runtime-config health compares with the live runtime.
-import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createInfoWarnErrorLogger } from "../../test/helpers/mock-logger.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { buildRuntimeConfigHealth } from "../commands/health-runtime-config.js";
-import type { ConfigFileSnapshot, ConfigWriteNotification } from "../config/config.js";
-import { hashConfigRaw } from "../config/io.read-helpers.js";
+import type { ConfigFileSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { getConfigReloadObservation } from "./config-reload-observed.js";
-import { startGatewayConfigReloader } from "./config-reload.js";
+import {
+  closeTestConfigReloaders,
+  createReloaderHarness,
+  flushReload,
+  makeSnapshot,
+  prepareConfigReloadTest,
+  waitForReloadState,
+} from "./config-reload.test-support.js";
 
 const configAuditMocks = vi.hoisted(() => ({
   append: vi.fn(),
@@ -34,97 +38,17 @@ vi.mock("../config/config-journal-snapshot.js", async (importOriginal) => ({
 const DRIFT_MESSAGE =
   "Live gateway runtime config differs from the latest completed reload observation for model/provider/auth paths; restart is required or pending.";
 
-type WatcherHandler = (value?: unknown) => void;
-
-function makeSnapshot(partial: Partial<ConfigFileSnapshot> = {}): ConfigFileSnapshot {
-  const config = partial.config ?? {};
-  const sourceConfig = (partial.sourceConfig ?? config) as ConfigFileSnapshot["sourceConfig"];
-  return {
-    path: "/tmp/openclaw.json",
-    includedPaths: [],
-    exists: true,
-    raw: JSON.stringify(sourceConfig),
-    parsed: sourceConfig,
-    sourceConfig,
-    resolved: sourceConfig,
-    valid: true,
-    runtimeConfig: partial.runtimeConfig ?? config,
-    config,
-    issues: [],
-    warnings: [],
-    legacyIssues: [],
-    ...partial,
-  };
-}
-
-function createReloaderHarness(
-  readSnapshot: () => Promise<ConfigFileSnapshot>,
-  initialConfig: OpenClawConfig,
-) {
-  const handlers = new Map<string, WatcherHandler[]>();
-  const watcher = {
-    options: { usePolling: false },
-    on(event: string, handler: WatcherHandler) {
-      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-      return this;
-    },
-    emit(event: string) {
-      for (const handler of handlers.get(event) ?? []) {
-        handler(event === "change" ? "/tmp/openclaw.json" : undefined);
-      }
-    },
-    close: vi.fn(async () => {}),
-  };
-  vi.spyOn(chokidar, "watch").mockReturnValue(watcher as unknown as never);
-  let writeListener: ((event: ConfigWriteNotification) => void) | null = null;
-  const onRestart = vi.fn();
-  const reloader = startGatewayConfigReloader({
-    testDebounceMs: 0,
-    initialConfig,
-    initialSnapshotRawHash: hashConfigRaw(JSON.stringify(initialConfig)),
-    initialAuthoredConfig: initialConfig,
-    initialSnapshotValid: true,
-    initialSnapshotIssues: [],
-    readSnapshot,
-    initialPluginInstallRecords: {},
-    readPluginInstallRecords: async () => ({}),
-    subscribeToWrites: (listener) => {
-      writeListener = listener;
-      return () => {
-        writeListener = null;
-      };
-    },
-    onNoopConfigCommit: async () => {},
-    onHotReload: async () => "applied" as const,
-    onRestart,
-    log: createInfoWarnErrorLogger(),
-    watchPath: "/tmp/openclaw.json",
-  });
-  return {
-    watcher,
-    reloader,
-    onRestart,
-    emitWrite: (event: ConfigWriteNotification) => writeListener?.(event),
-  };
-}
-
-// Applying a config lazily starts long maintenance intervals, so drain only due
-// timers instead of runAllTimersAsync, which never finishes with an interval armed.
-async function flushReload() {
-  for (let round = 0; round < 5; round += 1) {
-    await vi.advanceTimersByTimeAsync(0);
-  }
-}
-
 describe("config reload observation", () => {
-  beforeEach(() => {
+  beforeEach((context) => {
+    prepareConfigReloadTest(context);
     resetGatewayWorkAdmission();
     configAuditMocks.readSnapshot.mockReset().mockReturnValue(null);
     configAuditMocks.readLatestSnapshot.mockReset().mockReturnValue(null);
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeTestConfigReloaders();
     resetGatewayWorkAdmission();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -141,14 +65,14 @@ describe("config reload observation", () => {
     };
     const harness = createReloaderHarness(
       async () => makeSnapshot({ config: nextConfig, hash: "mode-off-write" }),
-      initialConfig,
+      { initialConfig },
     );
     await harness.reloader.ready;
     const observedGeneration = getConfigReloadObservation().generation;
     expect(getConfigReloadObservation().sourceConfig).toEqual(initialConfig);
 
     harness.watcher.emit("change");
-    await flushReload();
+    await flushReload(harness.reloader);
 
     expect(getConfigReloadObservation()).toEqual({
       generation: observedGeneration + 1,
@@ -165,13 +89,13 @@ describe("config reload observation", () => {
           issues: [{ path: "gateway.port", message: "Expected number" }],
           hash: "invalid",
         }),
-      { gateway: { reload: {} } },
+      { initialConfig: { gateway: { reload: {} } } },
     );
     await harness.reloader.ready;
     const observedGeneration = getConfigReloadObservation().generation;
 
     harness.watcher.emit("change");
-    await flushReload();
+    await flushReload(harness.reloader);
 
     expect(getConfigReloadObservation()).toEqual({
       generation: observedGeneration + 1,
@@ -219,7 +143,8 @@ describe("config reload observation", () => {
     };
     const nextConfig: OpenClawConfig = { gateway: { reload: { mode: "off" } }, ...fixture.next };
     const snapshot = createDeferred<ConfigFileSnapshot>();
-    const harness = createReloaderHarness(() => snapshot.promise, initialConfig);
+    const readSnapshot = vi.fn(() => snapshot.promise);
+    const harness = createReloaderHarness(readSnapshot, { initialConfig });
     await harness.reloader.ready;
     const observedGeneration = getConfigReloadObservation().generation;
     const health = () =>
@@ -230,13 +155,14 @@ describe("config reload observation", () => {
       });
 
     harness.watcher.emit("change");
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(0);
+    await waitForReloadState(() => readSnapshot.mock.calls.length === 1);
 
     expect(getConfigReloadObservation().generation).toBe(observedGeneration);
     expect(health()).toEqual({ state: "ok", ...fixture.ok });
 
     snapshot.resolve(makeSnapshot({ config: nextConfig, hash: `completed-${fixture.name}` }));
-    await flushReload();
+    await flushReload(harness.reloader);
 
     expect(getConfigReloadObservation().generation).toBe(observedGeneration + 1);
     expect(health()).toEqual({ state: "drift", ...fixture.drift, message: DRIFT_MESSAGE });
@@ -254,21 +180,23 @@ describe("config reload observation", () => {
       .fn<() => Promise<ConfigFileSnapshot>>()
       .mockImplementationOnce(() => supersededRead.promise)
       .mockImplementationOnce(() => newestRead.promise);
-    const harness = createReloaderHarness(readSnapshot, model("openai/gpt-5.6-sol"));
+    const harness = createReloaderHarness(readSnapshot, {
+      initialConfig: model("openai/gpt-5.6-sol"),
+    });
     await harness.reloader.ready;
     const initialObservation = getConfigReloadObservation();
 
     harness.watcher.emit("change");
     await vi.advanceTimersByTimeAsync(0);
-    expect(readSnapshot).toHaveBeenCalledOnce();
+    await waitForReloadState(() => readSnapshot.mock.calls.length === 1);
     harness.watcher.emit("change");
     supersededRead.resolve(makeSnapshot({ config: model("openai/gpt-5.6-terra"), hash: "old" }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    await waitForReloadState(() => readSnapshot.mock.calls.length === 2);
     expect(getConfigReloadObservation()).toEqual(initialObservation);
 
     newestRead.resolve(makeSnapshot({ config: model("openai/gpt-5.6-luna"), hash: "new" }));
-    await flushReload();
+    await flushReload(harness.reloader);
 
     expect(getConfigReloadObservation()).toEqual({
       generation: initialObservation.generation + 1,
@@ -288,7 +216,7 @@ describe("config reload observation", () => {
     };
     const harness = createReloaderHarness(
       async () => makeSnapshot({ config: nextConfig, hash: "hot-model-restart" }),
-      previousConfig,
+      { initialConfig: previousConfig },
     );
     await harness.reloader.ready;
 
@@ -303,7 +231,7 @@ describe("config reload observation", () => {
       writtenAtMs: Date.now(),
       afterWrite: { mode: "restart", reason: "model/provider runtime changed" },
     });
-    await vi.runOnlyPendingTimersAsync();
+    await flushReload(harness.reloader);
 
     expect(harness.onRestart).toHaveBeenCalledOnce();
     const [plan, restartConfig] = harness.onRestart.mock.calls[0] ?? [];
