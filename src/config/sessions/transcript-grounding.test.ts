@@ -163,6 +163,54 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
     expect(replay.at(-1)?.text).toBe(spellings.map(() => `(${REDACTED}/inbound/x.png)`).join(" "));
   });
 
+  it("grounds home-relative paths the media resolver expands", async () => {
+    const previousHome = process.env.OPENCLAW_HOME;
+    const home = tempDirs.make("grounding-home-");
+    process.env.OPENCLAW_HOME = home;
+    try {
+      const stateDir = path.join(home, "state");
+      const real = path.join(stateDir, "media", "inbound", "x.png");
+      fs.mkdirSync(path.dirname(real), { recursive: true });
+      fs.writeFileSync(real, "image");
+      const spellings = ["~/state/media/inbound/x.png", "~/state/./media/inbound/x.png"];
+      const { sessionKey, storePath } = await createSession(
+        "home-relative",
+        [
+          { message: { role: "user", timestamp: 1, content: "send it" } },
+          {
+            message: {
+              role: "assistant",
+              timestamp: 2,
+              content: [{ type: "text", text: spellings.join(" and ") }],
+            },
+          },
+        ],
+        stateDir,
+      );
+      const opened = await resolveInboundMediaReference(real);
+      for (const spelling of spellings) {
+        expect((await resolveInboundMediaReference(spelling))?.physicalPath).toBe(
+          opened?.physicalPath,
+        );
+      }
+
+      const replay = await readRecentUserAssistantTextForSession({
+        agentId: "main",
+        sessionKey,
+        storePath,
+        limit: 10,
+      });
+
+      expect(replay.at(-1)?.text).toBe(`${REDACTED}/inbound/x.png and ${REDACTED}/inbound/x.png`);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.OPENCLAW_HOME;
+      } else {
+        process.env.OPENCLAW_HOME = previousHome;
+      }
+    }
+  });
+
   it("rejects MCP, later-result, and prior-user-turn provenance", async () => {
     const stateDir = tempDirs.make("grounding-turn-order-");
     process.env.OPENCLAW_STATE_DIR = stateDir;

@@ -19,8 +19,9 @@ function grounding(
   authorizedAliases: string[] = [],
   caseInsensitivePaths = false,
   uriRoots: string[] = ["media://inbound"],
+  homeDir = "/home/tester",
 ): ManagedMediaGrounding {
-  return { authorizedAliases, caseInsensitivePaths, rootAliases, uriRoots };
+  return { authorizedAliases, caseInsensitivePaths, homeDir, rootAliases, uriRoots };
 }
 
 describe("invalidateUngroundedMediaPrefixes", () => {
@@ -672,6 +673,45 @@ describe("invalidateUngroundedMediaPrefixes", () => {
   ] as const)("reads a file URL as the URL parser does: %j", (input, expected) => {
     const g = grounding([root, `file://${root}`], [`file://${root}/inbound/x.png`], false, []);
     expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+  });
+
+  it.each([
+    [`file://${root}/inbound/ok.png\t/../../generated/secret.png`],
+    [`file://${root}/inbound/ok.png\n/../../generated/secret.png`],
+    [`${root}/inbound/ok.png /../../generated/secret.png`],
+  ])("does not let an authorized path run on past a boundary a later .. discards: %j", (input) => {
+    // The resolver reads each input as one path: ok.png and inbound are popped, and it opens
+    // generated/secret.png under the root, which no tool result verified.
+    const granted = [`file://${root}/inbound/ok.png`, `${root}/inbound/ok.png`];
+    const g = grounding([root, `file://${root}`], granted, false, []);
+    const out = invalidateUngroundedMediaPrefixes(input, g);
+    expect(out.startsWith(REDACTED)).toBe(true);
+    expect(out).toBe(`${REDACTED}${input.slice(input.indexOf("/inbound/"))}`);
+  });
+
+  it.each([
+    ["~/.openclaw/media/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    ["see ~/.openclaw/./media/x.png", `see ${REDACTED}/x.png`],
+    ["~/../tester/.openclaw/media/x.png", `${REDACTED}/x.png`],
+    ["~/../../srv/state/media/x.png", `${REDACTED}/x.png`],
+  ])("expands a leading ~ as the resolver does: %j", (input, expected) => {
+    // resolveUserPath turns ~/ into the home directory before the resolver normalizes.
+    const roots = ["/home/tester/.openclaw/media", "/srv/state/media"];
+    expect(invalidateUngroundedMediaPrefixes(input, grounding(roots, [], false, []))).toBe(
+      expected,
+    );
+  });
+
+  it("leaves ~ spellings that do not reach a root", () => {
+    const g = grounding(["/home/tester/.openclaw/media"], [], false, []);
+    for (const benign of [
+      "~/other/media/x.png",
+      "~tester/.openclaw/media/x.png",
+      "~/.openclaw/media-old/x.png",
+      "cd ~ && ls .openclaw/media",
+    ]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
   });
 
   it("keeps prose boundaries around file URLs when no deleted character is inside one", () => {

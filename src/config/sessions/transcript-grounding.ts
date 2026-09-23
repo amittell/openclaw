@@ -28,6 +28,8 @@ const URI_PREFIX = /^[a-z][a-z0-9+.-]*:(?:\/\/[^/]*)?/iu;
 const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
 // What the WHATWG URL parser deletes from its input before parsing; see urlParserReading.
 const URL_DELETED_RUNS = /[\t\n\r]+/gu;
+// The `~` spellings resolveUserPath expands; `~name` is left to the filesystem.
+const HOME_PREFIX = /^~(?=$|[\\/])/u;
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -75,6 +77,8 @@ type NormalizableRoot = {
   lastSegment: string;
   lowerLastSegment: string;
   lowerSegments: readonly string[];
+  /** The segments a leading `~` does not supply; see admitsRange. */
+  lowerSegmentsBeyondHome: readonly string[];
   /** Whole path, not just the last segment: ANY accented segment needs the fold to decide. */
   pathIsAscii: boolean;
   lowerPrefix: string;
@@ -121,6 +125,7 @@ function resolvedManagedPrefix(
   token: string,
   root: NormalizableRoot,
   comparable: (value: string) => string,
+  homeDir: string,
 ): number {
   let boundaries = 0;
   for (let end = root.prefixLength + 1; end <= token.length; end += 1) {
@@ -163,7 +168,10 @@ function resolvedManagedPrefix(
       }
       resolved = normalizedFilesystemPath(decodedPath);
     } else {
-      resolved = normalizedFilesystemPath(candidate);
+      // The resolver's resolveUserPath expands a leading "~" before it normalizes.
+      resolved = normalizedFilesystemPath(
+        HOME_PREFIX.test(candidate) ? `${homeDir}${candidate.slice(1)}` : candidate,
+      );
     }
     if (canonicalForCompare(comparable(resolved)) === canonicalForCompare(comparable(root.path))) {
       return end;
@@ -212,6 +220,13 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
   // path normalization does: file:///managed/state/./media resolves into the managed root
   // just as the bare path does, so excluding URI roots here would leave the same bypass
   // reachable through a different spelling.
+  const homeSegments = new Set(
+    normalizedFilesystemPath(grounding.homeDir)
+      .split("/")
+      .map((segment) => foldCasePreservingLength(segment)),
+  );
+  const beyondHome = (segments: readonly string[]) =>
+    segments.filter((segment) => !homeSegments.has(segment));
   const normalizableRoots: NormalizableRoot[] = grounding.rootAliases
     .concat(grounding.uriRoots)
     .map((alias) => {
@@ -230,16 +245,18 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
           return null;
         }
         const rootPath = normalizedFilesystemPath(decodedRootPath);
+        const lowerSegments = rootPath
+          .split("/")
+          .filter(Boolean)
+          .map((segment) => foldCasePreservingLength(segment));
         return {
           uri: { protocol: url.protocol, host: url.host },
           prefixLength: url.protocol.length,
           path: rootPath,
           lastSegment: rootPath.split("/").pop() ?? "",
           lowerLastSegment: foldCasePreservingLength(rootPath.split("/").pop() ?? ""),
-          lowerSegments: rootPath
-            .split("/")
-            .filter(Boolean)
-            .map((segment) => foldCasePreservingLength(segment)),
+          lowerSegments,
+          lowerSegmentsBeyondHome: beyondHome(lowerSegments),
           // Scheme only. WHATWG folds empty host, "localhost" and "LOCALHOST" to the same
           // file: authority, so gating on the raw authority text rejected spellings the
           // parser resolves into the root - the exact mistake this gate must never make.
@@ -251,16 +268,18 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
         return null;
       }
       const rootPath = normalizedFilesystemPath(alias);
+      const lowerSegments = rootPath
+        .split("/")
+        .filter(Boolean)
+        .map((segment) => foldCasePreservingLength(segment));
       return {
         uri: null,
         prefixLength: 0,
         path: rootPath,
         lastSegment: rootPath.split("/").pop() ?? "",
         lowerLastSegment: foldCasePreservingLength(rootPath.split("/").pop() ?? ""),
-        lowerSegments: rootPath
-          .split("/")
-          .filter(Boolean)
-          .map((segment) => foldCasePreservingLength(segment)),
+        lowerSegments,
+        lowerSegmentsBeyondHome: beyondHome(lowerSegments),
         pathIsAscii: !NON_ASCII.test(rootPath),
         lowerPrefix: "",
       };
@@ -324,10 +343,14 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
     // would fold onto the root - and it is what keeps ordinary content away from the caps
     // below. Matching on the last segment alone admitted any absolute-path list containing
     // the word "media", and a 41-entry PATH then lost its tail to a cost cap.
+    const spelled = (segments: readonly string[]) =>
+      segments.every((segment) => containsWithin(segment, cachedTokenStart, end));
     return (
       !root.pathIsAscii ||
       containsWithin("%", cachedTokenStart, end) ||
-      root.lowerSegments.every((segment) => containsWithin(segment, cachedTokenStart, end))
+      spelled(root.lowerSegments) ||
+      // A leading "~" supplies the home directory's segments without spelling them.
+      (containsWithin("~", cachedTokenStart, end) && spelled(root.lowerSegmentsBeyondHome))
     );
   };
   const admitsToken = (root: NormalizableRoot, rootIndex: number): boolean =>
@@ -416,10 +439,10 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
   };
   const startsAbsolutePath = (at: number): boolean => {
     const first = text.charAt(at);
-    if (first === "/" || first === "\\") {
+    const second = text.charAt(at + 1);
+    if (first === "/" || first === "\\" || (first === "~" && (second === "/" || second === "\\"))) {
       return true;
     }
-    const second = text.charAt(at + 1);
     const third = text.charAt(at + 2);
     return /[a-z]/iu.test(first) && second === ":" && (third === "/" || third === "\\");
   };
@@ -587,7 +610,12 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
       if (end - at > MAX_GROUNDING_TOKEN_CHARS) {
         return { length: end - at, undecidable: true };
       }
-      const length = resolvedManagedPrefix(text.slice(at, end), root, comparable);
+      const length = resolvedManagedPrefix(
+        text.slice(at, end),
+        root,
+        comparable,
+        grounding.homeDir,
+      );
       if (length === UNDECIDABLE_PREFIX) {
         return { length: end - at, undecidable: true };
       }
@@ -599,6 +627,14 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
       }
     }
     return null;
+  };
+  // An authorized alias ends the reference only where the path ends. Past a boundary that a
+  // later ".." discards ("ok.png /../../x", or a tab the URL parser deletes) the same path goes
+  // on to another file under the root, so the verified spelling is not what the resolver opens.
+  const pathRunsPast = (at: number, aliasEnd: number): boolean => {
+    const tokenEnd = tokenEndFrom(tokenStart);
+    const extent = pathExtent(at, tokenEnd);
+    return extent.truncated || extent.end > Math.max(tokenEnd, aliasEnd);
   };
   const advanceOne = () => {
     tokenStart = TOKEN_BOUNDARY.test(text.charAt(cursor++)) ? cursor : tokenStart;
@@ -668,7 +704,7 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
       (candidate) =>
         matchesAt(candidate, cursor) && endsReference(text, cursor + candidate.alias.length),
     )?.alias;
-    if (allowed) {
+    if (allowed && !pathRunsPast(cursor, cursor + allowed.length)) {
       cursor += allowed.length;
     } else {
       // A dot-segment spelling of an AUTHORIZED reference is redacted too: authorized

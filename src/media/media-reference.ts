@@ -303,6 +303,8 @@ async function resolveInboundMediaPath(id: string, source: string): Promise<stri
 export type ManagedMediaGrounding = {
   readonly authorizedAliases: readonly string[];
   readonly caseInsensitivePaths: boolean;
+  /** Where `maybeLocalPathFromSource` expands a leading `~`, through `resolveUserPath`. */
+  readonly homeDir: string;
   readonly rootAliases: readonly string[];
   /** Lowercase media-store URI roots; URI schemes match case-insensitively. */
   readonly uriRoots: readonly string[];
@@ -395,11 +397,18 @@ export async function prepareManagedMediaGroundingRoot(): Promise<ManagedMediaGr
   const rootAliases = new Set<string>();
   const mediaDir = getMediaDir();
   const realMediaDir = await fs.realpath(mediaDir).catch(() => mediaDir);
-  prepareManagedMediaPathAliases(mediaDir, rootAliases);
-  prepareManagedMediaPathAliases(realMediaDir, rootAliases);
+  const homeDir = resolveUserPath("~");
+  for (const dir of [mediaDir, realMediaDir]) {
+    prepareManagedMediaPathAliases(dir, rootAliases);
+    const fromHome = path.relative(homeDir, dir);
+    if (fromHome && !relativePathEscapesBase(fromHome)) {
+      prepareManagedMediaPathAliases(`~${path.sep}${fromHome}`, rootAliases);
+    }
+  }
   const byLength = (left: string, right: string) => right.length - left.length;
   return {
     caseInsensitivePaths: await probeCaseInsensitivePath(realMediaDir),
+    homeDir,
     mediaDir,
     rootAliases: [...rootAliases].toSorted(byLength),
     uriRoots: [INBOUND_MEDIA_URI_ROOT],
@@ -436,6 +445,7 @@ export async function prepareManagedMediaGrounding(
   return {
     authorizedAliases: [...authorizedAliases].toSorted(byLength),
     caseInsensitivePaths: root.caseInsensitivePaths,
+    homeDir: root.homeDir,
     rootAliases: root.rootAliases,
     uriRoots: root.uriRoots,
   };
