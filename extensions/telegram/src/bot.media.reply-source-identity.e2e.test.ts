@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { clearTimeout as cancelTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import { detectAndLoadAgentHarnessPromptImages } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -14,7 +15,6 @@ import {
   TELEGRAM_TEST_TIMINGS,
   createBotHandlerWithOptions,
   createTelegramPhotoForTest,
-  holdTelegramMediaTimeouts,
   mockTelegramPngDownload,
 } from "./bot.media.test-utils.js";
 
@@ -23,8 +23,13 @@ const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
+// A second decodable 1x1 PNG with a different pixel, for a genuinely distinct source.
+const OTHER_PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYPj/HwADAgH/OSkZvgAAAABJRU5ErkJggg==",
+  "base64",
+);
 
-function stageInboundPng(id: string): string {
+function stageInboundPng(id: string, bytes: Buffer = PNG_BYTES): string {
   const stateDir = process.env.OPENCLAW_STATE_DIR;
   if (!stateDir) {
     throw new Error("media harness state dir is not set");
@@ -32,7 +37,7 @@ function stageInboundPng(id: string): string {
   const inboundDir = path.join(stateDir, "media", "inbound");
   mkdirSync(inboundDir, { recursive: true });
   const filePath = path.join(inboundDir, id);
-  writeFileSync(filePath, PNG_BYTES);
+  writeFileSync(filePath, bytes);
   return filePath;
 }
 
@@ -56,6 +61,19 @@ type ScheduledTimer = {
   callback: () => unknown;
   handle: ReturnType<typeof setTimeout>;
 };
+
+// Hold media-group deadlines so the test releases a fully assembled album; every other
+// timer keeps native scheduling. Kept local because the shared hold helper lives in a
+// different test-support module on newer main.
+function holdMediaGroupDeadlines() {
+  return vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    const handle = scheduleTimeout(callback, delay, ...args);
+    if (delay === TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs) {
+      cancelTimeout(handle);
+    }
+    return handle;
+  });
+}
 
 // Flush only the media-group deadline timers, mirroring the album e2e suite.
 function resolveActiveScheduledTimersForDelay(
@@ -207,68 +225,82 @@ describe("telegram reply media source identity", () => {
   );
 
   it(
-    "sends one provider image when an album photo is replied to in a later message",
+    "drops a reply ancestor whose source is already an attachment of the replying album",
     async () => {
       const runtimeError = vi.fn();
       const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
       const fetchSpy = mockTelegramPngDownload();
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const albumPhotoPath = stageInboundPng("album-source.png");
-      const albumMessage = {
-        message_id: 1101,
-        chat: { id: 1234, type: "private" as const },
-        from: { id: 777, is_bot: false, first_name: "Ada" },
-        media_group_id: "album-source-group",
-        photo: [
-          {
-            ...createTelegramPhotoForTest("album-file"),
-            file_unique_id: "shared-telegram-source",
-          },
-        ],
-        date: 1736380800,
-      };
+      const originalPath = stageInboundPng("original-source.png");
+      const albumSamePath = stageInboundPng("album-same-source.png");
+      const albumOtherPath = stageInboundPng("album-other-source.png", OTHER_PNG_BYTES);
 
       try {
-        setNextSavedMediaPath({ path: albumPhotoPath, id: "album-source.png" });
+        setNextSavedMediaPath({ path: originalPath, id: "original-source.png" });
         await handler({
-          message: albumMessage,
+          message: originalMessage,
           me,
-          getFile: async () => ({ file_path: "photos/album.png" }),
+          getFile: async () => ({ file_path: "photos/original.png" }),
         });
-
-        // The album buffer holds the photo until its flush deadline.
-        expect(replySpy).not.toHaveBeenCalled();
-        await flushMediaGroupTimers(setTimeoutSpy, clearTimeoutSpy, 1);
-        await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(1));
-        expect(runtimeError).not.toHaveBeenCalled();
-
-        // A later reply to the album photo carries the same file_unique_id. Without the
-        // album-ingress handoff the reply ancestor would hydrate under a second path and
-        // the provider would receive the same source twice.
-        replySpy.mockClear();
-        await handler({
-          message: {
-            message_id: 1102,
-            chat: albumMessage.chat,
-            from: albumMessage.from,
-            text: "same picture again",
-            reply_to_message: albumMessage,
-            date: 1736380801,
-          },
-          me,
-          getFile: async () => ({ file_path: "photos/album.png" }),
-        });
-
         expect(replySpy).toHaveBeenCalledTimes(1);
+
+        // One album replies to the original photo and re-sends it next to a new photo.
+        // Only album ingress knows the album copy's file_unique_id, so without that
+        // handoff the replied-to original hydrates as a third provider image.
+        replySpy.mockClear();
+        const setTimeoutSpy = holdMediaGroupDeadlines();
+        const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+        try {
+          const albumBase = {
+            chat: originalMessage.chat,
+            from: originalMessage.from,
+            media_group_id: "album-source-group",
+            reply_to_message: originalMessage,
+            date: 1736380801,
+          };
+          setNextSavedMediaPath({ path: albumSamePath, id: "album-same-source.png" });
+          setNextSavedMediaPath({ path: albumOtherPath, id: "album-other-source.png" });
+          await handler({
+            message: {
+              ...albumBase,
+              message_id: 1102,
+              caption: "same picture, plus a new one",
+              photo: [
+                {
+                  ...createTelegramPhotoForTest("album-same-file"),
+                  file_unique_id: "shared-telegram-source",
+                },
+              ],
+            },
+            me,
+            getFile: async () => ({ file_path: "photos/album-same.png" }),
+          });
+          await handler({
+            message: {
+              ...albumBase,
+              message_id: 1103,
+              photo: [createTelegramPhotoForTest("album-other-file")],
+            },
+            me,
+            getFile: async () => ({ file_path: "photos/album-other.png" }),
+          });
+
+          // The album buffer holds both photos until its flush deadline.
+          expect(replySpy).not.toHaveBeenCalled();
+          await flushMediaGroupTimers(setTimeoutSpy, clearTimeoutSpy, 1);
+          await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(1));
+        } finally {
+          setTimeoutSpy.mockRestore();
+          clearTimeoutSpy.mockRestore();
+        }
+
+        expect(runtimeError).not.toHaveBeenCalled();
         const ctx = replySpy.mock.calls[0]?.[0] as MsgContext | undefined;
         if (!ctx) {
           throw new Error("expected one reply call");
         }
-        expect(await loadProviderImages(ctx)).toEqual({ payloads: 1, unique: 1 });
+        expect(ctx).toMatchObject({ MediaPaths: [albumSamePath, albumOtherPath] });
+        expect(await loadProviderImages(ctx)).toEqual({ payloads: 2, unique: 2 });
       } finally {
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
         fetchSpy.mockRestore();
       }
     },
