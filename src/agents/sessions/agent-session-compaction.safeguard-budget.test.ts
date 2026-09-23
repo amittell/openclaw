@@ -13,7 +13,7 @@ import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../packages/agent-core/src/h
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
-import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
@@ -169,7 +169,7 @@ describe("AgentSession safeguard summary budget", () => {
 
       // Reopen from disk: what the next turn gets is what the owner stored.
       const databasePath = resolveSqliteTargetFromSessionStorePath(target.storePath).path;
-      expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
+      expect(await closeOpenClawAgentDatabaseByPathAsync(databasePath)).toBe(true);
       const reopened = SessionManager.open(target, dir);
       const stored = reopened.getBranch().findLast((entry) => entry.type === "compaction");
       if (stored?.type !== "compaction") {
