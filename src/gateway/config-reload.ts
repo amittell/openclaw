@@ -286,6 +286,8 @@ export function startGatewayConfigReloader(opts: {
     epoch: number;
     writerEpoch: number;
     read?: Promise<[ConfigFileSnapshot, PluginInstallRecords]>;
+    // The transaction begun at this epoch proved this observation reads its own source.
+    acceptedFromEpoch?: number;
   } = { epoch: 0, writerEpoch: 0 };
   let pendingInProcessConfig: InProcessConfigCandidate | null = null;
   let activeInProcessConfig: InProcessConfigCandidate | null = null;
@@ -511,6 +513,7 @@ export function startGatewayConfigReloader(opts: {
         }
         assertOwned();
         transactionEpoch = observed.epoch;
+        observed.acceptedFromEpoch = initialEpoch;
       }
       assertOwned();
       assertReloadPublicationCurrent(isCurrent(), false);
@@ -1007,19 +1010,20 @@ export function startGatewayConfigReloader(opts: {
     pending = false;
     clearReloadTimer();
     let attemptedCandidate: InProcessConfigCandidate | null = null;
-    const observation = trackReloadObservation((epoch) => epoch === sourceObservation.epoch);
+    const observation = trackReloadObservation(() => sourceObservation);
     try {
       assertLeaseOwned();
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
         attemptedCandidate = pendingWrite;
-        observation.observe(pendingWrite.epoch, pendingWrite.compareConfig);
+        observation.observe(pendingWrite.epoch, null);
         pendingInProcessConfig = null;
         activeInProcessConfig = pendingWrite;
         missingConfigRetries = 0;
         try {
           await runAcceptedTransaction(async () => {
             const snapshot = await opts.readSnapshot(currentRuntimeEnvSourceConfig);
+            observation.observeSnapshot(pendingWrite.epoch, snapshot);
             assertLeaseOwned();
             if (
               !snapshot.exists ||

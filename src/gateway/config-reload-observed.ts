@@ -27,8 +27,11 @@ export function getConfigReloadObservation(): ConfigReloadObservation {
  * Holds one reloader transaction's source read until the transaction finishes.
  * Publishing then, and only while its epoch is current, lets health compare the
  * exact accepted or rejected candidate; a newer write revokes it before it escapes.
+ * A same-source watcher echo that the transaction accepted keeps its read current.
  */
-export function trackReloadObservation(isCurrent: (epoch: number) => boolean) {
+export function trackReloadObservation(
+  readCurrent: () => Readonly<{ epoch: number; acceptedFromEpoch?: number }>,
+) {
   let candidate: { epoch: number; sourceConfig: OpenClawConfig | null } | null = null;
   return {
     observe(epoch: number, sourceConfig: OpenClawConfig | null) {
@@ -44,7 +47,11 @@ export function trackReloadObservation(isCurrent: (epoch: number) => boolean) {
       };
     },
     publishIfCurrent() {
-      if (candidate && isCurrent(candidate.epoch)) {
+      const current = readCurrent();
+      if (
+        candidate &&
+        (candidate.epoch === current.epoch || candidate.epoch === current.acceptedFromEpoch)
+      ) {
         publishReloadObservation(candidate.sourceConfig);
       }
     },

@@ -240,4 +240,119 @@ describe("config reload observation", () => {
     expect(getConfigReloadObservation().sourceConfig).toEqual(nextConfig);
     await harness.reloader.stop();
   });
+
+  it("publishes a slow in-process write's source when it accepts its own watcher echo", async () => {
+    const model = (primary: string): OpenClawConfig => ({
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: primary } },
+    });
+    const initialConfig = model("openai/gpt-5.6-sol");
+    const nextConfig = model("openai/gpt-5.6-terra");
+    const pluginReadStarted = createDeferred();
+    const pluginReadGate = createDeferred();
+    const readPluginInstallRecords = vi.fn(async () => {
+      pluginReadStarted.resolve();
+      await pluginReadGate.promise;
+      return {};
+    });
+    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "slow-off" }));
+    const harness = createReloaderHarness(readSnapshot, {
+      initialConfig,
+      readPluginInstallRecords,
+    });
+    await harness.reloader.ready;
+    const observedGeneration = getConfigReloadObservation().generation;
+
+    harness.emitWrite({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: nextConfig,
+      runtimeConfig: nextConfig,
+      persistedHash: "slow-off",
+      revision: 1,
+      fingerprint: "runtime-slow-off",
+      sourceFingerprint: "source-slow-off",
+      writtenAtMs: Date.now(),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await pluginReadStarted.promise;
+    // The write's own filesystem echo lands while its transaction is still running.
+    harness.watcher.emit("change");
+    pluginReadGate.resolve();
+    await flushReload(harness.reloader);
+
+    // One reread for the write, one for the echo its checkpoint accepted; no follow-up reload.
+    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    expect(getConfigReloadObservation()).toEqual({
+      generation: observedGeneration + 1,
+      sourceConfig: nextConfig,
+    });
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: initialConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: getConfigReloadObservation().sourceConfig,
+      }),
+    ).toEqual({
+      state: "drift",
+      liveDefaultModel: "openai/gpt-5.6-sol",
+      observedDefaultModel: "openai/gpt-5.6-terra",
+      driftPaths: ["agents.defaults.model"],
+      message: DRIFT_MESSAGE,
+    });
+    await harness.reloader.stop();
+  });
+
+  it.each([
+    { outcome: "a read failure", observed: null },
+    { outcome: "a missing file", observed: null },
+    { outcome: "an invalid file", observed: null },
+    { outcome: "replaced bytes", observed: "openai/gpt-5.6-luna" },
+  ])("publishes a pending write's actual reread result after $outcome", async (fixture) => {
+    const model = (primary: string): OpenClawConfig => ({
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: primary } },
+    });
+    const nextConfig = model("openai/gpt-5.6-terra");
+    const reread = async (): Promise<ConfigFileSnapshot> => {
+      switch (fixture.outcome) {
+        case "a read failure":
+          throw new Error("config read failed");
+        case "a missing file":
+          return makeSnapshot({ exists: false, raw: null, hash: undefined });
+        case "an invalid file":
+          return makeSnapshot({
+            valid: false,
+            issues: [{ path: "gateway.port", message: "Expected number" }],
+            hash: "invalid",
+          });
+        default:
+          return makeSnapshot({ config: model("openai/gpt-5.6-luna"), hash: "replaced" });
+      }
+    };
+    const readSnapshot = vi.fn(reread);
+    const harness = createReloaderHarness(readSnapshot, {
+      initialConfig: model("openai/gpt-5.6-sol"),
+    });
+    await harness.reloader.ready;
+    const observedGeneration = getConfigReloadObservation().generation;
+
+    harness.emitWrite({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: nextConfig,
+      runtimeConfig: nextConfig,
+      persistedHash: "queued",
+      revision: 1,
+      fingerprint: "runtime-queued",
+      sourceFingerprint: "source-queued",
+      writtenAtMs: Date.now(),
+    });
+    await flushReload(harness.reloader);
+
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservation()).toEqual({
+      generation: observedGeneration + 1,
+      sourceConfig: fixture.observed === null ? null : model(fixture.observed),
+    });
+    await harness.reloader.stop();
+  });
 });
