@@ -658,6 +658,35 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     expect(out).toBe(paths.map((entry) => entry.replace(root, REDACTED)).join(","));
     expect(tests + sliced).toBeLessThan(token.length * 16);
   });
+
+  // WHATWG URL deletes ASCII tab, LF and CR anywhere in its input, and the media resolver
+  // hands every file: reference to it, so each input opens a file under the root. The first
+  // one names an authorized file, but not in the spelling the resolver verified.
+  it.each([
+    ["file:///managed/state/me\tdia/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    ["see FILE:///managed/state/me\ndia/x.png now", `see ${REDACTED}/x.png now`],
+    ["file:///managed/st\r\nate/media/x.png", `${REDACTED}/x.png`],
+    ["file:///managed/state/x/.\t./media/x.png", `${REDACTED}/x.png`],
+    ["file:///managed/state/x y/../me\tdia/x.png", `${REDACTED}/x.png`],
+    ["word\nfile:///managed/state/me\tdia/x.png", `word\n${REDACTED}/x.png`],
+  ] as const)("reads a file URL as the URL parser does: %j", (input, expected) => {
+    const g = grounding([root, `file://${root}`], [`file://${root}/inbound/x.png`], false, []);
+    expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+  });
+
+  it("keeps prose boundaries around file URLs when no deleted character is inside one", () => {
+    const granted = `file://${root}/inbound/ok.png`;
+    const g = grounding([root, `file://${root}`], [granted], false, []);
+    for (const benign of [
+      `${granted}\nnext line`,
+      `${granted}\t.fake`,
+      "/managed/state/me\tdia/x.png",
+      "file:///tmp/x.png\nmedia/x.png is elsewhere",
+      "file:///managed/state/other\n/media/x.png",
+    ]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
 });
 
 describe("prepareManagedMediaGrounding", () => {

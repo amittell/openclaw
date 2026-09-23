@@ -26,6 +26,8 @@ const NON_ASCII = /[^\u0020-\u007e]/u;
 const URI_PREFIX = /^[a-z][a-z0-9+.-]*:(?:\/\/[^/]*)?/iu;
 // A ".." segment in any spelling a resolver parser folds; over-matching only widens a search.
 const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
+// What the WHATWG URL parser deletes from its input before parsing; see urlParserReading.
+const URL_DELETED_RUNS = /[\t\n\r]+/gu;
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -182,16 +184,14 @@ function resolvedManagedPrefix(
   return 0;
 }
 
-export function invalidateUngroundedMediaPrefixes(
-  text: string,
-  grounding: ManagedMediaGrounding,
-): string {
+/** Ranges of `text` naming a managed root that no authorized alias covers, in text order. */
+function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [number, number][] {
+  const ranges: [number, number][] = [];
   if (!text || (grounding.rootAliases.length === 0 && grounding.uriRoots.length === 0)) {
-    return text;
+    return ranges;
   }
   let cursor = 0,
     tokenStart = 0;
-  const output: string[] = [];
   const comparisonText = grounding.caseInsensitivePaths ? foldCasePreservingLength(text) : text;
   const comparable = (alias: string) =>
     grounding.caseInsensitivePaths ? foldCasePreservingLength(alias) : alias;
@@ -601,9 +601,7 @@ export function invalidateUngroundedMediaPrefixes(
     return null;
   };
   const advanceOne = () => {
-    const char = text.charAt(cursor++);
-    output.push(char);
-    tokenStart = TOKEN_BOUNDARY.test(char) ? cursor : tokenStart;
+    tokenStart = TOKEN_BOUNDARY.test(text.charAt(cursor++)) ? cursor : tokenStart;
   };
   // The guard asks whether a remote authority appears BEFORE the cursor, and the prefix only
   // grows within a token, so the answer flips exactly once - at the end of the earliest match.
@@ -671,19 +669,98 @@ export function invalidateUngroundedMediaPrefixes(
         matchesAt(candidate, cursor) && endsReference(text, cursor + candidate.alias.length),
     )?.alias;
     if (allowed) {
-      output.push(text.slice(cursor, cursor + allowed.length));
       cursor += allowed.length;
-      reanchorToken(cursor);
     } else {
       // A dot-segment spelling of an AUTHORIZED reference is redacted too: authorized
       // aliases are the exact spellings the resolver verified, and re-deriving
       // equivalence for them would decide authorization from prompt text. Failing closed
       // costs a visible placeholder on an exotic spelling; failing open replays an
       // unverified path.
-      output.push(UNGROUNDED_MEDIA_PLACEHOLDER);
+      ranges.push([cursor, cursor + rootLength]);
       cursor += rootLength;
-      reanchorToken(cursor);
     }
+    reanchorToken(cursor);
   }
-  return output.join("");
+  return ranges;
+}
+
+/**
+ * The text as the URL parser reads a file: reference in it, or undefined when that reading
+ * cannot differ from the raw scan's.
+ *
+ * WHATWG URL deletes ASCII tab, LF and CR anywhere in its input, and the media resolver hands
+ * every `file:` reference to it (`safeFileURLToPath`), so `file:///state/me<TAB>dia/x` opens a
+ * file under `/state/media` while no raw spelling names that root. A run of those characters
+ * right before `file:` is kept: the reference starts after it, and deleting it would join the
+ * preceding word onto the scheme, which the predecessor rule then refuses.
+ */
+function urlParserReading(text: string): { text: string; offsets: Uint32Array } | undefined {
+  if (!/file:/iu.test(text)) {
+    return undefined;
+  }
+  const runs = [...text.matchAll(URL_DELETED_RUNS)];
+  if (runs.length === 0) {
+    return undefined;
+  }
+  const kept: string[] = [];
+  const offsets = new Uint32Array(text.length);
+  let length = 0;
+  const keep = (from: number, to: number) => {
+    kept.push(text.slice(from, to));
+    for (let index = from; index < to; index += 1) {
+      offsets[length++] = index;
+    }
+  };
+  let from = 0;
+  for (const run of runs) {
+    const end = run.index + run[0].length;
+    keep(from, text.slice(end, end + 5).toLowerCase() === "file:" ? end : run.index);
+    from = end;
+  }
+  keep(from, text.length);
+  return { text: kept.join(""), offsets: offsets.subarray(0, length) };
+}
+
+export function invalidateUngroundedMediaPrefixes(
+  text: string,
+  grounding: ManagedMediaGrounding,
+): string {
+  const ranges = ungroundedRanges(text, grounding);
+  const fileRoots = grounding.rootAliases.filter((alias) => /^file:/iu.test(alias));
+  const reading = fileRoots.length > 0 ? urlParserReading(text) : undefined;
+  if (reading) {
+    // Only file: roots, and only a range with a deleted character inside it: every other range
+    // spells bytes the raw scan already decided, and only that scan sees prose boundaries.
+    // Reading "ok.png<LF>next" as one URL would otherwise redact an authorized reference. No
+    // alias is authorized here: a spelling that needs deleted characters to name the root is
+    // not the one the resolver verified, so it is redacted like the dot-segment spellings.
+    const parsedRanges = ungroundedRanges(reading.text, {
+      ...grounding,
+      authorizedAliases: [],
+      rootAliases: fileRoots,
+      uriRoots: [],
+    });
+    for (const [start, end] of parsedRanges) {
+      const from = reading.offsets[start];
+      const last = reading.offsets[end - 1];
+      if (from !== undefined && last !== undefined) {
+        if (text.slice(from, last + 1).search(URL_DELETED_RUNS) !== -1) {
+          ranges.push([from, last + 1]);
+        }
+      }
+    }
+    ranges.sort(([left], [right]) => left - right);
+  }
+  if (ranges.length === 0) {
+    return text;
+  }
+  let output = "";
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start >= cursor) {
+      output += `${text.slice(cursor, start)}${UNGROUNDED_MEDIA_PLACEHOLDER}`;
+    }
+    cursor = Math.max(cursor, end);
+  }
+  return output + text.slice(cursor);
 }

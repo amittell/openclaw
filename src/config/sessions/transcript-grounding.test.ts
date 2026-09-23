@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { resolveInboundMediaReference } from "../../media/media-reference.js";
 import {
   appendTranscriptEvent,
   loadTranscriptEvents,
@@ -120,6 +122,45 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
     expect(await loadTranscriptEvents({ agentId: "main", sessionId, storePath })).toStrictEqual(
       before,
     );
+  });
+
+  it("grounds file URLs the media resolver opens through characters the URL parser deletes", async () => {
+    const stateDir = tempDirs.make("grounding-url-deleted-");
+    const real = path.join(stateDir, "media", "inbound", "x.png");
+    fs.mkdirSync(path.dirname(real), { recursive: true });
+    fs.writeFileSync(real, "image");
+    const rootUrl = pathToFileURL(path.join(stateDir, "media")).href;
+    const spellings = ["\t", "\n", "\r"].map(
+      (deleted) => `${rootUrl.slice(0, -"dia".length)}${deleted}dia/inbound/x.png`,
+    );
+    const { sessionKey, storePath } = await createSession(
+      "url-deleted",
+      [
+        { message: { role: "user", timestamp: 1, content: "send it" } },
+        {
+          message: {
+            role: "assistant",
+            timestamp: 2,
+            content: [{ type: "text", text: spellings.map((url) => `(${url})`).join(" ") }],
+          },
+        },
+      ],
+      stateDir,
+    );
+    const opened = await resolveInboundMediaReference(pathToFileURL(real).href);
+    for (const url of spellings) {
+      // The replayed text is only unsafe because the resolver really opens it.
+      expect((await resolveInboundMediaReference(url))?.physicalPath).toBe(opened?.physicalPath);
+    }
+
+    const replay = await readRecentUserAssistantTextForSession({
+      agentId: "main",
+      sessionKey,
+      storePath,
+      limit: 10,
+    });
+
+    expect(replay.at(-1)?.text).toBe(spellings.map(() => `(${REDACTED}/inbound/x.png)`).join(" "));
   });
 
   it("rejects MCP, later-result, and prior-user-turn provenance", async () => {
