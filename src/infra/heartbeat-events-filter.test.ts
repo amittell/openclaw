@@ -1,6 +1,10 @@
 // Covers heartbeat event prompt filtering.
 import { describe, expect, it } from "vitest";
 import {
+  appendExecTimeoutRetryGuidance,
+  EXEC_TIMEOUT_RETRY_GUIDANCE,
+} from "../agents/bash-tools.exec-output.js";
+import {
   buildCronEventPrompt,
   buildExecEventPrompt,
   isCronSystemEvent,
@@ -220,6 +224,47 @@ describe("isExecCompletionEvent", () => {
     // Parenthesized false positive from review feedback — must not match mid-string
     expect(isExecCompletionEvent("Nightly backup exec failed (see logs)")).toBe(false);
     expect(isExecCompletionEvent("Check: exec completed (last run was yesterday)")).toBe(false);
+  });
+});
+
+describe("timeout retry guidance suffix (producer shape)", () => {
+  it("treats a no-output SIGTERM timeout exit as non-relayable exec completion", () => {
+    const event = appendExecTimeoutRetryGuidance(
+      "Exec failed (abcd1234, signal SIGTERM)",
+      "no-output-timeout",
+    );
+    // Fixture must be the exact producer shape: structured event + appended guidance.
+    expect(event).toBe(`Exec failed (abcd1234, signal SIGTERM)\n\n${EXEC_TIMEOUT_RETRY_GUIDANCE}`);
+    expect(isExecCompletionEvent(event)).toBe(true);
+    expect(isRelayableExecCompletionEvent(event)).toBe(false);
+    const prompt = buildExecEventPrompt([event]);
+    expect(prompt).not.toContain("signal SIGTERM");
+    expect(prompt).not.toContain(EXEC_TIMEOUT_RETRY_GUIDANCE);
+  });
+
+  it("relays an output-bearing SIGKILL timeout exit and preserves the output", () => {
+    const event = appendExecTimeoutRetryGuidance(
+      "Exec failed (ef012345, signal SIGKILL) :: some output",
+      "overall-timeout",
+    );
+    expect(event).toBe(
+      `Exec failed (ef012345, signal SIGKILL) :: some output\n\n${EXEC_TIMEOUT_RETRY_GUIDANCE}`,
+    );
+    expect(isExecCompletionEvent(event)).toBe(true);
+    expect(isRelayableExecCompletionEvent(event)).toBe(true);
+    const prompt = buildExecEventPrompt([event]);
+    expect(prompt).toContain("some output");
+    expect(prompt).not.toContain(EXEC_TIMEOUT_RETRY_GUIDANCE);
+  });
+
+  it("leaves a no-output completed code 0 event unaffected by the suffix handling", () => {
+    const plain = "Exec completed (abcd1234, code 0)";
+    const withGuidance = appendExecTimeoutRetryGuidance(plain, "no-output-timeout");
+    expect(withGuidance).toBe(`${plain}\n\n${EXEC_TIMEOUT_RETRY_GUIDANCE}`);
+    expect(isRelayableExecCompletionEvent(plain)).toBe(false);
+    expect(isRelayableExecCompletionEvent(withGuidance)).toBe(false);
+    const prompt = buildExecEventPrompt([plain, withGuidance]);
+    expect(prompt).not.toContain("code 0");
   });
 });
 

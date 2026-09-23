@@ -1,6 +1,7 @@
 // Filters heartbeat event text before it is added to prompts.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { EXEC_TIMEOUT_RETRY_GUIDANCE } from "../agents/bash-tools.exec-output.js";
 import {
   HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS,
   isHeartbeatAcknowledgementText,
@@ -29,8 +30,25 @@ type StructuredExecCompletionEvent = {
   killed: boolean;
 };
 
+const EXEC_TIMEOUT_RETRY_GUIDANCE_SUFFIX = "\n\n" + EXEC_TIMEOUT_RETRY_GUIDANCE;
+
+/**
+ * Strip the producer-appended timeout retry guidance suffix, if present, so the
+ * structured parser treats it as metadata rather than captured output. The
+ * suffix comes from appendExecTimeoutRetryGuidance (bash-tools.exec-output.ts),
+ * which appends it after the event for overall-timeout / no-output-timeout
+ * exits; without this, the anchored parser rejects the decorated event and the
+ * heartbeat can still relay the model's narration to the owner.
+ */
+function stripTimeoutRetryGuidanceSuffix(evt: string): string {
+  if (evt.endsWith(EXEC_TIMEOUT_RETRY_GUIDANCE_SUFFIX)) {
+    return evt.slice(0, -EXEC_TIMEOUT_RETRY_GUIDANCE_SUFFIX.length);
+  }
+  return evt;
+}
+
 function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompletionEvent | null {
-  const trimmed = evt.trim();
+  const trimmed = stripTimeoutRetryGuidanceSuffix(evt.trim());
   const match = STRUCTURED_EXEC_COMPLETION_EVENT_RE.exec(trimmed);
   if (!match) {
     return null;
@@ -188,7 +206,7 @@ function isHeartbeatNoiseEvent(evt: string): boolean {
 }
 
 export function isExecCompletionEvent(evt: string): boolean {
-  const trimmed = evt.trimStart();
+  const trimmed = stripTimeoutRetryGuidanceSuffix(evt.trimStart());
   const normalized = normalizeLowercaseStringOrEmpty(trimmed);
   return (
     /^exec finished(?::|\s*\()/.test(normalized) ||
