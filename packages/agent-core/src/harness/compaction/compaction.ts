@@ -146,20 +146,12 @@ export function capCompactionSummary(
   return `${truncateUtf16Safe(prefix, budget)}${SUMMARY_TRUNCATED_MARKER}${suffix}`;
 }
 
-/**
- * Let each summary owner preserve its structure before checking the foreground token budget.
- *
- * `maxSummaryChars` is the owner's own ceiling, defaulting to the legacy fixed bound. #723:
- * the safeguard resolves a session-scaled ceiling instead, because a large session's summary
- * truncated at a fixed 16k loses the tail sections its own audit then fails on. Fitting only
- * ever shrinks from that ceiling, so a smaller foreground budget still wins.
- */
+/** Let each summary owner preserve its structure before checking the foreground token budget. */
 export function fitCompactionSummary<T extends { summary: string }>(
   tokenBudget: number | undefined,
   render: (maxChars: number) => T | undefined,
-  maxSummaryChars: number = MAX_COMPACTION_SUMMARY_CHARS,
 ): Result<T, CompactionError> {
-  const full = render(maxSummaryChars);
+  const full = render(MAX_COMPACTION_SUMMARY_CHARS);
   if (
     full &&
     (tokenBudget === undefined ||
@@ -168,7 +160,7 @@ export function fitCompactionSummary<T extends { summary: string }>(
     return ok(full);
   }
   let low = 1;
-  let high = maxSummaryChars - 1;
+  let high = MAX_COMPACTION_SUMMARY_CHARS - 1;
   let fitted: T | undefined;
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
