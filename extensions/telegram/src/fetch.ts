@@ -31,7 +31,10 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coer
 // The installed package retains dispatcher composition under Bun.
 import { Agent, fetch as undiciFetch } from "undici/index.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
-import { telegramAgentPoolOptions } from "./dispatcher-pool-options.js";
+import {
+  TELEGRAM_DISPATCHER_PIPELINING,
+  telegramAgentPoolOptions,
+} from "./dispatcher-pool-options.js";
 import {
   resolveTelegramAutoSelectFamilyDecision,
   resolveTelegramDnsResultOrderDecision,
@@ -267,7 +270,7 @@ function createTelegramDispatcher(policy: PinnedDispatcherPolicy): {
   // Telegram polling uses long-lived connections. Undici 8 enables HTTP/2 ALPN
   // by default, which can stall Telegram long-polling on Windows/IPv6 networks.
   // Force HTTP/1.1 for every dispatcher while keeping bounded pool defaults.
-  const poolOptions = telegramAgentPoolOptions();
+  const poolOptions = telegramAgentPoolOptions(TELEGRAM_DISPATCHER_PIPELINING);
 
   if (policy.mode === "explicit-proxy") {
     const requestTlsOptions = withPinnedLookup(policy.proxyTls, policy.pinnedHostname);
