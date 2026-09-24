@@ -320,9 +320,12 @@ function backfillExternalCliIdentity(params: {
  * profiles until the session is aborted. This sync resolves the env var and
  * returns a store clone with the fresh token so the caller can persist it.
  *
- * Env var naming convention: the profile id upper-cased with `:` and `.`
- * replaced by `_`, suffixed with `_TOKEN` (e.g. `anthropic:me.com` ->
- * `ANTHROPIC_ME_COM_TOKEN`). Profiles whose token is backed by a secret ref
+ * Env var naming convention: the profile id upper-cased with every character
+ * outside `[A-Z0-9_]` replaced by `_`, suffixed with `_TOKEN` (e.g.
+ * `anthropic:me.com` -> `ANTHROPIC_ME_COM_TOKEN`, `anthropic:work-acct` ->
+ * `ANTHROPIC_WORK_ACCT_TOKEN`), so every profile id maps to a name a shell can
+ * set. The earlier rule replaced only `:` and `.`; its name is still read as a
+ * fallback so an environment set under it keeps syncing. Profiles whose token is backed by a secret ref
  * (explicit `tokenRef` or `${ENV}` template) are resolved by the credential
  * pipeline and are never touched here.
  */
@@ -339,7 +342,13 @@ export function syncEnvBackedTokenCredentials(
     if (coerceSecretRef(credential.tokenRef) || coerceSecretRef(credential.token)) {
       continue;
     }
-    const envVarName = profileId.toUpperCase().replace(/[:.]/g, "_") + "_TOKEN";
+    const upperId = profileId.toUpperCase();
+    const portableEnvVarName = upperId.replace(/[^A-Z0-9_]/g, "_") + "_TOKEN";
+    const legacyEnvVarName = upperId.replace(/[:.]/g, "_") + "_TOKEN";
+    const envVarName =
+      env[portableEnvVarName] === undefined && env[legacyEnvVarName] !== undefined
+        ? legacyEnvVarName
+        : portableEnvVarName;
     const envValue = env[envVarName]?.trim();
     if (!envValue || credential.token === envValue) {
       continue;

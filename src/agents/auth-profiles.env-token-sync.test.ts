@@ -77,6 +77,38 @@ describe("syncEnvBackedTokenCredentials", () => {
     expect(next).toBeNull();
   });
 
+  it("maps every non-portable profile-id character to an underscore", () => {
+    const profileId = "anthropic:work-acct+ci@me.com";
+    const store: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        [profileId]: { type: "token", provider: "anthropic", token: "stale" } as TokenCredential,
+      },
+    };
+    const next = syncEnvBackedTokenCredentials(store, {
+      env: { ANTHROPIC_WORK_ACCT_CI_ME_COM_TOKEN: "fresh" },
+    });
+    expect((next?.profiles?.[profileId] as TokenCredential | undefined)?.token).toBe("fresh");
+  });
+
+  it("still reads the legacy name that kept '-' when the portable name is unset", () => {
+    const profileId = "anthropic:work-acct";
+    const store: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        [profileId]: { type: "token", provider: "anthropic", token: "stale" } as TokenCredential,
+      },
+    };
+    const legacy = syncEnvBackedTokenCredentials(store, {
+      env: { "ANTHROPIC_WORK-ACCT_TOKEN": "legacy" },
+    });
+    expect((legacy?.profiles?.[profileId] as TokenCredential | undefined)?.token).toBe("legacy");
+    const both = syncEnvBackedTokenCredentials(store, {
+      env: { "ANTHROPIC_WORK-ACCT_TOKEN": "legacy", ANTHROPIC_WORK_ACCT_TOKEN: "portable" },
+    });
+    expect((both?.profiles?.[profileId] as TokenCredential | undefined)?.token).toBe("portable");
+  });
+
   it("skips sync when the env var is not set", () => {
     const store = tokenStore("existing-token");
     expect(syncEnvBackedTokenCredentials(store, { env: {} })).toBeNull();
