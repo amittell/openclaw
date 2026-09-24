@@ -47,6 +47,7 @@ function channelPost(
 
 function channelPostHandler(channelId: number): ChannelPostHandler {
   getLoadConfigMock().mockReturnValue({
+    messages: { inbound: { debounceMs: 0 } },
     channels: {
       defaults: {
         botLoopProtection: { maxEventsPerWindow: 2, windowSeconds: 60, cooldownSeconds: 60 },
