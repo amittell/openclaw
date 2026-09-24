@@ -484,8 +484,17 @@ describe("Signal partial final delivery ingress boundary", () => {
     await first.receive(event);
     await first.waitForIdle();
     await first.stop();
-    expect(sendMessageSignalMock.mock.calls.map(([, text]) => text)).toEqual(["retry me"]);
-    expect(sendMessageSignalMock).toHaveBeenCalledOnce();
+    // The fork sends a visible non-outcome fallback when a dispatch produces nothing the user
+    // can see (core channels/turn/delivery-visibility.ts, fork-only). Upstream pins a single
+    // send because it has no such fallback. The text is inlined rather than imported: an
+    // extension test may not reach into core internals, and what is being asserted here is the
+    // user-visible string itself. Both sends are pinned rather than relaxed to a containment
+    // match, so a THIRD send still fails this test.
+    expect(sendMessageSignalMock.mock.calls.map(([, text]) => text)).toEqual([
+      "retry me",
+      "I hit a problem handling that message. Please try again, or use /new.",
+    ]);
+    expect(sendMessageSignalMock).toHaveBeenCalledTimes(2);
     expect(readQueuedDeliveryEntriesForTest(state.stateDir)).toEqual([]);
     const [pending] = await queue.listPending({ limit: "all" });
     expect(pending).toMatchObject({
@@ -552,10 +561,15 @@ describe("Signal partial final delivery ingress boundary", () => {
     try {
       await retryMonitor.receive(event);
       await retryMonitor.waitForIdle();
-      expect(sendMessageSignalMock).toHaveBeenCalledTimes(2);
+      // Cumulative across both monitors. The fork's visible non-outcome fallback lands
+      // between the failed first send and the successful retry, so every total here is one
+      // higher than upstream's. getReplyFromConfig stays at 2: the fallback is a delivery,
+      // not a second reply generation.
+      expect(sendMessageSignalMock).toHaveBeenCalledTimes(3);
       expect(getReplyFromConfigMock).toHaveBeenCalledTimes(2);
       expect(sendMessageSignalMock.mock.calls.map(([, text]) => text)).toEqual([
         "retry me",
+        "I hit a problem handling that message. Please try again, or use /new.",
         "retry me",
       ]);
       expect(readQueuedDeliveryEntriesForTest(state.stateDir)).toEqual([]);
@@ -569,7 +583,9 @@ describe("Signal partial final delivery ingress boundary", () => {
 
       await retryMonitor.receive(event);
       await retryMonitor.waitForIdle();
-      expect(sendMessageSignalMock).toHaveBeenCalledTimes(2);
+      // The invariant is that redelivering a completed event sends NOTHING new, so this must
+      // equal the count asserted above rather than any fixed number of its own.
+      expect(sendMessageSignalMock).toHaveBeenCalledTimes(3);
     } finally {
       await retryMonitor.stop();
       freshPluginRuntime.resetPluginRuntimeStateForTest();

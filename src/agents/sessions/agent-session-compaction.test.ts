@@ -246,28 +246,60 @@ describe("AgentSession compaction", () => {
           streamMocks.streamSimple.mock.calls.length * 2,
         );
         subscription.unsubscribe();
+        // FORK DIVERGENCE, reconciled per the convention ruled 2026-09-15: adopt the Signal
+        // precedent (790064e52c2) and reconcile the carried upstream assertion in place, naming
+        // the fork behaviour and the commit that introduced it.
+        //
+        // On a terminal quality-audit failure the fork DEGRADES to a structured fallback summary
+        // instead of cancelling (src/agents/agent-hooks/compaction-safeguard.ts:1509-1520, from
+        // e545867b558 / d71d1ee1720, written against a measured incident: a session left
+        // permanently mute at 289k/300k tokens because cancel:true stranded an uncompactable
+        // transcript). Upstream has no such fallback, so it asserts the cancel.
+        //
+        // NOT a blanket flip. The fork's own rule keeps genuinely unrecoverable paths cancelling,
+        // so `caller cancellation` still asserts upstream's rejected/aborted/[] values and only
+        // the two provider-failure cases degrade. Verified by run: that case passes unchanged.
+        const degradesToFallback = !recovers && !cancelCaller;
+        // Deterministic for this fixture (the history is empty), so it is pinned in full rather
+        // than relaxed to a containment match - per the same precedent, a changed fallback still
+        // fails this test.
+        // The degrade carries the pending ask (cad37985e06); before it, this section read
+        // "None." because the fallback was finalized with no retention plan.
+        const degradedFallbackSummary =
+          '## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nLatest user request context:\n"old prompt"\n\n## Exact identifiers\nNone captured.';
         expect.soft(observation).toMatchObject({
           providerCalls: 1,
           callerAbortedAtProviderEntry: false,
           callerAborted: cancelCaller,
-          result: recovers
-            ? { status: "resolved", summary: recoveredSummary }
-            : { status: "rejected" },
-          outcomes: [recovers ? "completed" : "aborted"],
-          appended: recovers ? [{ summary: recoveredSummary, fromHook: true }] : [],
+          result:
+            recovers || degradesToFallback
+              ? { status: "resolved", ...(recovers ? { summary: recoveredSummary } : {}) }
+              : { status: "rejected" },
+          outcomes: [recovers || degradesToFallback ? "completed" : "aborted"],
+          appended: recovers
+            ? [{ summary: recoveredSummary, fromHook: true }]
+            : degradesToFallback
+              ? [{ summary: degradedFallbackSummary, fromHook: true }]
+              : [],
         });
         // The guarded pipeline may chunk the history; do not pin its request count.
         if (!cancelCaller) {
           expect(streamMocks.streamSimple).toHaveBeenCalled();
         }
-        if (!recovers) {
+        // The degrade path APPENDS the fallback summary, so entries and messages legitimately
+        // change on those two cases; only a true cancel leaves the session untouched.
+        if (!recovers && !degradesToFallback) {
           expect.soft(sessionManager.getEntries()).toEqual(entriesBefore);
           expect.soft(session.messages).toEqual(messagesBefore);
         }
         if (!cancelCaller && !recovers) {
-          expect(getCompactionSafeguardRuntime(sessionManager)?.cancellation?.reason).toContain(
-            "failed quality checks",
-          );
+          // This condition is exactly degradesToFallback. The fork degrades rather than cancels
+          // on these two cases, so no cancellation reason is recorded; upstream asserts the
+          // "failed quality checks" cancel it would have produced instead. Pinned to the observed
+          // absence rather than deleted, so a fork that starts cancelling again fails here.
+          expect(
+            getCompactionSafeguardRuntime(sessionManager)?.cancellation?.reason,
+          ).toBeUndefined();
         }
         expect(network.mock.calls.length).toBe(0);
       } finally {

@@ -1,4 +1,5 @@
 import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import type { BuildSessionContextOptions } from "../../../packages/agent-core/src/index.js";
 import {
   readActiveTranscriptEntryAnchor,
   readTranscriptMutationAtSync,
@@ -64,6 +65,15 @@ function canonicalizeSessionEntry<T extends SessionEntry>(entry: T): T {
 }
 
 export class SessionManagerEntries extends SessionManagerSuffixPersistence {
+  // Set per run from the registered tool set; every context build in that run must
+  // render the same checkpoint bytes or the provider prompt cache breaks each turn.
+  private checkpointHandleFormatter: BuildSessionContextOptions["formatCheckpointHandle"];
+
+  setCompactionCheckpointHandleFormatter(
+    formatter: BuildSessionContextOptions["formatCheckpointHandle"],
+  ): void {
+    this.checkpointHandleFormatter = formatter;
+  }
   protected appendEntry<T extends SessionEntry>(
     entry: T,
     options?: AppendPersistenceOptions,
@@ -671,7 +681,9 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
   }
 
   buildSessionContext(): SessionContext {
-    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[]) as SessionContext;
+    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[], {
+      formatCheckpointHandle: this.checkpointHandleFormatter,
+    }) as SessionContext;
   }
 
   branch(branchFromId: string): void {

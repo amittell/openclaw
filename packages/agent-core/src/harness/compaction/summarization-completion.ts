@@ -107,5 +107,12 @@ export async function runSummarizationCompletion(
       new InvalidSummaryOutputError(`${params.errorLabel} failed: model returned no summary text`),
     );
   }
+  // A summary cut off at the output budget is structurally incomplete. Classify it
+  // like empty output so the host's retry-once policy covers it instead of committing it.
+  if (response.stopReason === "length") {
+    return err(
+      new InvalidSummaryOutputError(`${params.errorLabel} failed: summary exceeded max tokens`),
+    );
+  }
   return ok(summary);
 }

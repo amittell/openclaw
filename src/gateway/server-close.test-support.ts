@@ -97,6 +97,10 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
         close: (cb: (err?: Error | null) => void) => cb(null),
         closeIdleConnections: vi.fn(),
       } as never,
+      armPostShutdownExitWatchdog: vi.fn(() => null),
+      // Default the tests to the terminal CLI/daemon owner mode; embedded-mode
+      // coverage overrides this back to undefined.
+      postShutdownExitWatchdogEnabled: true,
       ...overrides,
     };
   };

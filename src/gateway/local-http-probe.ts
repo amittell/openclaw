@@ -24,6 +24,12 @@ export type ConfiguredGatewayLocalProbe = {
     port: number;
     timeoutMs: number;
     signal?: AbortSignal;
+    /**
+     * Opt into shutdown-aware probing: adds the `strict=1` marker the gateway reads
+     * in `isStrictLiveProbeRequest`, so a draining gateway answers 503 instead of 200.
+     * Public probes omit it and keep their legacy always-200 contract.
+     */
+    strictLiveProbe?: boolean;
   }): Promise<GatewayHttpProbeResponse | null>;
   resolveWebSocketTarget(
     port: number,
@@ -42,6 +48,12 @@ export async function requestGatewayLocalHttpProbe(params: {
   timeoutMs: number;
   tlsFingerprints?: readonly string[];
   signal?: AbortSignal;
+  /**
+   * Opt into shutdown-aware probing: adds the `strict=1` marker the gateway reads
+   * in `isStrictLiveProbeRequest`, so a draining gateway answers 503 instead of 200.
+   * Public probes omit it and keep their legacy always-200 contract.
+   */
+  strictLiveProbe?: boolean;
 }): Promise<GatewayHttpProbeResponse | null> {
   params.signal?.throwIfAborted();
   if (params.timeoutMs <= 0) {
@@ -63,7 +75,7 @@ export async function requestGatewayLocalHttpProbe(params: {
       {
         hostname: normalizeGatewayHttpProbeHost(params.host),
         port: params.port,
-        path: params.pathname,
+        path: params.strictLiveProbe ? `${params.pathname}?strict=1` : params.pathname,
         method: "GET",
         timeout: params.timeoutMs,
         ...(params.signal ? { signal: params.signal } : {}),

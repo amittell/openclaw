@@ -48,6 +48,10 @@ export async function downloadInboundMedia(
     "inbound",
     maxBytes,
     fileName,
+    undefined,
+    typeof msg.key?.remoteJid === "string" && msg.key.remoteJid
+      ? `wa-${msg.key.remoteJid}`
+      : undefined,
   );
   return { saved, mimetype, fileName };
 }

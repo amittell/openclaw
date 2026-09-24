@@ -526,6 +526,8 @@ export class GatewayChatClient implements TuiBackend {
   }
 
   async listModels(opts?: { agentId?: string }): Promise<GatewayModelChoice[]> {
+    // Unscoped TUI model reads name the system-agent owner so multi-agent
+    // rosters resolve one catalog instead of failing agent selection.
     const published = this.hello?.features.capabilities?.includes(
       GATEWAY_SERVER_CAPS.PUBLISHED_MODEL_CATALOG,
     );

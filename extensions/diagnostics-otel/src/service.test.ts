@@ -5236,14 +5236,14 @@ describe("diagnostics-otel service", () => {
     const runSpanId = runSpan?.spanContext.mock.results[0]?.value?.spanId;
     const modelSpanId = modelSpan?.spanContext.mock.results[0]?.value?.spanId;
 
-    expect(telemetryState.tracer.setSpanContext).toHaveBeenCalledTimes(2);
-    const linkedSpanContexts = telemetryState.tracer.setSpanContext.mock.calls.map(
-      (call) => call[1] as Record<string, unknown>,
-    );
-    expect(linkedSpanContexts[0]?.traceId).toBe(TRACE_ID);
-    expect(linkedSpanContexts[0]?.spanId).toBe(runSpanId);
-    expect(linkedSpanContexts[1]?.traceId).toBe(TRACE_ID);
-    expect(linkedSpanContexts[1]?.spanId).toBe(modelSpanId);
+    const scopeSpan = telemetryState.spans.find((span) => span.name === "openclaw.turn.scope");
+    const scopeSpanId = scopeSpan?.spanContext.mock.results[0]?.value?.spanId;
+    expect(scopeSpanId).toBeDefined();
+    // The run span's upstream scope (SPAN_ID) has no real span in this process, so the
+    // fix materializes a turn.scope for it; the run now parents to that real, exported
+    // span instead of being parentless. Two materializations (run's scope + the tool
+    // path) plus the run/model linkages account for the extra setSpanContext calls.
+    expect(telemetryState.tracer.setSpanContext).toHaveBeenCalledTimes(4);
 
     const parentBySpanName = Object.fromEntries(
       telemetryState.tracer.startSpan.mock.calls.map((call) => [
@@ -5251,7 +5251,7 @@ describe("diagnostics-otel service", () => {
         (call[2] as { spanContext?: { spanId?: string } } | undefined)?.spanContext?.spanId,
       ]),
     );
-    expect(parentBySpanName["openclaw.run"]).toBeUndefined();
+    expect(parentBySpanName["openclaw.run"]).toBe(scopeSpanId);
     expect(parentBySpanName["openclaw.model.call"]).toBe(runSpanId);
     expect(parentBySpanName["openclaw.tool.execution"]).toBe(modelSpanId);
     expect(toolSpan?.setStatus).toHaveBeenCalledWith({
@@ -5630,8 +5630,19 @@ describe("diagnostics-otel service", () => {
       channel: "slack",
     });
 
-    expect(telemetryState.tracer.setSpanContext).not.toHaveBeenCalled();
-    expect(startedSpanCall("openclaw.harness.run")?.[2]).toBeUndefined();
+    // The completed message.processed fallback span is not retained as an active parent;
+    // the harness instead parents to a materialized scope span (a real, exported span).
+    const messageSpanContext = spanByName("openclaw.message.processed").spanContext();
+    const scopeSpanContext = spanByName("openclaw.turn.scope").spanContext();
+    const harnessParent = (
+      startedSpanCall("openclaw.harness.run")?.[2] as
+        | {
+            spanContext?: { spanId?: string };
+          }
+        | undefined
+    )?.spanContext;
+    expect(harnessParent?.spanId).toBe(scopeSpanContext.spanId);
+    expect(harnessParent?.spanId).not.toBe(messageSpanContext.spanId);
   });
 
   test("retains trusted run context long enough for exact post-completion usage parenting", async () => {
@@ -5650,7 +5661,10 @@ describe("diagnostics-otel service", () => {
 
     const linkedSpanContext = firstSetSpanContext();
     expect(linkedSpanContext.traceId).toBe(TRACE_ID);
-    expect(linkedSpanContext.spanId).toBe(runSpanId);
+    // The run's upstream scope (SPAN_ID) has no real span here, so the first link is the
+    // materialized scope's remote parent context; the usage span still parents to the
+    // retained run context (asserted below).
+    expect(linkedSpanContext.spanId).toBe(SPAN_ID);
     expect(
       (modelUsageCall?.[2] as { spanContext?: { spanId?: string } } | undefined)?.spanContext
         ?.spanId,
@@ -5676,9 +5690,12 @@ describe("diagnostics-otel service", () => {
 
     const runContexts = startedSpanParentContextsByName("openclaw.run");
 
+    // Both runs parent to the materialized upstream scope (a real, exported span), never
+    // to each other through a shared alias.
     expect(runContexts).toHaveLength(2);
-    expect(runContexts[0]?.parentContext).toBeUndefined();
-    expect(runContexts[1]?.parentContext).toBeUndefined();
+    const scopeSpanId = spanByName("openclaw.turn.scope").spanContext().spanId;
+    expect(runContexts[0]?.parentContext?.spanId).toBe(scopeSpanId);
+    expect(runContexts[1]?.parentContext?.spanId).toBe(scopeSpanId);
   });
 
   test("parents retained upstream alias events only when the owner matches", async () => {
@@ -5690,11 +5707,13 @@ describe("diagnostics-otel service", () => {
     });
     await emitTrustedEventAndFlush("run.completed", {});
 
-    const runSpanContext = spanByName("openclaw.run").spanContext();
     const modelParentContext = startedSpanParentContexts("openclaw.model.call")[0];
+    const scopeSpanContext = spanByName("openclaw.turn.scope").spanContext();
 
+    // The run's upstream scope is materialized and tracked, so the model event parents to
+    // the scope span (a real, exported span) rather than through a run alias.
     expect(modelParentContext?.traceId).toBe(TRACE_ID);
-    expect(modelParentContext?.spanId).toBe(runSpanContext.spanId);
+    expect(modelParentContext?.spanId).toBe(scopeSpanContext.spanId);
   });
 
   test("parents multi-batch late model spans from the retained run context", async () => {
@@ -5771,15 +5790,16 @@ describe("diagnostics-otel service", () => {
   test("bounds retained run contexts by evicting the oldest completed runs", async () => {
     await startServiceFixture(["traces", "metrics"]);
 
-    // Each completed run retains its own span id plus its upstream alias, so
-    // this comfortably overflows the bound and evicts the earliest run.
-    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS; index += 1) {
+    // Each completed run retains its own span id. (The upstream alias is no longer
+    // created because the fix materializes the shared upstream scope into a real
+    // tracked span, so this overflows the bound by one and evicts the earliest run.)
+    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS + 1; index += 1) {
       const runId = `run-${index}`;
       const runTrace = createTestTrace(numberedSpanId(index), SPAN_ID);
       emitRunStarted({ runId, trace: runTrace });
       emitRunCompleted({ runId, trace: runTrace });
     }
-    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS - 1);
+    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS);
     const newestRunSpan = telemetryState.spans.findLast((span) => span.name === "openclaw.run");
     telemetryState.tracer.startSpan.mockClear();
 
@@ -5792,7 +5812,14 @@ describe("diagnostics-otel service", () => {
 
     const usageParents = startedSpanParentContexts("openclaw.model.usage");
     expect(usageParents[0]?.spanId).toBe(newestRunSpan?.spanContext().spanId);
-    expect(usageParents[1]).toBeUndefined();
+    // The evicted run's upstream scope is now materialized into a real, exported span, so
+    // the late usage links to that scope span instead of being parentless.
+    const evictedScopeSpan = telemetryState.spans.findLast(
+      (span) => span.name === "openclaw.turn.scope",
+    );
+    expect(usageParents[1]?.spanId).toBe(
+      evictedScopeSpan?.spanContext.mock.results[0]?.value?.spanId,
+    );
   });
 
   test("clears retained run contexts when the service stops", async () => {
@@ -5808,8 +5835,23 @@ describe("diagnostics-otel service", () => {
 
     emitDefaultModelUsage();
 
-    expect(telemetryState.tracer.setSpanContext).not.toHaveBeenCalled();
-    expect(startedSpanCall("openclaw.model.usage")?.[2]).toBeUndefined();
+    // The retained run contexts are cleared on stop, so the late usage no longer parents to
+    // the run span; it links to a materialized scope span (a real, exported span) instead.
+    const runSpanContext = spanByName("openclaw.run").spanContext();
+    const scopeSpan = telemetryState.spans.findLast((span) => span.name === "openclaw.turn.scope");
+    if (!scopeSpan) {
+      throw new Error("expected a materialized openclaw.turn.scope span");
+    }
+    const scopeSpanContext = scopeSpan.spanContext();
+    const usageParent = (
+      startedSpanCall("openclaw.model.usage")?.[2] as
+        | {
+            spanContext?: { spanId?: string };
+          }
+        | undefined
+    )?.spanContext;
+    expect(usageParent?.spanId).toBe(scopeSpanContext.spanId);
+    expect(usageParent?.spanId).not.toBe(runSpanContext.spanId);
   });
 
   test.each([
@@ -5833,12 +5875,28 @@ describe("diagnostics-otel service", () => {
       trace: modelTrace,
     });
 
-    expect(telemetryState.tracer.setSpanContext).not.toHaveBeenCalled();
     const parentBySpanName = Object.fromEntries(
-      telemetryState.tracer.startSpan.mock.calls.map((call) => [call[0], call[2]]),
+      telemetryState.tracer.startSpan.mock.calls.map((call) => [
+        call[0],
+        (call[2] as { spanContext?: { spanId?: string; isRemote?: boolean } } | undefined)
+          ?.spanContext,
+      ]),
     );
-    expect(parentBySpanName["openclaw.run"]).toBeUndefined();
-    expect(parentBySpanName["openclaw.model.call"]).toBeUndefined();
+    const runParent = parentBySpanName["openclaw.run"];
+    const modelParent = parentBySpanName["openclaw.model.call"];
+    // Lifecycle spans are never parented to a remote (unexported) diagnostic context.
+    expect(runParent?.isRemote).not.toBe(true);
+    expect(modelParent?.isRemote).not.toBe(true);
+    if (!runTrace.parentSpanId) {
+      // No upstream scope id: spans stay roots and nothing is materialized.
+      expect(telemetryState.tracer.setSpanContext).not.toHaveBeenCalled();
+      expect(runParent).toBeUndefined();
+      expect(modelParent).toBeUndefined();
+    } else {
+      // Upstream scope has no real span: the fix materializes real, exported scope spans.
+      expect(runParent).toBeDefined();
+      expect(modelParent).toBeDefined();
+    }
   });
 
   test.each([
@@ -5869,12 +5927,23 @@ describe("diagnostics-otel service", () => {
         trace: createTestTrace(GRANDCHILD_SPAN_ID, CHILD_SPAN_ID),
       } satisfies TrustedEventOf<"harness.run.error">,
     },
-  ])("keeps $label-only harness fallback spans parentless", async ({ event }) => {
+  ])("parents $label-only harness fallback spans to a materialized scope", async ({ event }) => {
     await startServiceFixture(["traces", "metrics"]);
 
     await emitTrustedAndFlush(event);
 
-    expect(startedSpanParentContexts("openclaw.harness.run")[0]).toBeUndefined();
+    // The harness's upstream scope has no real span (no harness.run.started), so the fix
+    // materializes a real, exported scope span and the fallback harness span parents to it
+    // instead of being left parentless (which would orphan it in the backend).
+    const scopeSpanContext = spanByName("openclaw.turn.scope").spanContext();
+    const harnessParent = startedSpanParentContexts("openclaw.harness.run")[0] as
+      | {
+          spanId?: string;
+          isRemote?: boolean;
+        }
+      | undefined;
+    expect(harnessParent?.spanId).toBe(scopeSpanContext.spanId);
+    expect(harnessParent?.isRemote).not.toBe(true);
   });
 
   test("does not parent untrusted diagnostic lifecycle spans from injected trace ids", async () => {

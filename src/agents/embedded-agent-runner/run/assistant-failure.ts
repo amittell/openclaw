@@ -21,6 +21,7 @@ import {
 } from "../../embedded-agent-helpers.js";
 import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assistant-message-failures.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
+import { isPreDispatchToolCallRejectionMessage } from "../../failover/message-patterns.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import { classifyRateLimitWindow } from "../../failover/retry-evidence.js";
 import {
@@ -44,7 +45,7 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 const MAX_EMPTY_ERROR_RETRIES = 3;
 
 type EmbeddedRunAssistantFailureOutcome = {
-  action: "retry" | "proceed";
+  action: "retry" | "proceed" | "silent-error-exhausted";
   thinkLevel: ThinkLevel;
   authRetryPending: boolean;
   emptyErrorRetries: number;
@@ -202,6 +203,41 @@ export async function handleEmbeddedAssistantFailure(input: {
   const effectiveFailoverReason = exhaustedUnclassifiedSilentError
     ? ("unknown" as const)
     : assistantFailoverReason;
+
+  // The bounded same-model silent-error retries already proved the model produces
+  // no visible output. With no configured fallback to rotate into, the outer run
+  // loop would otherwise keep re-dispatching whole attempts (continue_normal resets
+  // no per-model budget), so a wedged self-hosted model (e.g. vLLM connection churn)
+  // spins to the ingress 5-min adoption-stall watchdog. Hard-stop the same-model
+  // silent-error path here so the turn terminates with a visible error payload
+  // instead. Reuses MAX_EMPTY_ERROR_RETRIES; no new constant.
+  // Only UNCLASSIFIED silent failures hard-stop here. A resolved auth-profile
+  // failure is classified, and both this fork and upstream expect it to carry
+  // into terminal resolution as `proceed` so the profile is marked and rotated.
+  // This release base classifies more of these attempts as `null` than upstream
+  // main does, so without this guard the hard-stop swallows auth failures that
+  // used to reach the profile path.
+  // A pre-dispatch tool-call rejection is a CLASSIFIED transport diagnostic, not a
+  // silent model: the provider named why it rejected the call. Upstream expects it
+  // to reach terminal resolution as `proceed` even with the budget spent and no
+  // fallback, and this hard-stop would otherwise swallow it, because this release
+  // base classifies the message as null. Excluded here using the same predicate
+  // `incomplete-turn-recovery.ts` uses to recognise the category, so the two stay
+  // in agreement rather than drifting apart on separate wording lists.
+  if (
+    !input.fallbackConfigured &&
+    assistantFailoverReason === null &&
+    assistantProfileFailureReason === null &&
+    !isPreDispatchToolCallRejectionMessage(failedAssistant?.errorMessage) &&
+    replaySafeSilentErrorFailure &&
+    input.emptyErrorRetries >= MAX_EMPTY_ERROR_RETRIES
+  ) {
+    return buildOutcome(input, {
+      action: "silent-error-exhausted",
+      emptyErrorRetries: input.emptyErrorRetries,
+      assistantProfileFailureReason,
+    });
+  }
 
   const logFailoverDecision = createFailoverDecisionLogger({
     stage: "assistant",

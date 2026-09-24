@@ -98,6 +98,8 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
+  // On macOS the launchd supervisor immediately respawns the gateway, so a
+  // freshly-respawned listener must not be misreported as a stale process.
   supervisorKeepsAlive?: boolean;
   isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
   probeHosts?: readonly string[];

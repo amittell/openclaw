@@ -83,7 +83,9 @@ function archivedTranscriptReader(target: ResolvedTranscriptReadTarget): Archive
   });
 }
 
-function projectSqliteHistoryEvents(entries: readonly SessionTranscriptMessageEvent[]): unknown[] {
+export function projectSqliteHistoryEvents(
+  entries: readonly SessionTranscriptMessageEvent[],
+): unknown[] {
   const messages: unknown[] = [];
   for (const entry of entries) {
     const message = projectTranscriptEntryMessage(entry.event, entry.seq, entry.displayPosition);

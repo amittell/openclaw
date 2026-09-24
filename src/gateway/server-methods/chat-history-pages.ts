@@ -19,7 +19,12 @@ import { resolveCurrentUserProfileDisplay } from "../current-user-profile-displa
 import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
-import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
+import {
+  readChatHistoryPageKernel,
+  type ChatHistoryPageKernelOptions,
+} from "./chat-history-page-kernel.js";
+
+export { shouldReadAnchoredWindow } from "./chat-history-page-kernel.js";
 
 function readCliIdentityProjectionKey(message: unknown): string | undefined {
   const id = readChatHistoryMessageId(message);
@@ -120,7 +125,38 @@ function refreshForwardedLabels(messages: unknown[]): unknown[] {
   );
 }
 
-async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<ChatHistoryPage> {
+/**
+ * Reads one page of the span a compaction summary shadowed; undefined when the id is not a
+ * compaction in this session. Always local: the span reader is host-side, not one of the
+ * worker's admitted readers, so this never takes readChatHistoryPage's worker path.
+ */
+export async function readChatHistoryCompactionSpanPage(
+  params: ChatHistoryPageParams & { compactionId: string },
+  signal?: AbortSignal,
+): Promise<ChatHistoryPage | undefined> {
+  signal?.throwIfAborted();
+  if (!params.sessionId || !params.storePath) {
+    const page = await readChatHistoryPageLocal(params);
+    return { ...page, messages: refreshForwardedLabels(page.messages) };
+  }
+  let found = false;
+  const page = await readChatHistoryPageLocal(params, {
+    readCompactionShadowPage: async (readScope, opts) => {
+      const span = await sessionTranscriptReaders.readSessionMessagesShadowedByCompactionAsync(
+        readScope,
+        opts,
+      );
+      found = span !== undefined;
+      return span;
+    },
+  });
+  return found ? { ...page, messages: refreshForwardedLabels(page.messages) } : undefined;
+}
+
+async function readChatHistoryPageLocal(
+  params: ChatHistoryPageParams,
+  extra: Pick<ChatHistoryPageKernelOptions, "readCompactionShadowPage"> = {},
+): Promise<ChatHistoryPage> {
   const { entry, provider, effectiveMaxChars, offset, messageId, sessionId, storePath } = params;
   const cliSessionId = params.ignoreCliSessionImports
     ? undefined
@@ -138,6 +174,7 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
   const page = await readChatHistoryPageKernel(params, {
     readers: { ...sessionTranscriptReaders, subagentCoordination },
     resolveCurrentUserProfileDisplay,
+    ...extra,
     ...(cliSessionId
       ? {
           cliSessionId,

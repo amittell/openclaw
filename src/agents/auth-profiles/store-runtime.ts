@@ -3,6 +3,7 @@ import { nativePluginBindings } from "../../plugins/loader-runtime-load.js";
 export const {
   createAuthProfileStoreReadScope,
   updateAuthProfileStoreWithLock,
+  loadAgentLocalAuthProfileStore,
   loadAuthProfileStore,
   loadAuthProfileStoreForRuntime,
   loadAuthProfileStoreForRuntimeAsync,

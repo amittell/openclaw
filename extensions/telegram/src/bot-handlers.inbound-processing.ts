@@ -39,7 +39,7 @@ import {
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
 } from "./bot-processing-outcome.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   buildTelegramThreadParams,
   getTelegramTextParts,
@@ -234,6 +234,7 @@ export function createTelegramInboundProcessing({
         ctx,
         maxBytes: mediaMaxBytes,
         ...mediaRuntime,
+        scope: buildTelegramMediaScope(chatId, threadSpec.id),
       });
       if (mediaRuntime.abortSignal?.aborted) {
         const abortError =
@@ -311,6 +312,7 @@ export function createTelegramInboundProcessing({
                 contentType: media.contentType,
                 ...(media.fileName ? { fileName: media.fileName } : {}),
                 kind: media.kind,
+                fileUniqueId: media.fileUniqueId,
                 stickerMetadata: media.stickerMetadata,
               }
             : { kind: nativeMedia.kind, unavailable },

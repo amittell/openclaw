@@ -16,6 +16,20 @@ import {
   type PreparedProviderFailoverOwner,
 } from "./provider-patterns.js";
 
+/**
+ * Detects Anthropic's 429 "Extra usage is required for long context requests." error.
+ *
+ * Anthropic returns HTTP 429 for this case, but it is semantically a context overflow
+ * (the session is too large for the standard usage tier), not a transient rate limit.
+ * It should be routed to the compact+retry path instead of the model fallback chain.
+ * Kept internal to the failover module (carried from openclaw PR #111913).
+ */
+function isAnthropicLongContextUsageError(errorMessage: string): boolean {
+  return normalizeLowercaseStringOrEmpty(errorMessage).includes(
+    "extra usage is required for long context",
+  );
+}
+
 export function isContextOverflowError(
   errorMessage?: string,
   opts?: { providerPlugin?: PreparedProviderFailoverOwner | null },
@@ -49,6 +63,12 @@ export function isLikelyContextOverflowError(errorMessage?: string): boolean {
 
   if (isReasoningConstraintErrorMessage(errorMessage)) {
     return false;
+  }
+
+  // This Anthropic 429 is constrained by context size, so compact and retry
+  // before the broader billing and rate-limit classifiers can claim it.
+  if (isAnthropicLongContextUsageError(errorMessage)) {
+    return true;
   }
 
   // Billing/quota errors can contain patterns like "request size exceeds" or

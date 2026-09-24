@@ -597,6 +597,7 @@ export function createUserTurnTranscriptRecorder(
       }
       return processingCompletion.value;
     },
+    getPendingInputRequestHash: () => pendingInput?.requestHash,
     isPendingInputConsumed: () => pendingInput?.state === "consumed",
     withPendingInput: (run) => (pendingInput ? pendingInput.run(run) : run()),
     finishPendingInput: (disposition) => {

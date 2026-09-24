@@ -35,7 +35,10 @@ import {
 import { finalizeAcceptedChatSendMessageInjection } from "./chat-send-message-injection.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
 import { createChatSendReplyDispatch } from "./chat-send-reply-dispatch.js";
-import { finalizeChatSendDispatchedReplies } from "./chat-send-reply-finalization.js";
+import {
+  finalizeChatSendDispatchedReplies,
+  recordChatSendCompletedTurn,
+} from "./chat-send-reply-finalization.js";
 import {
   classifyAcceptedChatSendFailure,
   runAcceptedChatSendDispatch,
@@ -562,6 +565,15 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
+              recordCompletedTurn: () =>
+                recordChatSendCompletedTurn({
+                  agentId,
+                  expectedSessionId: admittedSessionId,
+                  logGateway: context.logGateway,
+                  requestHash: userTurnRecorder.getPendingInputRequestHash?.(),
+                  sessionKey,
+                  storePath,
+                }),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

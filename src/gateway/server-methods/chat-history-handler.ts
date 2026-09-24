@@ -68,7 +68,7 @@ import {
   enrichChatHistoryCompactionMarkers,
   resolveChatHistoryNextOffset,
 } from "./chat-history-page-kernel.js";
-import { readChatHistoryPage } from "./chat-history-pages.js";
+import { readChatHistoryCompactionSpanPage, readChatHistoryPage } from "./chat-history-pages.js";
 import {
   resolveEmbeddedAgentRunRecoverySnapshot,
   respondChatHistoryUnavailable,
@@ -105,6 +105,7 @@ export async function handleChatHistoryRequest({
     offset,
     cursor,
     messageId,
+    compactionId,
     sessionId: wireSessionId,
     maxChars,
     maxBytes,
@@ -120,11 +121,23 @@ export async function handleChatHistoryRequest({
     );
     return;
   }
-  if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
+  if (compactionId !== undefined && messageId !== undefined) {
     respond(
       false,
       undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "cursor cannot be used with offset or messageId"),
+      errorShape(ErrorCodes.INVALID_REQUEST, "compactionId and messageId cannot be used together"),
+    );
+    return;
+  }
+  const hasAnchor = offset !== undefined || messageId !== undefined || compactionId !== undefined;
+  if (cursor !== undefined && hasAnchor) {
+    respond(
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        "cursor cannot be used with offset, messageId, or compactionId",
+      ),
     );
     return;
   }
@@ -326,29 +339,47 @@ export async function handleChatHistoryRequest({
       ? [{ runId: receipt.runId, consumedByEventId: receipt.consumedByEventId }]
       : [],
   );
-  let historyPage: Awaited<ReturnType<typeof readChatHistoryPage>>;
+  let historyPage: Awaited<ReturnType<typeof readChatHistoryCompactionSpanPage>>;
   try {
     historyPage = cursor
       ? { messages: [] }
       : await measureDiagnosticsTimelineSpan(
           `gateway.${method}.history_page`,
           () =>
-            readChatHistoryPage(
-              {
-                entry: historyEntry,
-                provider: resolvedSessionModel.provider,
-                sessionId,
-                storePath,
-                sessionAgentId,
-                canonicalKey,
-                max,
-                maxHistoryBytes,
-                effectiveMaxChars,
-                offset,
-                messageId,
-              },
-              signal,
-            ),
+            compactionId !== undefined
+              ? readChatHistoryCompactionSpanPage(
+                  {
+                    entry: historyEntry,
+                    provider: resolvedSessionModel.provider,
+                    sessionId,
+                    storePath,
+                    sessionAgentId,
+                    canonicalKey,
+                    max,
+                    maxHistoryBytes,
+                    effectiveMaxChars,
+                    offset,
+                    messageId,
+                    compactionId,
+                  },
+                  signal,
+                )
+              : readChatHistoryPage(
+                  {
+                    entry: historyEntry,
+                    provider: resolvedSessionModel.provider,
+                    sessionId,
+                    storePath,
+                    sessionAgentId,
+                    canonicalKey,
+                    max,
+                    maxHistoryBytes,
+                    effectiveMaxChars,
+                    offset,
+                    messageId,
+                  },
+                  signal,
+                ),
           {
             config: cfg,
             phase: method,
@@ -367,6 +398,19 @@ export async function handleChatHistoryRequest({
     respondChatHistoryUnavailable(method, respond, unavailableMessage);
     return;
   }
+  if (!historyPage) {
+    respond(
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        `compactionId "${compactionId}" is not a compaction checkpoint in this session; ` +
+          'compaction rows in history carry __openclaw.kind "compaction" and the id in __openclaw.id',
+      ),
+    );
+    return;
+  }
+
   const normalized = enrichChatHistoryCompactionMarkers(historyPage.messages, historyEntry);
   // Imported snapshots have no back-scroll cursor. Preserve their complete
   // snapshot budget until the external history owner supports pagination.

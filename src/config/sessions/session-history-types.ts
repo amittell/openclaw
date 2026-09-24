@@ -37,6 +37,7 @@ export type ChatHistoryPageParams = {
   effectiveMaxChars: number;
   offset: number | undefined;
   messageId: string | undefined;
+  compactionId?: string;
   ignoreCliSessionImports?: boolean;
 };
 

@@ -2,6 +2,7 @@
  * Prepares transcript boundaries, session management, and active resources.
  * It may assume attempt configuration and tool inputs are ready.
  */
+import { formatCompactionCheckpointHandle } from "../../../../packages/agent-core/src/index.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import {
@@ -36,6 +37,7 @@ import {
 import { createAgentSessionForEmbeddedRunner } from "../../sessions/sdk.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
+import { SESSIONS_HISTORY_CHECKPOINT_READ_HINT } from "../../tool-description-presets.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
@@ -156,6 +158,12 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     ...input.clientToolPreparation,
   });
   const { allCustomTools, sessionToolAllowlist, ...clientToolRuntime } = preparedClientTools;
+  // The checkpoint line may name sessions_history only when this run registers it.
+  input.sessionManager.setCompactionCheckpointHandleFormatter(
+    sessionToolAllowlist.includes("sessions_history")
+      ? (handle) => formatCompactionCheckpointHandle(handle, SESSIONS_HISTORY_CHECKPOINT_READ_HINT)
+      : undefined,
+  );
 
   const sessionOptions: CreateAgentSessionOptions = {
     cwd: input.effectiveCwd,

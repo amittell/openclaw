@@ -44,7 +44,10 @@ import { isProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
 import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recovery-hint.js";
 import type { ReplyCompletion, ReplyExpectation } from "../../agents/reply-completion.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { extractErrorHttpStatus } from "../../shared/assistant-error-format.js";
+import {
+  extractErrorHttpStatus,
+  formatTransportErrorCopy,
+} from "../../shared/assistant-error-format.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
   copyReplyPayloadMetadata,
@@ -86,6 +89,32 @@ export function resolveReplyFailoverFacts(error: unknown, message: string) {
 }
 
 type ReplyFailoverFacts = ReturnType<typeof resolveReplyFailoverFacts>;
+
+// A transport failure never reached the provider, so it carries no HTTP status and no
+// server-side timeout. The classifier still buckets it as `timeout` so retry and
+// failover behave exactly as before, but the classified copy would then tell the user
+// "request timed out, HTTP 408 ... usually temporary" for a connection that failed in
+// milliseconds and does not clear on its own (EHOSTUNREACH from a macOS Local Network
+// denial, a refused port, a DNS miss). Name what actually failed instead.
+function renderTransportFailureReplyCopy(
+  facts: ReplyFailoverFacts,
+  error: unknown,
+  normalizedMessage: string,
+): string | undefined {
+  if (facts.reason !== "timeout") {
+    return undefined;
+  }
+  const rawText = describeFailoverError(error ?? normalizedMessage).rawError ?? normalizedMessage;
+  const transportCopy = formatTransportErrorCopy(rawText);
+  if (!transportCopy) {
+    return undefined;
+  }
+  const provider = facts.provider?.trim();
+  const model = facts.model?.trim();
+  const target = provider && model ? `${provider}/${model}` : provider || model;
+  const detail = transportCopy.replace(/^LLM request failed:\s*/, "");
+  return target ? `⚠️ ${target} request failed: ${detail}` : `⚠️ ${transportCopy}`;
+}
 
 function readFallbackAttempts(error: unknown): readonly ReplyFallbackAttempt[] {
   return isFailoverError(error) && Array.isArray(error.attempts) ? error.attempts : [];
@@ -375,6 +404,10 @@ export function buildExternalRunFailureReply(
   const codexAppServerFailure = buildCodexAppServerFailureText(normalizedMessage);
   if (codexAppServerFailure) {
     return { text: codexAppServerFailure, isGenericRunnerFailure: false };
+  }
+  const transportFailure = renderTransportFailureReplyCopy(failoverFacts, error, normalizedMessage);
+  if (transportFailure) {
+    return { text: transportFailure, isGenericRunnerFailure: false };
   }
   const classifiedFailure =
     failoverFacts.formatFailureText ?? renderAssistantRequestFailureCopy(failoverFacts);

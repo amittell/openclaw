@@ -45,6 +45,15 @@ export type ChatHistoryPageKernelOptions = {
   resolveCronJobName?: ChatDisplayProjectionOptions["resolveCronJobName"];
   cliSessionId?: string;
   readCliTailPage?: (tail: ChatHistoryCliTail) => Promise<ChatHistoryPage>;
+  /**
+   * Reads the span a compaction summary shadowed (fork: chat.history / sessions_history
+   * `compactionId`). Host-supplied because the span reader is not in the worker's admitted
+   * reader set; `undefined` from it means the id is not a compaction in this transcript.
+   */
+  readCompactionShadowPage?: (
+    readScope: SessionTranscriptReadScope,
+    opts: { compactionId: string; maxMessages: number; offset: number },
+  ) => Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined>;
 };
 
 export function resolveChatHistoryNextOffset(params: {
@@ -215,6 +224,32 @@ export function capChatHistoryAroundMessage(params: {
   return params.messages.slice(start, end);
 }
 
+/**
+ * Anchored reads (offset, messageId, compaction span) bypass the CLI-import merge.
+ *
+ * Bound snapshots are terminal by contract, so offset requests return the same full
+ * snapshot; paging oversized imports needs an opaque snapshot cursor and is deferred.
+ * offset and messageId therefore fall through to the merge when the session carries a
+ * CLI import binding, because that merge still centers on messageId at the handler cap.
+ *
+ * A compaction span never falls through. It is a fixed historical window in this
+ * session's own transcript, so an import binding cannot change what the boundary
+ * shadowed, and the merge would answer a span request with the live tail while
+ * reporting success -- the caller could not tell the span was never read.
+ */
+export function shouldReadAnchoredWindow(params: {
+  offset: number | undefined;
+  messageId: string | undefined;
+  compactionId: string | undefined;
+  cliSessionId: string | undefined;
+}): boolean {
+  const { offset, messageId, compactionId, cliSessionId } = params;
+  if (compactionId) {
+    return true;
+  }
+  return (offset !== undefined || Boolean(messageId)) && !cliSessionId;
+}
+
 /** Assemble one page from admitted readers; host imports and profile discovery stay outside. */
 export async function readChatHistoryPageKernel(
   params: ChatHistoryPageParams,
@@ -231,6 +266,7 @@ export async function readChatHistoryPageKernel(
     effectiveMaxChars,
     offset,
     messageId,
+    compactionId,
   } = params;
   if (!sessionId || !storePath) {
     if (messageId) {
@@ -256,12 +292,24 @@ export async function readChatHistoryPageKernel(
   // full snapshot. Paging oversized imports needs an opaque snapshot cursor and
   // is deferred to a follow-up issue. Anchored reads fall through with them: the
   // full-snapshot merge below still centers on messageId at the handler cap.
-  if ((offset !== undefined || messageId) && !cliSessionId) {
+  if (shouldReadAnchoredWindow({ offset, messageId, compactionId, cliSessionId })) {
     let pageOffset = offset ?? 0;
     let hasOverreadContext = false;
     let readPage: ReadRecentSessionMessagesResult;
     let incrementalTail: IncrementalChatHistoryTail | undefined;
-    if (messageId) {
+    if (compactionId) {
+      // A shadowed span is a fixed historical window: no live tail cursor and no CLI merge.
+      const span = await options.readCompactionShadowPage?.(readScope, {
+        compactionId,
+        maxMessages: max,
+        offset: offset ?? 0,
+      });
+      if (!span) {
+        return { messages: [] };
+      }
+      pageOffset = span.offset;
+      readPage = span;
+    } else if (messageId) {
       const anchoredPage = await options.readers.readSessionMessagesAroundIdWithStatsAsync(
         readScope,
         {
@@ -289,7 +337,7 @@ export async function readChatHistoryPageKernel(
       });
       readPage = incrementalTail.readPage;
     }
-    const isTailPage = !messageId && pageOffset === 0;
+    const isTailPage = !messageId && !compactionId && pageOffset === 0;
     const overreadContextMessage = incrementalTail
       ? incrementalTail.overreadContextMessage
       : hasOverreadContext || readPage.messages.length > max

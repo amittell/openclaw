@@ -234,6 +234,8 @@ function createCronPromptExecutor(
   const resolveCandidateExecution = createCronCandidateExecutionResolver(params);
 
   return async (promptText: string, runStartedAt: number): Promise<CronCompletedPromptRun> => {
+    const requestedProvider = params.liveSelection.provider;
+    const requestedModel = params.liveSelection.model;
     // A retry can fail during preparation, before any backend start callback.
     params.lifecycle.beginAttempt();
     const sessionTarget = {
@@ -711,15 +713,26 @@ function createCronPromptExecutor(
     }
     params.liveSelection.provider = fallbackResult.provider;
     params.liveSelection.model = fallbackResult.model;
-    setCronSessionRuntimeModel({
-      entry: params.cronSession.sessionEntry,
-      provider: fallbackResult.provider,
-      model: fallbackResult.model,
-    });
+    // A fallback served this run only if the tuple that answered differs from the
+    // one THIS attempt requested. requestedProvider/Model are read from liveSelection
+    // at the top of this runPrompt call, so a deliberate live model switch (which
+    // re-enters runPrompt) compares equal and is correctly NOT a fallback, while a
+    // genuine fallback compares unequal. Do not compare against liveSelection here:
+    // the two lines above have already rewritten it.
+    const usedFallback =
+      fallbackResult.provider !== requestedProvider || fallbackResult.model !== requestedModel;
+    // Deliberately NOT setCronSessionRuntimeModel here. A fallback is a transient
+    // recovery choice; writing it to the session entry pins the session to the
+    // fallback and its context budget after the primary recovers, which is the
+    // exact outcome run-finalize's guard exists to prevent. liveSelection above
+    // still carries the served tuple for continuation ownership.
     const completed = {
       runResult: fallbackResult.result,
       fallbackProvider: fallbackResult.provider,
       fallbackModel: fallbackResult.model,
+      requestedProvider,
+      requestedModel,
+      usedFallback,
       runStartedAt,
       runEndedAt: Date.now(),
     };

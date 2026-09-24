@@ -3,6 +3,7 @@ import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host
 import { hasRetainedPluginRuntimeCloseError } from "../plugins/runtime-close-error.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
+import { resetGatewayShuttingDownState } from "./gateway-shutdown-state.js";
 import { createGatewayKernel, gatewayKernelLogs } from "./server-kernel.js";
 import type { GatewayServer, GatewayServerOptions } from "./server-public.js";
 import { createGatewayHttpTransport } from "./server-runtime-state.js";
@@ -22,6 +23,15 @@ export async function startGatewayServerCore(
   port = 18789,
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
+  // Reset the shutting-down flag before any startup work so in-process restart
+  // (close handler already ran in the prior cycle, then we re-enter startup
+  // without process exit) starts answering /healthz as 200 again. Pull from
+  // the lightweight `gateway-shutdown-state` module instead of the close
+  // runtime so startup does not load shutdown-only agent/channel/plugin
+  // cleanup code. Imported statically and called synchronously: an await here
+  // yields before the remote catalog snapshot is captured, which lets a catalog
+  // that changes during startup win over the one present at start.
+  resetGatewayShuttingDownState();
   const sdkResourceHost = new LegacyPluginSdkResourceHost();
   return await sdkResourceHost.run(() =>
     startGatewayServerWithSdkHost(port, opts, sdkResourceHost),
