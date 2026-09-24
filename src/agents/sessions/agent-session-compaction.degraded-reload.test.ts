@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
-import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
@@ -56,9 +56,9 @@ const PRIOR_SUMMARY = [
 // A synthetic API plus the registered stream keep the real summarizer offline.
 const model: Model = { ...testModel, api: "compaction-test-api", contextWindow: 200_000 };
 
-function reopen(target: { storePath: string }, dir: string): SessionManager {
+async function reopen(target: { storePath: string }, dir: string): Promise<SessionManager> {
   const databasePath = resolveSqliteTargetFromSessionStorePath(target.storePath).path;
-  expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
+  expect(await closeOpenClawAgentDatabaseByPathAsync(databasePath)).toBe(true);
   return SessionManager.open(target as Parameters<typeof SessionManager.open>[0], dir);
 }
 
@@ -99,7 +99,7 @@ describe("AgentSession degraded compaction reload", () => {
         true,
       );
       sessionManager.flushPendingPersistence();
-      sessionManager = reopen(target, dir);
+      sessionManager = await reopen(target, dir);
     }
     sessionManager.appendMessage({
       role: "user",
@@ -152,7 +152,7 @@ describe("AgentSession degraded compaction reload", () => {
       sessionManager.flushPendingPersistence();
 
       // Reload: the boundary, its durable flag, and the request context come back from disk.
-      const reopened = reopen(target, dir);
+      const reopened = await reopen(target, dir);
       const boundary = lastCompaction(reopened);
       expect(boundary.details).toMatchObject({ qualityDegraded: true });
       expect(boundary.summary).toContain("## Pending user asks\nLatest user request context:");
@@ -187,7 +187,7 @@ describe("AgentSession degraded compaction reload", () => {
       expect(request).toContain("next question");
       expect(request).not.toContain(OVERSIZED_IDENTIFIER);
       reopened.flushPendingPersistence();
-      const afterTurn = reopen(target, dir);
+      const afterTurn = await reopen(target, dir);
       expect(lastCompaction(afterTurn).id).toBe(boundary.id);
       expect(afterTurn.buildSessionContext().messages.at(-1)).toMatchObject({
         role: "assistant",
