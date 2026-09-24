@@ -1,21 +1,13 @@
 // Telegram tests cover upload deadlines through the real undici transport.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { InputFile, type Transformer } from "grammy";
+import { InputFile } from "grammy";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { withTelegramMediaUploadSize } from "./media-upload-size.js";
+import { recordTelegramUploadBytes } from "./request-timeouts.js";
 import { withTelegramApiContext } from "./send-context.js";
 import { resetTelegramClientOptionsCacheForTests } from "./send.js";
 
-// The account throttler queues through Bottleneck's setTimeout, and vitest's fake
-// timers do not carry AsyncLocalStorage across it, so the caller's upload size
-// would read as unknown here. Real timers carry it; pass the throttler through.
-vi.mock("./bot.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./bot.runtime.js")>()),
-  apiThrottler: (): Transformer => (prev, method, payload, signal) => prev(method, payload, signal),
-}));
-
-// The 893.1 MiB incident file: ceil(bytes / 2 MiB/s) + 60 s is a 507 s guard.
+// The 893.1 MiB incident file: ceil(bytes / 2 MiB/s) + 15 s is a 462 s guard.
 const INCIDENT_UPLOAD_BYTES = 936_445_710;
 
 // setImmediate stays real so socket I/O runs between fake-clock steps.
@@ -87,8 +79,12 @@ describe("Telegram upload through the real transport", () => {
     };
 
     void withTelegramApiContext({ cfg }, ({ api }) =>
-      withTelegramMediaUploadSize(INCIDENT_UPLOAD_BYTES, () =>
-        api.sendDocument("123", new InputFile(Buffer.alloc(64 * 1024), "disk.img")),
+      api.sendDocument(
+        "123",
+        recordTelegramUploadBytes(
+          new InputFile(Buffer.alloc(64 * 1024), "disk.img"),
+          INCIDENT_UPLOAD_BYTES,
+        ),
       ),
     ).then(
       () => {
@@ -101,7 +97,7 @@ describe("Telegram upload through the real transport", () => {
     );
 
     await advanceUntil(() => seen.bodyEndAt !== undefined, 10, 500);
-    await advanceUntil(() => seen.settledAt !== undefined, 250, 2_200);
+    await advanceUntil(() => seen.settledAt !== undefined, 250, 2_000);
 
     expect({
       reason: innermostMessage(seen.failure),
@@ -109,6 +105,6 @@ describe("Telegram upload through the real transport", () => {
         seen.settledAt === undefined || seen.bodyEndAt === undefined
           ? undefined
           : Math.round((seen.settledAt - seen.bodyEndAt) / 1000),
-    }).toEqual({ reason: "Telegram senddocument timed out after 507000ms", afterSeconds: 507 });
+    }).toEqual({ reason: "Telegram senddocument timed out after 462000ms", afterSeconds: 462 });
   });
 });

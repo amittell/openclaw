@@ -1,3 +1,6 @@
+// Telegram plugin module implements request timeouts behavior.
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { Transformer } from "grammy";
 import {
   finiteSecondsToTimerSafeMilliseconds,
   MAX_TIMER_TIMEOUT_MS,
@@ -7,55 +10,18 @@ export const TELEGRAM_GET_UPDATES_REQUEST_TIMEOUT_MS = 45_000;
 const TELEGRAM_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const TELEGRAM_DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 30;
 const TELEGRAM_LONG_POLL_ABORT_MARGIN_SECONDS = 5;
-// Size-aware media upload timeouts. Local uploads through the self-hosted Bot
-// API run at roughly 3MB/s, so a fixed 30s guard aborts large files mid-upload
-// (the tdlib upload keeps going in the background and delivers minutes later,
-// producing a false failure plus duplicate retries). Scale the guard with the
-// outgoing file size at a conservative 2MB/s plus a fixed margin, clamped to a
-// 30s floor and a 3600s ceiling (or the timer cap if that is lower).
-const TELEGRAM_MEDIA_UPLOAD_RATE_BYTES_PER_SECOND = 2 * 1024 * 1024;
-const TELEGRAM_MEDIA_UPLOAD_FIXED_MARGIN_MS = 60_000;
-const TELEGRAM_MEDIA_UPLOAD_TIMEOUT_FLOOR_MS = 30_000;
-const TELEGRAM_MEDIA_UPLOAD_TIMEOUT_CEILING_MS = 3_600_000;
+// The Bot API answers an upload with the sent Message, so the response cannot
+// arrive before the file has reached Telegram. Uploads keep their table guard
+// while the file fits inside it; larger files get the time to move them at an
+// assumed 2 MiB/s plus a response margin, capped so a bad size cannot pin a lane.
+const TELEGRAM_UPLOAD_ASSUMED_BYTES_PER_SECOND = 2 * 1024 * 1024;
+const TELEGRAM_UPLOAD_RESPONSE_MARGIN_MS = 15_000;
+const TELEGRAM_UPLOAD_MAX_TIMEOUT_MS = 30 * 60_000;
 // grammY races every API call against one client-wide timer (500 s unless
-// client.timeoutSeconds is set) and has no per-call override, and undici waits
-// 300 s for response headers after the request body. Clients that install
-// createTelegramClientFetch set both past the upload ceiling, so the per-method
-// guard decides: 45 s for getUpdates, up to the ceiling for media uploads.
-export const TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS =
-  TELEGRAM_MEDIA_UPLOAD_TIMEOUT_CEILING_MS / 1000 + 60;
-const TELEGRAM_MEDIA_UPLOAD_METHODS = new Set([
-  "sendanimation",
-  "sendaudio",
-  "senddocument",
-  "sendphoto",
-  "sendvideo",
-  "sendvoice",
-]);
-
-function isTelegramMediaUploadMethod(method: string): boolean {
-  return TELEGRAM_MEDIA_UPLOAD_METHODS.has(method);
-}
-
-/**
- * Resolves the request timeout for a media upload from the outgoing file size.
- * Returns the 30s floor when the size is unknown, otherwise the size-scaled
- * duration clamped to [floor, min(ceiling, timer cap)].
- */
-export function resolveTelegramMediaUploadTimeoutMs(fileSizeBytes: number | undefined): number {
-  if (fileSizeBytes === undefined) {
-    return TELEGRAM_MEDIA_UPLOAD_TIMEOUT_FLOOR_MS;
-  }
-  const uploadMs = Math.ceil(fileSizeBytes / TELEGRAM_MEDIA_UPLOAD_RATE_BYTES_PER_SECOND) * 1000;
-  const ceilingMs = Math.min(TELEGRAM_MEDIA_UPLOAD_TIMEOUT_CEILING_MS, MAX_TIMER_TIMEOUT_MS);
-  return Math.min(
-    Math.max(
-      uploadMs + TELEGRAM_MEDIA_UPLOAD_FIXED_MARGIN_MS,
-      TELEGRAM_MEDIA_UPLOAD_TIMEOUT_FLOOR_MS,
-    ),
-    ceilingMs,
-  );
-}
+// client.timeoutSeconds is set) and has no per-call override. Clients that
+// install createTelegramClientFetch set it past the longest guard here, so the
+// per-method guard decides: 45 s for getUpdates, up to 30 minutes for uploads.
+export const TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS = TELEGRAM_UPLOAD_MAX_TIMEOUT_MS / 1000 + 60;
 
 const TELEGRAM_REQUEST_TIMEOUTS_MS = {
   // Bound startup/control-plane calls so the gateway cannot report Telegram as
@@ -95,10 +61,18 @@ function resolveConfiguredTelegramRequestTimeoutMs(timeoutSeconds: unknown): num
   );
 }
 
+function resolveTelegramUploadTimeoutMs(uploadBytes: number | undefined): number {
+  if (typeof uploadBytes !== "number" || !Number.isFinite(uploadBytes) || uploadBytes <= 0) {
+    return 0;
+  }
+  const transferMs = Math.ceil(uploadBytes / TELEGRAM_UPLOAD_ASSUMED_BYTES_PER_SECOND) * 1000;
+  return Math.min(transferMs + TELEGRAM_UPLOAD_RESPONSE_MARGIN_MS, TELEGRAM_UPLOAD_MAX_TIMEOUT_MS);
+}
+
 export function resolveTelegramRequestTimeoutMs(
   method: string | null,
   timeoutSeconds?: unknown,
-  fileSizeBytes?: number,
+  uploadBytes?: number,
 ): number | undefined {
   if (!method) {
     return undefined;
@@ -106,17 +80,60 @@ export function resolveTelegramRequestTimeoutMs(
   if (method === "getupdates") {
     return TELEGRAM_REQUEST_TIMEOUTS_MS.getupdates;
   }
-  if (isTelegramMediaUploadMethod(method)) {
-    const mediaUploadTimeoutMs = resolveTelegramMediaUploadTimeoutMs(fileSizeBytes);
-    return Math.max(
-      mediaUploadTimeoutMs,
-      resolveConfiguredTelegramRequestTimeoutMs(timeoutSeconds) ?? 0,
-    );
-  }
   const baseTimeoutMs =
     TELEGRAM_REQUEST_TIMEOUTS_MS[method as keyof typeof TELEGRAM_REQUEST_TIMEOUTS_MS] ??
     TELEGRAM_DEFAULT_REQUEST_TIMEOUT_MS;
-  return Math.max(baseTimeoutMs, resolveConfiguredTelegramRequestTimeoutMs(timeoutSeconds) ?? 0);
+  return Math.max(
+    baseTimeoutMs,
+    resolveTelegramUploadTimeoutMs(uploadBytes),
+    resolveConfiguredTelegramRequestTimeoutMs(timeoutSeconds) ?? 0,
+  );
+}
+
+const telegramUploadBytesByFile = new WeakMap<object, number>();
+const telegramUploadBytesStore = new AsyncLocalStorage<number>();
+
+/** Remember how many bytes an outgoing InputFile carries. */
+export function recordTelegramUploadBytes<T extends object>(file: T, uploadBytes: number): T {
+  telegramUploadBytesByFile.set(file, uploadBytes);
+  return file;
+}
+
+function readRecordedUploadBytes(value: unknown): number {
+  return (typeof value === "object" && value !== null && telegramUploadBytesByFile.get(value)) || 0;
+}
+
+function readTelegramPayloadUploadBytes(payload: unknown): number {
+  let uploadBytes = 0;
+  for (const value of Object.values(payload ?? {})) {
+    if (Array.isArray(value)) {
+      // sendMediaGroup nests each file under media[].media.
+      for (const item of value) {
+        if (typeof item === "object" && item !== null && "media" in item) {
+          uploadBytes += readRecordedUploadBytes(item.media);
+        }
+      }
+    } else {
+      uploadBytes += readRecordedUploadBytes(value);
+    }
+  }
+  return uploadBytes;
+}
+
+/**
+ * Carry a request's upload size to the client fetch guard. Install inside the
+ * account throttler: its queue runs requests from its own drain loop, so a size
+ * taken from the caller's async context would be lost or cross-attributed.
+ */
+export const telegramUploadTimeoutTransformer: Transformer = (prev, method, payload, signal) => {
+  const uploadBytes = readTelegramPayloadUploadBytes(payload);
+  return uploadBytes > 0
+    ? telegramUploadBytesStore.run(uploadBytes, () => prev(method, payload, signal))
+    : prev(method, payload, signal);
+};
+
+export function getTelegramUploadBytes(): number | undefined {
+  return telegramUploadBytesStore.getStore();
 }
 
 export function resolveTelegramLongPollTimeoutSeconds(timeoutSeconds: unknown): number {

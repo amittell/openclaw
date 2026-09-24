@@ -2,7 +2,6 @@ import type { ApiClientOptions } from "grammy";
 import { responseWithRelease } from "openclaw/plugin-sdk/fetch-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { TelegramTransport } from "./fetch.js";
-import { getTelegramMediaUploadSize } from "./media-upload-size.js";
 import {
   isTelegramMisdirectedRequestError,
   TelegramRequestNotStartedError,
@@ -13,7 +12,7 @@ import {
   getTelegramRequestAuthority,
   withoutTelegramRequestAuthority,
 } from "./request-authority.js";
-import { resolveTelegramRequestTimeoutMs } from "./request-timeouts.js";
+import { getTelegramUploadBytes, resolveTelegramRequestTimeoutMs } from "./request-timeouts.js";
 
 type TelegramFetchInput = Parameters<NonNullable<ApiClientOptions["fetch"]>>[0];
 type TelegramFetchInit = Parameters<NonNullable<ApiClientOptions["fetch"]>>[1];
@@ -147,7 +146,7 @@ export function createTelegramClientFetch(params: {
     const requestTimeoutMs = resolveTelegramRequestTimeoutMs(
       method,
       params.timeoutSeconds,
-      getTelegramMediaUploadSize(),
+      getTelegramUploadBytes(),
     );
     const shutdownSignal = isTelegramAbortSignalLike(params.shutdownSignal)
       ? params.shutdownSignal

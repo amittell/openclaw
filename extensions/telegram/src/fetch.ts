@@ -31,6 +31,7 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coer
 // The installed package retains dispatcher composition under Bun.
 import { Agent, fetch as undiciFetch } from "undici/index.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
+import { telegramAgentPoolOptions } from "./dispatcher-pool-options.js";
 import {
   resolveTelegramAutoSelectFamilyDecision,
   resolveTelegramDnsResultOrderDecision,
@@ -43,7 +44,6 @@ import {
   findTelegramRequestAuthorityError,
   getTelegramRequestAuthority,
 } from "./request-authority.js";
-import { TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS } from "./request-timeouts.js";
 
 const log = createSubsystemLogger("telegram/network");
 
@@ -51,45 +51,10 @@ const TELEGRAM_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS = 300;
 const TELEGRAM_API_HOSTNAME = "api.telegram.org";
 const TELEGRAM_FALLBACK_IPS: readonly string[] = ["149.154.167.220"];
 
-// Dispatcher defaults that bound the per-origin connection pool. Telegram long
-// polling keeps a handful of connections hot for hours, so the defaults must be
-// strict enough that (a) idle sockets are closed even when the pool is still
-// actively used and (b) the pool itself cannot grow unbounded under transient
-// concurrency spikes. These values are a defence-in-depth layer; the primary
-// fix for the leak observed in openclaw#68128 is the transport lifecycle that
-// calls `close()` on abandoned dispatchers.
-const TELEGRAM_DISPATCHER_KEEP_ALIVE_TIMEOUT_MS = 30_000;
-const TELEGRAM_DISPATCHER_KEEP_ALIVE_MAX_TIMEOUT_MS = 600_000;
-const TELEGRAM_DISPATCHER_CONNECTIONS_PER_ORIGIN = 10;
-const TELEGRAM_DISPATCHER_PIPELINING = 1;
 const TELEGRAM_STICKY_FALLBACK_PRIMARY_PROBE_SUCCESS_THRESHOLD = 5;
 const TELEGRAM_TRANSPORT_ATTEMPT_FAILURE_THRESHOLD = 5;
 const TELEGRAM_TRANSPORT_ATTEMPT_INITIAL_COOLDOWN_MS = 10_000;
 const TELEGRAM_TRANSPORT_ATTEMPT_MAX_COOLDOWN_MS = 60_000;
-
-type TelegramAgentPoolOptions = {
-  allowH2: false;
-  keepAliveTimeout: number;
-  keepAliveMaxTimeout: number;
-  connections: number;
-  pipelining: number;
-  headersTimeout: number;
-};
-
-function telegramAgentPoolOptions(): TelegramAgentPoolOptions {
-  return {
-    allowH2: false,
-    keepAliveTimeout: TELEGRAM_DISPATCHER_KEEP_ALIVE_TIMEOUT_MS,
-    keepAliveMaxTimeout: TELEGRAM_DISPATCHER_KEEP_ALIVE_MAX_TIMEOUT_MS,
-    connections: TELEGRAM_DISPATCHER_CONNECTIONS_PER_ORIGIN,
-    pipelining: TELEGRAM_DISPATCHER_PIPELINING,
-    // undici gives up on response headers 300 s after the request body is
-    // sent. A self-hosted Bot API server answers an upload only after relaying
-    // the file to Telegram, so leave the deadline to the per-method guard in
-    // createTelegramClientFetch.
-    headersTimeout: TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS * 1000,
-  };
-}
 
 type RequestInitWithDispatcher = RequestInit & {
   dispatcher?: unknown;

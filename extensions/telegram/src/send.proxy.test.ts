@@ -144,7 +144,7 @@ describe("telegram proxy client", () => {
       network: undefined,
     });
     expect(botCtorSpy).toHaveBeenCalledWith("tok", {
-      client: { fetch: expect.any(Function), timeoutSeconds: 3660 },
+      client: { fetch: expect.any(Function) },
     });
   };
 
@@ -194,7 +194,7 @@ describe("telegram proxy client", () => {
     expect(botCtorSpy).toHaveBeenCalledTimes(2);
     expect(resolveTelegramTransport).toHaveBeenCalledWith(proxyFetch, { network: undefined });
     const firstOptions = botCtorSpy.mock.calls[0]?.[1];
-    expect(firstOptions).toEqual({ client: { fetch: expect.any(Function), timeoutSeconds: 3660 } });
+    expect(firstOptions).toEqual({ client: { fetch: expect.any(Function) } });
     expect(botCtorSpy).toHaveBeenNthCalledWith(2, "tok", firstOptions);
   });
 

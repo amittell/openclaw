@@ -7,8 +7,8 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import { resolveTelegramPlainCaption, splitTelegramCaption } from "./caption.js";
 import { renderTelegramHtmlText, telegramHtmlToPlainTextFallback } from "./format.js";
-import { withTelegramMediaUploadSize } from "./media-upload-size.js";
 import type { TelegramOutboundPromptContextMessage } from "./outbound-message-context.js";
+import { recordTelegramUploadBytes } from "./request-timeouts.js";
 import { isTelegramEmptyContentError, isTelegramHtmlParseError } from "./rich-plain-fallback.js";
 import type { TelegramApi } from "./send-context.js";
 import { isTelegramPhotoLimitError } from "./send-error-predicates.js";
@@ -122,7 +122,10 @@ export function prepareTelegramOutboundMedia(params: {
     isGif,
     isVideoNote,
     fileName,
-    file: new InputFile(params.media.buffer, fileName),
+    file: recordTelegramUploadBytes(
+      new InputFile(params.media.buffer, fileName),
+      params.media.buffer.byteLength,
+    ),
     caption,
     htmlCaption,
     plainCaption: resolveTelegramPlainCaption(
@@ -154,20 +157,17 @@ export function resolveTelegramOutboundMediaSenders<
       file: InputFile,
       options: Record<string, unknown>,
     ) => Promise<T>;
-    const uploadSizeBytes = params.media.buffer.byteLength;
     return {
       label,
       operation,
       send: (effectiveParams) =>
-        withTelegramMediaUploadSize(uploadSizeBytes, () =>
-          method.call(
-            params.api,
-            params.chatId,
-            params.plan.file,
-            label === "document" && params.forceDocument
-              ? { ...effectiveParams, disable_content_type_detection: true }
-              : effectiveParams,
-          ),
+        method.call(
+          params.api,
+          params.chatId,
+          params.plan.file,
+          label === "document" && params.forceDocument
+            ? { ...effectiveParams, disable_content_type_detection: true }
+            : effectiveParams,
         ),
     };
   };
