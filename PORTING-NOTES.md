@@ -1644,3 +1644,198 @@ script counted **fork-only files as deletions** — files absent at the 9.2 base
 WE created them. They have no delta to replay and simply copy over. 42 files were
 scored as product decisions and every one was a non-event. Skip a file when it is
 absent at the BASE.
+
+---
+
+# Carrying onto v2026.9.6 (9.5 -> 9.6), 2026-09-23
+
+Branch `upgrade-v2026.9.6`, built from `upgrade-v2026.9.5` at `afc498ca1e7`
+(the bots run `764e5007023`; `afc498ca1e7` adds only the bot-pair author rule and
+a test-only mantis fix). Everything below was measured on this carry, not
+carried forward from an earlier one.
+
+## Topology
+
+    v2026.9.5^{commit}          ec9c1a13db8
+    v2026.9.6^{commit}          eb377ac59e6
+    merge-base                  309e85fe12c   2026-09-17
+    commits only in 9.6         2,792
+    commits only in 9.5             4   release scaffolding + #151977
+    9.5 -> 9.6                  17,431 files, +1,363,916 / -439,135
+
+Sibling release branches again, so the same squash-and-cherry-pick as 9.4 and 9.5:
+
+    SQUASH=$(git commit-tree <reduced-fork>^{tree} -p v2026.9.5^{commit})
+    git cherry-pick -n $SQUASH        # onto v2026.9.6
+
+The one 9.5-only product commit, `80ae94528f6` (#151977), is in 9.6 as
+`a9fea70fcba` with the same patch-id, so moving to 9.6 loses nothing.
+
+## Revert pass: upstream ports 9.6 already contains
+
+Candidates were every `(#NNNNN)` in fork commit subjects across the 9.2, 9.3,
+9.4 and 9.5 lines (16 numbers), plus every PR number named in their bodies
+(34 more), matched against subjects in `309e85fe12c..v2026.9.6`.
+
+| fork commit                                                                | PR                                      | 9.6 commit    | decision                                                                                                                                                            |
+| -------------------------------------------------------------------------- | --------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `17174e3a88a`                                                              | #151461 (sticker emoji)                 | `f3947b7f934` | **reverted**: identical patch-id, so a landing, not a revert. The revert left all three files byte-identical to the 9.5 tag, so the fork had no other delta in them |
+| squashed across `7616f08043c`, `0314b464965`, `745a87c5623`, `764e5007023` | #141843 (untyped 5xx -> `server_error`) | `776f76b4b87` | **not revertable** (spread across three squashes); resolved to upstream's landed lines at conflict time, below                                                      |
+
+The other 14 subject-matched PRs were already in 9.5 and were handled by the
+9.5 carry. #144979 and #151924 (the `afc498ca1e7` pair) are NOT in 9.6: the
+mantis test blobs are unchanged 9.5 -> 9.6 and `bot-pair-loop-facts.ts` is
+fork-only.
+
+    fork delta vs 9.5    352 files -> 349 after the revert
+    conflicts            46 -> 46    (the #151461 files merged cleanly either way)
+
+The 46 matched `git merge-tree --write-tree --merge-base v2026.9.5^{commit}`
+exactly, before and after.
+
+## #141843 landed upstream: what that means for the standing ruling
+
+Alex's own PR landed in 9.6 as `776f76b4b87` (2026-09-19). The ruling "keep
+untyped HTTP 500 -> `server_error`, not the timeout lane" is now upstream
+behaviour, so the fork no longer diverges on it.
+
+- Status mapping: upstream maps 499, 504, 522 and 524 to `timeout` and every
+  other 5xx to `server_error`. That is the same set as the fork's
+  `TIMING_HTTP_STATUSES` (408 is handled earlier by both). Took upstream's
+  lines; the fork's `isTimingHttpStatus` helper is gone.
+- CDN HTML path: upstream delegates to the shared status classifier. The one
+  observable difference: an HTML **529** page is now `overloaded` (upstream)
+  where the fork said `server_error`. Both are failover-worthy.
+- Kept, fork-only: `server_error` in `shouldUseTransientCooldownProbeSlot`.
+  Upstream's PR body says the cooldown-probe policy was left intact, so on
+  upstream a reclassified 502 is no longer probe-eligible; on the fork it still
+  is (deployed behaviour since 9.2).
+- The 9.5 test pin in `result-fallback-classifier.test.ts` is now upstream's own
+  test with the same expectation. The pin's divergence comment is obsolete and
+  went with the conflict. The other 9.5 pin (compaction checkpoint handle in
+  `session-manager-provenance-compaction.test.ts`) carried unchanged.
+
+## Deleted-file decisions
+
+- Files the fork MODIFIES that 9.6 deletes: **0** (297 of 297 present at 9.6;
+  control: all 297 present at 9.5). The cherry-pick reported no renames and no
+  modify/delete.
+- Fork-added files that 9.6 also adds at the same path: **0**.
+- One fork-added file deleted by me:
+  `src/infra/heartbeat-runner.tool-response.previews.test.ts` (trap 5). It is
+  the 8.1 max-lines split of upstream's UTF-16 preview test; the 9.5 carry
+  restored upstream's copy in `heartbeat-runner.tool-response.test.ts` and
+  left this one too. Two byte-identical tests; upstream's stays (941 lines,
+  under the 1000 cap).
+- Trap-5 sweep: 139 carry test files, 408 added test/describe names, 6 found
+  in another file at 9.6. One real duplicate (above); the other five are
+  generic describe names or a name the fork moved out of
+  `auth-controller.test.ts` (0 copies left there, measured).
+
+## Per-file rulings (46 conflicts: 40 hand, 6 generated)
+
+Rule throughout: take 9.6's structure, then re-apply the FORK's delta where
+9.6 moved the code.
+
+| file                                                                                                                                                                                                                                                          | 9.6 change that collided                                                                                 | ruling                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config/assertion-safety-baseline.txt` + 4 codex prompt snapshots                                                                                                                                                                                             | generated                                                                                                | took 9.6, regenerated                                                                                                                                                                                                      |
+| `config/env-var-count-budget.txt`                                                                                                                                                                                                                             | 9.6 lowered 492 -> 491                                                                                   | 491 + the fork's one name = 492                                                                                                                                                                                            |
+| `failover/classify-core.ts`, `classification-rules.ts`, `classify.test.ts`, `result-fallback-classifier.test.ts`, `assistant-failure.failover.test.ts`, `run-termination.test.ts`, `worker-turn-launcher-computer.test.ts`, `docs/concepts/model-failover.md` | #141843 landed                                                                                           | took 9.6 whole (see above)                                                                                                                                                                                                 |
+| `failover-error.ts`                                                                                                                                                                                                                                           | 9.6 removed the casts (`asOptionalObjectRecord`)                                                         | the fork's delta was only 12 SAFETY comments on those casts -> 9.6                                                                                                                                                         |
+| `run/helpers.ts`                                                                                                                                                                                                                                              | 9.6 moved the transient-retry helpers into `failover-retry-controller.ts`                                | kept only the fork's overload backoff policy here                                                                                                                                                                          |
+| `run/failover-retry-controller.ts`                                                                                                                                                                                                                            | imports                                                                                                  | 9.6's diagnostics import + the fork's `computeBackoff`                                                                                                                                                                     |
+| `run/incomplete-turn-recovery.ts`                                                                                                                                                                                                                             | 9.6 removed the cast                                                                                     | 9.6                                                                                                                                                                                                                        |
+| `run/attempt-spawn-workspace.test-support.ts`                                                                                                                                                                                                                 | 9.6 extracted `SessionManagerMocks` into `...session-manager-mock.test-support.ts`                       | the fork's `setCompactionCheckpointHandleFormatter` field moved there                                                                                                                                                      |
+| `auth-profiles/constants.ts`                                                                                                                                                                                                                                  | 9.6 rewrote the lock doc ("claiming and settling, not provider I/O")                                     | 9.6's doc + the fork's retries=22 note                                                                                                                                                                                     |
+| `auth-profiles/oauth.ts`                                                                                                                                                                                                                                      | `OAuthManagerRefreshError` moved to `oauth-refresh-failure.js`                                           | union with the fork's `classifyOAuthRefreshFailureReason`                                                                                                                                                                  |
+| `auth-profiles/store.ts`                                                                                                                                                                                                                                      | options type moved to `runtime-read.ts`; runtime loader moved into `createAuthProfileStoreRuntimeReader` | `skipInheritance` added in `runtime-read.ts`; the fork's `loadAgentLocalAuthProfileStore` kept                                                                                                                             |
+| `auth-profiles/external-cli-sync.ts`, `oauth-refresh-failure.test.ts`                                                                                                                                                                                         | imports                                                                                                  | union                                                                                                                                                                                                                      |
+| `sessions/agent-session-compaction.ts`                                                                                                                                                                                                                        | 9.6 computes `tokensAfter` inside the write                                                              | the fork's leaf-moved guard first, then 9.6's computation                                                                                                                                                                  |
+| `sessions/session-manager-entries.ts`                                                                                                                                                                                                                         | new base class `SessionManagerSuffixPersistence`                                                         | 9.6's base + the fork's checkpoint formatter                                                                                                                                                                               |
+| `tools/sessions-history-tool.ts` (+ test)                                                                                                                                                                                                                     | schema now derived from `ChatHistoryParamsSchema`                                                        | `compactionId` as `Type.With(ChatHistoryParamsSchema.properties.compactionId)`; `shadowedCount`/`returnedCount` kept                                                                                                       |
+| `tool-description-presets.ts` (+ test)                                                                                                                                                                                                                        | new `sessions_history` wording                                                                           | 9.6's wording + the fork's compactionId sentence                                                                                                                                                                           |
+| `sqlite-history-query.ts`, `session-transcript-readers.ts`, `chat-history-handler.ts`, `chat-send-agent-dispatch.ts`, `server-close.ts`, `status.scan.shared.test.ts`                                                                                         | imports                                                                                                  | union                                                                                                                                                                                                                      |
+| `server-http.ts`                                                                                                                                                                                                                                              | `PluginHttpRequestHandler` moved to `server/plugins-http.js`                                             | the fork's healthz re-export kept                                                                                                                                                                                          |
+| `server-start.ts`                                                                                                                                                                                                                                             | 9.6 dropped a test import                                                                                | the fork's `resetGatewayShuttingDownState`                                                                                                                                                                                 |
+| `server-methods/health.ts`                                                                                                                                                                                                                                    | 9.6 no longer revives the cached event loop                                                              | destructure both `eventLoop` and `runtimeConfig`                                                                                                                                                                           |
+| `infra/state-migrations.doctor.ts`                                                                                                                                                                                                                            | 9.6 extracted the owner helper into `state-migrations.legacy-owner.ts`                                   | the fork's `hasExplicitSessionStoreOwner` disjunct re-applied there                                                                                                                                                        |
+| `cron/isolated-agent/run-executor.ts`                                                                                                                                                                                                                         | `CronCompletedPromptRun` moved to `run.types.ts`                                                         | `requestedProvider`/`requestedModel`/`usedFallback` added there; `run-finalize` still reads `usedFallback`                                                                                                                 |
+| `server-methods/cron.validation.test.ts`                                                                                                                                                                                                                      | foreign/operator cases folded into a `describe.each`                                                     | kept only the fork's missing-id test                                                                                                                                                                                       |
+| `media/store.ts`                                                                                                                                                                                                                                              | read-scope write path in `writeSavedMediaBuffer`                                                         | 9.6's path + the fork's inbound-save log                                                                                                                                                                                   |
+| `channels/turn/lifecycle.ts`                                                                                                                                                                                                                                  | inline `deliver` extracted to `deliverReply()`                                                           | the fork's `durableTerminal` tag + SAFETY re-applied inside `deliverReply`; the helpers the fork moved to `delivery-visibility.ts` are byte-identical at 9.5 and 9.6, so that extraction hides nothing                     |
+| `tools/message-tool-execution.ts`                                                                                                                                                                                                                             | 9.6 extracted `resolvePollVoteEchoRoute` into `poll-vote-echo.ts`                                        | trap 3 again, both directions: the fork's `send-suppression.ts` keeps the tracker state (test setup clears it), its resolver copy was deleted, and both guards now key on 9.6's resolver                                   |
+| telegram `bot-handlers.message-pipeline.ts`                                                                                                                                                                                                                   | #151911: reply media moved into `hydrateMedia()`, external replies hydrate too                           | the fork's file_unique_id dedupe, own-bot skip and `fileUniqueId` re-applied on 9.6's loop; the chat scope is now a `hydrateMedia` parameter (chain: the node's chat/thread; external reply: the chat the turn arrived in) |
+
+## Pre-existing fork defects found on the way (NOT fixed here; the deployed build has them too)
+
+1. **The overload backoff has no production caller, and has not since 9.2.**
+   `maybeBackoffBeforeOverloadFailover` (config
+   `agents.defaults.embeddedAgent.overloadBackoffMaxMs`) is defined on the
+   failover controller and called only by `failover-overload-backoff.test.ts`.
+   Its 8.1 call sites (`assistant-failover.ts`, `prompt-failure.ts`,
+   `attempt-recovery.ts`, `run-loop.ts`) are gone on `upgrade-v2026.9.2`,
+   `.9.3`, `d99eb39b331` and `upgrade-v2026.9.5`. Trap 4 exactly: tests green,
+   production inert. Re-wiring it changes bot behaviour, so it is Alex's call.
+2. **`OAUTH_REFRESH_INLOCK_TIMEOUT_MS` is inert too.** At 9.5 it is referenced
+   only by tests and a comment; no production code wraps anything in it. 9.6's
+   own doc on the lock options now says the lock covers "claiming and settling
+   OAuth generations, not provider I/O", so its premise (the network call runs
+   inside the lock) no longer describes upstream either. Its only live effect is
+   `retries: 22` in the lock options. Kept as-is.
+
+## Typecheck fixes after the carry (commit `fix(v2026.9.6): make the carry typecheck...`)
+
+9 errors, every one fork code meeting a 9.6 API change:
+
+| file                                                     | 9.6 change                                                                                                                                      | fix                                                                                                             |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `session-accessor.pending-inputs.ts`                     | the two-argument hash helper became a private `preparePendingInputMessage`; `preparePendingInputRequest` now needs a run id and idempotency key | export `preparePendingInputMessage` and call it, so the answered-turn marker and stage admission share one hash |
+| telegram `bot-handlers.message-pipeline.ts` (2)          | `hydrateMedia` takes a media-only `Pick<Message>` with no chat or thread                                                                        | chat scope passed in as a parameter                                                                             |
+| `status.scan.shared.test.ts` (2, fork tests)             | `gatewayProbeDeadlineMs` required                                                                                                               | `createStatusGatewayProbeBudget()`                                                                              |
+| `tui-command-handlers.test.ts` (fork test)               | `createHarness` renamed `createTuiCommandHandlersHarness`                                                                                       | trap 2: a free variable, renamed                                                                                |
+| `restart-recovery-claim.test.ts` (2, fork tests)         | claim controller requires `agentId`                                                                                                             | `agentId: "main"`                                                                                               |
+| telegram `bot-message-context.reply-media-guard.test.ts` | `isTelegramMessageFromCurrentBot` moved to `message-cache-codec.ts`                                                                             | import from there                                                                                               |
+
+Lint found one more carry-caused problem, and it is fixed: the fork's
+answered-turn marker helper in `agent-run-execution-phase.ts` shadowed 9.6's
+new outer `sessionKey` (`no-shadow`).
+
+## Regenerated artifacts
+
+- `plugins:assets:build`: the workboard control-ui hash in
+  `extensions/workboard/openclaw.plugin.json` changes. Control: a clean 9.6
+  worktree rebuilds exactly its committed hash (`e7af77ce...`), so the new hash
+  (`78432061...`) comes from the carry, most likely the fork's gateway-protocol
+  schema delta. `plugins:assets:check` passes after the commit.
+- `prompt:snapshots:gen`: the 4 codex fixtures (the sessions_history tool's
+  compactionId parameter and description).
+- `protocol:gen`, `:swift`, `:kotlin`: no diff. The carried Swift models already
+  carry `chat.history` `compactionId`.
+- Assertion-safety baseline: pruned with `--base v2026.9.6^{commit}`, going from
+  3727 to 3708 files and 10682 to 10607 assertions (20 lowered or removed).
+  **One row was raised, and it is inherited:** `src/gateway/server-methods/send.ts`
+  0 -> 1 (`request.action as never`). A clean 9.6 worktree fails its own ratchet
+  on exactly that file, and `upstream/main` still has the line.
+- **Guard base trap:** `check:assertion-safety` and `check:line-cap-ratchet`
+  default to `merge-base HEAD origin/main`. In this repo `origin` is the writhub
+  mirror, whose `main` is July's `fcdb9321b8a`, so the default base compares
+  against a months-old tree. Use `--base v2026.9.6^{commit}` for a carry.
+
+## Validation (2026-09-23, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                                | result                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tsgo:core`                                                                          | rc=0, 0 errors                                                                                                                                                                                                                                                                                                                    |
+| `tsgo:extensions`                                                                    | rc=0, 0 errors                                                                                                                                                                                                                                                                                                                    |
+| `check:test-types` (25 core test shards, extensions test, root test)                 | rc=0, 0 errors; all 25 shards reported passed                                                                                                                                                                                                                                                                                     |
+| every core test shard ALONE, before the fixes                                        | 23 of 25 green; `commands` (3) and `messaging` (2) red, both fixed                                                                                                                                                                                                                                                                |
+| `check:assertion-safety`, `check:max-lines-ratchet`, `check:env-var-count` (492/492) | rc=0                                                                                                                                                                                                                                                                                                                              |
+| 31 other cheap guards from `scripts/check.mts` and `package.json`                    | rc=0                                                                                                                                                                                                                                                                                                                              |
+| `plugins:assets:check`, `prompt:snapshots:check`, `protocol:check:swift`             | rc=0                                                                                                                                                                                                                                                                                                                              |
+| `check:line-cap-ratchet --base v2026.9.6^{commit}`                                   | rc=1, **48** over-cap files grown by the fork. PRE-EXISTING class: the deployed line (`afc498ca1e7` against v2026.9.5) fails the same check with **50**. New in the carry: `src/commands/health.test.ts` (1026) and `src/media/store.ts` (715), both because 9.6 grew files the fork had already grown. Not split here (issue #9) |
+| oxlint over the 318 carried TS files                                                 | 14 errors, the **same 14** that 9.6's oxlint 1.82.0 reports on the deployed-line tree (`afc498ca1e7`, its own deps). None is carry-caused                                                                                                                                                                                         |
+| `oxfmt --check` over the 338 carried files                                           | clean                                                                                                                                                                                                                                                                                                                             |
+
+Not run here: the test suite (the verifier lane's job). The trap-5 sweep and
+the conflict-marker scan both ran and are recorded above.
