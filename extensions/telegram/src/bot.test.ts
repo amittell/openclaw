@@ -4358,9 +4358,9 @@ describe("createTelegramBot", () => {
 
   it.each([
     {
-      name: "skips self-authored bot photo in reply chain even when the bot is allowlisted",
+      name: "hydrates allowlisted group reply ancestors",
       allowFrom: ["1", "999"],
-      expectHydrated: false,
+      expectHydrated: true,
       chatId: 7,
     },
     {
@@ -4419,10 +4419,8 @@ describe("createTelegramBot", () => {
         },
       });
 
-      // Self-authored reply media must not be re-downloaded (re-derive of upstream
-      // PR #57280): the bot's own photo is never re-ingested as reply-chain media.
-      expect(getFileSpy).not.toHaveBeenCalledWith("generated-photo-1", expect.any(AbortSignal));
-      expect(mediaFetch).not.toHaveBeenCalled();
+      expect(getFileSpy).toHaveBeenCalledWith("generated-photo-1", expect.any(AbortSignal));
+      expect(mediaFetch).toHaveBeenCalledTimes(1);
 
       replySpy.mockClear();
       getFileSpy.mockClear();

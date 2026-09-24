@@ -41,7 +41,6 @@ import {
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
-import { isTelegramMessageFromCurrentBot } from "./message-cache-codec.js";
 import type { TelegramCachedMessageNode, TelegramReplyChainEntry } from "./message-cache-codec.js";
 import type { TelegramResolvedMedia } from "./message-cache-persistence.js";
 import {
@@ -245,8 +244,12 @@ export function createTelegramMessagePipeline({
     const mediaRuntime = resolveMediaRuntime(...participantSignals);
     const replyMedia: TelegramMediaRef[] = [];
     const replyChain: TelegramReplyChainEntry[] = [];
+    // Only current media that reached the agent claims its source. An unavailable
+    // attachment has no bytes, so a replied-to copy of it may still hydrate.
     const seenFileUniqueIds = new Set(
-      currentMedia.flatMap((media) => (media.fileUniqueId ? [media.fileUniqueId] : [])),
+      currentMedia.flatMap((media) =>
+        media.fileUniqueId && !media.unavailable ? [media.fileUniqueId] : [],
+      ),
     );
     const hydrateMedia = async (
       sourceMessage: Parameters<typeof resolveMedia>[0]["ctx"]["message"],
@@ -316,9 +319,6 @@ export function createTelegramMessagePipeline({
         node.resolvedMedia?.fileUniqueId ?? replyPrimaryMedia?.fileRef.file_unique_id;
       const mediaRef =
         replyFileId &&
-        // Do not re-ingest media from messages sent by this bot (re-derive of
-        // upstream PR #57280; the beta.2 layout has no bot-handlers.buffers/runtime).
-        !isTelegramMessageFromCurrentBot(node.sourceMessage, ctx.me?.id) &&
         // file_unique_id is Telegram's source identity. Check it before hydration,
         // because each save assigns a fresh path even when the bytes are the same.
         (!replyFileUniqueId || !seenFileUniqueIds.has(replyFileUniqueId)) &&
@@ -344,12 +344,15 @@ export function createTelegramMessagePipeline({
     // An explicit external reply belongs to this turn, not to the current chat's cache.
     const externalReply =
       chain.length === 0 && !ctx.message.reply_to_message ? ctx.message.external_reply : undefined;
-    const externalFileId = resolveTelegramPrimaryMedia(externalReply)?.fileRef.file_id;
+    const externalPrimaryMedia = resolveTelegramPrimaryMedia(externalReply);
+    const externalFileId = externalPrimaryMedia?.fileRef.file_id;
+    const externalFileUniqueId = externalPrimaryMedia?.fileRef.file_unique_id;
     const externalTarget = externalFileId ? describeReplyTarget(ctx.message) : null;
     if (
       externalReply &&
       externalFileId &&
       externalTarget &&
+      (!externalFileUniqueId || !seenFileUniqueIds.has(externalFileUniqueId)) &&
       (await shouldHydrateMedia(externalTarget, 0))
     ) {
       // Stamp the chat this turn arrived in: the scope keeps inbound files attributable
@@ -542,18 +545,14 @@ export function createTelegramMessagePipeline({
       const promptContextMediaByMessageId = new Map<string, TelegramMediaRef>();
       const currentMessageId =
         typeof params.msg.message_id === "number" ? String(params.msg.message_id) : undefined;
-      const mediaPathKeys = new Set<string>();
       for (const [index, media] of params.allMedia.entries()) {
         const messageId = media.sourceMessageId ?? (index === 0 ? currentMessageId : undefined);
         const promptMediaPath = media.path ? resolveTelegramPromptMediaPath(media.path) : undefined;
         if (messageId && promptMediaPath) {
-          if (!mediaPathKeys.has(promptMediaPath)) {
-            mediaPathKeys.add(promptMediaPath);
-            promptContextMediaByMessageId.set(messageId, {
-              ...media,
-              path: promptMediaPath,
-            });
-          }
+          promptContextMediaByMessageId.set(messageId, {
+            ...media,
+            path: promptMediaPath,
+          });
         }
       }
       for (const entry of replyChain) {
@@ -567,13 +566,6 @@ export function createTelegramMessagePipeline({
           entry.mediaKind ??
           (inferredKind && inferredKind !== "unknown" ? inferredKind : "document");
         if (entry.messageId && entry.mediaPath && promptMediaPath) {
-          // One staged file must not be attached twice to a single prompt: the
-          // reply chain can hydrate media that the current message already carries
-          // (same media id, different source message ids).
-          if (mediaPathKeys.has(promptMediaPath)) {
-            continue;
-          }
-          mediaPathKeys.add(promptMediaPath);
           promptContextMediaByMessageId.set(entry.messageId, {
             path: promptMediaPath,
             kind: mediaKind,
