@@ -1,7 +1,7 @@
 import type { Message } from "grammy/types";
 import { describe, expect, it, vi } from "vitest";
 import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
-import { isTelegramMessageFromCurrentBot } from "./message-cache.js";
+import { isTelegramMessageFromCurrentBot } from "./message-cache-codec.js";
 
 vi.mock("./sticker-vision.runtime.js", () => ({
   resolveStickerVisionSupportRuntime: vi.fn(async () => false),

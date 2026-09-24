@@ -3652,7 +3652,7 @@ describe("tui command handlers", () => {
       .mockResolvedValue([
         { provider: "openrouter", id: "openrouter/auto", name: "OpenRouter Auto" },
       ]);
-    const { handleCommand, openOverlay } = createHarness({
+    const { handleCommand, openOverlay } = createTuiCommandHandlersHarness({
       listModels,
       currentAgentId: "voice",
     });

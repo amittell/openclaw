@@ -216,15 +216,15 @@ export async function startAgentRunExecution(params: {
      */
     const recordCompletedTurnMarker = () => {
       const requestHash = prepared.userTurn.recorder?.getPendingInputRequestHash?.();
-      const sessionKey = params.resolvedSessionKey;
+      const markerSessionKey = params.resolvedSessionKey;
       const expectedSessionId = params.resolvedSessionId;
-      if (!requestHash || !sessionKey || !expectedSessionId) {
+      if (!requestHash || !markerSessionKey || !expectedSessionId) {
         return;
       }
       void recordSessionPendingInputCompletedTurn(
         {
           agentId: params.activeSessionAgentId,
-          sessionKey,
+          sessionKey: markerSessionKey,
           ...(params.storePath ? { storePath: params.storePath } : {}),
         },
         { expectedSessionId, requestHash },

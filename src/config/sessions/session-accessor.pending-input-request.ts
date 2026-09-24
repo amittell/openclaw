@@ -17,7 +17,8 @@ function resolvePendingInputRequestHash(
     : createHash("sha256").update(stableStringify(message)).digest("hex");
 }
 
-function preparePendingInputMessage(
+/** Stage-time request identity shared by pending-input admission and the answered-turn marker. */
+export function preparePendingInputMessage(
   message: PersistedUserTurnMessage,
   requestFingerprint?: string,
 ) {

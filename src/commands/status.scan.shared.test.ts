@@ -386,7 +386,7 @@ describe("resolveGatewayProbeSnapshot", () => {
 
     const result = await resolveGatewayProbeSnapshot({
       cfg: {},
-      opts: {},
+      opts: createStatusGatewayProbeBudget(),
     });
 
     const probeCall = readProbeCall();
@@ -709,7 +709,7 @@ describe("resolveGatewayProbeSnapshot", () => {
       async () => {
         const result = await resolveGatewayProbeSnapshot({
           cfg,
-          opts: {},
+          opts: createStatusGatewayProbeBudget(),
         });
 
         expect(result.gatewayProbeAuth).toStrictEqual({});

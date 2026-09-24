@@ -33,6 +33,7 @@ import {
   hasRestartRecoveryTerminalRun,
 } from "./restart-recovery-state.js";
 import {
+  preparePendingInputMessage,
   preparePendingInputRequest,
   resolveCommittedPendingInputRequestHash,
   resolvePendingInputReplayRequest,
@@ -208,7 +209,7 @@ export function computeSessionPendingInputRequestHash(
   requestFingerprint?: string,
 ): string {
   // One definition with the stage path: the answered-turn marker must compare equal.
-  return preparePendingInputRequest(message, requestFingerprint).requestHash;
+  return preparePendingInputMessage(message, requestFingerprint).requestHash;
 }
 
 /**

@@ -621,6 +621,7 @@ describe("createReplyRestartRecoveryClaimController", () => {
       persistFallback: async () => undefined,
     } satisfies UserTurnTranscriptRecorder;
     const controller = createReplyRestartRecoveryClaimController({
+      agentId: "main",
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
       getEntry: () => entry,
       getSessionId: () => sessionId,
@@ -691,6 +692,7 @@ describe("createReplyRestartRecoveryClaimController", () => {
       persistFallback: async () => undefined,
     } satisfies UserTurnTranscriptRecorder;
     const controller = createReplyRestartRecoveryClaimController({
+      agentId: "main",
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
       getEntry: () => entry,
       getSessionId: () => sessionId,

@@ -251,6 +251,7 @@ export function createTelegramMessagePipeline({
     const hydrateMedia = async (
       sourceMessage: Parameters<typeof resolveMedia>[0]["ctx"]["message"],
       replyFileId: string,
+      scope: string | undefined,
       node?: TelegramCachedMessageNode,
     ): Promise<TelegramMediaRef | undefined> => {
       let mediaRef: TelegramMediaRef | undefined;
@@ -273,7 +274,7 @@ export function createTelegramMessagePipeline({
           },
           maxBytes: mediaMaxBytes,
           ...mediaRuntime,
-          scope: buildTelegramMediaScope(sourceMessage.chat?.id, sourceMessage.message_thread_id),
+          scope,
         });
         if (!media) {
           return undefined;
@@ -322,7 +323,15 @@ export function createTelegramMessagePipeline({
         // because each save assigns a fresh path even when the bytes are the same.
         (!replyFileUniqueId || !seenFileUniqueIds.has(replyFileUniqueId)) &&
         (await shouldHydrateMedia(node, index))
-          ? await hydrateMedia(node.sourceMessage, replyFileId, node)
+          ? await hydrateMedia(
+              node.sourceMessage,
+              replyFileId,
+              buildTelegramMediaScope(
+                node.sourceMessage.chat?.id,
+                node.sourceMessage.message_thread_id,
+              ),
+              node,
+            )
           : undefined;
       if (mediaRef) {
         replyMedia.push(mediaRef);
@@ -343,7 +352,13 @@ export function createTelegramMessagePipeline({
       externalTarget &&
       (await shouldHydrateMedia(externalTarget, 0))
     ) {
-      const mediaRef = await hydrateMedia(externalReply, externalFileId);
+      // Stamp the chat this turn arrived in: the scope keeps inbound files attributable
+      // to the conversation that saved them, not to the external message's origin.
+      const mediaRef = await hydrateMedia(
+        externalReply,
+        externalFileId,
+        buildTelegramMediaScope(ctx.message.chat?.id, ctx.message.message_thread_id),
+      );
       if (mediaRef) {
         replyMedia.push(mediaRef);
       }
