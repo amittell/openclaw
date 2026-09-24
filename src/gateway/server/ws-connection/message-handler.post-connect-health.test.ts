@@ -155,14 +155,6 @@ vi.mock("./connect-node-session.js", async (importOriginal) => {
 vi.mock("../../../config/config.js", () => ({
   getRuntimeConfig: loadConfigMock,
   loadConfig: loadConfigMock,
-  // The post-connect health path re-enters this barrel through a dynamic
-  // import (health-runtime-config.ts loadConfigRuntime) and reads the runtime
-  // config snapshot. Nothing sets that snapshot outside a running Gateway, so
-  // null is what the real module returns here (src/config/runtime-snapshot.ts),
-  // and it short-circuits the drift read before any disk access.
-  getRuntimeConfigSourceSnapshot: () => null,
-  getRuntimeConfigSnapshotMetadata: () => null,
-  hashRuntimeConfigValue: () => "",
 }));
 
 vi.mock("../../../config/io.js", () => ({
