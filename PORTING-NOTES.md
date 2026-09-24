@@ -1839,3 +1839,116 @@ new outer `sessionKey` (`no-shadow`).
 
 Not run here: the test suite (the verifier lane's job). The trap-5 sweep and
 the conflict-marker scan both ran and are recorded above.
+
+## Pull-forwards onto the 9.6 carry (2026-09-24)
+
+Nine of Alex's PRs pulled forward at their current heads, replacing the fork's
+older variant of each where the fork carried one. The list and heads come from
+the PR census (`oc96/pr-census.md`); every head was re-verified against its
+scratch ref. Each PR was applied as its own diff, `git diff <merge-base with
+upstream main>..<head>`, never as a merge of its branch, because the branches
+sit on upstream `main` and the carry sits on the 9.6 release tag. One commit
+per PR.
+
+| PR      | head          | fork variant replaced                                                                                   | apply result                                                                                                                                                      | tests ALONE on the branch                                                                                                                                                                                       |
+| ------- | ------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #151921 | `55ecc3210f4` | earlier dedupe (a prefix plus a punctuation-only tail was always a duplicate)                           | clean after resetting `messaging-dedupe.ts` and its test to 9.6                                                                                                   | sanitize 124/124, lifecycle 26/26, transport-dedupe 9/9, fork `message-tool.test.ts` 286/286, `qa-channel-message-tool-delivery` 23/23                                                                          |
+| #156537 | `f5b7646141b` | none (new)                                                                                              | clean                                                                                                                                                             | heartbeat-events-filter 58/58, heartbeat-runner.tool-response 37/37                                                                                                                                             |
+| #155000 | `325aa9423db` | none (new; the fork's silent-stop nudge in `terminal-resolution.ts` is untouched)                       | clean                                                                                                                                                             | subagent-reasoning-only 2/2                                                                                                                                                                                     |
+| #151099 | `6b2305349c3` | pre-review inline carrier body in `inbound-meta.ts` plus 94 test lines                                  | clean after resetting `inbound-meta.ts` and its test to 9.6                                                                                                       | current-message 6/6, inbound-meta 78/78                                                                                                                                                                         |
+| #101866 | `039c25673c7` | 114-line `transcript-grounding.ts` (`redactUngroundedMediaRefs`) and its test                           | clean after deleting the fork's two files and resetting `transcript.ts`                                                                                           | 7 files, 183/183                                                                                                                                                                                                |
+| #138416 | `8f9fdab74af` | #723 window-scaled budget, dropped entirely (see below)                                                 | rebuilt from the PR head blob plus the fork's #721, #722 and SAFETY deltas; quality module merged with 0 conflicts                                                | summary-budget 3/3, safeguard-budget 1/1, fork #721 tests 3/3 and 6/6                                                                                                                                           |
+| #130393 | `22caaf374fe` | the fork's #722 degrade path                                                                            | one conflict with #138416 at the `fitCompactionSummary` call site, resolved together; 2 test conflicts resolved to the PR                                         | tool-failures 8/8, safeguard 147/147, compact.hooks 196/196, degraded-reload 2/2, provider-boundary 5/5, session-compaction 18/18, fork degrade-fallback 6/6, agent-core compaction 48/48 and tool-pair-cut 2/2 |
+| #151923 | `d7b158e8aa2` | `media-upload-size.ts`, the 3660 s client backstop and undici headersTimeout (96fcdcbb4eb, d99eb39b331) | clean after reverting the variant; the known add/add in `request-timeouts.test.ts` resolved as 9.6's tests plus the PR's                                          | request-timeouts 20/20, upload-real-transport 1/1, upload-timeout 4/4; 3 files re-anchored (below)                                                                                                              |
+| #89526  | `5d5ad44f5f6` | pre-gate drift health (4 fork-only files, 9 files of fork edits)                                        | one conflict, the known mechanical one in `config-reload.ts`: take the PR's removal of `resolveChokidarUsePolling`, keep 9.6's local `GatewayConfigReloader` type | 12 files, 858/858 after the re-anchor below                                                                                                                                                                     |
+
+Commits: `cf9c279edb1` #151921, `df63314bb9c` #156537, `d1bb7d61de0` #155000,
+`f759ee4e478` #151099, `ba32a64e429` #101866, `0a0518c396d` #138416,
+`c59c7cb9f56` #130393, `b6a4c2cb003` #151923, `93ad0681e24` #89526, then
+`3818db5405b` (the #57137 hyphen fix), `94a5ae017c4` (workboard hash regen) and
+`e8ad42c32ea` (test re-anchors).
+
+### What each replacement changes against the deployed fork
+
+- **#151921:** a prior send that prefixes the new text with a punctuation-only
+  tail now falls through to the length ratio instead of always counting as a
+  duplicate. A tail with any letter or digit is still delivered.
+- **#151099:** the CLI inline prompt no longer repeats the Telegram body. It is
+  stated in the carrier only.
+- **#138416 (drops #723):** the safeguard audits what the owner will actually
+  store, the 16,000-char persistence cap. The fork's scaled budget let the audit
+  pass a 60,305-char summary that was then cut to 16,000, losing the Pending
+  user asks and Exact identifiers sections (the PR's own 81514de9e81 message).
+  Removed: `resolveCompactionSummaryBudgetChars`, `SUMMARIZER_*`, the scaled
+  split-turn and preserved-turn caps, `fitCompactionSummary`'s `maxSummaryChars`
+  parameter in agent-core, and the #723 tests. Kept: #721's feedback block
+  (sized per the fork's #138415 variant, which the census says to keep) and the
+  fork's I1 open-tool-call cut guard.
+- **#130393:** the degrade now also covers infeasible required facts. It sheds
+  the longest identifiers before dropping the request context, and reserves the
+  generated split-turn summary at the head of the suffix. Fork test code it
+  supersedes was removed: the FORK DIVERGENCE reconciliations in
+  `agent-session-compaction.test.ts` and `compact.hooks.test.ts`, and a
+  byte-identical duplicate test in `compaction-safeguard.test.ts` (trap 5).
+- **#151923:** request guards scale with the upload's byte size, and grammY's
+  client timer is 1,860 s (30 min + 60 s) rather than the fork's 3,660 s.
+- **#89526:** `runtimeConfig` health is sent only to clients that advertise
+  `RUNTIME_CONFIG_HEALTH`. The fork variant sent it to every client, with
+  fingerprints gated by admin scope. Kept from the fork in `config-reload.ts`:
+  the hybrid-mode restart warning (a #89517 remnant, not part of #89526).
+
+### #130393's red CI test, measured here
+
+`src/agents/sessions/agent-session-compaction.degraded-reload.test.ts` failed on
+upstream CI in `checks-node-compact-large-44` with "Agent database resources are
+closing". ALONE on this branch it passed **5 of 5 runs, 2/2 tests each**, routed
+to the `infra` project, and no log contains that string. This is not a verdict
+on the CI failure: that ran in a large shard, and its conditions were not
+reproduced here. It says the test and its code are sound in isolation on this
+tree.
+
+### Re-anchors the ALONE runs found (`e8ad42c32ea`)
+
+- Three 9.6 telegram test files pinned the pre-#151923 client timeout
+  (`undefined`): `bot.create-telegram-bot.test.ts` (3 failed), `send.proxy.test.ts`
+  (4 failed) and `send.test.ts` (1 failed). The PR never touched them because its
+  `main` base had deleted those cases (#155040). They are pinned to 1860 now, the
+  same eight expectations the fork's old variant pinned to 3660.
+- `config-reload.test.ts` "honors model runtime restart write intent in hot mode"
+  (a fork test from the pre-gate #89526 lineage) failed 1 of 486. #89526's head
+  carries the same scenario in `config-reload.observation.test.ts`, which awaits
+  9.6's async `reloader.ready`, and that version passes. Three cells: pass ALONE
+  at the deployed-line `afc498ca1e7` (567/567), fail ALONE at the pre-pull carry
+  `3b8d947de6b`, absent at the tag. So it was already a 9.6-carry defect,
+  surfaced here, and the fork copy is removed.
+
+### Greptile P1 on the fork's #57137 carry, fixed (`3818db5405b`)
+
+`syncEnvBackedTokenCredentials` replaced only `:` and `.`, so a hyphenated
+profile id looked up an env name no shell can export. Every character outside
+`[A-Z0-9_]` now maps to `_`. The old name is still read when the portable one is
+unset (a launchd plist can carry a hyphen), and the portable name wins when both
+are set. Tests: 13/13. Reverting the regex reds exactly the two new cases.
+
+### Held for Alex, left exactly as the carry had them
+
+- #93952: the auth deadline backstop.
+- #155273, together with the self-authored reply-media guard (#57280, #66912).
+- #111913 / #52030 / #84972: Anthropic long-context routing.
+- Fork PR #8.
+- The dead `overloadBackoffMaxMs` wiring.
+- #151924 was NOT pulled by its head, which is now a copy of #93952; the fork's
+  own bot-loop wiring stays.
+
+### Superseded rulings earlier in this section
+
+Several 9.6 carry rows above describe fork variants as they stood on
+2026-09-23, before the pull-forwards replaced them:
+
+- `server-methods/health.ts` ("destructure both `eventLoop` and `runtimeConfig`");
+- the compaction-safeguard #722 variant;
+- the telegram upload-guard files;
+- `inbound-meta.ts`.
+
+For those files, the table above describes the current tree, not the earlier
+rows.
