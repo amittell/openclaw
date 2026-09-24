@@ -2051,3 +2051,26 @@ ALONE where they could discriminate.
 
 Result: one adoption (`send.ts`), one merge (the baseline), two converged files,
 and 26 files where ours is kept.
+
+### Two PR heads moved after the pull (2026-09-24)
+
+Both new heads were fetched from upstream `refs/pull/<n>/head`, and their shas
+were asserted before anything was applied.
+
+- **#151923: `d7b158e8aa2` -> `fe89fffb2d4` (`f3d176faeec`).** The PR was rebased
+  onto `d9f63649ff0`. `range-diff` shows commits 1 and 2 unchanged; only commit 3
+  was re-derived, and only because upstream main's #156842 gave `fetch.ts`'s
+  `telegramAgentPoolOptions` a `pipelining` parameter. 9.6 does not carry
+  #156842, so:
+  - `dispatcher-pool-options.ts` is now the PR head's blob;
+  - 9.6's single `fetch.ts` call site passes `TELEGRAM_DISPATCHER_PIPELINING` (1);
+  - behaviour is unchanged, and the 1860 s test pins still apply.
+
+  Tests ALONE: 14 telegram timeout and transport files green. `fetch.socks`'s
+  first run died compiling ("Boundary configuration or resolution topology
+  changed", with `examples/ai-chat/node_modules` appearing under the verifier
+  lane) and passed 6/6 on an unloaded rerun.
+
+- **#130393: `22caaf374fe` -> `7805358201f` (`5534851263e`).** This one is test-only:
+  the degraded-reload test closes the agent database with
+  `closeOpenClawAgentDatabaseByPathAsync`. ALONE, 3 of 3 runs passed, 2/2 each.
