@@ -15,6 +15,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/matrix/src/matrix/monitor/inbound-dedupe.test.ts",
   "extensions/nextcloud-talk/src/doctor.test.ts",
   "extensions/raft/src/gateway.test.ts",
+  "extensions/telegram/src/bot-handlers.message-pipeline.replay-guard.test.ts",
   "extensions/telegram/src/message-dispatch-dedupe.test.ts",
   "extensions/google-meet/index.create.test.ts",
   "extensions/google-meet/index.test.ts",
