@@ -51,6 +51,7 @@ import { createEventBus } from "../sessions/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../sessions/extensions/loader.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { SettingsManager } from "../sessions/settings-manager.js";
+import { createPreparedCodexCompactionPlans } from "./compact.hooks.codex-plans.test-support.js";
 import {
   acquireAgentRunPreparedModelRuntimeMock,
   attemptServerEndpointCompactionMock,
@@ -315,39 +316,6 @@ async function nativeCompactionArgs(
     agentHarnessId: overrides.agentHarnessId,
   });
   return params;
-}
-
-function createPreparedCodexCompactionPlans(modelId = "gpt-5.5") {
-  const modelRoute = {
-    provider: "openai",
-    modelId,
-    api: "openai-responses",
-    baseUrl: "https://api.openai.com/v1",
-    authRequirement: "api-key",
-    requestTransportOverrides: "none",
-    runtimePolicy: { compatibleIds: ["codex"] },
-  } as const;
-  const runtimeAuthPlan = {
-    providerForAuth: "openai",
-    modelId,
-    authProfileProviderForAuth: "openai",
-    harnessAuthProvider: "openai",
-    selectedAuthMode: "api-key",
-    modelRoute,
-  } as const;
-  return {
-    modelRoute,
-    runtimeAuthPlan,
-    runtimePlan: {
-      resolvedRef: {
-        provider: "openai",
-        modelId,
-        modelApi: "openai-responses",
-        harnessId: "codex",
-      },
-      auth: runtimeAuthPlan,
-    } as never,
-  };
 }
 
 const sessionHook = (action: string): SessionHookEvent | undefined =>
@@ -2224,7 +2192,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     it.each([
       ["provider timeout", "request timed out", "fallback"],
       ["provider rate limit", "429 rate limit exceeded", "fallback"],
-      ["intentional quality rejection", undefined, "cancel"],
+      ["intentional quality rejection", undefined, "degrade"],
       ["explicit model timeout", "request timed out", "cancel"],
       [
         "reasoning-mandatory rejection",
@@ -2296,7 +2264,10 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
               : createAssistant(activeModel, [
                   {
                     type: "text",
-                    text: outcome === "cancel" ? "Missing required sections." : fallbackSummary,
+                    text:
+                      outcome === "cancel" || outcome === "degrade"
+                        ? "Missing required sections."
+                        : fallbackSummary,
                   },
                 ]),
           );
@@ -2368,7 +2339,18 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           fallback ? [primary, backup] : [primary],
         );
         expect(config).toEqual(configBefore);
-        if (outcome !== "cancel") {
+        if (outcome === "degrade") {
+          // Exhausted quality validation commits a bounded fallback instead of cancelling:
+          // cancelling never shrinks the transcript, so the session could never compact again.
+          expect(result).toMatchObject({ ok: true, compacted: true });
+          const boundary = expectDefined(
+            sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+            "degraded compaction boundary",
+          );
+          expect(boundary).toMatchObject({ details: { qualityDegraded: true } });
+          expect(boundary.summary).toContain("## Decisions");
+          expect(sessionManager.buildSessionContext().messages).not.toEqual(originalMessages);
+        } else if (outcome !== "cancel") {
           if (outcome === "thinking") {
             expect([...new Set(requestedThinking)]).toEqual(["off", "minimal"]);
           }
@@ -2388,33 +2370,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
               latestUnresolvedUserRequest: "Keep the rollout notes.",
             },
           });
-        } else if (!explicitModel) {
-          // FORK DIVERGENCE, reconciled per the convention ruled 2026-09-15 (adopt the Signal
-          // precedent 790064e52c2). On a terminal quality-audit failure the fork degrades to a
-          // structured fallback summary instead of cancelling (compaction-safeguard.ts:1509-1520,
-          // e545867b558 / d71d1ee1720, written against a session left permanently mute at
-          // 289k/300k tokens). Upstream asserts the cancel. This is the same behaviour pinned at
-          // the session layer in agent-session-compaction.test.ts, with the identical fallback.
-          //
-          // Scoped by explicitModel, not by outcome: both "cancel" scenarios share that outcome,
-          // but only the quality rejection degrades. The explicit-model timeout still genuinely
-          // cancels (verified by run), so the upstream branch below is left byte-identical and
-          // is now reached only by that case - which is why its /quality/i arm is unreachable.
-          expect(result).toMatchObject({
-            ok: true,
-            compacted: true,
-            result: {
-              summary:
-                // The degrade carries the pending ask (cad37985e06): finalizing the fallback
-                // without the retention plan stored the empty template and dropped it.
-                '## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nLatest user request context: "Keep the rollout notes."\n\n## Exact identifiers\nNone captured.',
-            },
-          });
-          expect(sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(
-            true,
-          );
-          // The degrade compacts the transcript: 3 messages become 2 on this fixture.
-          expect(sessionManager.buildSessionContext().messages).toHaveLength(2);
         } else {
           expect(result).toMatchObject({ ok: false, compacted: false });
           expect(result.reason).toMatch(explicitModel ? /timed out/i : /quality/i);

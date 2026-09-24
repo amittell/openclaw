@@ -11,15 +11,8 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import type { CompactionProvider } from "../../plugins/compaction-provider.js";
-import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { MAX_OVERFLOW_COMPACTION_ATTEMPTS } from "../agent-compaction-constants.js";
-import {
-  getCompactionSafeguardRuntime,
-  setCompactionSafeguardRuntime,
-} from "../agent-hooks/compaction-safeguard-runtime.js";
-import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import { compactWithSafetyTimeout } from "../embedded-agent-runner/compaction-safety-timeout.js";
 import { subscribeEmbeddedAgentSession } from "../embedded-agent-subscribe.js";
 import { estimateContextTokens } from "../runtime/index.js";
@@ -29,6 +22,7 @@ import {
   agentSessionSetContextReplacementHook,
 } from "./agent-session-compaction.js";
 import {
+  collectCompactionEnds,
   createAssistant,
   createAssistantResultStream,
   createAutoCompactionSettings,
@@ -99,219 +93,7 @@ function createResultHandlers(
   return handlers;
 }
 
-function collectCompactionEnds(session: Awaited<ReturnType<typeof createTestSession>>["session"]) {
-  const events: Array<Extract<AgentSessionEvent, { type: "compaction_end" }>> = [];
-  session.subscribe((event) => {
-    if (event.type === "compaction_end") {
-      events.push(event);
-    }
-  });
-  return events;
-}
-
 describe("AgentSession compaction", () => {
-  it.each([
-    { name: "provider timeout", errorName: "TimeoutError", cancelCaller: false, recovers: false },
-    {
-      name: "provider timeout recovery",
-      errorName: "TimeoutError",
-      cancelCaller: false,
-      recovers: true,
-    },
-    { name: "ordinary provider failure", errorName: "Error", cancelCaller: false, recovers: false },
-    { name: "provider-side abort", errorName: "AbortError", cancelCaller: false, recovers: true },
-    { name: "caller cancellation", errorName: "AbortError", cancelCaller: true, recovers: false },
-  ])(
-    "preserves the safeguard boundary after $name",
-    async ({ errorName, cancelCaller, recovers }) => {
-      // A synthetic API plus the registered stream keep both real summarizers offline.
-      const model = {
-        ...testModel,
-        api: "compaction-test-api",
-        contextWindow: 4_096,
-        maxTokens: 128,
-      };
-      const summary = recovers
-        ? [
-            "## Decisions\nThe old prompt was answered.",
-            "## Open TODOs\nNone.",
-            "## Constraints/Rules\nPreserve the session history.",
-            "## Pending user asks\nNone.",
-            "## Exact identifiers\nNone.",
-          ].join("\n\n")
-        : "Core summary without required safeguard headings";
-      const recoveredSummary = [
-        "## Latest user request context",
-        JSON.stringify("old prompt"),
-        "",
-        summary,
-      ].join("\n");
-      const sessionManager = SessionManager.inMemory();
-      sessionManager.appendMessage({ role: "user", content: "old prompt", timestamp: 1 });
-      sessionManager.appendMessage({
-        ...createAssistant(model, [{ type: "text", text: "old answer" }]),
-        timestamp: 2,
-      });
-      sessionManager.appendMessage({ role: "user", content: "latest prompt", timestamp: 3 });
-      const providerStarted = createDeferred();
-      const releaseProvider = createDeferred();
-      const summarize = vi.fn<CompactionProvider["summarize"]>(async () => {
-        providerStarted.resolve();
-        await releaseProvider.promise;
-        throw Object.assign(new Error("synthetic custom-provider failure"), { name: errorName });
-      });
-      const registration = {
-        provider: { id: "session-compaction-test", label: "Session compaction test", summarize },
-      };
-      const registry = requireActivePluginRegistry();
-      registry.compactionProviders.push(registration);
-      setCompactionSafeguardRuntime(sessionManager, {
-        provider: registration.provider.id,
-        model,
-        recentTurnsPreserve: 0,
-        qualityGuardEnabled: true,
-        qualityGuardMaxRetries: 0,
-      });
-      const network = vi
-        .spyOn(globalThis, "fetch")
-        .mockRejectedValue(new Error("Unexpected network request in compaction test"));
-      const eventBus = createEventBus();
-      try {
-        const resourceLoader = createResourceLoader();
-        const extensions = resourceLoader.getExtensions();
-        extensions.extensions.push(
-          await loadExtensionFromFactory(
-            compactionSafeguardExtension,
-            sessionManager.getCwd(),
-            eventBus,
-            extensions.runtime,
-          ),
-        );
-        streamMocks.streamSimple.mockImplementation(
-          (activeModel: Model, _context: Context, options?: SimpleStreamOptions) =>
-            createAssistantResultStream(
-              createAssistant(
-                activeModel,
-                [{ type: "text", text: summary }],
-                options?.signal?.aborted ? "aborted" : "stop",
-              ),
-            ),
-        );
-        const { session } = await createTestSession({
-          model,
-          sessionManager,
-          resourceLoader,
-          settingsManager: SettingsManager.inMemory({
-            compaction: { enabled: false, reserveTokens: 64, keepRecentTokens: 1 },
-            retry: { enabled: false },
-          }),
-        });
-        const subscription = subscribeEmbeddedAgentSession({
-          session,
-          runId: "run-safeguard-summary-usage",
-        });
-        const entriesBefore = structuredClone(sessionManager.getEntries());
-        const messagesBefore = structuredClone(session.messages);
-        const compactionEnds = collectCompactionEnds(session);
-        const compaction = session.compact().then(
-          (result) => ({ status: "resolved", summary: result.summary }),
-          (error: unknown) => ({
-            status: "rejected",
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-        // Cancel through the public session API while the custom provider is in flight.
-        await Promise.race([providerStarted.promise, compaction]);
-        const callerSignal = summarize.mock.calls[0]?.[0].signal;
-        const callerAbortedAtProviderEntry = callerSignal?.aborted;
-        if (cancelCaller) {
-          session.abortCompaction();
-        }
-        releaseProvider.resolve();
-        const result = await compaction;
-        const appended = sessionManager
-          .getEntries()
-          .filter((entry) => entry.type === "compaction")
-          .map(({ summary: text, fromHook }) => ({ summary: text, fromHook }));
-
-        const observation = {
-          providerCalls: summarize.mock.calls.length,
-          callerAbortedAtProviderEntry,
-          callerAborted: callerSignal?.aborted,
-          result,
-          outcomes: compactionEnds.map((event) => event.outcome.status),
-          appended,
-        };
-        expect(subscription.getUsageTotals()?.total ?? 0).toBe(
-          streamMocks.streamSimple.mock.calls.length * 2,
-        );
-        subscription.unsubscribe();
-        // FORK DIVERGENCE, reconciled per the convention ruled 2026-09-15: adopt the Signal
-        // precedent (790064e52c2) and reconcile the carried upstream assertion in place, naming
-        // the fork behaviour and the commit that introduced it.
-        //
-        // On a terminal quality-audit failure the fork DEGRADES to a structured fallback summary
-        // instead of cancelling (src/agents/agent-hooks/compaction-safeguard.ts:1509-1520, from
-        // e545867b558 / d71d1ee1720, written against a measured incident: a session left
-        // permanently mute at 289k/300k tokens because cancel:true stranded an uncompactable
-        // transcript). Upstream has no such fallback, so it asserts the cancel.
-        //
-        // NOT a blanket flip. The fork's own rule keeps genuinely unrecoverable paths cancelling,
-        // so `caller cancellation` still asserts upstream's rejected/aborted/[] values and only
-        // the two provider-failure cases degrade. Verified by run: that case passes unchanged.
-        const degradesToFallback = !recovers && !cancelCaller;
-        // Deterministic for this fixture (the history is empty), so it is pinned in full rather
-        // than relaxed to a containment match - per the same precedent, a changed fallback still
-        // fails this test.
-        // The degrade carries the pending ask (cad37985e06); before it, this section read
-        // "None." because the fallback was finalized with no retention plan.
-        const degradedFallbackSummary =
-          '## Decisions\nNo prior history.\n\n## Open TODOs\nNone.\n\n## Constraints/Rules\nNone.\n\n## Pending user asks\nLatest user request context:\n"old prompt"\n\n## Exact identifiers\nNone captured.';
-        expect.soft(observation).toMatchObject({
-          providerCalls: 1,
-          callerAbortedAtProviderEntry: false,
-          callerAborted: cancelCaller,
-          result:
-            recovers || degradesToFallback
-              ? { status: "resolved", ...(recovers ? { summary: recoveredSummary } : {}) }
-              : { status: "rejected" },
-          outcomes: [recovers || degradesToFallback ? "completed" : "aborted"],
-          appended: recovers
-            ? [{ summary: recoveredSummary, fromHook: true }]
-            : degradesToFallback
-              ? [{ summary: degradedFallbackSummary, fromHook: true }]
-              : [],
-        });
-        // The guarded pipeline may chunk the history; do not pin its request count.
-        if (!cancelCaller) {
-          expect(streamMocks.streamSimple).toHaveBeenCalled();
-        }
-        // The degrade path APPENDS the fallback summary, so entries and messages legitimately
-        // change on those two cases; only a true cancel leaves the session untouched.
-        if (!recovers && !degradesToFallback) {
-          expect.soft(sessionManager.getEntries()).toEqual(entriesBefore);
-          expect.soft(session.messages).toEqual(messagesBefore);
-        }
-        if (!cancelCaller && !recovers) {
-          // This condition is exactly degradesToFallback. The fork degrades rather than cancels
-          // on these two cases, so no cancellation reason is recorded; upstream asserts the
-          // "failed quality checks" cancel it would have produced instead. Pinned to the observed
-          // absence rather than deleted, so a fork that starts cancelling again fails here.
-          expect(
-            getCompactionSafeguardRuntime(sessionManager)?.cancellation?.reason,
-          ).toBeUndefined();
-        }
-        expect(network.mock.calls.length).toBe(0);
-      } finally {
-        releaseProvider.resolve();
-        setCompactionSafeguardRuntime(sessionManager, null);
-        registry.compactionProviders.splice(registry.compactionProviders.indexOf(registration), 1);
-        eventBus.clear();
-        network.mockRestore();
-      }
-    },
-  );
-
   it.each([
     {
       name: "long untrusted focus",
