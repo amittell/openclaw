@@ -1,5 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
-import { getAiTransportHost } from "../host.js";
+import { describe, expect, it } from "vitest";
 import { FAILED_ASSISTANT_REPLAY_TEXT } from "../replay-turn-classification.js";
 import type { Model } from "../types.js";
 import { createZeroUsage } from "../usage.test-support.js";
@@ -282,7 +281,12 @@ describe("openai completions params", () => {
     },
   );
 
-  it("preserves non-reasoning short budgets and the exhausted-budget fallback", () => {
+  // FORK DIVERGENCE from upstream #157673, which keeps sending non-reasoning and thinking-off
+  // requests clamped below 16 output tokens (down to max_completion_tokens=1, with an
+  // insufficient_output_budget warning). The fork refuses them as overflow in every mode (Alex's
+  // all-models ruling: the bots run qwen3.8-27b with thinking off), so these two tests are pinned
+  // to the refusal. A smaller requested budget that fits is still sent unchanged.
+  it("refuses non-reasoning short budgets as overflow too (fork, not #157673)", () => {
     const model = makeCompletionsModel({
       baseUrl: "http://localhost:8000/v1",
       reasoning: false,
@@ -290,24 +294,22 @@ describe("openai completions params", () => {
       maxTokens: 1000,
     });
     const context = emptyContext("x".repeat(3200));
-    for (const [remaining, expected] of [
-      [-1, 1],
-      [0, 1],
-      [1, 1],
-      [15, 15],
-    ] as const) {
-      expect(
+    for (const remaining of [-1, 0, 1, 15]) {
+      expect(() =>
         buildOpenAICompletionsParams(
           { ...model, contextTokens: 1001 + remaining },
           context,
           undefined,
-        ).max_completion_tokens,
-      ).toBe(expected);
+        ),
+      ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
     }
+    expect(
+      buildOpenAICompletionsParams(model, context, { maxTokens: 8 }).max_completion_tokens,
+    ).toBe(8);
   });
 
   it.each([false, true])(
-    "warns when a short non-thinking request proceeds (reasoning=%s)",
+    "refuses a short thinking-off request as overflow (reasoning=%s) (fork, not #157673)",
     (reasoning) => {
       const model = makeCompletionsModel({
         baseUrl: "http://localhost:8000/v1",
@@ -315,20 +317,11 @@ describe("openai completions params", () => {
         contextWindow: 1000,
         maxTokens: 1000,
       });
-      const warning = vi.spyOn(getAiTransportHost(), "logWarn");
-      try {
-        const params = buildOpenAICompletionsParams(model, emptyContext("x".repeat(3200)), {
+      expect(() =>
+        buildOpenAICompletionsParams(model, emptyContext("x".repeat(3200)), {
           reasoning: "off",
-        });
-        expect(params.max_completion_tokens).toBe(1);
-        expect(warning).toHaveBeenCalledWith(
-          "openai-transport",
-          expect.stringContaining("insufficient_output_budget"),
-          undefined,
-        );
-      } finally {
-        warning.mockRestore();
-      }
+        }),
+      ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
     },
   );
 

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import type { Model } from "../types.js";
+import type { AssistantMessage, Model } from "../types.js";
 import { createOpenAICompletionsTransportStreamFn } from "./openai-completions-transport.js";
 import { makeCompletionsModel } from "./openai-completions.test-support.js";
 import { buildOpenAISdkClientOptions } from "./openai-transport-params.js";
@@ -253,6 +253,87 @@ describe("openai completions transport requests", () => {
       expect(thinking).toBe("Need a direct answer.");
       expect(text).toBe("live-ok");
       expect(doneReason).toBe("stop");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  // Fork: thinking off, the bots' qwen3.8-27b mode. Upstream #157673 refuses only with thinking
+  // on and would send this request with max_completion_tokens=1.
+  it("fails as a context overflow instead of sending a thinking-off request with no useful output budget", async () => {
+    const requestedOutputLimits: unknown[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const payload: { max_completion_tokens?: unknown; max_tokens?: unknown } = JSON.parse(body);
+        requestedOutputLimits.push(payload.max_completion_tokens ?? payload.max_tokens);
+        // A server whose real window exceeds the configured cap accepts the request and
+        // returns a one-token reply.
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+        res.end(
+          JSON.stringify({
+            id: "chatcmpl-one-token",
+            object: "chat.completion",
+            model: "qwen3.8-27b",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "The" },
+                finish_reason: "length",
+              },
+            ],
+            usage: { prompt_tokens: 4_100, completion_tokens: 1, total_tokens: 4_101 },
+          }),
+        );
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Missing loopback server address");
+      }
+      const model = makeCompletionsModel({
+        id: "qwen3.8-27b",
+        provider: "vllm",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        contextWindow: 1_010_000,
+        contextTokens: 4_096,
+        maxTokens: 32_768,
+      });
+      // 14,006 chars estimate to 4,377 input tokens, past the 4,096-token cap.
+      const stream = await createOpenAICompletionsTransportStreamFn()(
+        model,
+        {
+          systemPrompt: "system",
+          messages: [{ role: "user", content: "x".repeat(14_000), timestamp: 1 }],
+          tools: [],
+        },
+        { apiKey: "test-key", reasoning: "off" },
+      );
+
+      let failure: AssistantMessage | undefined;
+      for await (const event of stream) {
+        if (event.type === "error") {
+          failure = event.error;
+        }
+      }
+
+      expect(requestedOutputLimits).toEqual([]);
+      expect(failure).toMatchObject({
+        stopReason: "error",
+        errorCode: "context_length_exceeded",
+        errorMessage: expect.stringMatching(/^Context window exceeded: /),
+      });
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

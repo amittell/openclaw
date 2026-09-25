@@ -1,10 +1,12 @@
 import path from "node:path";
+import { projectProviderError } from "@openclaw/ai/internal/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import { buildAssistantFailoverSignal } from "../embedded-agent-helpers/assistant-message-failures.js";
 import { classifyFailoverSignal } from "../failover/classify.js";
+import { buildOpenAICompletionsParams } from "../openai-transport-stream.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
@@ -264,6 +266,52 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(result).toEqual({ action: "retry" });
     expect(mocks.compact).toHaveBeenCalledOnce();
     expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("source=assistantError"));
+  });
+
+  // Fork: thinking off, the bots' qwen3.8-27b mode, which upstream #157673 still sends with a
+  // one-token budget. The candidate carries the terminal fields the transport assigns on a throw,
+  // and its text is passed as attempt-recovery passes it: the refusal's wording is matched by the
+  // text heuristic, not by the structured classifiers.
+  it("compacts when the completions transport refuses a thinking-off request with no output budget", async () => {
+    let refusal: unknown;
+    try {
+      buildOpenAICompletionsParams(
+        {
+          id: "qwen3.8-27b",
+          name: "qwen3.8-27b",
+          api: "openai-completions",
+          provider: "vllm",
+          baseUrl: "http://127.0.0.1:8000/v1",
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 1_010_000,
+          contextTokens: 4_096,
+          maxTokens: 32_768,
+        },
+        { systemPrompt: "x".repeat(14_000), messages: [] },
+        { reasoning: "off" },
+      );
+    } catch (error) {
+      refusal = error;
+    }
+    if (!(refusal instanceof Error)) {
+      throw new Error("expected the completions request builder to refuse");
+    }
+    const assistantOverflowCandidate: AssistantMessage = {
+      ...makeAssistantMessage({ stopReason: "error" }),
+      ...projectProviderError(refusal),
+    };
+    const result = await recoverEmbeddedRunOverflow(
+      makeInput({
+        promptError: null,
+        assistantOverflowCandidate,
+        assistantErrorText: assistantOverflowCandidate.errorMessage,
+      }),
+    );
+
+    expect(result).toEqual({ action: "retry" });
+    expect(mocks.compact).toHaveBeenCalledOnce();
   });
 
   it("does not compact after an ambiguous bodyless 400", async () => {

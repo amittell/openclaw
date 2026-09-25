@@ -332,19 +332,22 @@ describe("openai completions params", () => {
     expect(enabled).not.toHaveProperty("reasoning_effort");
     expect(disabled).not.toHaveProperty("reasoning_effort");
 
+    // FORK DIVERGENCE from upstream #157673, which sends thinking-off requests here with
+    // max_completion_tokens 15 and 1. The fork refuses below the 16-token floor with thinking off
+    // as well (Alex's all-models ruling; see openai-completions-params.test.ts).
     const nearCapModel = { ...baseModel, contextWindow: 1016 };
     const nearCapContext = { systemPrompt: "x".repeat(3200), messages: [], tools: [] };
-    expect(
+    expect(() =>
       buildOpenAICompletionsParams(nearCapModel, nearCapContext, { reasoning: "off" }),
-    ).toMatchObject({ enable_thinking: false, max_completion_tokens: 15 });
+    ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
     expect(() =>
       buildOpenAICompletionsParams(nearCapModel, nearCapContext, { reasoning: "medium" }),
     ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
-    expect(
+    expect(() =>
       buildOpenAICompletionsParams({ ...baseModel, contextWindow: 1000 }, nearCapContext, {
         reasoning: "off",
       }),
-    ).toMatchObject({ enable_thinking: false, max_completion_tokens: 1 });
+    ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
   });
 
   it("maps qwen-chat-template thinking format to chat_template_kwargs", () => {
