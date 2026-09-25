@@ -23,12 +23,21 @@ import { assignOtelModelContentAttributes } from "./service-genai-content.js";
 
 const CAPTURE_ALL = resolveContentCapturePolicy(true);
 const TRUNCATED_SUFFIX = "...(truncated)";
+const REDACTION_LOOKAHEAD_CHARS = 4096;
 // Built at runtime so the fixtures are not literal credentials.
 const SECRET_BODY = "A1b2C3d4".repeat(4);
 // This token rule needs 20 characters after its prefix, more than the JSON suffix leaves.
 const SECRET_TOKEN = `glpat-${SECRET_BODY}`;
 // Longer than the redaction lookahead, so the END line falls outside the redacted window.
 const PRIVATE_KEY_BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(250);
+// Quoted values longer than the lookahead, so a value opened before the cut closes past the
+// redacted window. Spaces keep the unquoted assignment rules from masking the whole value.
+const LONG_SECRET = `${SECRET_BODY} `.repeat(200);
+const LONG_SECRET_WORD = SECRET_BODY.repeat(200);
+// The AWS secret-key rule matches exactly 40 characters, so a cut inside one leaves no match.
+const AWS_STYLE_SECRET = "Q1w2E3r4".repeat(5);
+// Each masks to 11 characters, so together they shorten the redacted text by more than the lookahead.
+const SHRINKING_TOKENS = Array.from({ length: 5 }, () => `sk-${SECRET_BODY.repeat(31)}`).join(" ");
 
 function captureModelCall(inputMessages: unknown[]): Record<string, string | number | boolean> {
   const attributes: Record<string, string | number | boolean> = {};
@@ -75,6 +84,13 @@ describe("OTEL content redaction cost", () => {
       capture: (scale: number) =>
         normalizeOtelLogString("o".repeat(scale * 150_000), MAX_OTEL_LOG_BODY_CHARS),
     },
+    {
+      // Masks shorten the redacted window, which is then widened once, to at most three times its size.
+      name: "a log body full of masked secrets",
+      maxWork: 8 * MAX_OTEL_LOG_BODY_CHARS,
+      capture: (scale: number) =>
+        normalizeOtelLogString(`${SECRET_TOKEN} `.repeat(scale * 5000), MAX_OTEL_LOG_BODY_CHARS),
+    },
   ])("does not grow with $name beyond its export budget", ({ maxWork, capture }) => {
     const work = redactionCharsFor(() => capture(1));
 
@@ -84,17 +100,32 @@ describe("OTEL content redaction cost", () => {
 });
 
 describe("OTEL content redaction at the export cut", () => {
+  // The first JSON budget keeps 8,192 characters of a clipped string, suffix included.
+  const jsonStringChars = 8192;
+  const messagePart = {
+    name: "a model-call message part",
+    keptChars: jsonStringChars - TRUNCATED_SUFFIX.length,
+    windowChars: jsonStringChars + REDACTION_LOOKAHEAD_CHARS,
+    exportText: (text: string) =>
+      String(captureModelCall([{ role: "user", content: text }])["gen_ai.input.messages"]),
+  };
   const exportPaths = [
+    messagePart,
     {
-      name: "a model-call message part",
-      // The first JSON budget keeps 8,192 characters of a clipped string, suffix included.
-      keptChars: 8192 - TRUNCATED_SUFFIX.length,
+      name: "a model-call tool result",
+      keptChars: jsonStringChars - TRUNCATED_SUFFIX.length,
+      windowChars: jsonStringChars + REDACTION_LOOKAHEAD_CHARS,
       exportText: (text: string) =>
-        String(captureModelCall([{ role: "user", content: text }])["gen_ai.input.messages"]),
+        String(
+          captureModelCall([
+            { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text }] },
+          ])["gen_ai.input.messages"],
+        ),
     },
     {
       name: "a log body",
       keptChars: MAX_OTEL_LOG_BODY_CHARS,
+      windowChars: MAX_OTEL_LOG_BODY_CHARS + REDACTION_LOOKAHEAD_CHARS,
       exportText: (text: string) => normalizeOtelLogString(text, MAX_OTEL_LOG_BODY_CHARS),
     },
   ];
@@ -118,6 +149,72 @@ describe("OTEL content redaction at the export cut", () => {
 
     expect(exported).toContain(TRUNCATED_SUFFIX);
     expect(exported).not.toContain(PRIVATE_KEY_BODY.slice(0, 32));
+  });
+
+  it.each(exportPaths)(
+    "masks a JSON secret whose closing quote lies past the redaction window in $name",
+    (path) => {
+      const text = `${"x".repeat(path.keptChars - 200)} {"password": "${LONG_SECRET}"} ${"y".repeat(400_000)}`;
+
+      const exported = path.exportText(text);
+
+      expect(exported).toContain(TRUNCATED_SUFFIX);
+      expect(exported).toContain("password");
+      expect(exported).not.toContain(SECRET_BODY);
+    },
+  );
+
+  it.each([
+    { name: "JSON payment key", open: '{"cardNumber": "', value: LONG_SECRET, close: '"}' },
+    { name: "quoted config assignment", open: 'password: "', value: LONG_SECRET, close: '"' },
+    {
+      name: "namespaced config assignment",
+      open: "db.password = '",
+      value: LONG_SECRET,
+      close: "'",
+    },
+    { name: "quoted secret field", open: "client_secret: '", value: LONG_SECRET, close: "'" },
+    { name: "backtick assignment", open: "token=`", value: LONG_SECRET, close: "`" },
+    { name: "quoted CLI flag", open: '--password "', value: LONG_SECRET_WORD, close: '"' },
+    { name: "escaped env assignment", open: 'API_KEY=\\"', value: LONG_SECRET_WORD, close: '\\"' },
+  ])("masks an open $name value at the cut", ({ open, value, close }) => {
+    const text = `${"x".repeat(messagePart.keptChars - 200)} ${open}${value}${close} ${"y".repeat(400_000)}`;
+
+    const exported = messagePart.exportText(text);
+
+    expect(exported).toContain(TRUNCATED_SUFFIX);
+    expect(exported).not.toContain(SECRET_BODY);
+  });
+
+  it("keeps a long quoted value whose key is not sensitive", () => {
+    const text = `${"x".repeat(messagePart.keptChars - 200)} {"description": "${LONG_SECRET}"}`;
+
+    expect(messagePart.exportText(text)).toContain(`"description\\": \\"${SECRET_BODY}`);
+  });
+
+  it.each(exportPaths)(
+    "masks a fixed-length secret the window cuts after earlier masks shorten the text in $name",
+    (path) => {
+      // Without the earlier masks the secret would start past the export; with them, the export
+      // reaches the window end, where the cut leaves 20 characters of the secret unmatched.
+      const head = `${SHRINKING_TOKENS} `;
+      const pad = "x".repeat(path.windowChars - head.length - 21);
+      const text = `${head}${pad} ${AWS_STYLE_SECRET} ${"y".repeat(400_000)}`;
+
+      const exported = path.exportText(text);
+
+      expect(exported).toContain(TRUNCATED_SUFFIX);
+      expect(exported).not.toContain(AWS_STYLE_SECRET.slice(0, 12));
+    },
+  );
+
+  it("exports a full budget of text whose masks shorten it by up to half", () => {
+    const text = `ordinary words around a token ${SECRET_TOKEN}\n`.repeat(2000);
+
+    const exported = normalizeOtelLogString(text, MAX_OTEL_LOG_BODY_CHARS);
+
+    expect(exported).toHaveLength(MAX_OTEL_LOG_BODY_CHARS + TRUNCATED_SUFFIX.length);
+    expect(exported).not.toContain(SECRET_BODY);
   });
 
   it("redacts line-start assignments in content that fits without truncation", () => {

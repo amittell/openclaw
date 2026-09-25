@@ -11,12 +11,20 @@ const TRUNCATED_TEXT_SUFFIX = "...(truncated)";
 // redacted with this much context past its export cut: a secret that starts in the exported
 // prefix and ends within the lookahead is matched as it would be in the whole text.
 const OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
-// Bounds the clipped text one truncated JSON candidate may send to the redactor; a candidate
-// over it falls through to the next, smaller budget.
+// Bounds the clipped text one truncated JSON candidate may send to the redactor, before any
+// window its masks shorten is widened (to at most three times its size); a candidate over it
+// falls through to the next, smaller budget.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
-// A private key clipped before its END line gives the PEM rule nothing to match.
+// Some secrets end with a delimiter the window can cut off: a private key's END line, or the
+// closing quote of a quoted value (JSON secret keys, quoted assignments, CLI flags). A secret
+// the window leaves open is masked from where its value starts.
+const OPEN_SECRET_MASK = "***";
 const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
 const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
+// Whether a quote opens a secret is asked of the redactor: it gets the key and separator before
+// the quote, then a stand-in value and the closing quote.
+const OPEN_QUOTE_PROBE_CONTEXT_CHARS = 256;
+const OPEN_QUOTE_PROBE_VALUE = "0".repeat(24);
 
 export type OtelContentCapturePolicy = {
   inputMessages: boolean;
@@ -40,23 +48,80 @@ const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
 
 /** Redacts the part of `value` an export of `keepChars` can show; `clipped` means text was dropped. */
 function redactExportPrefix(value: string, keepChars: number): { text: string; clipped: boolean } {
-  const windowChars = keepChars + OTEL_REDACTION_LOOKAHEAD_CHARS;
-  if (value.length <= windowChars) {
-    return { text: redactSensitiveText(value), clipped: false };
+  const neededChars = keepChars + OTEL_REDACTION_LOOKAHEAD_CHARS;
+  let redacted = redactWindow(value, neededChars);
+  // Masks shorten text, so the export cut can move into the lookahead, where a secret the window
+  // cuts off may start. Twice the shortfall restores the lookahead when masks shortened at most
+  // half the text.
+  if (!redacted.settled && redacted.text.length < neededChars) {
+    redacted = redactWindow(value, neededChars + 2 * (neededChars - redacted.text.length));
   }
+  if (redacted.settled || redacted.text.length >= neededChars) {
+    return redacted;
+  }
+  // Masks only shorten text (values under three characters aside), so keeping a lookahead of
+  // redacted text after the export keeps at least that much input after it.
+  const exportChars = redacted.text.length - OTEL_REDACTION_LOOKAHEAD_CHARS;
+  return { text: truncateUtf16Safe(redacted.text, Math.max(0, exportChars)), clipped: true };
+}
+
+/** `settled` means nothing past the window can change the redacted text. */
+function redactWindow(
+  value: string,
+  windowChars: number,
+): { text: string; clipped: boolean; settled: boolean } {
+  if (value.length <= windowChars) {
+    return { text: redactSensitiveText(value), clipped: false, settled: true };
+  }
+  const clippedText = truncateUtf16Safe(value, windowChars);
+  const openSecret = findOpenSecret(clippedText);
+  if (!openSecret) {
+    return { text: redactSensitiveText(clippedText), clipped: true, settled: false };
+  }
+  const beforeSecret = redactSensitiveText(clippedText.slice(0, openSecret.start));
   return {
-    text: omitUnterminatedPrivateKey(redactSensitiveText(truncateUtf16Safe(value, windowChars))),
+    text: `${beforeSecret}${OPEN_SECRET_MASK}${openSecret.closing}`,
     clipped: true,
+    settled: true,
   };
 }
 
-function omitUnterminatedPrivateKey(text: string): string {
+/** A secret whose closing delimiter lies past the end of `text`, masked from `start`. */
+function findOpenSecret(text: string): { start: number; closing: string } | undefined {
   let lastEnd = 0;
   for (const end of text.matchAll(PRIVATE_KEY_END_RE)) {
     lastEnd = end.index + end[0].length;
   }
   const begin = text.slice(lastEnd).search(PRIVATE_KEY_BEGIN_RE);
-  return begin < 0 ? text : text.slice(0, lastEnd + begin);
+  let open = begin < 0 ? undefined : { start: lastEnd + begin, closing: "" };
+  // An open quoted value holds no closing quote, so it follows the last quote of its kind.
+  // JSON string values can span lines; the quoted assignment rules end at a line break.
+  const lineStart = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
+  for (const quote of ['"', "'", "`"]) {
+    const quoteIndex = text.lastIndexOf(quote);
+    if (
+      quoteIndex < 0 ||
+      quoteIndex + 1 >= (open?.start ?? text.length) ||
+      (quote !== '"' && quoteIndex < lineStart)
+    ) {
+      continue;
+    }
+    // An escaped quote closes with the same escape.
+    let escapeStart = quoteIndex;
+    while (escapeStart > 0 && text[escapeStart - 1] === "\\") {
+      escapeStart--;
+    }
+    const closing = text.slice(escapeStart, quoteIndex + 1);
+    const opening = text.slice(
+      Math.max(0, escapeStart - OPEN_QUOTE_PROBE_CONTEXT_CHARS),
+      quoteIndex + 1,
+    );
+    const probe = redactSensitiveText(`${opening}${OPEN_QUOTE_PROBE_VALUE}${closing}`);
+    if (!probe.includes(OPEN_QUOTE_PROBE_VALUE)) {
+      open = { start: quoteIndex + 1, closing };
+    }
+  }
+  return open;
 }
 
 export function normalizeOtelLogString(value: string, maxChars: number): string {
