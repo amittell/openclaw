@@ -2074,3 +2074,76 @@ were asserted before anything was applied.
 - **#130393: `22caaf374fe` -> `7805358201f` (`5534851263e`).** This one is test-only:
   the degraded-reload test closes the agent database with
   `closeOpenClawAgentDatabaseByPathAsync`. ALONE, 3 of 3 runs passed, 2/2 each.
+
+## Three additions onto the 9.6 carry (2026-09-25)
+
+Added on top of the deployed `16e061d1176`, in this order, one commit each. None
+is deployed.
+
+| commit        | kind                         | source                                                        | apply result                                                                                                                                            |
+| ------------- | ---------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `e173e39a3fd` | port                         | upstream #157673, `63944b8a1df` (main, 2026-09-25)            | `cherry-pick -x`, clean: the three files were at the same blobs at the tag, on the branch and at the commit's parent                                    |
+| `6e1031f10f0` | fork delta                   | the fork's `c1c8e83bbf4` (#157307 variant)                    | re-expressed on top of the port: the guard's condition removed (`params.ts` +9/-13), 4 upstream tests pinned, 2 of `c1c8e83bbf4`'s tests kept and moved |
+| `31f7e210dfe` | fork carry, pending upstream | local `4ca89185cc5` (fix/otel-content-capture-redaction-cost) | `cherry-pick -x`, clean: both production files at the same blobs as its parent; the test file is new                                                    |
+
+### #157673 and the fork's all-modes delta
+
+- **Upstream (`e173e39a3fd`):** on an explicit proxy-like openai-completions
+  endpoint, a request whose output budget is clamped below 16 tokens throws
+  `context_length_exceeded` before provider I/O, but only for a reasoning model
+  with thinking not disabled. Non-reasoning and thinking-off requests are still
+  sent, down to `max_completion_tokens=1`, with an `insufficient_output_budget`
+  warning. That is also what the deployed `16e061d1176` does in every mode.
+- **Fork (`6e1031f10f0`):** Alex chose all-models coverage, because the bots run
+  qwen3.8-27b with thinking off often. The guard now throws in every mode;
+  the warning went with the only path that reached it. A request that was not
+  clamped (a requested budget that fits) is unchanged. Upstream's error text and
+  code are kept as they are, so the delta is only the condition.
+- **Pinned upstream tests** (FORK DIVERGENCE comments): in
+  `openai-completions-params.test.ts`, "preserves non-reasoning short budgets..."
+  and "warns when a short non-thinking request proceeds"; in
+  `openai-completions-params.reasoning.test.ts`, the thinking-off near-cap lines of
+  the qwen `enable_thinking` test. The warning spy went too, and with it the params
+  test's `vi` and `getAiTransportHost` imports.
+- **From `c1c8e83bbf4`:** its intentionally short case (15 tokens left, 8
+  requested, sent as 8) is folded into the pinned non-reasoning test; its other two
+  params cases duplicate upstream's. Its transport and recovery tests are kept, and
+  moved to thinking off, the mode upstream still sends. With the port's `params.ts`
+  the transport test records `max_completion_tokens=1` reaching the server. Six
+  tests fail against the port alone and pass with the delta.
+- **Found on the way, not changed:** upstream's refusal text ("Context window
+  exceeded: ...") is matched only by `isLikelyContextOverflowError`.
+  `isContextOverflow` returns false and `classifyFailoverSignal` returns null for
+  it, even with `code: "context_length_exceeded"`, and no production code reads that
+  code. Recovery works because `attempt-recovery.ts` passes the candidate's
+  `errorMessage` as `assistantErrorText`. The recovery test now does the same, and
+  builds the candidate with `projectProviderError` as the transport does. Without
+  `assistantErrorText` it returns `none`. `c1c8e83bbf4`'s "Context overflow: ..."
+  wording matched all three classifiers. If upstream's text path changes, this
+  refusal stops compacting silently; that is an upstream follow-up, not a carry
+  item.
+
+### The OTel content-capture fix (`31f7e210dfe`)
+
+Pending upstream: no upstream PR carries it (searched 2026-09-25), and upstream
+`main` `9fdb24bbccc` has not touched either production file since the commit's
+parent `b98500ebcc2`. Drop the commit when an upstream equivalent lands. It only
+changes behaviour when `diagnostics.otel.captureContent` is enabled.
+
+### Validation (2026-09-25, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                | result                                                                                                                    |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| the four #157673 files ALONE at the tip                              | params 20/20, params.reasoning 20/20, transport.requests 5/5, run.overflow-context-recovery 46/46                         |
+| the six fork-behaviour tests against the port's `params.ts`          | all six fail (3 in params, 1 in params.reasoning, 1 transport, 1 recovery); `params.ts` restored, blob sha checked        |
+| neighbours: 47 files that drive the completions builder or transport | 47 files, 1,119/1,119 (packages/ai transports and providers, `src/agents/openai-transport-stream*`, proxy, qwen, stepfun) |
+| every `extensions/diagnostics-otel/src/*.test.ts` ALONE              | 11 files, 351/351                                                                                                         |
+| `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`               | rc=0, 0 errors each                                                                                                       |
+| `tsgo:core:test`                                                     | rc=0, 25 of 25 shards passed, 0 errors                                                                                    |
+| `oxlint` and `oxfmt --check` over the 8 touched files                | clean (oxlint 1.82.0; a probe file with three known violations reported all three)                                        |
+| `git diff --check 16e061d1176..HEAD`                                 | clean                                                                                                                     |
+
+No test failed on the final tree, so no failure needed the three-cell
+classification. Not run: the full suite, the ratchet guards, `pnpm build`, and
+any live proof; the bots' behaviour on a real near-cap qwen3.8-27b session is
+inferred from the builder and recovery tests, not observed.
