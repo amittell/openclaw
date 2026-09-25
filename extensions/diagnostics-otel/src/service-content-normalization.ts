@@ -11,9 +11,8 @@ const TRUNCATED_TEXT_SUFFIX = "...(truncated)";
 // redacted with this much context past its export cut: a secret that starts in the exported
 // prefix and ends within the lookahead is matched as it would be in the whole text.
 const OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
-// Bounds the clipped text one truncated JSON candidate may send to the redactor, before any
-// window its masks shorten is widened (to at most three times its size); a candidate over it
-// falls through to the next, smaller budget.
+// Bounds the clipped text one truncated JSON candidate may send to the redactor, as counted
+// before masks widen a window; a candidate over it falls through to the next, smaller budget.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
 // Some secrets end with a delimiter the window can cut off: a private key's END line, or the
 // closing quote of a quoted value (JSON secret keys, quoted assignments, CLI flags). A secret
@@ -21,10 +20,15 @@ const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
 const OPEN_SECRET_MASK = "***";
 const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
 const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
-// Whether a quote opens a secret is asked of the redactor: it gets the key and separator before
-// the quote, then a stand-in value and the closing quote.
+// Whether a quote opens a secret is asked of the redactor: it gets the key before the quote, the
+// separator and quote, then a stand-in value and the closing quote. Each probe stays under
+// 512 characters: separator whitespace collapses to one space, as the rules' `\s*` allows, and
+// escapes are capped at the redactor's own limit for serialized quotes.
 const OPEN_QUOTE_PROBE_CONTEXT_CHARS = 256;
+const OPEN_QUOTE_PROBE_SEPARATOR_CHARS = 16;
+const OPEN_QUOTE_PROBE_ESCAPE_CHARS = 64;
 const OPEN_QUOTE_PROBE_VALUE = "0".repeat(24);
+const OPEN_QUOTE_SEPARATOR_CHAR_RE = /[\s:=]/;
 
 export type OtelContentCapturePolicy = {
   inputMessages: boolean;
@@ -52,7 +56,7 @@ function redactExportPrefix(value: string, keepChars: number): { text: string; c
   let redacted = redactWindow(value, neededChars);
   // Masks shorten text, so the export cut can move into the lookahead, where a secret the window
   // cuts off may start. Twice the shortfall restores the lookahead when masks shortened at most
-  // half the text.
+  // half the text. With the first window, redaction work stays within four windows plus probes.
   if (!redacted.settled && redacted.text.length < neededChars) {
     redacted = redactWindow(value, neededChars + 2 * (neededChars - redacted.text.length));
   }
@@ -94,16 +98,13 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
   }
   const begin = text.slice(lastEnd).search(PRIVATE_KEY_BEGIN_RE);
   let open = begin < 0 ? undefined : { start: lastEnd + begin, closing: "" };
-  // An open quoted value holds no closing quote, so it follows the last quote of its kind.
-  // JSON string values can span lines; the quoted assignment rules end at a line break.
+  // An open quoted value holds no closing quote, so it follows the last quote of its kind. A
+  // quote before the last line break is probed with a value that crosses a line, which only
+  // rules for values spanning lines (JSON strings) mask.
   const lineStart = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
   for (const quote of ['"', "'", "`"]) {
     const quoteIndex = text.lastIndexOf(quote);
-    if (
-      quoteIndex < 0 ||
-      quoteIndex + 1 >= (open?.start ?? text.length) ||
-      (quote !== '"' && quoteIndex < lineStart)
-    ) {
+    if (quoteIndex < 0 || quoteIndex + 1 >= (open?.start ?? text.length)) {
       continue;
     }
     // An escaped quote closes with the same escape.
@@ -111,13 +112,26 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
     while (escapeStart > 0 && text[escapeStart - 1] === "\\") {
       escapeStart--;
     }
-    const closing = text.slice(escapeStart, quoteIndex + 1);
-    const opening = text.slice(
-      Math.max(0, escapeStart - OPEN_QUOTE_PROBE_CONTEXT_CHARS),
-      quoteIndex + 1,
+    let separatorStart = escapeStart;
+    while (
+      separatorStart > 0 &&
+      OPEN_QUOTE_SEPARATOR_CHAR_RE.test(text[separatorStart - 1] ?? "")
+    ) {
+      separatorStart--;
+    }
+    const escapes = Math.min(quoteIndex - escapeStart, OPEN_QUOTE_PROBE_ESCAPE_CHARS);
+    const closing = `${"\\".repeat(escapes)}${quote}`;
+    const separator = text
+      .slice(separatorStart, escapeStart)
+      .replace(/\s+/g, " ")
+      .slice(-OPEN_QUOTE_PROBE_SEPARATOR_CHARS);
+    const key = text.slice(
+      Math.max(0, separatorStart - OPEN_QUOTE_PROBE_CONTEXT_CHARS),
+      separatorStart,
     );
-    const probe = redactSensitiveText(`${opening}${OPEN_QUOTE_PROBE_VALUE}${closing}`);
-    if (!probe.includes(OPEN_QUOTE_PROBE_VALUE)) {
+    const value = `${quoteIndex < lineStart ? "\n" : ""}${OPEN_QUOTE_PROBE_VALUE}${closing}`;
+    // Only the stand-in's own position counts: the key context may hold the same characters.
+    if (!redactSensitiveText(`${key}${separator}${closing}${value}`).endsWith(value)) {
       open = { start: quoteIndex + 1, closing };
     }
   }

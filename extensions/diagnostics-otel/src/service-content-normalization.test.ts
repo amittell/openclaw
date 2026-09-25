@@ -19,7 +19,10 @@ import {
   normalizeOtelLogString,
   resolveContentCapturePolicy,
 } from "./service-content-normalization.js";
-import { assignOtelModelContentAttributes } from "./service-genai-content.js";
+import {
+  assignOtelModelContentAttributes,
+  assignOtelToolContentAttributes,
+} from "./service-genai-content.js";
 
 const CAPTURE_ALL = resolveContentCapturePolicy(true);
 const TRUNCATED_SUFFIX = "...(truncated)";
@@ -54,6 +57,15 @@ function toolResultTranscript(messages: number, parts: number, partChars: number
   }));
 }
 
+function captureToolCall(content: {
+  toolInput?: unknown;
+  toolOutput?: unknown;
+}): Record<string, string | number | boolean> {
+  const attributes: Record<string, string | number | boolean> = {};
+  assignOtelToolContentAttributes(attributes, content, CAPTURE_ALL);
+  return attributes;
+}
+
 function redactionCharsFor(run: () => unknown): number {
   redaction.chars = 0;
   run();
@@ -85,11 +97,22 @@ describe("OTEL content redaction cost", () => {
         normalizeOtelLogString("o".repeat(scale * 150_000), MAX_OTEL_LOG_BODY_CHARS),
     },
     {
-      // Masks shorten the redacted window, which is then widened once, to at most three times its size.
+      // The first window, one widened to at most three times its size, and quote probes of
+      // under 512 characters each.
       name: "a log body full of masked secrets",
-      maxWork: 8 * MAX_OTEL_LOG_BODY_CHARS,
+      maxWork: 9 * MAX_OTEL_LOG_BODY_CHARS,
       capture: (scale: number) =>
         normalizeOtelLogString(`${SECRET_TOKEN} `.repeat(scale * 5000), MAX_OTEL_LOG_BODY_CHARS),
+    },
+    {
+      // The quote probe carries a capped escape, not the whole run.
+      name: "a log body with a long escape run before a quote",
+      maxWork: 4 * MAX_OTEL_LOG_BODY_CHARS,
+      capture: (scale: number) =>
+        normalizeOtelLogString(
+          `note=${"\\".repeat(7000)}"${"o".repeat(scale * 150_000)}`,
+          MAX_OTEL_LOG_BODY_CHARS,
+        ),
     },
   ])("does not grow with $name beyond its export budget", ({ maxWork, capture }) => {
     const work = redactionCharsFor(() => capture(1));
@@ -128,9 +151,28 @@ describe("OTEL content redaction at the export cut", () => {
       windowChars: MAX_OTEL_LOG_BODY_CHARS + REDACTION_LOOKAHEAD_CHARS,
       exportText: (text: string) => normalizeOtelLogString(text, MAX_OTEL_LOG_BODY_CHARS),
     },
+    {
+      name: "a tool call output",
+      keptChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
+      windowChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS + REDACTION_LOOKAHEAD_CHARS,
+      cutOnRedactorChunk: true,
+      exportText: (text: string) =>
+        String(captureToolCall({ toolOutput: text })["gen_ai.tool.call.result"]),
+    },
+    {
+      name: "a tool call input of joined strings",
+      keptChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
+      windowChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS + REDACTION_LOOKAHEAD_CHARS,
+      cutOnRedactorChunk: true,
+      exportText: (text: string) =>
+        String(captureToolCall({ toolInput: [text] })["gen_ai.tool.call.arguments"]),
+    },
   ];
+  // The core redactor matches text over 32,768 characters in 16,384-character chunks, and these
+  // cuts fall on a chunk boundary, so a token crossing them goes unmatched in the whole text too.
+  const tokenCutPaths = exportPaths.filter((path) => !("cutOnRedactorChunk" in path));
 
-  it.each(exportPaths)("masks a token that crosses the cut in $name", (path) => {
+  it.each(tokenCutPaths)("masks a token that crosses the cut in $name", (path) => {
     // The token starts 10 characters before the cut; unmasked, the export would end "glpat-A1b2".
     const text = `${"x".repeat(path.keptChars - 11)} ${SECRET_TOKEN} ${"y".repeat(400_000)}`;
 
@@ -177,8 +219,35 @@ describe("OTEL content redaction at the export cut", () => {
     { name: "backtick assignment", open: "token=`", value: LONG_SECRET, close: "`" },
     { name: "quoted CLI flag", open: '--password "', value: LONG_SECRET_WORD, close: '"' },
     { name: "escaped env assignment", open: 'API_KEY=\\"', value: LONG_SECRET_WORD, close: '\\"' },
+    {
+      // A GitHub push webhook's null commit id: the probe must not find its stand-in here.
+      name: "JSON secret key after a run of zeros",
+      open: `{"before": "${"0".repeat(40)}", "password": "`,
+      value: LONG_SECRET,
+      close: '"}',
+    },
+    {
+      name: "config assignment spaced from its quote",
+      open: `password:${" ".repeat(260)}"`,
+      value: LONG_SECRET,
+      close: '"',
+    },
+    {
+      name: "JSON secret key spaced from its quote",
+      open: `{"password":${" ".repeat(300)}"`,
+      value: LONG_SECRET,
+      close: '"}',
+    },
+    {
+      name: "JSON secret value spanning lines",
+      open: '{"password": "',
+      value: `${SECRET_BODY}\n${LONG_SECRET}`,
+      close: '"}',
+    },
   ])("masks an open $name value at the cut", ({ open, value, close }) => {
-    const text = `${"x".repeat(messagePart.keptChars - 200)} ${open}${value}${close} ${"y".repeat(400_000)}`;
+    // The value starts 200 characters before the cut, however long its key and separator are.
+    const pad = "x".repeat(messagePart.keptChars - 201 - open.length);
+    const text = `${pad} ${open}${value}${close} ${"y".repeat(400_000)}`;
 
     const exported = messagePart.exportText(text);
 
@@ -190,6 +259,13 @@ describe("OTEL content redaction at the export cut", () => {
     const text = `${"x".repeat(messagePart.keptChars - 200)} {"description": "${LONG_SECRET}"}`;
 
     expect(messagePart.exportText(text)).toContain(`"description\\": \\"${SECRET_BODY}`);
+  });
+
+  it("keeps text after a quote that a line break leaves unclosed", () => {
+    const prose = "ordinary words ".repeat(400);
+    const text = `${"x".repeat(messagePart.keptChars - 200)} Set password: "\n${prose}" ${"y".repeat(400_000)}`;
+
+    expect(messagePart.exportText(text)).toContain("ordinary words ordinary words");
   });
 
   it.each(exportPaths)(
