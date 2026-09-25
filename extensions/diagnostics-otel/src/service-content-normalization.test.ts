@@ -48,8 +48,7 @@ function captureModelCall(inputMessages: unknown[]): Record<string, string | num
   return attributes;
 }
 
-function toolResultTranscript(messages: number, parts: number, partChars: number): unknown[] {
-  const text = "o".repeat(partChars);
+function toolResultTranscript(messages: number, parts: number, text: string): unknown[] {
   return Array.from({ length: messages }, (_, index) => ({
     role: "toolResult",
     toolCallId: `call-${index}`,
@@ -73,9 +72,13 @@ function redactionCharsFor(run: () => unknown): number {
 }
 
 describe("OTEL content redaction cost", () => {
-  // Input messages export as two JSON attributes; each redacts at most 8x its budget of
-  // clipped text plus its serialized JSON.
+  // Input messages export as two JSON attributes. Each picks a budget whose clipped strings fill
+  // at most 8x its size in redaction windows, then redacts its serialized JSON.
   const modelCallMaxWork = 2 * 9 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS;
+  // Masks and quote probes can make a clipped string cost up to five windows.
+  const maskedModelCallMaxWork = 2 * (5 * 8 + 1) * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS;
+  // One window of 8,192 characters plus three quote probes under 512 characters each.
+  const logBodyProbedMaxWork = 2 * MAX_OTEL_LOG_BODY_CHARS + 3 * 512;
   // Every fixture string is longer than the widest redaction window, so doubling it must not
   // change how much text reaches the redactor.
 
@@ -83,12 +86,20 @@ describe("OTEL content redaction cost", () => {
     {
       name: "a model call's large tool outputs",
       maxWork: modelCallMaxWork,
-      capture: (scale: number) => captureModelCall(toolResultTranscript(6, 1, scale * 150_000)),
+      capture: (scale: number) =>
+        captureModelCall(toolResultTranscript(6, 1, "o".repeat(scale * 150_000))),
     },
     {
       name: "a model call with many tool output parts",
       maxWork: modelCallMaxWork,
-      capture: (scale: number) => captureModelCall(toolResultTranscript(200, 5, scale * 15_000)),
+      capture: (scale: number) =>
+        captureModelCall(toolResultTranscript(200, 5, "o".repeat(scale * 15_000))),
+    },
+    {
+      name: "a model call whose tool outputs are full of masked secrets",
+      maxWork: maskedModelCallMaxWork,
+      capture: (scale: number) =>
+        captureModelCall(toolResultTranscript(200, 1, `${SECRET_TOKEN} `.repeat(scale * 1700))),
     },
     {
       name: "a log body",
@@ -97,7 +108,7 @@ describe("OTEL content redaction cost", () => {
         normalizeOtelLogString("o".repeat(scale * 150_000), MAX_OTEL_LOG_BODY_CHARS),
     },
     {
-      // The first window, one widened to at most three times its size, and quote probes of
+      // The first window, one widened to at most three times its size, and six quote probes
       // under 512 characters each.
       name: "a log body full of masked secrets",
       maxWork: 9 * MAX_OTEL_LOG_BODY_CHARS,
@@ -105,12 +116,31 @@ describe("OTEL content redaction cost", () => {
         normalizeOtelLogString(`${SECRET_TOKEN} `.repeat(scale * 5000), MAX_OTEL_LOG_BODY_CHARS),
     },
     {
+      name: "a log body full of quoted secrets",
+      maxWork: 9 * MAX_OTEL_LOG_BODY_CHARS,
+      capture: (scale: number) =>
+        normalizeOtelLogString(
+          `password: "${SECRET_BODY}" and 'it is' done\n`.repeat(scale * 3000),
+          MAX_OTEL_LOG_BODY_CHARS,
+        ),
+    },
+    {
       // The quote probe carries a capped escape, not the whole run.
       name: "a log body with a long escape run before a quote",
-      maxWork: 4 * MAX_OTEL_LOG_BODY_CHARS,
+      maxWork: logBodyProbedMaxWork,
       capture: (scale: number) =>
         normalizeOtelLogString(
           `note=${"\\".repeat(7000)}"${"o".repeat(scale * 150_000)}`,
+          MAX_OTEL_LOG_BODY_CHARS,
+        ),
+    },
+    {
+      // The quote probe collapses the whitespace between a key and its quote.
+      name: "a log body with a long separator before a quote",
+      maxWork: logBodyProbedMaxWork,
+      capture: (scale: number) =>
+        normalizeOtelLogString(
+          `note:${" ".repeat(7000)}"${"o".repeat(scale * 150_000)}`,
           MAX_OTEL_LOG_BODY_CHARS,
         ),
     },
@@ -259,6 +289,28 @@ describe("OTEL content redaction at the export cut", () => {
     const text = `${"x".repeat(messagePart.keptChars - 200)} {"description": "${LONG_SECRET}"}`;
 
     expect(messagePart.exportText(text)).toContain(`"description\\": \\"${SECRET_BODY}`);
+  });
+
+  it("masks a quoted secret wherever the probe's key context starts", () => {
+    // A context cut inside `token="` began the probe with an assignment the text does not have,
+    // whose quoted value ran to the quote after `password:` and left the stand-in unmasked.
+    for (let filler = 230; filler <= 250; filler++) {
+      const open = `token="${"y".repeat(filler)} password: "`;
+      const value = `LEAKMARKzz ${LONG_SECRET}`;
+      const logPad = "x".repeat(MAX_OTEL_LOG_BODY_CHARS - 200 - open.length);
+      const logText = `${logPad}${open}${value}" ${"z".repeat(60_000)}`;
+      expect(
+        normalizeOtelLogString(logText, MAX_OTEL_LOG_BODY_CHARS),
+        `filler ${filler}`,
+      ).not.toContain("LEAKMARK");
+      const messagePad = "x".repeat(messagePart.keptChars - 200 - open.length);
+      const attributes = captureModelCall([
+        { role: "user", content: `${messagePad}${open}${value}" ${"z".repeat(400_000)}` },
+      ]);
+      for (const key of ["gen_ai.input.messages", "openclaw.content.input_messages"]) {
+        expect(String(attributes[key]), `${key}, filler ${filler}`).not.toContain("LEAKMARK");
+      }
+    }
   });
 
   it("keeps text after a quote that a line break leaves unclosed", () => {

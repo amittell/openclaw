@@ -11,8 +11,9 @@ const TRUNCATED_TEXT_SUFFIX = "...(truncated)";
 // redacted with this much context past its export cut: a secret that starts in the exported
 // prefix and ends within the lookahead is matched as it would be in the whole text.
 const OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
-// Bounds the clipped text one truncated JSON candidate may send to the redactor, as counted
-// before masks widen a window; a candidate over it falls through to the next, smaller budget.
+// Bounds the clipped text one truncated JSON candidate may send to the redactor, counted as one
+// window per clipped string; a candidate over it falls through to the next, smaller budget.
+// Masks and quote probes can make a clipped string cost up to five windows.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
 // Some secrets end with a delimiter the window can cut off: a private key's END line, or the
 // closing quote of a quoted value (JSON secret keys, quoted assignments, CLI flags). A secret
@@ -29,6 +30,7 @@ const OPEN_QUOTE_PROBE_SEPARATOR_CHARS = 16;
 const OPEN_QUOTE_PROBE_ESCAPE_CHARS = 64;
 const OPEN_QUOTE_PROBE_VALUE = "0".repeat(24);
 const OPEN_QUOTE_SEPARATOR_CHAR_RE = /[\s:=]/;
+const NON_WORD_CHAR_RE = /\W/;
 
 export type OtelContentCapturePolicy = {
   inputMessages: boolean;
@@ -125,10 +127,15 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
       .slice(separatorStart, escapeStart)
       .replace(/\s+/g, " ")
       .slice(-OPEN_QUOTE_PROBE_SEPARATOR_CHARS);
-    const key = text.slice(
-      Math.max(0, separatorStart - OPEN_QUOTE_PROBE_CONTEXT_CHARS),
-      separatorStart,
-    );
+    // Start the key context on a non-word character, so the probe's start adds no word boundary
+    // the text lacks: a rule anchored there could take this quote as its closing one. A context
+    // that is one word throughout keeps its cut.
+    let keyStart = Math.max(0, separatorStart - OPEN_QUOTE_PROBE_CONTEXT_CHARS);
+    if (keyStart > 0) {
+      const wordEnd = text.slice(keyStart - 1, separatorStart).search(NON_WORD_CHAR_RE);
+      keyStart += wordEnd < 0 ? 0 : wordEnd - 1;
+    }
+    const key = text.slice(keyStart, separatorStart);
     const value = `${quoteIndex < lineStart ? "\n" : ""}${OPEN_QUOTE_PROBE_VALUE}${closing}`;
     // Only the stand-in's own position counts: the key context may hold the same characters.
     if (!redactSensitiveText(`${key}${separator}${closing}${value}`).endsWith(value)) {
