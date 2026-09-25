@@ -521,7 +521,8 @@ export function buildOpenAICompletionsRequest(
       effectiveContextTokens !== undefined
     ) {
       const estimatedInputTokens = estimateOpenAICompletionsInputTokens(params);
-      const remainingBudget = Math.max(1, effectiveContextTokens - estimatedInputTokens - 1);
+      const availableOutputTokens = effectiveContextTokens - estimatedInputTokens - 1;
+      const remainingBudget = Math.max(1, availableOutputTokens);
       if (clampedMaxTokens > remainingBudget) {
         clampedMaxTokens = remainingBudget;
         emitModelTransportDebug(
@@ -531,7 +532,9 @@ export function buildOpenAICompletionsRequest(
             `effectiveContext=${effectiveContextTokens} estimatedInput=${estimatedInputTokens}`,
         );
         if (remainingBudget < MIN_USEFUL_OUTPUT_TOKENS) {
-          if (model.reasoning && thinkingEnabled !== false) {
+          // A positive short budget can still carry a short visible reply without thinking.
+          // An exhausted estimate only has the one-token fallback, in every thinking mode.
+          if (availableOutputTokens < 1 || (model.reasoning && thinkingEnabled !== false)) {
             throw Object.assign(
               new Error(
                 `Context window exceeded: estimated input ${estimatedInputTokens} leaves only ` +

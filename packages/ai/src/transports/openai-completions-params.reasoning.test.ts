@@ -340,11 +340,11 @@ describe("openai completions params", () => {
     expect(() =>
       buildOpenAICompletionsParams(nearCapModel, nearCapContext, { reasoning: "medium" }),
     ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
-    expect(
+    expect(() =>
       buildOpenAICompletionsParams({ ...baseModel, contextWindow: 1000 }, nearCapContext, {
         reasoning: "off",
       }),
-    ).toMatchObject({ enable_thinking: false, max_completion_tokens: 1 });
+    ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
   });
 
   it("maps qwen-chat-template thinking format to chat_template_kwargs", () => {

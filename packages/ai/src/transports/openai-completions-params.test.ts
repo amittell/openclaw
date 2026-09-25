@@ -282,7 +282,7 @@ describe("openai completions params", () => {
     },
   );
 
-  it("preserves non-reasoning short budgets and the exhausted-budget fallback", () => {
+  it("preserves non-reasoning positive short budgets", () => {
     const model = makeCompletionsModel({
       baseUrl: "http://localhost:8000/v1",
       reasoning: false,
@@ -290,21 +290,40 @@ describe("openai completions params", () => {
       maxTokens: 1000,
     });
     const context = emptyContext("x".repeat(3200));
-    for (const [remaining, expected] of [
-      [-1, 1],
-      [0, 1],
-      [1, 1],
-      [15, 15],
-    ] as const) {
+    for (const remaining of [1, 15]) {
       expect(
         buildOpenAICompletionsParams(
           { ...model, contextTokens: 1001 + remaining },
           context,
           undefined,
         ).max_completion_tokens,
-      ).toBe(expected);
+      ).toBe(remaining);
     }
   });
+
+  it.each([
+    ["non-reasoning", false, undefined],
+    ["thinking-off", true, { reasoning: "off" }],
+  ] as const)(
+    "rejects a %s proxy request with no output tokens left",
+    (_mode, reasoning, options) => {
+      const model = makeCompletionsModel({
+        baseUrl: "http://localhost:8000/v1",
+        reasoning,
+        contextWindow: 1000,
+        maxTokens: 1000,
+      });
+      for (const remaining of [-1, 0]) {
+        expect(() =>
+          buildOpenAICompletionsParams(
+            { ...model, contextTokens: 1001 + remaining },
+            emptyContext("x".repeat(3200)),
+            options,
+          ),
+        ).toThrowError(expect.objectContaining({ code: "context_length_exceeded" }));
+      }
+    },
+  );
 
   it.each([false, true])(
     "warns when a short non-thinking request proceeds (reasoning=%s)",
@@ -312,20 +331,25 @@ describe("openai completions params", () => {
       const model = makeCompletionsModel({
         baseUrl: "http://localhost:8000/v1",
         reasoning,
-        contextWindow: 1000,
+        contextWindow: 1016,
         maxTokens: 1000,
       });
       const warning = vi.spyOn(getAiTransportHost(), "logWarn");
       try {
-        const params = buildOpenAICompletionsParams(model, emptyContext("x".repeat(3200)), {
-          reasoning: "off",
-        });
-        expect(params.max_completion_tokens).toBe(1);
-        expect(warning).toHaveBeenCalledWith(
-          "openai-transport",
-          expect.stringContaining("insufficient_output_budget"),
-          undefined,
-        );
+        for (const remaining of [1, 15]) {
+          warning.mockClear();
+          const params = buildOpenAICompletionsParams(
+            { ...model, contextTokens: 1001 + remaining },
+            emptyContext("x".repeat(3200)),
+            { reasoning: "off" },
+          );
+          expect(params.max_completion_tokens).toBe(remaining);
+          expect(warning).toHaveBeenCalledWith(
+            "openai-transport",
+            expect.stringContaining("insufficient_output_budget"),
+            undefined,
+          );
+        }
       } finally {
         warning.mockRestore();
       }
