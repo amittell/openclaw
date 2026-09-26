@@ -72,4 +72,45 @@ describe("embedded attempt owner-only stubs", () => {
       );
     },
   );
+
+  it("lets a client tool replace a stub of the same name, as when owner-only tools were absent", async () => {
+    resetEmbeddedAttemptHarness();
+    const hoisted = getHoisted();
+    hoisted.createOpenClawCodingToolsMock.mockReturnValue([
+      tool("message"),
+      createOwnerOnlyToolStub(tool("gateway")),
+      createOwnerOnlyToolStub(tool("nodes")),
+    ]);
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey: "agent:main:owner-only-client-tool",
+      tempPaths,
+      attemptOverrides: {
+        clientTools: [
+          {
+            type: "function",
+            function: {
+              name: "gateway",
+              description: "client gateway",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        disableTools: false,
+        senderIsOwner: false,
+        trigger: "user",
+        transcriptPrompt: "hello",
+        sessionPersistence: "detached",
+      },
+    });
+
+    expect(result.terminal.kind).toBe("ok");
+    const promptInput = hoisted.embeddedSystemPromptInputs.at(-1) as {
+      extraSystemPrompt?: string;
+    };
+    expect(promptInput.extraSystemPrompt).toContain(
+      "Owner-only tools unavailable on this turn; calls to them are refused: `nodes`.",
+    );
+  });
 });

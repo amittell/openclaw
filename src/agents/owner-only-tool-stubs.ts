@@ -8,9 +8,13 @@
  * may not run is replaced by a stub that carries its declaration and nothing else.
  */
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { buildBlockedToolResult } from "./agent-tools.before-tool-call.wrapper.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { isOwnerOnlyToolStub, markOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
+import { attachInternalToolExecutionPreparer } from "./runtime/internal-hooks.js";
 import { ToolAuthorizationError } from "./tool-input-error.js";
+import { normalizeToolPolicyName } from "./tool-policy.js";
+import { registerTrustedToolNoStartError } from "./tool-result-error.js";
 
 const log = createSubsystemLogger("agents/owner-only-tools");
 
@@ -39,9 +43,15 @@ export function buildOwnerOnlyToolsUnavailablePrompt(
  * The stub is a fresh object that copies only the tool's data fields (name, label,
  * description, parameters, output schema and similar declaration metadata). It never
  * copies function fields (`execute`, `prepareArguments`, before-tool-call param hooks,
- * timeout budgets) or identity-bound metadata (execution preparers, before-tool-call
- * source edges, availability bindings), so no call path can reach the real tool
- * through it. It does not carry `resultContentSource`: a refusal has no external content.
+ * timeout budgets) or identity-bound metadata (the real tool's execution preparer,
+ * before-tool-call source edges, availability bindings), so no call path can reach the
+ * real tool through it. It does not carry `resultContentSource`: a refusal has no
+ * external content.
+ *
+ * A refusal is a pre-execution block, never a started call: the stub's own preparer
+ * returns the host's standard blocked result immediately (so the agent loop reports
+ * `executionStarted: false` and skips after-tool-call handlers, as for a
+ * before_tool_call veto), and callers that bypass preparers get a trusted no-start error.
  */
 export function createOwnerOnlyToolStub(
   tool: AnyAgentTool,
@@ -56,6 +66,13 @@ export function createOwnerOnlyToolStub(
     declaration[key] = value;
   }
   const toolName = tool.name;
+  const reason = ownerOnlyToolRefusalMessage(toolName);
+  const logRefusal = () =>
+    log.info(`refused owner-only tool ${toolName} on a non-owner turn`, {
+      tool: toolName,
+      ...(context.runId ? { runId: context.runId } : {}),
+      ...(context.sessionKey ? { sessionKey: context.sessionKey } : {}),
+    });
   const stub: AnyAgentTool = {
     ...declaration,
     name: toolName,
@@ -63,15 +80,44 @@ export function createOwnerOnlyToolStub(
     description: tool.description,
     parameters: tool.parameters,
     execute: async () => {
-      log.info(`refused owner-only tool ${toolName} on a non-owner turn`, {
-        tool: toolName,
-        ...(context.runId ? { runId: context.runId } : {}),
-        ...(context.sessionKey ? { sessionKey: context.sessionKey } : {}),
-      });
-      throw new ToolAuthorizationError(ownerOnlyToolRefusalMessage(toolName));
+      logRefusal();
+      throw registerTrustedToolNoStartError(new ToolAuthorizationError(reason));
     },
   };
+  attachInternalToolExecutionPreparer(stub, async ({ toolCallId }) => {
+    logRefusal();
+    return {
+      kind: "immediate",
+      outcome: {
+        kind: "result",
+        result: buildBlockedToolResult({
+          reason,
+          deniedReason: "owner-only",
+          toolCallId,
+          runId: context.runId,
+        }),
+        isError: true,
+      },
+      dispose() {},
+    };
+  });
   return markOwnerOnlyToolStub(stub);
+}
+
+/**
+ * A client tool with an owner-only tool's name replaces its stub, as it did when
+ * non-owner turns omitted owner-only tools; on owner turns the same name conflicts.
+ */
+export function dropOwnerOnlyToolStubsNamed<T extends { name: string }>(
+  tools: T[],
+  names: readonly string[],
+): T[] {
+  const claimed = new Set(names.map((name) => normalizeToolPolicyName(name)));
+  return claimed.size === 0
+    ? tools
+    : tools.filter(
+        (tool) => !isOwnerOnlyToolStub(tool) || !claimed.has(normalizeToolPolicyName(tool.name)),
+      );
 }
 
 /**

@@ -5,10 +5,18 @@
  * or cron capture) reaches the real tool. Keeps the #102030 guarantee, including its one
  * exception: an exact-run automations grant.
  */
+import { expectDefined } from "@openclaw/normalization-core";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type Message,
+  type Model,
+} from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
+import { runAgentLoop, type AgentEvent } from "../plugin-sdk/agent-core.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -17,6 +25,10 @@ import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../security/dangerous-tools.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
+import {
+  bindAgentToolAvailability,
+  finalizeAgentToolAvailability,
+} from "./agent-tool-availability.js";
 import { toToolDefinitions } from "./agent-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import {
@@ -31,14 +43,17 @@ import {
   attachInternalToolExecutionPreparer,
   getInternalToolExecutionPreparer,
 } from "./runtime/internal-hooks.js";
+import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
 import { ToolAuthorizationError } from "./tool-input-error.js";
 import { replaceWithEffectiveToolAllowlist } from "./tool-policy.js";
+import { consumeTrustedToolNoStartError, isToolResultError } from "./tool-result-error.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import {
   createToolSearchCatalogRef,
   registerHeadlessToolSearchCatalog,
   resolveToolSearchConfig,
 } from "./tool-search.js";
+import { createToolTerminalObserver } from "./tool-terminal-outcome.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 import { captureFinalEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool.js";
 import type { CronCreatorToolAllowlistEntry } from "./tools/cron-tool.types.js";
@@ -123,6 +138,46 @@ function expectNoRealOwnerOnlyExecution() {
   }
 }
 
+// A refusal is a pre-execution block: the preparer the agent loop prefers answers at once.
+async function expectPreExecutionRefusal(tool: object, name: string) {
+  const preparer = expectDefined(getInternalToolExecutionPreparer(tool), `${name} preparer`);
+  const prepared = await preparer({ toolCallId: `prepare-${name}`, args: { action: "x" } });
+  expect(prepared, name).toMatchObject({
+    kind: "immediate",
+    outcome: {
+      kind: "result",
+      isError: true,
+      result: { details: { status: "blocked", deniedReason: "owner-only" } },
+    },
+  });
+}
+
+const loopModel: Model = {
+  id: "test-model",
+  name: "Test Model",
+  api: "test-api",
+  provider: "test-provider",
+  baseUrl: "https://example.test",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 1000,
+  maxTokens: 1000,
+};
+
+function loopAssistant(content: AssistantMessage["content"]): AssistantMessage {
+  return {
+    role: "assistant",
+    content,
+    api: loopModel.api,
+    provider: loopModel.provider,
+    model: loopModel.id,
+    usage: createZeroUsageFixture(),
+    stopReason: content.some((item) => item.type === "toolCall") ? "toolUse" : "stop",
+    timestamp: 1,
+  };
+}
+
 describe("owner-only tool stubs", () => {
   const beforeToolCall = vi.fn();
 
@@ -175,11 +230,17 @@ describe("owner-only tool stubs", () => {
       expect(stub.parameters).toEqual(ownerTool.parameters);
       expect(stub.outputSchema).toEqual(ownerTool.outputSchema);
       expect(stub.resultContentSource).toBeUndefined();
-      expect(getInternalToolExecutionPreparer(stub), name).toBeUndefined();
       expect(stub.prepareArguments).toBeUndefined();
-      await expect(stub.execute(`call-${name}`, { action: "x" })).rejects.toThrow(
+      await expectPreExecutionRefusal(stub, name);
+      // Callers that bypass preparers get host-owned proof that nothing started.
+      const error = await stub.execute(`call-${name}`, { action: "x" }).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      expect(error).toEqual(
         new ToolAuthorizationError(`${name} is not available on this turn: owner-only.`),
       );
+      expect(consumeTrustedToolNoStartError(error), name).toBe(true);
     }
     expectNoRealOwnerOnlyExecution();
     expect(beforeToolCall).not.toHaveBeenCalled();
@@ -205,7 +266,7 @@ describe("owner-only tool stubs", () => {
     expect(cataloged.map((entry) => entry.name).toSorted()).toEqual(OWNER_ONLY.toSorted());
     for (const entry of cataloged) {
       expect(isOwnerOnlyToolStub(entry.tool), entry.name).toBe(true);
-      expect(getInternalToolExecutionPreparer(entry.tool), entry.name).toBeUndefined();
+      await expectPreExecutionRefusal(entry.tool, entry.name);
     }
 
     await expect(runtime.call("gateway", { action: "config.get" })).rejects.toThrow(
@@ -219,30 +280,94 @@ describe("owner-only tool stubs", () => {
     expect(beforeToolCall).not.toHaveBeenCalled();
   });
 
-  it("keeps hooks and approvals away from stubs in the session tool adapter", async () => {
-    const other = buildTurnTools(false);
+  it("records a refusal as a blocked call that never started, through the adapter and loop", async () => {
+    const runId = "other-run";
+    const stub = requireTool(buildTurnTools(false, runId), "nodes");
+    const args = { action: "invoke", node: "mac", invokeCommand: "system.run" };
     // The embedded session adapter runs before_tool_call itself for tools it sees unwrapped.
-    const [definition] = toToolDefinitions([requireTool(other, "gateway")], {
-      runId: "other-run",
-      sessionKey,
-    });
-    if (!definition) {
-      throw new Error("expected the gateway definition");
-    }
+    const [definition] = toToolDefinitions([stub], { runId, sessionKey });
+    await expectPreExecutionRefusal(expectDefined(definition, "nodes definition"), "nodes");
 
-    const result = await definition.execute(
-      "adapter-call",
-      { action: "config.get" },
+    const events: AgentEvent[] = [];
+    const afterToolCall = vi.fn();
+    let turn = 0;
+    const streamFn = () => {
+      turn += 1;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message =
+          turn === 1
+            ? loopAssistant([{ type: "toolCall", id: "loop-call", name: "nodes", arguments: args }])
+            : loopAssistant([{ type: "text", text: "done" }]);
+        stream.push({ type: "done", reason: turn === 1 ? "toolUse" : "stop", message });
+        stream.end();
+      });
+      return stream;
+    };
+    await runAgentLoop(
+      [{ role: "user", content: "run it", timestamp: 1 }],
+      { systemPrompt: "", messages: [], tools: [stub] },
+      {
+        model: loopModel,
+        convertToLlm: (messages) => messages as Message[],
+        // Mirrors the session: tool_result handlers run only for started calls.
+        afterToolCall,
+        afterToolOutcome: async ({ executionStarted, result, isError }) =>
+          executionStarted ? undefined : { isError: isError || isToolResultError(result) },
+      },
+      (event) => {
+        events.push(event);
+      },
       undefined,
-      undefined,
-      undefined as never,
+      streamFn,
     );
-    expect(JSON.stringify(result.content)).toContain(
-      "gateway is not available on this turn: owner-only.",
+
+    const end = expectDefined(
+      events.find(
+        (event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+          event.type === "tool_execution_end" && event.toolCallId === "loop-call",
+      ),
+      "tool_execution_end",
     );
-    expect(getInternalToolExecutionPreparer(definition)).toBeUndefined();
+    expect(end).toMatchObject({
+      executionStarted: false,
+      isError: true,
+      result: { details: { status: "blocked", deniedReason: "owner-only" } },
+    });
+    expect(afterToolCall).not.toHaveBeenCalled();
+    // The host observer turns this into no side-effect evidence, so replay stays valid.
+    expect(
+      createToolTerminalObserver(runId)({
+        toolCallId: "loop-call",
+        toolName: "nodes",
+        arguments: args,
+        executionStarted: end.executionStarted,
+        outcome: "failure",
+        result: end.result,
+        failure: { error: "nodes is not available on this turn: owner-only." },
+      }),
+    ).toMatchObject({
+      executionStarted: false,
+      sideEffectEvidence: false,
+      lastToolError: { executionStarted: false, mutatingAction: false },
+    });
     expectNoRealOwnerOnlyExecution();
     expect(beforeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("never counts a stub as callable for availability-bound tools", () => {
+    const callable: string[] = [];
+    const probe = bindAgentToolAvailability(
+      { name: "probe", description: "probe", parameters: { type: "object", properties: {} } },
+      { prepare: (_tool, callableTools) => callable.push(...callableTools.keys()) },
+    );
+
+    finalizeAgentToolAvailability([probe, ...buildTurnTools(false)]);
+
+    expect(callable).toContain("message");
+    for (const name of [...OWNER_ONLY, "intent"]) {
+      expect(callable).not.toContain(name);
+    }
   });
 
   it("never passes a stub name on to child sessions or scheduled jobs", () => {

@@ -275,7 +275,7 @@ export function isPreExecutionBlockedToolResult(result: unknown): boolean {
 /** Build the standard terminal result for vetoed tool calls. */
 export function buildBlockedToolResult(params: {
   reason: string;
-  deniedReason?: HookBlockedReason;
+  deniedReason?: HookBlockedReason | "owner-only";
   toolCallId?: string;
   runId?: string;
 }) {
