@@ -21,6 +21,12 @@ const createMemoryRuntimeMock = vi.hoisted(() =>
   })),
 );
 
+const createStandingIntentToolMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./src/standing-intents-tool.js", () => ({
+  createStandingIntentTool: createStandingIntentToolMock,
+}));
+
 vi.mock("./src/runtime-provider.js", () => ({
   createMemoryRuntime: createMemoryRuntimeMock,
   memoryRuntime: {
@@ -352,7 +358,7 @@ describe("memory-core plugin runtime registration", () => {
     }
   });
 
-  it("hides intent create, list, and cancel from non-owner turns", () => {
+  it("gives non-owner turns only the owner-only intent declaration", async () => {
     const warn = vi.fn();
     let intentFactory:
       | ((ctx: { config?: OpenClawConfig; senderIsOwner?: boolean }) => unknown)
@@ -369,6 +375,7 @@ describe("memory-core plugin runtime registration", () => {
             "contextVersion" in factory
           ) {
             expect(factory.contextVersion).toBe(2);
+            expect(options.ownerOnly).toBe(true);
             intentFactory = (ctx) => factory.create({ ...ctx, assertInvocationCurrent: () => {} });
           }
         },
@@ -378,8 +385,29 @@ describe("memory-core plugin runtime registration", () => {
       throw new Error("expected standing-intent tool factory");
     }
 
-    expect(intentFactory({ config: {}, senderIsOwner: false })).toBeNull();
-    expect(intentFactory({ config: {} })).toBeNull();
+    type IntentTool = {
+      name?: string;
+      description?: string;
+      parameters?: unknown;
+      execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+    };
+    const declarationOf = ({ name, description, parameters }: IntentTool) => ({
+      name,
+      description,
+      parameters,
+    });
+    // The host stubs (non-owner) or omits (unknown sender) these; alone they grant nothing.
+    for (const nonOwner of [
+      intentFactory({ config: {}, senderIsOwner: false }) as IntentTool,
+      intentFactory({ config: {} }) as IntentTool,
+    ]) {
+      expect(declarationOf(nonOwner)).toEqual(
+        declarationOf(intentFactory({ config: {}, senderIsOwner: true }) as IntentTool),
+      );
+      await expect(nonOwner.execute("call", { action: "list" })).rejects.toThrow(
+        "intent is not available on this turn: owner-only.",
+      );
+    }
     expect(warn).not.toHaveBeenCalled();
 
     expect(intentFactory({ senderIsOwner: true })).toBeNull();
@@ -400,6 +428,7 @@ describe("memory-core plugin runtime registration", () => {
     expect(ownerTool.parameters?.properties?.scope?.default).toBe("channel");
     expect(ownerTool.parameters?.properties?.senderScope?.default).toBe("sender");
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(createStandingIntentToolMock).not.toHaveBeenCalled();
   });
 
   it("keeps memory manager initialization demand-driven", () => {

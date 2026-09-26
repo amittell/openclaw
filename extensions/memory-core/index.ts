@@ -96,40 +96,11 @@ function createLazyMemoryGetTool(options: MemoryToolOptions): AnyAgentTool | nul
   });
 }
 
-function createLazyStandingIntentTool(
-  ctx: OpenClawPluginToolContext,
-  reportUnavailable: (reason: string) => void,
-): AnyAgentTool | null {
-  if (ctx.senderIsOwner !== true) {
-    return null;
-  }
-  const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config;
-  const provider = ctx.messageChannel?.trim();
-  const senderId = ctx.requesterSenderId?.trim();
-  if (!cfg) {
-    reportUnavailable("runtime config is unavailable for this turn");
-    return null;
-  }
-  const agentId = resolveSessionAgentIdStrict({
-    sessionKey: ctx.sessionKey,
-    config: cfg,
-    agentId: ctx.agentId,
-  });
-  let toolPromise: Promise<AnyAgentTool> | undefined;
-  const loadTool = async (): Promise<AnyAgentTool> => {
-    toolPromise ??= loadStandingIntentToolModule().then((module: StandingIntentToolModule) =>
-      module.createStandingIntentTool({
-        agentId,
-        assertCurrent: ctx.assertInvocationCurrent,
-        ...(ctx.sessionId ? { sourceSessionId: ctx.sessionId } : {}),
-        ...(ctx.nativeChannelId ? { conversationId: ctx.nativeChannelId } : {}),
-        ...(provider ? { provider } : {}),
-        ...(ctx.agentAccountId ? { accountId: ctx.agentAccountId } : {}),
-        ...(senderId ? { senderId } : {}),
-      }),
-    );
-    return await toolPromise;
-  };
+// Built per call: owner and non-owner turns get equal declarations, never a shared object.
+function standingIntentToolDeclaration(): Pick<
+  AnyAgentTool,
+  "label" | "name" | "description" | "parameters"
+> {
   return {
     label: "Standing Intent",
     name: "intent",
@@ -163,6 +134,52 @@ function createLazyStandingIntentTool(
       required: ["action"],
       additionalProperties: false,
     },
+  };
+}
+
+function createLazyStandingIntentTool(
+  ctx: OpenClawPluginToolContext,
+  reportUnavailable: (reason: string) => void,
+): AnyAgentTool | null {
+  if (ctx.senderIsOwner !== true) {
+    // Registered `ownerOnly`: the host keeps this declaration for a non-owner turn and
+    // swaps in its refusing stub. The declaration alone still grants nothing.
+    return {
+      ...standingIntentToolDeclaration(),
+      execute: async () => {
+        throw new Error("intent is not available on this turn: owner-only.");
+      },
+    };
+  }
+  const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config;
+  const provider = ctx.messageChannel?.trim();
+  const senderId = ctx.requesterSenderId?.trim();
+  if (!cfg) {
+    reportUnavailable("runtime config is unavailable for this turn");
+    return null;
+  }
+  const agentId = resolveSessionAgentIdStrict({
+    sessionKey: ctx.sessionKey,
+    config: cfg,
+    agentId: ctx.agentId,
+  });
+  let toolPromise: Promise<AnyAgentTool> | undefined;
+  const loadTool = async (): Promise<AnyAgentTool> => {
+    toolPromise ??= loadStandingIntentToolModule().then((module: StandingIntentToolModule) =>
+      module.createStandingIntentTool({
+        agentId,
+        assertCurrent: ctx.assertInvocationCurrent,
+        ...(ctx.sessionId ? { sourceSessionId: ctx.sessionId } : {}),
+        ...(ctx.nativeChannelId ? { conversationId: ctx.nativeChannelId } : {}),
+        ...(provider ? { provider } : {}),
+        ...(ctx.agentAccountId ? { accountId: ctx.agentAccountId } : {}),
+        ...(senderId ? { senderId } : {}),
+      }),
+    );
+    return await toolPromise;
+  };
+  return {
+    ...standingIntentToolDeclaration(),
     execute: async (toolCallId, params, signal, onUpdate) => {
       const tool = await loadTool();
       return await tool.execute(toolCallId, params, signal, onUpdate);
@@ -284,7 +301,7 @@ export default definePluginEntry({
             api.logger.warn(`memory-core: intent tool unavailable: ${reason}`);
           }),
       },
-      { names: ["intent"] },
+      { names: ["intent"], ownerOnly: true },
     );
 
     api.on("before_prompt_build", async (event, ctx) => {

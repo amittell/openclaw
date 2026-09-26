@@ -16,6 +16,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { resolveEffectiveToolPolicy } from "./agent-tools.policy.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import type { SandboxDockerConfig } from "./sandbox/types.docker.js";
 import { createRestrictedAgentSandboxConfig } from "./test-helpers/sandbox-agent-config-fixtures.js";
@@ -495,10 +496,14 @@ describe("Agent-specific tool filtering", () => {
         senderIsOwner,
         workspaceDir: "/tmp/test-webchat-owner-policy",
         agentDir: "/tmp/agent-webchat-owner-policy",
-      }).map((tool) => tool.name);
+      });
+    // Owner-only tools stay declared for non-owners as refusing stubs; only real tools count.
+    const executableNames = (tools: ReturnType<typeof createWebChatTools>) =>
+      tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
 
-    const ownerTools = createWebChatTools(true);
-    const nonOwnerTools = createWebChatTools(false);
+    const ownerTools = executableNames(createWebChatTools(true));
+    const nonOwnerTurn = createWebChatTools(false);
+    const nonOwnerTools = executableNames(nonOwnerTurn);
 
     expect(ownerTools).toContain("exec");
     expect(ownerTools).toContain("process");
@@ -518,6 +523,11 @@ describe("Agent-specific tool filtering", () => {
     expect(nonOwnerTools).not.toContain("conversations_list");
     expect(nonOwnerTools).not.toContain("conversations_send");
     expect(nonOwnerTools).not.toContain("conversations_turn");
+    // Sender policy removals are not owner-only: they leave no stub behind.
+    expect(nonOwnerTurn.map((tool) => tool.name)).not.toContain("exec");
+    expect(
+      nonOwnerTurn.filter((tool) => isOwnerOnlyToolStub(tool)).map((tool) => tool.name),
+    ).toEqual(expect.arrayContaining(["automations", "gateway", "nodes", "openclaw"]));
   });
 
   it("should let agent per-sender policy override global sender wildcard", () => {

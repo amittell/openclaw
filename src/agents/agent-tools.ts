@@ -35,6 +35,7 @@ import {
   getActiveAgentRingZeroTools,
   mergeAgentRingZeroTools,
 } from "./agent-tools.ring-zero-context.js";
+import { assembleTurnToolSurface } from "./agent-tools.turn-surface.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { resolveConfiguredApplyPatchPolicy } from "./apply-patch-policy.js";
 import { waitForExecScope } from "./bash-process-registry.js";
@@ -48,7 +49,6 @@ import {
   bindActiveCronCreatorAuthorityResolver,
   bindCronManagementGrant,
 } from "./cron-creator-authority-context.js";
-import { applyDelegationCapability } from "./delegation-capability.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveImageSanitizationLimits } from "./image-sanitization.js";
@@ -58,7 +58,6 @@ import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.j
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { createOpenClawTools, filterToolsByClientCaps } from "./openclaw-tools.js";
 import { filterRequesterYieldTools } from "./openclaw-tools.requester-yield.js";
-import { applySwarmCollectorToolContract } from "./openclaw-tools.swarm.js";
 import { resolveSandboxFileIdentity } from "./sandbox/file-mutation-identity.js";
 import { createEmbeddedMessageInvocationPolicy } from "./scheduled-message-invocation.js";
 import { resolveScheduledToolCallerContext } from "./scheduled-tool-policy.js";
@@ -708,20 +707,16 @@ export function createOpenClawCodingToolsInternal(
     toolDenylist: pluginToolDenylist,
   });
   // Sender identity is primarily command/action auth, with one Gateway parity exception:
-  // explicit non-owner callers never receive owner-only control-plane core tools.
-  const subagentFiltered = messageInvocationPolicy.filter();
-  // Host-bound ring-zero tools carry their own authority checks. Agent policy
-  // must not deadlock setup, but the tools still receive schema/hook wrappers.
-  const authorizedTools = applySwarmCollectorToolContract(
-    applyDelegationCapability(
-      mergeAgentRingZeroTools(ringZeroTools, subagentFiltered),
-      options?.delegationCapability,
-    ),
-    {
-      swarmCollector: options?.swarmCollector,
-      structuredOutputTool: swarmStructuredOutputTool,
-    },
-  );
+  // explicit non-owner callers never receive owner-only control-plane core tools. They
+  // see refusing stubs in their place, so every grant below reads `authorizedTools`.
+  const { authorizedTools, modelFacingTools } = assembleTurnToolSurface({
+    policy: messageInvocationPolicy,
+    ringZeroTools,
+    delegationCapability: options?.delegationCapability,
+    swarmCollector: options?.swarmCollector,
+    structuredOutputTool: swarmStructuredOutputTool,
+    stubContext: { runId: options?.runId, sessionKey: executionSessionKey },
+  });
   authorizedTools.forEach(bindAssembledAgentToolActionDescriptor);
   processToolAvailabilityRef.value = authorizedTools.some((tool) => tool.name === "process");
   if (shouldInheritEffectiveToolAllowlist) {
@@ -792,7 +787,7 @@ export function createOpenClawCodingToolsInternal(
   };
   // NOTE: Keep canonical (lowercase) tool names here. Provider transports remap on the wire.
   return finalizeAgentTools({
-    tools: filterRequesterYieldTools(authorizedTools, executionSessionKey),
+    tools: filterRequesterYieldTools(modelFacingTools, executionSessionKey),
     modelProvider: options?.modelProvider,
     modelId: options?.modelId,
     modelCompat: options?.modelCompat,

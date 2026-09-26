@@ -39,11 +39,6 @@ import {
 import { runWithAgentRingZeroTools } from "./agent-tools.ring-zero-context.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
-import {
-  createCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapabilityResolver,
-} from "./cron-creator-authority-context.js";
 import * as openClawPluginTools from "./openclaw-plugin-tools.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { expectReadWriteEditTools } from "./test-helpers/agent-tools-fs-helpers.js";
@@ -345,112 +340,6 @@ describe("createOpenClawCodingTools", () => {
         },
       }),
     );
-  });
-
-  it("binds configured MCP cron authority only to the exact admitted run", async () => {
-    const resolve = vi.fn().mockResolvedValue({
-      tools: ["read", { name: "mcp_todoist_add_task", pluginId: "todoist" }],
-      provenance: { version: 1, source: "final-executable-surface" },
-    });
-    let releaseRun: (() => void) | undefined;
-    const holdRun = new Promise<void>((resolveHold) => {
-      releaseRun = resolveHold;
-    });
-    let retainedResolver: (() => Promise<unknown>) | undefined;
-
-    vi.mocked(createOpenClawTools).mockClear();
-    const forgedTools = runWithCronCreatorAuthorityCapabilityResolver({
-      capability: undefined,
-      runId: "forged-run",
-      resolve,
-      run: () => createOpenClawCodingTools({ runId: "forged-run", senderIsOwner: false }),
-    });
-    expect(toolNameList(forgedTools)).not.toContain("automations");
-    expect(
-      vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority,
-    ).toBeUndefined();
-
-    const capability = createCronCreatorAuthorityCapability("admitted-run")!;
-    const activeRun = runWithCronCreatorAuthorityCapability(capability, async () => {
-      const wrongRunTools = runWithCronCreatorAuthorityCapabilityResolver({
-        capability,
-        runId: "other-run",
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: "admitted-run", senderIsOwner: false }),
-      });
-      expect(toolNameList(wrongRunTools)).not.toContain("automations");
-      expect(
-        vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority,
-      ).toBeUndefined();
-
-      const admittedTools = runWithCronCreatorAuthorityCapabilityResolver({
-        capability,
-        runId: "admitted-run",
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: "admitted-run", senderIsOwner: false }),
-      });
-      const admittedToolNames = toolNameList(admittedTools);
-      expect(admittedToolNames).toContain("automations");
-      expect(admittedToolNames).not.toContain("gateway");
-      expect(admittedToolNames).not.toContain("nodes");
-      expect(admittedToolNames).not.toContain("openclaw");
-      retainedResolver =
-        vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority;
-      expect(retainedResolver).toEqual(expect.any(Function));
-      await expect(retainedResolver!()).resolves.toMatchObject({
-        provenance: { source: "final-executable-surface" },
-      });
-      await holdRun;
-    });
-
-    releaseRun?.();
-    await activeRun;
-    await expect(retainedResolver!()).rejects.toThrow(
-      "Configured MCP cron authority is no longer active for this run",
-    );
-    expect(
-      toolNameList(createOpenClawCodingTools({ runId: "admitted-run", senderIsOwner: false })),
-    ).not.toContain("automations");
-    expect(resolve).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops senderless Automations retention when exact authority aborts or errors", async () => {
-    const resolve = async () => ({
-      tools: ["read"],
-      provenance: { version: 1 as const, source: "final-executable-surface" as const },
-    });
-    const buildTools = (capability: ReturnType<typeof createCronCreatorAuthorityCapability>) =>
-      runWithCronCreatorAuthorityCapabilityResolver({
-        capability,
-        runId: "lifecycle-run",
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: "lifecycle-run", senderIsOwner: false }),
-      });
-
-    const abortController = new AbortController();
-    const abortedCapability = createCronCreatorAuthorityCapability("lifecycle-run")!;
-    await runWithCronCreatorAuthorityCapability(
-      abortedCapability,
-      async () => {
-        expect(toolNameList(buildTools(abortedCapability))).toContain("automations");
-        abortController.abort(new Error("run cancelled"));
-        expect(toolNameList(buildTools(abortedCapability))).not.toContain("automations");
-      },
-      abortController.signal,
-    );
-    expect(abortedCapability.active).toBe(false);
-
-    const failedCapability = createCronCreatorAuthorityCapability("lifecycle-run")!;
-    await expect(
-      runWithCronCreatorAuthorityCapability(failedCapability, async () => {
-        expect(toolNameList(buildTools(failedCapability))).toContain("automations");
-        throw new Error("run failed");
-      }),
-    ).rejects.toThrow("run failed");
-    expect(failedCapability.active).toBe(false);
-    expect(
-      toolNameList(createOpenClawCodingTools({ runId: "lifecycle-run", senderIsOwner: false })),
-    ).not.toContain("automations");
   });
 
   it("re-wraps existing before_tool_call hooks once with the current context", async () => {

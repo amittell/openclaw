@@ -6,6 +6,7 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { sanitizeServerName, TOOL_NAME_SEPARATOR } from "./agent-bundle-mcp-names.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { IMPLICIT_ALLOW_ALL_FROM_ALSO_ALLOW } from "./sandbox-tool-policy.js";
 import {
   attachToolAllowlistIntersection,
@@ -133,6 +134,10 @@ export function replaceWithEffectiveToolAllowlist(
   target.length = 0;
   const seen = new Set<string>();
   for (const tool of tools) {
+    // A stub only declares an owner-only tool this turn may not run; never pass it on.
+    if (isOwnerOnlyToolStub(tool)) {
+      continue;
+    }
     const normalized = normalizeToolPolicyName(tool.name);
     if (!normalized || seen.has(normalized)) {
       continue;

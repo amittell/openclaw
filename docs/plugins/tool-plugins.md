@@ -214,6 +214,37 @@ alone grants nothing: management-only callers, unrelated sessions, and detached
 cron runs still cannot acquire the owner's identity. `senderIsOwner` is an
 availability check, never a substitute for the required final-effect guard.
 
+### Owner-only tools
+
+Returning `null` to non-owners removes the tool from their turns, so owner and
+non-owner turns of one session send different tool lists and cannot share a
+prompt cache. To keep the list stable, register the tool with `ownerOnly: true`
+and return its declaration to every sender:
+
+```typescript
+api.registerTool(
+  {
+    contextVersion: 2,
+    create(context) {
+      if (context.senderIsOwner !== true) {
+        return { ...privilegedToolDeclaration, execute: refuseOwnerOnlyCall };
+      }
+      return createPrivilegedTool({ assertCurrent: context.assertInvocationCurrent });
+    },
+  },
+  { name: "my_privileged_tool", ownerOnly: true },
+);
+```
+
+On an agent turn whose sender is not the owner, OpenClaw keeps the returned
+name, description, and parameters but replaces the tool with a stub that refuses
+every call. The stub never runs the tool's `execute`, before-tool-call hooks,
+or approvals, and it is never passed on to spawned sessions or scheduled jobs.
+Gateway tool surfaces such as the MCP loopback, `POST /tools/invoke`, and skill
+command dispatch omit the tool for non-owners instead, and contexts with no known
+sender (tool listings, the plugin-tools MCP server, cron trigger scripts) omit it
+too. The factory must still grant nothing to a non-owner by itself.
+
 Set `hideFromChannelProgress: true` on the concrete factory tool to keep its
 transient activity out of channel progress drafts. Lifecycle events and the
 final tool result still flow normally. OpenClaw preserves the current factory's

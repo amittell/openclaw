@@ -37,6 +37,8 @@ Keeps the Gateway local-only, isolates DMs, limits session tools to the agent's 
 
 Built-in baseline for chat-driven agent turns: non-owner senders cannot use the `cron` or `gateway` tools regardless of config.
 
+On a non-owner turn, such as a subagent completion reported back into an owner's session, owner-only tools stay in the tool list with the same schemas as on owner turns, so the session keeps one tool list and prompt prefix for prompt caching. Each of them is a stub that refuses every call, a per-turn line in the embedded agent's system prompt names them, and they are never passed on to spawned sessions or scheduled jobs.
+
 ### Requester-scoped controls and prompt context
 
 `tools.toolsBySender`, sender ownership, and owner-only tool inventories are evaluated against the current turn's originating requester. They do not authenticate or sanitize other content in that model prompt, including quoted text, prior shared-room history, forwarded content, fetched content, attachments, tool results, or other prompt inputs. Content from another person can therefore influence an owner-triggered turn when it is included in that turn's context.

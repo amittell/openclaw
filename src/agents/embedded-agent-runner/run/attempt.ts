@@ -15,6 +15,7 @@ import {
 } from "../../agent-run-terminal-outcome.js";
 import { resolveAgentDir } from "../../agent-scope.js";
 import { buildExecAutoReviewTranscript } from "../../exec-auto-review-transcript.js";
+import { listOwnerOnlyToolStubNames } from "../../owner-only-tool-stub-marker.js";
 import { recordAgentCleanupFailure, runOwnedAgentCleanup } from "../../run-cleanup-timeout.js";
 import {
   clearToolSearchCatalog,
@@ -334,6 +335,8 @@ async function runEmbeddedAttemptOwned(
         setup,
         bootstrap: preparedBootstrap,
         capabilityToolNames: toolSearchRunPlan.capabilityToolNames,
+        // Read before compaction: a stub can sit behind tool search and still refuse.
+        ownerOnlyUnavailableToolNames: listOwnerOnlyToolStubNames(uncompactedEffectiveTools),
         requireExplicitMessageTarget: preparedToolBase.requireExplicitMessageTarget,
         effectiveTools,
         isRawModelRun,

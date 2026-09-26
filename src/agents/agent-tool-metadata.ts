@@ -5,6 +5,7 @@ import { copyBeforeToolCallMetadata } from "./before-tool-call-metadata.js";
 import { copyChannelAgentToolMeta } from "./channel-tool-metadata.js";
 import { copyCodeModeControlToolIdentity } from "./code-mode-control-tools.js";
 import { copyCronScheduledToolProjection } from "./exec-tool-target-pinning.js";
+import { copyOwnerOnlyToolStubMarker } from "./owner-only-tool-stub-marker.js";
 import { copyInternalToolExecutionPreparer } from "./runtime/internal-hooks.js";
 import { copyToolTerminalPresentation } from "./tool-terminal-presentation.js";
 
@@ -46,6 +47,7 @@ export function copyBeforeToolCallWrapperMetadata(
   copyToolTerminalPresentation(source, target);
   copyAgentToolActionDescriptor(source, target);
   copyAgentToolAvailability(source, target);
+  copyOwnerOnlyToolStubMarker(source, target);
 }
 
 /** Bind the broad family at final assembly from private, process-stable owner metadata. */
@@ -78,5 +80,6 @@ export function copyAgentToolMetadata<T extends AnyAgentTool>(source: AnyAgentTo
   copyInternalToolExecutionPreparer(source, target);
   copyAgentToolActionDescriptor(source, target);
   copyAgentToolAvailability(source, target);
+  copyOwnerOnlyToolStubMarker(source, target);
   return target;
 }

@@ -97,6 +97,14 @@ export type OpenClawPluginToolOptions = {
   name?: string;
   names?: string[];
   optional?: boolean;
+  /**
+   * Only the owner may run these tools. On a non-owner turn (`senderIsOwner: false`)
+   * the host still calls the factory and replaces the returned tool with a stub that
+   * keeps its declaration but refuses every call, so agent turns list the same tools
+   * for every sender; Gateway tool surfaces omit it instead, as does any context with
+   * no known sender. The factory must still grant nothing to a non-owner by itself.
+   */
+  ownerOnly?: boolean;
 };
 
 export type OpenClawPluginHookOptions = {

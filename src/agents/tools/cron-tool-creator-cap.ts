@@ -1,5 +1,6 @@
 import { isRecord } from "../../utils.js";
 import { readCronScheduledToolProjection } from "../exec-tool-target-pinning.js";
+import { isOwnerOnlyToolStub } from "../owner-only-tool-stub-marker.js";
 import { createToolPolicyMatcher } from "../tool-policy-match.js";
 import {
   buildPluginToolGroups,
@@ -95,6 +96,10 @@ export function replaceWithEffectiveCronCreatorToolAllowlist<T extends { name: s
   // the same capability. The alias name is kept for explicit-cap matching only.
   const captured = new Map<string, NormalizedCronCreatorTool>();
   for (const tool of tools) {
+    // A stub only declares an owner-only tool the creating turn may not run.
+    if (isOwnerOnlyToolStub(tool)) {
+      continue;
+    }
     const projection = readCronScheduledToolProjection(tool);
     const name = normalizeToolPolicyName(projection ? projection.targetTool : tool.name);
     if (!name) {

@@ -32,6 +32,7 @@ import {
 } from "./code-mode-control-tools.js";
 import { sanitizeForConsole } from "./console-sanitize.js";
 import type { ClientToolDefinition } from "./embedded-agent-runner/run/params.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import type { AgentTool, AgentToolResult } from "./runtime/index.js";
 import {
   attachInternalToolExecutionPreparer,
@@ -359,7 +360,9 @@ export function toToolDefinitions(
   return tools.map((tool) => {
     const name = tool.name || "tool";
     const normalizedName = normalizeToolPolicyName(name);
-    const beforeHookWrapped = isToolWrappedWithBeforeToolCallHook(tool);
+    // An owner-only stub refuses every call itself; hooks and approvals must never see it.
+    const beforeHookWrapped =
+      isToolWrappedWithBeforeToolCallHook(tool) || isOwnerOnlyToolStub(tool);
     const sourcePreparer = getInternalToolExecutionPreparer(tool);
     const definition = {
       name,

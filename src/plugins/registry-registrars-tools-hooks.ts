@@ -266,6 +266,7 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
         names: normalized,
         declaredNames,
         optional,
+        ...(opts?.ownerOnly === true ? { ownerOnly: true as const } : {}),
         origin: record.origin,
       }),
     );

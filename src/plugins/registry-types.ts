@@ -115,6 +115,8 @@ export type PluginToolRegistration = PluginRegistrationOwner & {
   names: string[];
   declaredNames?: string[];
   optional: boolean;
+  /** Registered owner-only: non-owner turns receive refusing stubs of these tools. */
+  ownerOnly?: true;
   /** Loader-owned provenance. Missing values are conservative legacy registrations. */
   origin?: PluginOrigin;
 };

@@ -17,6 +17,7 @@ import {
   createSwarmCollectorWriteAuthority,
   resolveSwarmCollectorToolContext,
 } from "../agents/openclaw-tools.swarm.js";
+import { isOwnerOnlyToolStub } from "../agents/owner-only-tool-stub-marker.js";
 import { resolveRequesterToolPolicies } from "../agents/requester-tool-policy.js";
 import type { PreparedRootedExecutionCapability } from "../agents/rooted-run-params.js";
 import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
@@ -531,9 +532,12 @@ export function resolveGatewayScopedTools(
       : [];
   // CLI backends already own their local shell. This extra surface is deliberately
   // fixed to node so it cannot become a second path to Gateway-local execution.
-  const baseTools = nodeExecSurface
-    ? openClawTools.filter((tool) => tool.name.trim().toLowerCase() !== "exec")
-    : openClawTools;
+  // Owner-only stubs keep an agent turn's prompt owner-shaped; this surface omits
+  // owner-only tools for non-owners instead, as it does the core ones.
+  const baseTools = openClawTools.filter(
+    (tool) =>
+      !isOwnerOnlyToolStub(tool) && !(nodeExecSurface && tool.name.trim().toLowerCase() === "exec"),
+  );
   const toolsWithMediatedCoding = [
     // Once a name is server-minted as mediated, only the canonical coding
     // factory may supply it. A policy-filtered tool must not fall back to a

@@ -48,6 +48,7 @@ vi.mock("./openclaw-tools.js", async (importOriginal) => {
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { createAgentToolsSandboxContext } from "./test-helpers/agent-tools-sandbox-context.js";
 import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 import {
@@ -126,7 +127,8 @@ describe("createOpenClawCodingTools cron scope", () => {
             }),
         ),
       );
-      const names = tools.map((tool) => tool.name);
+      // Owner-only tools stay declared for this non-owner turn as refusing stubs.
+      const names = tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
       expect(names.includes(AUTOMATIONS_TOOL_NAME)).toBe(Boolean(source));
       expect(names).not.toContain("gateway");
     },

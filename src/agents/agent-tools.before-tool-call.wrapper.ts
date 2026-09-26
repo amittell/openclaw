@@ -48,7 +48,8 @@ import {
   adjustedParamsByToolCallId,
   buildAdjustedParamsKey,
   clearTrackedToolExecution,
-  preExecutionBlockedToolCallIds,
+  MAX_TRACKED_ADJUSTED_PARAMS,
+  recordPreExecutionBlockedToolCall,
   recordStructuredReplaySafeToolCall,
   recordToolExecutionStarted,
   recordToolExecutionTracked,
@@ -84,6 +85,7 @@ import {
   normalizeCodeModeExecBeforeHookParams,
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import {
   appendToolLoopWarning,
@@ -100,7 +102,6 @@ import {
 import type { AnyAgentTool } from "./tools/common.js";
 
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
-const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 const INTERNAL_DISPOSED_RESULT = {
   content: [],
   details: { status: "skipped", deniedReason: "internal-dispose" },
@@ -303,7 +304,8 @@ export function wrapToolWithBeforeToolCallHook(
     isCodeModeControlTool(tool) && tool.name === CODE_MODE_WAIT_TOOL_NAME
       ? refresh.assertActive
       : refresh.assertCurrent;
-  if (!execute) {
+  // An owner-only stub refuses every call itself; hooks and approvals must never see it.
+  if (!execute || isOwnerOnlyToolStub(tool)) {
     return tool;
   }
   const toolName = tool.name || "tool";
@@ -726,18 +728,4 @@ export function rewrapToolWithBeforeToolCallHook(
   copyBeforeToolCallWrapperMetadata(tool, rewrapSource);
   copyAgentToolSourceExecutionGuard(tool, rewrapSource);
   return wrapToolWithBeforeToolCallHook(rewrapSource, ctx ?? preservedContext, wrapperOptions);
-}
-
-function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {
-  if (!toolCallId) {
-    return;
-  }
-  preExecutionBlockedToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
-  while (preExecutionBlockedToolCallIds.size > MAX_TRACKED_ADJUSTED_PARAMS) {
-    const oldest = preExecutionBlockedToolCallIds.values().next().value;
-    if (!oldest) {
-      break;
-    }
-    preExecutionBlockedToolCallIds.delete(oldest);
-  }
 }
