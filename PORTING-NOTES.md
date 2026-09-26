@@ -2147,3 +2147,84 @@ No test failed on the final tree, so no failure needed the three-cell
 classification. Not run: the full suite, the ratchet guards, `pnpm build`, and
 any live proof; the bots' behaviour on a real near-cap qwen3.8-27b session is
 inferred from the builder and recovery tests, not observed.
+
+## Owner-only tool stubs onto the 9.6 carry (2026-09-26)
+
+Two commits on top of the deployed `157d6f5f0fb`, then this note. Fork carry,
+pending upstream: issue #102175 is open, and its earlier candidate #102189 was
+closed unmerged by its author on 2026-07-29. Drop both commits when an upstream
+equivalent lands.
+
+| commit        | kind         | what it changes                                                                                                          |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `b5bf6d52a70` | fork carry   | non-owner turns send the owner turn's tool declarations; each owner-only tool the policy removes becomes a refusing stub |
+| `eba8e338ace` | review fixes | a stub refusal is a blocked call that never started; availability skips stubs; a client tool replaces a same-named stub  |
+
+### Why the bots carry it
+
+A non-owner turn, such as a subagent completion dispatched in-process with a
+synthetic system client, dropped the owner-only core tools that #102030 denies,
+plus memory-core's `intent`. The tool list, and the tool-gated text above the
+prompt-cache boundary, then differed from the owner turns of the same session,
+so every sender switch missed the provider prompt cache.
+
+Measured with `src/agents/agent-tools.owner-prefix.test.ts` (a telegram session
+on the test registry). At `157d6f5f0fb` the non-owner turn lacks 7 tools
+(`nodes`, `automations`, `gateway`, `openclaw`, `conversations_list`,
+`conversations_send`, `conversations_turn`), and the `exec` and `process`
+descriptions lose their `automations` sentences, so both the declarations and the
+stable prefix differ. At `eba8e338ace` both are identical, and only the per-turn
+suffix (below the boundary) names the refused tools.
+
+### What it does not change
+
+- The #102030 guarantee: the authorized list is still computed with the
+  owner-only deny, holds no stub, and feeds process availability, message
+  admission, `sessions_spawn` inheritance and cron creator capture;
+  `inheritedToolDenylist` still names the owner-only tools.
+- A stub carries only the declaration: no `execute`, argument or
+  before-tool-call hooks, execution preparer, source edge or availability binding
+  of the real tool. MCP loopback, HTTP `tools.invoke` and skill dispatch still
+  omit owner-only tools for non-owners.
+- No schema change (agent 23, state 18 on both sides), and no change to
+  `package.json`, `pnpm-lock.yaml`, `src/config` or `docs/.generated`.
+
+The plugin SDK gains `api.registerTool(factory, { ownerOnly: true })`; only the
+bundled memory-core uses it here.
+
+### Review, and what is left
+
+Fixed in `eba8e338ace`: a refused call took the loop's ready-execution path and
+was recorded as a started, possibly mutating failure (replay/failover evidence,
+`tool_result` handlers, compaction and heartbeat retries, an error-level log of
+the raw arguments). The stub now returns the host's blocked result from its own
+execution preparer, so the loop reports `executionStarted: false`. Also fixed:
+`finalizeAgentToolAvailability` counted a stub as callable, and a client tool
+named like an owner-only tool failed the run with a name conflict on non-owner
+turns.
+
+Two P3s stay as they are, both latent: a plugin `ownerOnly` stub records its
+blocked call without the run id (it is built with the session key only), and a
+report-only delegation proxy around a stub keeps the stub mark but not its
+preparer, so a call reaches the proxy's own refusal and is recorded as started.
+In both the real tool is never called.
+
+Known limits: the per-turn refusal line is added only by the embedded runner;
+in sandboxed sessions the elevated-exec lines above the boundary still vary by
+sender; plugins that return `null` for non-owners without opting into
+`ownerOnly` still vary; the worker-environment tool authority
+(`resolveWorkerToolAuthority`) was not examined.
+
+### Validation (2026-09-26, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                               | result                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the 25 test files that drive the stubs and their callers (`pnpm test`, 11 shards)   | 25/25 files, 1,181/1,181 tests                                                                                                                      |
+| `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:core:test`            | rc=0, 0 errors each                                                                                                                                 |
+| `node scripts/check-changed.mjs --base 157d6f5f0fb` at `eba8e338ace`                | stops at the config docs baseline (it is fail-fast); each of its 36 planned commands was then run on its own: 34 pass                               |
+| the two that fail, `config:docs:check` and `check-deadcode-exports`                 | identical output at `157d6f5f0fb`: config counts over budget (core 2455 > 2454, channel 3750 > 3740, plugin 4353 > 4352); unused exports in 9 files |
+| prefix identity at `157d6f5f0fb` (a variant of the owner-prefix test without stubs) | 7 tools missing on the non-owner turn, declarations and stable prefix both differ (2026-09-25 and 2026-09-26)                                       |
+
+None of those 9 files is one these commits touch. Not run: the
+full suite, `pnpm build`, and any live proof; the prompt-cache effect on the
+bots is expected from the prefix test, not observed.
