@@ -155,13 +155,11 @@ describe("OTEL content redaction cost", () => {
   it("names the redaction cap when it drops a JSON value that would fit the attribute", () => {
     // 512 long strings outside any array: the smallest budget clips each one, and its JSON would
     // fit the attribute, but their redaction windows pass the 8x cap.
+    const fields = Object.fromEntries(
+      Array.from({ length: 8 }, (_, index) => [`f${index}`, "o".repeat(5000)]),
+    );
     const toolInput = Object.fromEntries(
-      Array.from({ length: 64 }, (_, outer) => [
-        `k${outer}`,
-        Object.fromEntries(
-          Array.from({ length: 8 }, (_, inner) => [`f${inner}`, "o".repeat(5000)]),
-        ),
-      ]),
+      Array.from({ length: 64 }, (_, index) => [`k${index}`, { ...fields }]),
     );
 
     const exported = captureToolCall({ toolInput })["gen_ai.tool.call.arguments"];
