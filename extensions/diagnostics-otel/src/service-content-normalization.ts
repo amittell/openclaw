@@ -52,7 +52,11 @@ const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
   logBodies: false,
 };
 
-// Registered secrets only match whole, so the lookahead also covers the longest one.
+// Registered secrets only match whole, so the lookahead also covers the longest registered surface
+// form (URL-encoded and JSON-escaped forms included). That length widens every clipped string's
+// window, so redaction work grows linearly with it. JSON attributes count the wider windows against
+// their 8x cap and keep fewer items as it grows; once a single clipped string's window passes the
+// cap (a surface form of about 1M characters), they export only the truncation summary.
 function otelRedactionLookaheadChars(): number {
   return Math.max(MIN_OTEL_REDACTION_LOOKAHEAD_CHARS, getLongestRegisteredSecretLength());
 }
@@ -242,6 +246,7 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
   // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
   const maxRedactionChars = maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR;
   const lookaheadChars = otelRedactionLookaheadChars();
+  let redactionCapped = false;
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
       let redactionChars = 0;
@@ -261,7 +266,11 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
           },
         }),
       );
-      if (!unredacted || unredacted.length > maxChars || redactionChars > maxRedactionChars) {
+      if (!unredacted || unredacted.length > maxChars) {
+        continue;
+      }
+      if (redactionChars > maxRedactionChars) {
+        redactionCapped = true;
         continue;
       }
       const candidate = truncateJsonValueForOtelAttribute(value, {
@@ -277,10 +286,19 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
   }
   const summary = stringifyJsonForOtelAttribute({
     truncated: true,
-    reason: stringifyJson(value) ? "max_attribute_size" : "unserializable_value",
+    reason: summaryReason(value, redactionCapped),
     type: describeJsonValue(value),
   });
   return summary && summary.length <= maxChars ? summary : undefined;
+}
+
+// A candidate that fit the attribute but not the redaction cap was dropped for its redaction
+// cost, not its size.
+function summaryReason(value: unknown, redactionCapped: boolean): string {
+  if (!stringifyJson(value)) {
+    return "unserializable_value";
+  }
+  return redactionCapped ? "max_redaction_work" : "max_attribute_size";
 }
 
 function isOmittedFromJson(value: unknown): boolean {

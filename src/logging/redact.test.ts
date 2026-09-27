@@ -26,6 +26,7 @@ import {
 } from "./redact.js";
 import { withFullContextToolPayloadRedaction } from "./redact.test-support.js";
 import {
+  getLongestRegisteredSecretLength,
   getSecretRedactionRegistryRevision,
   redactRegisteredSecretValues,
   registerSecretValueForRedaction,
@@ -184,8 +185,10 @@ describe("registered exact secret values", () => {
   });
 
   it("evicts the oldest value after 512 registrations", () => {
-    const first = "exact-registry-value-000";
+    // The oldest value is also the longest, so eviction must shorten the longest length.
+    const first = "exact-registry-value-000-longest";
     registerSecretValueForRedaction(first);
+    expect(getLongestRegisteredSecretLength()).toBe(first.length);
     for (let index = 1; index <= 512; index += 1) {
       registerSecretValueForRedaction(`exact-registry-value-${index.toString().padStart(3, "0")}`);
     }
@@ -193,6 +196,9 @@ describe("registered exact secret values", () => {
 
     expect(redactSensitiveText(first, { mode: "off" })).toBe(first);
     expect(redactSensitiveText(last, { mode: "off" })).toBe("exact-…-512");
+    expect(getLongestRegisteredSecretLength()).toBe(last.length);
+    resetSecretRedactionRegistryForTest();
+    expect(getLongestRegisteredSecretLength()).toBe(0);
   });
 
   it("refreshes duplicate registration recency before eviction", () => {

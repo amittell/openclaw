@@ -301,13 +301,6 @@ The retained `openclaw/plugin-sdk/security-runtime` export and its
 - `sensitiveFieldPatterns` has the same entry types but is used by structured
   redaction, not by this text function.
 
-Registered exact secrets only match as whole values. A plugin that redacts a
-clipped prefix of longer text, so it can export that prefix, needs to redact
-past the cut. `getLongestRegisteredSecretLength()` from
-`openclaw/plugin-sdk/logging-core` returns the length of the longest registered
-secret (0 when none), so it can size that lookahead and mask a registered
-secret that starts before the cut.
-
 A matcher has `source: string` (a diagnostic label) and
 `exec(input): Iterable<{ match: string; groups: string[]; input: string; offset: number }>`.
 It must finish synchronously and return a fresh iterable for each call. Keep
@@ -329,6 +322,14 @@ serialized into `logging.redactPatterns`, which remains a string array. OpenClaw
 does not persist matcher state or migrate configuration for this argument kind.
 Existing string and regex callers remain supported. Older hosts need not support
 matcher objects; plugins using them must require a host version that supports them.
+
+Registered exact secrets only match as whole values. A plugin that redacts a
+clipped prefix of longer text, so it can export that prefix, needs to redact
+past the cut. `getLongestRegisteredSecretLength()` from
+`openclaw/plugin-sdk/logging-core` returns the length of the longest registered
+surface form, counting the URL-encoded and JSON-escaped forms registered with
+each value (0 when none). Redacting that far past the cut masks a registered
+secret that starts before it.
 
 For structured SecretRefs, `resolveReadOnlyEnvSecretRef` returns `blocked` when the ref cannot be used, including an allowed env ref whose value is missing or empty. Callers may apply their existing fallback only for `missing`; a blocked ref must not borrow ambient or auth-profile credentials. Its provider check follows source-specific default aliases and explicit env allowlists.
 

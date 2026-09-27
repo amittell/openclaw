@@ -19,5 +19,7 @@ export type {
   OpenClawPluginService,
   OpenClawPluginServiceContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-export { getLongestRegisteredSecretLength } from "openclaw/plugin-sdk/logging-core";
-export { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
+export {
+  getLongestRegisteredSecretLength,
+  redactSensitiveText,
+} from "openclaw/plugin-sdk/logging-core";

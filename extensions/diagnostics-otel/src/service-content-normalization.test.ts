@@ -151,6 +151,27 @@ describe("OTEL content redaction cost", () => {
     expect(redactionCharsFor(() => capture(2))).toBe(work);
     expect(work).toBeLessThan(maxWork);
   });
+
+  it("names the redaction cap when it drops a JSON value that would fit the attribute", () => {
+    // 512 long strings outside any array: the smallest budget clips each one, and its JSON would
+    // fit the attribute, but their redaction windows pass the 8x cap.
+    const toolInput = Object.fromEntries(
+      Array.from({ length: 64 }, (_, outer) => [
+        `k${outer}`,
+        Object.fromEntries(
+          Array.from({ length: 8 }, (_, inner) => [`f${inner}`, "o".repeat(5000)]),
+        ),
+      ]),
+    );
+
+    const exported = captureToolCall({ toolInput })["gen_ai.tool.call.arguments"];
+
+    expect(JSON.parse(String(exported))).toEqual({
+      truncated: true,
+      reason: "max_redaction_work",
+      type: "object",
+    });
+  });
 });
 
 describe("OTEL content redaction at the export cut", () => {
@@ -374,4 +395,17 @@ describe("OTEL content redaction at the export cut", () => {
       expect(exported).toContain(TRUNCATED_SUFFIX);
     },
   );
+
+  it("keeps a model call's redaction work within its budget when a long secret is registered", () => {
+    // A registered secret widens every clipped string's window by its length. JSON attributes
+    // count those windows against their cap and keep fewer items instead of redacting more.
+    const secret = generateSecureToken({ bytes: 49_152, redact: true });
+    expect(secret).toHaveLength(65_536);
+
+    const work = redactionCharsFor(() =>
+      captureModelCall(toolResultTranscript(200, 1, "o".repeat(100_000))),
+    );
+
+    expect(work).toBeLessThan(2 * 9 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  });
 });
