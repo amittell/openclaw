@@ -1,5 +1,5 @@
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { redactSensitiveText } from "../api.js";
+import { getLongestRegisteredSecretLength, redactSensitiveText } from "../api.js";
 
 export const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 export const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
@@ -8,9 +8,9 @@ const PRELOADED_OTEL_SDK_ENV = "OPENCLAW_OTEL_PRELOADED";
 const TRUNCATED_TEXT_SUFFIX = "...(truncated)";
 // Redaction runs on the event-loop thread, so its cost must follow what an attribute exports,
 // not what a model call carries (megabytes of tool output or image data). Clipped text is
-// redacted with this much context past its export cut: a secret that starts in the exported
-// prefix and ends within the lookahead is matched as it would be in the whole text.
-const OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
+// redacted with at least this much context past its export cut: a secret that starts in the
+// exported prefix and ends within the lookahead is matched as it would be in the whole text.
+const MIN_OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
 // Bounds the clipped text one truncated JSON candidate may send to the redactor, counted as one
 // window per clipped string; a candidate over it falls through to the next, smaller budget.
 // Masks and quote probes can make a clipped string cost up to five windows.
@@ -52,9 +52,15 @@ const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
   logBodies: false,
 };
 
+// Registered secrets only match whole, so the lookahead also covers the longest one.
+function otelRedactionLookaheadChars(): number {
+  return Math.max(MIN_OTEL_REDACTION_LOOKAHEAD_CHARS, getLongestRegisteredSecretLength());
+}
+
 /** Redacts the part of `value` an export of `keepChars` can show; `clipped` means text was dropped. */
 function redactExportPrefix(value: string, keepChars: number): { text: string; clipped: boolean } {
-  const neededChars = keepChars + OTEL_REDACTION_LOOKAHEAD_CHARS;
+  const lookaheadChars = otelRedactionLookaheadChars();
+  const neededChars = keepChars + lookaheadChars;
   let redacted = redactWindow(value, neededChars);
   // Masks shorten text, so the export cut can move into the lookahead, where a secret the window
   // cuts off may start. Twice the shortfall restores the lookahead when masks shortened at most
@@ -67,7 +73,7 @@ function redactExportPrefix(value: string, keepChars: number): { text: string; c
   }
   // Masks only shorten text (values under three characters aside), so keeping a lookahead of
   // redacted text after the export keeps at least that much input after it.
-  const exportChars = redacted.text.length - OTEL_REDACTION_LOOKAHEAD_CHARS;
+  const exportChars = redacted.text.length - lookaheadChars;
   return { text: truncateUtf16Safe(redacted.text, Math.max(0, exportChars)), clipped: true };
 }
 
@@ -235,6 +241,7 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
   }
   // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
   const maxRedactionChars = maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR;
+  const lookaheadChars = otelRedactionLookaheadChars();
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
       let redactionChars = 0;
@@ -249,7 +256,7 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
           ...budget,
           seen: new WeakSet<object>(),
           truncateText: (text, textMaxChars) => {
-            redactionChars += Math.min(text.length, textMaxChars + OTEL_REDACTION_LOOKAHEAD_CHARS);
+            redactionChars += Math.min(text.length, textMaxChars + lookaheadChars);
             return text.length > textMaxChars ? clipJsonText(text, textMaxChars) : text;
           },
         }),

@@ -1,3 +1,4 @@
+import { generateSecureToken } from "openclaw/plugin-sdk/secure-random-runtime";
 import { describe, expect, it, vi } from "vitest";
 
 const redaction = vi.hoisted(() => ({ chars: 0 }));
@@ -354,4 +355,23 @@ describe("OTEL content redaction at the export cut", () => {
       expect(String(attributes[key])).not.toContain(SECRET_BODY);
     }
   });
+
+  // Registered secrets stay registered until the runner resets the registry after this file, and
+  // they widen every later window, so these cases run last.
+  it.each(exportPaths)(
+    "masks a registered secret longer than the lookahead that crosses the cut in $name",
+    (path) => {
+      // Registered values only match whole. This one starts 10 characters before the cut and
+      // ends past the default lookahead; unmasked, the export would end with its first 10.
+      const secret = generateSecureToken({ bytes: 3456, redact: true });
+      expect(secret.length).toBeGreaterThan(REDACTION_LOOKAHEAD_CHARS);
+      const text = `${"x".repeat(path.keptChars - 11)} ${secret} ${"y".repeat(400_000)}`;
+
+      const exported = path.exportText(text);
+
+      expect(exported).not.toContain(secret.slice(0, 10));
+      expect(exported).toContain(`${secret.slice(0, 6)}…`);
+      expect(exported).toContain(TRUNCATED_SUFFIX);
+    },
+  );
 });

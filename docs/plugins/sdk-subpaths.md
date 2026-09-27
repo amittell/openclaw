@@ -301,6 +301,13 @@ The retained `openclaw/plugin-sdk/security-runtime` export and its
 - `sensitiveFieldPatterns` has the same entry types but is used by structured
   redaction, not by this text function.
 
+Registered exact secrets only match as whole values. A plugin that redacts a
+clipped prefix of longer text, so it can export that prefix, needs to redact
+past the cut. `getLongestRegisteredSecretLength()` from
+`openclaw/plugin-sdk/logging-core` returns the length of the longest registered
+secret (0 when none), so it can size that lookahead and mask a registered
+secret that starts before the cut.
+
 A matcher has `source: string` (a diagnostic label) and
 `exec(input): Iterable<{ match: string; groups: string[]; input: string; offset: number }>`.
 It must finish synchronously and return a fresh iterable for each call. Keep
