@@ -15,12 +15,19 @@ const MIN_OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
 // window per clipped string; a candidate over it falls through to the next, smaller budget.
 // Masks and quote probes can make a clipped string cost up to five windows.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
-// Some secrets end with a delimiter the window can cut off: a private key's END line, or the
-// closing quote of a quoted value (JSON secret keys, quoted assignments, CLI flags). A secret
-// the window leaves open is masked from where its value starts.
+// Some secrets end with a part the window can cut off: a private key's END line, the closing
+// quote of a quoted value (JSON secret keys, quoted assignments, CLI flags), or a JWT's
+// signature. A secret the window leaves open is masked from where its value starts.
 const OPEN_SECRET_MASK = "***";
 const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
 const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
+// The redactor's JWT rule needs all three base64url segments. A run of base64url characters and
+// dots that reaches the window end can hold a JWT cut before its signature: a header of at least
+// the rule's length, starting `eyJ`, a dot, then a payload that starts `eyJ` as a JSON claims set
+// does, as far as the window shows it. It is masked from where that header starts. A header that
+// alone runs past the window is not recognized; it holds JOSE parameters, not claims or signature.
+const JWT_HEADER_PREFIX = "eyJ";
+const JWT_MIN_HEADER_CHARS = 13;
 // Whether a quote opens a secret is asked of the redactor: it gets the key before the quote, the
 // separator and quote, then a stand-in value and the closing quote. Each probe stays under
 // 512 characters: separator whitespace collapses to one space, as the rules' `\s*` allows, and
@@ -110,6 +117,10 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
   }
   const begin = text.slice(lastEnd).search(PRIVATE_KEY_BEGIN_RE);
   let open = begin < 0 ? undefined : { start: lastEnd + begin, closing: "" };
+  const jwtStart = findOpenJwt(text);
+  if (jwtStart !== undefined && jwtStart < (open?.start ?? text.length)) {
+    open = { start: jwtStart, closing: "" };
+  }
   // An open quoted value holds no closing quote, so it follows the last quote of its kind. A
   // quote before the last line break is probed with a value that crosses a line, which only
   // rules for values spanning lines (JSON strings) mask.
@@ -153,6 +164,43 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
     }
   }
   return open;
+}
+
+/** Where a JWT starts in the base64url run that ends `text`, if the run holds one. */
+function findOpenJwt(text: string): number | undefined {
+  let from = text.length;
+  while (from > 0 && isJwtChar(text.charCodeAt(from - 1))) {
+    from--;
+  }
+  // Each candidate header ends at the next dot; one without a JWT's shape is something else.
+  for (;;) {
+    const start = text.indexOf(JWT_HEADER_PREFIX, from);
+    const headerEnd = start < 0 ? -1 : text.indexOf(".", start);
+    if (headerEnd < 0) {
+      return undefined;
+    }
+    const payload = headerEnd + 1;
+    const payloadMatches =
+      text.length - payload < JWT_HEADER_PREFIX.length
+        ? JWT_HEADER_PREFIX.startsWith(text.slice(payload))
+        : text.startsWith(JWT_HEADER_PREFIX, payload);
+    if (headerEnd - start >= JWT_MIN_HEADER_CHARS && payloadMatches) {
+      return start;
+    }
+    from = payload;
+  }
+}
+
+/** Base64url characters and the dots between JWT segments. */
+function isJwtChar(code: number): boolean {
+  return (
+    (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    code === 0x2d ||
+    code === 0x2e ||
+    code === 0x5f
+  );
 }
 
 export function normalizeOtelLogString(value: string, maxChars: number): string {
