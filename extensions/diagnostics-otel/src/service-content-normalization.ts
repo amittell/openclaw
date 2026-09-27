@@ -23,9 +23,9 @@ const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
 const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
 // The redactor's JWT rule needs all three base64url segments. A run of base64url characters and
 // dots that reaches the window end can hold a JWT cut before its signature: a header of at least
-// the rule's length, starting `eyJ`, a dot, then a payload that starts `eyJ` as a JSON claims set
-// does, as far as the window shows it. It is masked from where that header starts. A header that
-// alone runs past the window is not recognized; it holds JOSE parameters, not claims or signature.
+// the rule's length, starting `eyJ`, then a dot. It is masked from where that header starts. A
+// header that alone runs past the window is not recognized; it holds JOSE parameters, not claims
+// or the signature.
 const JWT_HEADER_PREFIX = "eyJ";
 const JWT_MIN_HEADER_CHARS = 13;
 // Whether a quote opens a secret is asked of the redactor: it gets the key before the quote, the
@@ -172,22 +172,17 @@ function findOpenJwt(text: string): number | undefined {
   while (from > 0 && isJwtChar(text.charCodeAt(from - 1))) {
     from--;
   }
-  // Each candidate header ends at the next dot; one without a JWT's shape is something else.
+  // Each candidate header ends at the next dot; a shorter one than the rule's is not a header.
   for (;;) {
     const start = text.indexOf(JWT_HEADER_PREFIX, from);
     const headerEnd = start < 0 ? -1 : text.indexOf(".", start);
     if (headerEnd < 0) {
       return undefined;
     }
-    const payload = headerEnd + 1;
-    const payloadMatches =
-      text.length - payload < JWT_HEADER_PREFIX.length
-        ? JWT_HEADER_PREFIX.startsWith(text.slice(payload))
-        : text.startsWith(JWT_HEADER_PREFIX, payload);
-    if (headerEnd - start >= JWT_MIN_HEADER_CHARS && payloadMatches) {
+    if (headerEnd - start >= JWT_MIN_HEADER_CHARS) {
       return start;
     }
-    from = payload;
+    from = headerEnd + 1;
   }
 }
 

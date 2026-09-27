@@ -47,6 +47,14 @@ const LONG_JWT_PAYLOAD = Buffer.from(
   JSON.stringify({ sub: "synthetic", groups: Array.from({ length: 400 }, (_, i) => `group-${i}`) }),
 ).toString("base64url");
 const LONG_JWT = `${LONG_JWT_HEADER}.${LONG_JWT_PAYLOAD}.${SECRET_BODY}`;
+// The core JWT rule takes any base64url payload; indented claims do not start `eyJ`.
+const LONG_JWT_INDENTED = `${LONG_JWT_HEADER}.${Buffer.from(
+  JSON.stringify(
+    { sub: "synthetic", groups: Array.from({ length: 300 }, (_, i) => `group-${i}`) },
+    null,
+    2,
+  ),
+).toString("base64url")}.${SECRET_BODY}`;
 // The AWS secret-key rule matches exactly 40 characters, so a cut inside one leaves no match.
 const AWS_STYLE_SECRET = "Q1w2E3r4".repeat(5);
 // Each masks to 11 characters, so together they shorten the redacted text by more than the lookahead.
@@ -255,18 +263,20 @@ describe("OTEL content redaction at the export cut", () => {
   it.each(exportPaths)(
     "masks a JWT whose signature lies past the redaction window in $name",
     (path) => {
-      // The token starts 200 characters before the cut, so its header and part of its payload
-      // would be exported.
-      expect(LONG_JWT_HEADER.length + LONG_JWT_PAYLOAD.length).toBeGreaterThan(
-        200 + REDACTION_LOOKAHEAD_CHARS,
-      );
-      const text = `${"x".repeat(path.keptChars - 201)} ${LONG_JWT} ${"y".repeat(400_000)}`;
+      for (const jwt of [LONG_JWT, LONG_JWT_INDENTED]) {
+        // The token starts 200 characters before the cut, so its header and part of its payload
+        // would be exported.
+        expect(jwt.lastIndexOf(".")).toBeGreaterThan(200 + REDACTION_LOOKAHEAD_CHARS);
+        const text = `${"x".repeat(path.keptChars - 201)} ${jwt} ${"y".repeat(400_000)}`;
 
-      const exported = path.exportText(text);
+        const exported = path.exportText(text);
 
-      expect(exported).toContain(TRUNCATED_SUFFIX);
-      expect(exported).not.toContain(LONG_JWT_HEADER);
-      expect(exported).not.toContain(LONG_JWT_PAYLOAD.slice(0, 32));
+        expect(exported).toContain(TRUNCATED_SUFFIX);
+        expect(exported).not.toContain(LONG_JWT_HEADER);
+        expect(exported).not.toContain(
+          jwt.slice(LONG_JWT_HEADER.length + 1, LONG_JWT_HEADER.length + 33),
+        );
+      }
     },
   );
 
@@ -332,28 +342,9 @@ describe("OTEL content redaction at the export cut", () => {
     expect(exported).not.toContain(SECRET_BODY);
   });
 
-  // Where the kept data starts; a header this long before a dot puts the dot that many characters
-  // before the window end.
-  const dataStart = messagePart.keptChars - 199;
-  const headerBeforeWindowEnd = (chars: number) =>
-    LONG_JWT_PAYLOAD.slice(0, messagePart.windowChars - dataStart - chars - 1);
-  it.each([
-    { name: "no dot", data: LONG_JWT_PAYLOAD },
-    {
-      name: "a dot before a segment that is not JSON",
-      data: `${LONG_JWT_PAYLOAD.slice(0, 1000)}.${"o".repeat(8000)}`,
-    },
-    {
-      name: "one non-JSON character after a dot at the window end",
-      data: `${headerBeforeWindowEnd(1)}.${"o".repeat(8000)}`,
-    },
-    {
-      name: "two non-JSON characters after a dot at the window end",
-      data: `${headerBeforeWindowEnd(2)}.${"o".repeat(8000)}`,
-    },
-  ])("keeps long base64url JSON with $name that crosses the window end", ({ data }) => {
-    // It starts like a JWT header, but a JWT has a dot and a payload that is base64url JSON too.
-    const text = `${"x".repeat(messagePart.keptChars - 200)} ${data} ${"y".repeat(400_000)}`;
+  it("keeps long base64url JSON with no dot that crosses the window end", () => {
+    // It starts like a JWT header, but a JWT header ends at a dot.
+    const text = `${"x".repeat(messagePart.keptChars - 200)} ${LONG_JWT_PAYLOAD} ${"y".repeat(400_000)}`;
 
     expect(messagePart.exportText(text)).toContain(LONG_JWT_PAYLOAD.slice(0, 150));
   });
