@@ -13,7 +13,6 @@ import type { SqliteSchemaIssue } from "../infra/sqlite-schema-contract.js";
 import { readSqliteWriterAppVersion as readWriterAppVersion } from "../infra/sqlite-schema-header.js";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
-import { hasStateDatabaseSourceExclusion } from "../infra/state-database-coordinator.js";
 import {
   AgentDatabaseAdmissionError,
   canIsolateAgentDatabase,
@@ -21,11 +20,11 @@ import {
   recordAgentDatabaseAdmissions,
 } from "./agent-database-admission.js";
 import { getAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
-import {
-  readRetainedAgentDeletionsFromDatabase,
-  type AgentDeletionJournalDisposition,
-  type AgentDeletionJournalPurpose,
-} from "./agent-deletion-journal.read.js";
+import { readRetainedAgentDeletionsFromDatabase } from "./agent-deletion-journal.read.js";
+import type {
+  AgentDeletionJournalDisposition,
+  AgentDeletionJournalPurpose,
+} from "./agent-deletion-journal.types.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
@@ -307,10 +306,11 @@ export async function preflightOpenClawDatabaseSchemas(
   }
   try {
     if (statePresence.status === "present") {
-      // Even a read-only source connection can create WAL/SHM. The copy worker
-      // preserves source artifacts and cannot release this process's writer locks.
+      // Native source opens stay in the copy worker, preserving this process's locks.
+      // Updates opt into online backup; other inspections retain artifact preservation.
       stateSnapshot = await prepareSqliteReadOnlyLocation(realpathSync.native(statePath), {
-        preserveSourceArtifacts: true,
+        preserveSourceArtifacts: options.preserveSourceArtifacts ?? true,
+        allowLiveOwner: options.preserveSourceArtifacts !== false,
         signal: options.signal,
       });
       options.signal?.throwIfAborted();
@@ -516,14 +516,14 @@ export async function preflightOpenClawDatabaseSchemas(
             : undefined,
         };
         // Unprepared agents use the slot's reader, including header-only Doctor checks.
-        if (!schemaInspection && !hasStateDatabaseSourceExclusion(realAgentPath)) {
+        if (!schemaInspection) {
           schemaInspection = await inspectSchema(schemaInput, options.signal);
         }
         if (!schemaInspection) {
-          // Raw private recovery reuses the slot's snapshot worker without the
-          // native async-backup/IPC stall; the parent retains cleanup ownership.
+          // The parent retains cleanup ownership for the isolated snapshot worker.
           agentSnapshot = await prepareSqliteReadOnlyLocation(realAgentPath, {
-            preserveSourceArtifacts: true,
+            preserveSourceArtifacts: options.preserveSourceArtifacts ?? true,
+            allowLiveOwner: options.preserveSourceArtifacts !== false,
             signal: options.signal,
           });
           options.signal?.throwIfAborted();
