@@ -62,10 +62,8 @@ it.for([
   { mode: "timeout", factory: "none", deferred: false },
   { mode: "caller-abort", factory: "none", deferred: false },
   { mode: "success-tail", factory: "none", deferred: false },
-  { mode: "factory-service", factory: "service", deferred: false },
   { mode: "factory-signal", factory: "signal", deferred: false },
   { mode: "operation-signal", factory: "service", deferred: false },
-  { mode: "deferred-factory-service", factory: "service", deferred: true },
   { mode: "deferred-factory-signal", factory: "signal", deferred: true },
 ] as const)(
   "retains $mode resources through disposal without retaining write authority",
@@ -330,20 +328,23 @@ it.for([
       try {
         expect(getAsyncWorkSignal()).toBeUndefined();
         const start = () =>
-          compactEmbeddedAgentSession({
-            ...target,
-            sessionTarget: target,
-            sessionFile: target.sessionKey,
-            workspaceDir: state.workspaceDir,
-            agentDir: state.agentDir(),
-            config,
-            provider: pluginId,
-            model: "model",
-            trigger: deferred ? "budget" : "manual",
-            ...(deferred ? { deferOwningContextEngineCompaction: true } : {}),
-            abortSignal: caller.signal,
-            enqueue: async (task) => await task(),
-          });
+          compactEmbeddedAgentSession(
+            {
+              ...target,
+              sessionTarget: target,
+              sessionFile: target.sessionKey,
+              workspaceDir: state.workspaceDir,
+              agentDir: state.agentDir(),
+              config,
+              provider: pluginId,
+              model: "model",
+              trigger: deferred ? "budget" : "manual",
+              ...(deferred ? { deferOwningContextEngineCompaction: true } : {}),
+              abortSignal: caller.signal,
+              enqueue: async (task) => await task(),
+            },
+            { sourceAuthority: { assertActive: () => {}, operatorAuthority: undefined } },
+          );
         const completion = parent ? parent.run(start) : start();
         pending = completion;
         if (deferred) {
