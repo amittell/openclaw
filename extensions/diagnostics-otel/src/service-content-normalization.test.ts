@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 import { generateSecureToken } from "openclaw/plugin-sdk/secure-random-runtime";
 import { describe, expect, it, vi } from "vitest";
 
@@ -81,6 +84,19 @@ function captureToolCall(content: {
   const attributes: Record<string, string | number | boolean> = {};
   assignOtelToolContentAttributes(attributes, content, CAPTURE_ALL);
   return attributes;
+}
+
+function withRedactPatterns<T>(patterns: string[], run: () => T): T {
+  const configDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openclaw-otel-redact-config-"));
+  const configPath = nodePath.join(configDir, "openclaw.json");
+  fs.writeFileSync(configPath, JSON.stringify({ logging: { redactPatterns: patterns } }));
+  vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+  try {
+    return run();
+  } finally {
+    vi.unstubAllEnvs();
+    fs.rmSync(configDir, { force: true, recursive: true });
+  }
 }
 
 function redactionCharsFor(run: () => unknown): number {
@@ -341,6 +357,21 @@ describe("OTEL content redaction at the export cut", () => {
     expect(exported).toContain(TRUNCATED_SUFFIX);
     expect(exported).not.toContain(SECRET_BODY);
   });
+
+  it.each(tokenCutPaths)(
+    "masks a configured pattern's match that runs past the lookahead in $name",
+    (path) => {
+      // Configured patterns can need any amount of text: this match starts 200 characters before
+      // the cut and ends past the lookahead, so only whole-value redaction masks it.
+      const secret = `SECRETSTART${"q".repeat(5000)}END`;
+      const text = `${"x".repeat(path.keptChars - 201)} ${secret} ${"y".repeat(400_000)}`;
+
+      const exported = withRedactPatterns(["SECRETSTART[q]{5000}END"], () => path.exportText(text));
+
+      expect(exported).toContain(TRUNCATED_SUFFIX);
+      expect(exported).not.toContain("SECRETSTART");
+    },
+  );
 
   it("keeps long base64url JSON with no dot that crosses the window end", () => {
     // It starts like a JWT header, but a JWT header ends at a dot.

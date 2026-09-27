@@ -21,5 +21,6 @@ export type {
 } from "openclaw/plugin-sdk/plugin-entry";
 export {
   getLongestRegisteredSecretLength,
+  hasConfiguredRedactPatterns,
   redactSensitiveText,
 } from "openclaw/plugin-sdk/logging-core";

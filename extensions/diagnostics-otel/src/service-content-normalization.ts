@@ -1,5 +1,9 @@
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { getLongestRegisteredSecretLength, redactSensitiveText } from "../api.js";
+import {
+  getLongestRegisteredSecretLength,
+  hasConfiguredRedactPatterns,
+  redactSensitiveText,
+} from "../api.js";
 
 export const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 export const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
@@ -64,7 +68,12 @@ const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
 // window, so redaction work grows linearly with it. JSON attributes count the wider windows against
 // their 8x cap and keep fewer items as it grows; once a single clipped string's window passes the
 // cap (a surface form of about 1M characters), they export only the truncation summary.
+// Configured `logging.redactPatterns` can need any amount of text past a cut, so with them the
+// lookahead is unbounded: every string is redacted whole, without the cap, as main does.
 function otelRedactionLookaheadChars(): number {
+  if (hasConfiguredRedactPatterns()) {
+    return Number.POSITIVE_INFINITY;
+  }
   return Math.max(MIN_OTEL_REDACTION_LOOKAHEAD_CHARS, getLongestRegisteredSecretLength());
 }
 
@@ -287,8 +296,10 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
     }
   }
   // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
-  const maxRedactionChars = maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR;
   const lookaheadChars = otelRedactionLookaheadChars();
+  const maxRedactionChars = Number.isFinite(lookaheadChars)
+    ? maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR
+    : Number.POSITIVE_INFINITY;
   let redactionCapped = false;
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
