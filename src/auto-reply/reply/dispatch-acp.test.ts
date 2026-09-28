@@ -85,6 +85,7 @@ vi.mock("../../infra/outbound/session-binding-service.js", () => ({
 }));
 
 const { tryDispatchAcpReply } = await import("./dispatch-acp.js");
+const { resetReplyDedupe, shouldSuppressReDispatch } = await import("./reply-dedupe.js");
 const sessionKey = "agent:codex-acp:session-1";
 
 function createDispatcher(): {
@@ -131,6 +132,8 @@ async function runDispatch(params: {
   dispatcher?: ReplyDispatcher;
   shouldRouteToOriginating?: boolean;
   onReplyStart?: () => void;
+  messageId?: string;
+  timestamp?: number;
 }) {
   return tryDispatchAcpReply({
     ctx: buildTestCtx({
@@ -138,6 +141,8 @@ async function runDispatch(params: {
       Surface: "discord",
       SessionKey: sessionKey,
       BodyForAgent: params.bodyForAgent,
+      ...(params.messageId ? { MessageSid: params.messageId } : {}),
+      ...(params.timestamp != null ? { Timestamp: params.timestamp } : {}),
     }),
     cfg: params.cfg ?? createAcpTestConfig(),
     dispatcher: params.dispatcher ?? createDispatcher().dispatcher,
@@ -205,6 +210,7 @@ async function dispatchVisibleTurn(onReplyStart: () => void) {
 
 describe("tryDispatchAcpReply", () => {
   beforeEach(() => {
+    resetReplyDedupe();
     managerMocks.resolveSession.mockReset();
     managerMocks.runTurn.mockReset();
     managerMocks.getObservabilitySnapshot.mockReset();
@@ -371,5 +377,69 @@ describe("tryDispatchAcpReply", () => {
         text: expect.stringContaining("ACP_DISPATCH_DISABLED"),
       }),
     );
+  });
+
+  it("records a landed reply for a successful ACP turn so a re-presented inbound is suppressed", async () => {
+    setReadyAcpResolution();
+    mockVisibleTextTurn("acp visible");
+
+    const { dispatcher } = createDispatcher();
+    await runDispatch({
+      bodyForAgent: "visible",
+      dispatcher,
+      messageId: "acp-msg-1",
+      timestamp: 1_000,
+    });
+
+    // The ACP delivery path (block/final visible output) must seed the guard.
+    const rePresented = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      SessionKey: sessionKey,
+      MessageSid: "acp-msg-1",
+      Timestamp: 1_000,
+    });
+    expect(shouldSuppressReDispatch(rePresented, 6_000)).toBe(true);
+
+    // A different inbound id is never suppressed.
+    const newInbound = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      SessionKey: sessionKey,
+      MessageSid: "acp-msg-2",
+      Timestamp: 999,
+    });
+    expect(shouldSuppressReDispatch(newInbound, 6_000)).toBe(false);
+  });
+
+  it("records a landed reply for the ACP error final payload", async () => {
+    setReadyAcpResolution();
+    policyMocks.resolveAcpDispatchPolicyError.mockReturnValue(
+      new AcpRuntimeError("ACP_DISPATCH_DISABLED", "ACP dispatch is disabled by policy."),
+    );
+
+    const { dispatcher } = createDispatcher();
+    await runDispatch({
+      bodyForAgent: "test",
+      dispatcher,
+      messageId: "acp-err-1",
+      timestamp: 1_000,
+    });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("ACP_DISPATCH_DISABLED"),
+      }),
+    );
+    // The error reply also seeds the guard: a re-presented errored ACP inbound
+    // must not be re-dispatched into the same session.
+    const rePresented = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      SessionKey: sessionKey,
+      MessageSid: "acp-err-1",
+      Timestamp: 1_000,
+    });
+    expect(shouldSuppressReDispatch(rePresented, 6_000)).toBe(true);
   });
 });
