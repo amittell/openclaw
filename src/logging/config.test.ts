@@ -194,9 +194,9 @@ describe("readLoggingConfig", () => {
     );
   });
 
-  it("reports whether configured redaction patterns replace the built-in rules", () => {
+  it("reports whether configured redaction patterns replace the default string rules", () => {
     // The same reader as the redactor, so the applied runtime snapshot answers; an empty list
-    // keeps the built-in rules.
+    // keeps the default string rules.
     applyLoggingConfig({ redactPatterns: ["/custom-only-secret/g"] });
     expect(hasConfiguredRedactPatterns()).toBe(true);
     applyLoggingConfig({ redactPatterns: [] });

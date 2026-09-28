@@ -20,8 +20,9 @@ const MIN_OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
 // Masks and quote probes can make a clipped string cost up to five windows.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
 // Some secrets end with a part the window can cut off: a private key's END line, the closing
-// quote of a quoted value (JSON secret keys, quoted assignments, CLI flags), or a JWT's
-// signature. A secret the window leaves open is masked from where its value starts.
+// quote of a quoted value (JSON secret keys, quoted assignments, CLI flags), a JWT's signature,
+// or the `@` after a URL password. A secret the window leaves open is masked from where its value
+// starts.
 const OPEN_SECRET_MASK = "***";
 const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
 const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
@@ -32,6 +33,17 @@ const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
 // or the signature.
 const JWT_HEADER_PREFIX = "eyJ";
 const JWT_MIN_HEADER_CHARS = 13;
+// The redactor's URL password rules end at the `@` after the userinfo. A password that runs to the
+// window end, with no character in between that ends one, is masked from its start. The prefix
+// takes the rules' schemes and userinfo; a scheme starts at most 16 characters before the userinfo.
+// A raw `/` ends the password even for database URLs, whose rule allows one: userinfo cannot hold
+// a raw `/` (RFC 3986), and a credential-free URL's port and path would otherwise read as an open
+// password. A port followed by a run without `/`, whitespace or `@` that reaches the window end
+// still does, and is dropped from the port.
+const OPEN_URL_PASSWORD_PREFIX_RE =
+  /\b(?:https?|wss?|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^/\s:@]*:/gi;
+const URL_PASSWORD_END_CHAR_RE = /[/\s@]/;
+const OPEN_URL_SCHEME_MAX_CHARS = 16;
 // Whether a quote opens a secret is asked of the redactor: it gets the key before the quote, the
 // separator and quote, then a stand-in value and the closing quote. Each probe stays under
 // 512 characters: separator whitespace collapses to one space, as the rules' `\s*` allows, and
@@ -130,6 +142,10 @@ function findOpenSecret(text: string): { start: number; closing: string } | unde
   if (jwtStart !== undefined && jwtStart < (open?.start ?? text.length)) {
     open = { start: jwtStart, closing: "" };
   }
+  const passwordStart = findOpenUrlPassword(text);
+  if (passwordStart !== undefined && passwordStart < (open?.start ?? text.length)) {
+    open = { start: passwordStart, closing: "" };
+  }
   // An open quoted value holds no closing quote, so it follows the last quote of its kind. A
   // quote before the last line break is probed with a value that crosses a line, which only
   // rules for values spanning lines (JSON strings) mask.
@@ -193,6 +209,27 @@ function findOpenJwt(text: string): number | undefined {
     }
     from = headerEnd + 1;
   }
+}
+
+/** Where a URL password starts when the `@` that ends it lies past the end of `text`. */
+function findOpenUrlPassword(text: string): number | undefined {
+  let runStart = text.length;
+  while (runStart > 0 && !URL_PASSWORD_END_CHAR_RE.test(text[runStart - 1] ?? "")) {
+    runStart--;
+  }
+  // The scheme and `//` end before the run that ends `text`; the userinfo and password are in it.
+  OPEN_URL_PASSWORD_PREFIX_RE.lastIndex = Math.max(0, runStart - OPEN_URL_SCHEME_MAX_CHARS);
+  for (
+    let match = OPEN_URL_PASSWORD_PREFIX_RE.exec(text);
+    match && match.index < runStart;
+    match = OPEN_URL_PASSWORD_PREFIX_RE.exec(text)
+  ) {
+    const passwordStart = match.index + match[0].length;
+    if (passwordStart > runStart && passwordStart < text.length) {
+      return passwordStart;
+    }
+  }
+  return undefined;
 }
 
 /** Base64url characters and the dots between JWT segments. */

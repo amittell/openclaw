@@ -452,6 +452,37 @@ describe("OTEL content redaction at the export cut", () => {
 
   // Registered secrets stay registered until the runner resets the registry after this file, and
   // they widen every later window, so these cases run last.
+  it.each(exportPaths)("masks a URL password whose @ lies past the lookahead in $name", (path) => {
+    // The URL rules need the @ after the password, which lies past the window here. On the
+    // tool call paths the whole string misses it too: it crosses a redactor chunk.
+    const urls = [
+      (password: string) => `https://deploy:${password}@internal.example.test/path`,
+      (password: string) => `postgres://deploy:${password}@db.example.test:5432/app`,
+    ];
+    for (const url of urls) {
+      for (const length of [5000, 10_000]) {
+        const password = `${SECRET_BODY}${"p".repeat(length - SECRET_BODY.length)}`;
+        const text = `${"x".repeat(path.keptChars - 201)} ${url(password)} ${"y".repeat(400_000)}`;
+
+        const exported = path.exportText(text);
+
+        expect(exported).not.toContain(SECRET_BODY);
+        expect(exported).toContain("deploy:***");
+        expect(exported).toContain(TRUNCATED_SUFFIX);
+      }
+    }
+  });
+
+  it.each(["https://internal.example.test:8443/", "postgres://db.example.test:5432/app/"])(
+    "keeps the port and path of %s when they cross the cut",
+    (url) => {
+      // The path's slash ends what could be a password, so the port is not one.
+      const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(400_000)}`;
+
+      expect(messagePart.exportText(text)).toContain(`${url}aaaa`);
+    },
+  );
+
   it.each(exportPaths)(
     "masks a registered secret longer than the lookahead that crosses the cut in $name",
     (path) => {
