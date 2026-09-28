@@ -31,6 +31,7 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
+import { recordReplyLanded, shouldSuppressReDispatch } from "./reply-dedupe.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { shouldSuppressReasoningPayload } from "./reply-payloads.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
@@ -166,6 +167,15 @@ export async function dispatchReplyFromConfig(params: {
 
   if (shouldSkipDuplicateInbound(ctx)) {
     recordProcessed("skipped", { reason: "duplicate" });
+    return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+  }
+
+  // Re-dispatch guard: if a reply already landed in this session after this
+  // inbound's original timestamp, the inbound is a stale re-presentation of an
+  // errored turn (channel ingress re-dispatch). Suppress it instead of
+  // re-running the turn.
+  if (shouldSuppressReDispatch(ctx)) {
+    recordProcessed("skipped", { reason: "reply_already_landed" });
     return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
   }
 
@@ -307,6 +317,9 @@ export async function dispatchReplyFromConfig(params: {
       }
       const counts = dispatcher.getQueuedCounts();
       counts.final += routedFinalCount;
+      if (queuedFinal) {
+        recordReplyLanded(ctx);
+      }
       recordProcessed("completed", { reason: "fast_abort" });
       markIdle("message_completed");
       return { queuedFinal, counts };
@@ -518,6 +531,10 @@ export async function dispatchReplyFromConfig(params: {
       }
     }
 
+    if (queuedFinal) {
+      recordReplyLanded(ctx);
+    }
+
     const ttsMode = resolveTtsConfig(cfg).mode ?? "final";
     // Generate TTS-only reply after block streaming completes (when there's no final reply).
     // This handles the case where block streaming succeeds and drops final payloads,
@@ -569,6 +586,9 @@ export async function dispatchReplyFromConfig(params: {
             const didQueue = dispatcher.sendFinalReply(ttsOnlyPayload);
             queuedFinal = didQueue || queuedFinal;
           }
+        }
+        if (queuedFinal) {
+          recordReplyLanded(ctx);
         }
       } catch (err) {
         logVerbose(

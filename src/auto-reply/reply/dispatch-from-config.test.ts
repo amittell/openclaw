@@ -147,6 +147,7 @@ vi.mock("../../tts/tts.js", () => ({
 
 const { dispatchReplyFromConfig } = await import("./dispatch-from-config.js");
 const { resetInboundDedupe } = await import("./inbound-dedupe.js");
+const { resetReplyDedupe } = await import("./reply-dedupe.js");
 const { __testing: acpManagerTesting } = await import("../../acp/control-plane/manager.js");
 
 const noAbortResult = { handled: false, aborted: false } as const;
@@ -209,6 +210,7 @@ describe("dispatchReplyFromConfig", () => {
   beforeEach(() => {
     acpManagerTesting.resetAcpSessionManagerForTests();
     resetInboundDedupe();
+    resetReplyDedupe();
     mocks.routeReply.mockReset();
     mocks.routeReply.mockResolvedValue({ ok: true, messageId: "mock" });
     acpMocks.listAcpSessionEntries.mockReset().mockResolvedValue([]);
@@ -1742,5 +1744,151 @@ describe("dispatchReplyFromConfig", () => {
     await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
     expect(blockReplySentTexts).not.toContain("Reasoning:\n_thinking..._");
     expect(blockReplySentTexts).toContain("The answer is 42");
+  });
+
+  describe("re-dispatch de-duplication (reply already landed)", () => {
+    const diagCfg = { diagnostics: { enabled: true } } as OpenClawConfig;
+
+    it("does not re-run an errored turn whose reply already landed for the same inbound", async () => {
+      setNoAbort();
+      const dispatcher = createDispatcher();
+      const inboundTs = Date.now() + 100_000;
+      const ctx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: inboundTs,
+      });
+
+      // First dispatch: the reply lands (queuedFinal = true).
+      const firstResolver = vi.fn(
+        async () => ({ text: "already answered" }) satisfies ReplyPayload,
+      );
+      const first = await dispatchReplyFromConfig({
+        ctx,
+        cfg: diagCfg,
+        dispatcher,
+        replyResolver: firstResolver,
+      });
+      expect(first.queuedFinal).toBe(true);
+      expect(firstResolver).toHaveBeenCalledTimes(1);
+
+      // The turn then errors and the ingress re-dispatches the SAME inbound
+      // (same messageId, same original timestamp) after the reply landed.
+      const reDispatchCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: inboundTs,
+      });
+      const secondResolver = vi.fn(async () => ({ text: "should not run" }) satisfies ReplyPayload);
+      // Clear the short-window inbound dedupe so the re-dispatch reaches the
+      // reply-landed guard (the guard under test), not the duplicate-inbound guard.
+      resetInboundDedupe();
+      const second = await dispatchReplyFromConfig({
+        ctx: reDispatchCtx,
+        cfg: diagCfg,
+        dispatcher: createDispatcher(),
+        replyResolver: secondResolver,
+      });
+      expect(secondResolver).not.toHaveBeenCalled();
+      expect(second.queuedFinal).toBe(false);
+      expect(diagnosticMocks.logMessageProcessed).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: "skipped", reason: "reply_already_landed" }),
+      );
+    });
+
+    it("still processes a genuinely NEW inbound after a reply landed", async () => {
+      setNoAbort();
+      const dispatcher = createDispatcher();
+      const firstTs = Date.now() + 100_000;
+      const firstCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: firstTs,
+      });
+      const firstResolver = vi.fn(async () => ({ text: "first reply" }) satisfies ReplyPayload);
+      await dispatchReplyFromConfig({
+        ctx: firstCtx,
+        cfg: diagCfg,
+        dispatcher,
+        replyResolver: firstResolver,
+      });
+
+      // A brand-new inbound (newer timestamp, new messageId) must still run.
+      const newTs = Date.now() + 200_000;
+      const newCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19275",
+        Timestamp: newTs,
+      });
+      const newResolver = vi.fn(async () => ({ text: "second reply" }) satisfies ReplyPayload);
+      resetInboundDedupe();
+      const result = await dispatchReplyFromConfig({
+        ctx: newCtx,
+        cfg: diagCfg,
+        dispatcher: createDispatcher(),
+        replyResolver: newResolver,
+      });
+      expect(newResolver).toHaveBeenCalledTimes(1);
+      expect(result.queuedFinal).toBe(true);
+    });
+
+    it("does not suppress when the re-dispatched inbound has no timestamp", async () => {
+      setNoAbort();
+      const dispatcher = createDispatcher();
+      const firstTs = Date.now() + 100_000;
+      const firstCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: firstTs,
+      });
+      const firstResolver = vi.fn(async () => ({ text: "first reply" }) satisfies ReplyPayload);
+      await dispatchReplyFromConfig({
+        ctx: firstCtx,
+        cfg: diagCfg,
+        dispatcher,
+        replyResolver: firstResolver,
+      });
+
+      // Re-dispatch without a usable timestamp: cannot prove stale, so it runs.
+      const noTsCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: undefined,
+      });
+      const secondResolver = vi.fn(async () => ({ text: "second reply" }) satisfies ReplyPayload);
+      resetInboundDedupe();
+      const result = await dispatchReplyFromConfig({
+        ctx: noTsCtx,
+        cfg: diagCfg,
+        dispatcher: createDispatcher(),
+        replyResolver: secondResolver,
+      });
+      expect(secondResolver).toHaveBeenCalledTimes(1);
+      expect(result.queuedFinal).toBe(true);
+    });
   });
 });

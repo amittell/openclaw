@@ -18,7 +18,20 @@ type EmbeddedRunWaiter = {
 };
 const EMBEDDED_RUN_WAITERS = new Map<string, Set<EmbeddedRunWaiter>>();
 
-export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean {
+/**
+ * Message ids already folded into an active run via mid-turn steering, per
+ * session. Used to prevent the same inbound from being re-injected into the
+ * running turn a second time (for example when a re-dispatched inbound with an
+ * identical messageId is steered again). Cleared when the run is cleared so a
+ * genuinely new run can steer the same messageId.
+ */
+const STEERED_MESSAGE_IDS = new Map<string, Set<string>>();
+
+export function queueEmbeddedPiMessage(
+  sessionId: string,
+  text: string,
+  messageId?: string,
+): boolean {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
@@ -31,6 +44,18 @@ export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean
   if (handle.isCompacting()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
     return false;
+  }
+  const normalizedMessageId = messageId?.trim();
+  if (normalizedMessageId) {
+    const steered = STEERED_MESSAGE_IDS.get(sessionId) ?? new Set<string>();
+    if (steered.has(normalizedMessageId)) {
+      diag.debug(
+        `queue message failed: sessionId=${sessionId} reason=already_steered messageId=${normalizedMessageId}`,
+      );
+      return false;
+    }
+    steered.add(normalizedMessageId);
+    STEERED_MESSAGE_IDS.set(sessionId, steered);
   }
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
   void handle.queueMessage(text);
@@ -140,6 +165,7 @@ export function clearActiveEmbeddedRun(
 ) {
   if (ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle) {
     ACTIVE_EMBEDDED_RUNS.delete(sessionId);
+    STEERED_MESSAGE_IDS.delete(sessionId);
     logSessionStateChange({ sessionId, sessionKey, state: "idle", reason: "run_completed" });
     if (!sessionId.startsWith("probe-")) {
       diag.debug(`run cleared: sessionId=${sessionId} totalActive=${ACTIVE_EMBEDDED_RUNS.size}`);
@@ -148,6 +174,11 @@ export function clearActiveEmbeddedRun(
   } else {
     diag.debug(`run clear skipped: sessionId=${sessionId} reason=handle_mismatch`);
   }
+}
+
+/** Test-only: clear all steering de-duplication state. */
+export function resetSteeredMessageIdsForTest(): void {
+  STEERED_MESSAGE_IDS.clear();
 }
 
 export type { EmbeddedPiQueueHandle };
