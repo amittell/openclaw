@@ -22,8 +22,8 @@ const EMBEDDED_RUN_WAITERS = new Map<string, Set<EmbeddedRunWaiter>>();
  * Message ids already folded into an active run via mid-turn steering, per
  * session. Used to prevent the same inbound from being re-injected into the
  * running turn a second time (for example when a re-dispatched inbound with an
- * identical messageId is steered again). Cleared when the run is cleared so a
- * genuinely new run can steer the same messageId.
+ * identical messageId is steered again). Cleared when the run is cleared or
+ * replaced so a genuinely new run can steer the same messageId.
  */
 const STEERED_MESSAGE_IDS = new Map<string, Set<string>>();
 
@@ -146,6 +146,12 @@ export function setActiveEmbeddedRun(
   sessionKey?: string,
 ) {
   const wasActive = ACTIVE_EMBEDDED_RUNS.has(sessionId);
+  if (wasActive) {
+    // The previous run's steering state belongs to that run. Clear it so the
+    // replacing run can steer the same messageId without being rejected as a
+    // duplicate of the prior run's steering.
+    STEERED_MESSAGE_IDS.delete(sessionId);
+  }
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
   logSessionStateChange({
     sessionId,

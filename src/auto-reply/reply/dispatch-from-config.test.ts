@@ -1869,7 +1869,8 @@ describe("dispatchReplyFromConfig", () => {
         replyResolver: firstResolver,
       });
 
-      // Re-dispatch without a usable timestamp: cannot prove stale, so it runs.
+      // Re-dispatch without a usable timestamp: identity (same messageId) is
+      // sufficient to prove a re-presentation, so it is still suppressed.
       const noTsCtx = buildTestCtx({
         Provider: "telegram",
         Surface: "telegram",
@@ -1887,7 +1888,76 @@ describe("dispatchReplyFromConfig", () => {
         dispatcher: createDispatcher(),
         replyResolver: secondResolver,
       });
-      expect(secondResolver).toHaveBeenCalledTimes(1);
+      expect(secondResolver).not.toHaveBeenCalled();
+      expect(result.queuedFinal).toBe(false);
+
+      // But a re-dispatched inbound with NO messageId at all cannot be
+      // correlated to a landed reply, so it runs.
+      const noIdCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: undefined,
+        Timestamp: undefined,
+      });
+      const thirdResolver = vi.fn(async () => ({ text: "third reply" }) satisfies ReplyPayload);
+      resetInboundDedupe();
+      const third = await dispatchReplyFromConfig({
+        ctx: noIdCtx,
+        cfg: diagCfg,
+        dispatcher: createDispatcher(),
+        replyResolver: thirdResolver,
+      });
+      expect(thirdResolver).toHaveBeenCalledTimes(1);
+      expect(third.queuedFinal).toBe(true);
+    });
+
+    it("does not suppress a NEW messageId with an older provider timestamp (identity over timestamp)", async () => {
+      setNoAbort();
+      const dispatcher = createDispatcher();
+      const firstTs = Date.now() + 100_000;
+      const firstCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19274",
+        Timestamp: firstTs,
+      });
+      const firstResolver = vi.fn(async () => ({ text: "first reply" }) satisfies ReplyPayload);
+      await dispatchReplyFromConfig({
+        ctx: firstCtx,
+        cfg: diagCfg,
+        dispatcher,
+        replyResolver: firstResolver,
+      });
+
+      // A genuinely new inbound (new messageId) whose provider timestamp is
+      // OLDER than the first reply's landed time must still run: Telegram
+      // timestamps are only second-resolution, so the timestamp alone cannot
+      // prove a re-presentation.
+      const newTs = firstTs - 5_000;
+      const newCtx = buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:111",
+        To: "telegram:222",
+        SessionKey: "agent:main:telegram:direct:222",
+        MessageSid: "19275",
+        Timestamp: newTs,
+      });
+      const newResolver = vi.fn(async () => ({ text: "second reply" }) satisfies ReplyPayload);
+      resetInboundDedupe();
+      const result = await dispatchReplyFromConfig({
+        ctx: newCtx,
+        cfg: diagCfg,
+        dispatcher: createDispatcher(),
+        replyResolver: newResolver,
+      });
+      expect(newResolver).toHaveBeenCalledTimes(1);
       expect(result.queuedFinal).toBe(true);
     });
   });
