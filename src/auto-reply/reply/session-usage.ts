@@ -287,9 +287,14 @@ export async function persistSessionUsageUpdate(params: {
  * - Advance-only: only writes when the candidate strictly exceeds the current
  *   fresh persisted value, so it never shrinks and cannot regress the turn-end
  *   authoritative snapshot (which is the largest context observation).
- * - Fenced: a stale generation (session rotation/reset/fork) is rejected by the
- *   `expectedSession` guard; a write straddling an entry rewrite (e.g. a
- *   compaction commit) is rejected by the commit-edge snapshot revalidation.
+ * - Fenced: the `expectedSession` guard compares every present field. Session
+ *   rotation/reset/fork changes `sessionId`/`lifecycleRevision`; compaction is
+ *   the one same-session generation advance and stamps `compactionCount`
+ *   atomically with its `totalTokens*` clear/re-stamp
+ *   ({@link projectCompactionAccountingPatch} and the compaction transaction),
+ *   so a write carrying pre-compaction facts is rejected. A write prepared
+ *   straddling any entry rewrite is additionally rejected by the commit-edge
+ *   snapshot revalidation.
  * - Goal accounting uses the same {@link resolveSessionGoalDisplayState} seam as
  *   the turn-completion path so goal token usage stays consistent.
  */
@@ -297,7 +302,12 @@ export async function persistSessionTotalTokensAdvance(params: {
   agentId?: string;
   storePath?: string;
   sessionKey?: string;
-  expectedSession?: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision">;
+  expectedSession?: Partial<
+    Pick<
+      InternalSessionEntry,
+      "sessionId" | "lifecycleRevision" | "compactionCount" | "activeWriterRunId"
+    >
+  >;
   authorize?: () => boolean;
   /** Candidate context snapshot: prompt tokens for the latest settled model call. */
   totalTokens: number;
@@ -328,6 +338,20 @@ export async function persistSessionTotalTokensAdvance(params: {
           if (
             Object.hasOwn(expectedSession, "lifecycleRevision") &&
             entry.lifecycleRevision !== expectedSession.lifecycleRevision
+          ) {
+            return null;
+          }
+          // Compaction advances this generation without re-stamping the session
+          // identity, so it is the fence that rejects stale per-attempt facts.
+          if (
+            Object.hasOwn(expectedSession, "compactionCount") &&
+            entry.compactionCount !== expectedSession.compactionCount
+          ) {
+            return null;
+          }
+          if (
+            Object.hasOwn(expectedSession, "activeWriterRunId") &&
+            entry.activeWriterRunId !== expectedSession.activeWriterRunId
           ) {
             return null;
           }
