@@ -270,3 +270,95 @@ export async function persistSessionUsageUpdate(params: {
     }
   }
 }
+
+/**
+ * Advance-only per-model-call context snapshot persist.
+ *
+ * `totalTokens` on the session entry is a prompt/context snapshot. A long agent
+ * turn is a single reply run with many model calls (the tool loop is internal to
+ * one embedded `agent.prompt()`), so the turn-completion accounting in
+ * {@link persistSessionUsageUpdate} only lands at the very end. This primitive
+ * publishes the latest model call's context snapshot mid-run so status probes see
+ * a growing count, reusing the same guarded entry-patch primitive, the
+ * `sessionId`/`lifecycleRevision` generation fence, and the commit-edge row
+ * revalidation that {@link persistSessionUsageUpdate} relies on.
+ *
+ * Safety properties:
+ * - Advance-only: only writes when the candidate strictly exceeds the current
+ *   fresh persisted value, so it never shrinks and cannot regress the turn-end
+ *   authoritative snapshot (which is the largest context observation).
+ * - Fenced: a stale generation (session rotation/reset/fork) is rejected by the
+ *   `expectedSession` guard; a write straddling an entry rewrite (e.g. a
+ *   compaction commit) is rejected by the commit-edge snapshot revalidation.
+ * - Goal accounting uses the same {@link resolveSessionGoalDisplayState} seam as
+ *   the turn-completion path so goal token usage stays consistent.
+ */
+export async function persistSessionTotalTokensAdvance(params: {
+  agentId?: string;
+  storePath?: string;
+  sessionKey?: string;
+  expectedSession?: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision">;
+  authorize?: () => boolean;
+  /** Candidate context snapshot: prompt tokens for the latest settled model call. */
+  totalTokens: number;
+}): Promise<void> {
+  const { agentId, storePath, sessionKey, expectedSession, authorize } = params;
+  if (!storePath || !sessionKey) {
+    return;
+  }
+  const candidate = asNonNegativeFiniteNumber(params.totalTokens);
+  if (candidate === undefined || candidate <= 0) {
+    return;
+  }
+  try {
+    await patchSessionEntryCore(
+      { agentId, storePath, sessionKey },
+      (entry) => {
+        if (!(authorize?.() ?? true)) {
+          return null;
+        }
+        if (expectedSession) {
+          // Absent fields are "no expectation", mirroring the turn-completion fence.
+          if (
+            Object.hasOwn(expectedSession, "sessionId") &&
+            entry.sessionId !== expectedSession.sessionId
+          ) {
+            return null;
+          }
+          if (
+            Object.hasOwn(expectedSession, "lifecycleRevision") &&
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision
+          ) {
+            return null;
+          }
+        }
+        // Advance-only: only move forward, never shrink. A stale/compacted entry
+        // reads as "unknown" (not fresh) and accepts the first fresh value; a
+        // fresh entry only advances.
+        const currentFresh =
+          entry.totalTokensFresh === true &&
+          entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION
+            ? entry.totalTokens
+            : undefined;
+        if (currentFresh !== undefined && candidate <= currentFresh) {
+          return null;
+        }
+        const updatedAt = Date.now();
+        const patch: Partial<SessionEntry> = {
+          totalTokens: candidate,
+          totalTokensFresh: true,
+          totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+          updatedAt,
+        };
+        const accountedGoal = resolveSessionGoalDisplayState({ ...entry, ...patch }, updatedAt);
+        if (accountedGoal) {
+          patch.goal = accountedGoal;
+        }
+        return patch;
+      },
+      { skipMaintenance: true },
+    );
+  } catch (err) {
+    logVerbose(`failed to persist per-attempt totalTokens advance: ${String(err)}`);
+  }
+}
