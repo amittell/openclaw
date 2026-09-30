@@ -204,7 +204,9 @@ export function createTelegramBotCore(
         void deferredWork.task
           .then((deferredResult) => {
             updateTracker.finishUpdate(begin.update, {
-              completed: deferredResult.kind !== "failed-retryable",
+              completed:
+                !deferredWork.wasOwnerAbortedWhilePending() &&
+                deferredResult.kind !== "failed-retryable",
             });
           })
           .catch(() => {
