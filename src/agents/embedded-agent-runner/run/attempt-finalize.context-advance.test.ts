@@ -149,6 +149,29 @@ describe("persistSettledAttemptContextTotalTokens", () => {
     });
   });
 
+  it("does not stamp a session that rotated while the attempt ran", async () => {
+    await withStore(async (fixture) => {
+      // /new or a reset replaces the row with a fresh generation mid-run.
+      const rotated: InternalSessionEntry = {
+        sessionId: randomUUID(),
+        lifecycleRevision: randomUUID(),
+        updatedAt: 2,
+        compactionCount: 0,
+      };
+      await replaceSessionEntry(fixture.scope, rotated);
+      await persistSettledAttemptContextTotalTokens({
+        attempt: attempt(fixture.scope),
+        sessionIdUsed: fixture.entry.sessionId,
+        lastCallUsage: usage({ input: 80_000, output: 500 }),
+        compactionOccurredThisAttempt: false,
+      });
+      const row = fixture.read();
+      expect(row?.sessionId).toBe(rotated.sessionId);
+      expect(row?.totalTokens).toBeUndefined();
+      expect(resolveFreshSessionTotalTokens(row)).toBeUndefined();
+    });
+  });
+
   it("is a no-op for detached runs and when compaction occurred during the attempt", async () => {
     await withStore(async (fixture) => {
       await persistSettledAttemptContextTotalTokens({

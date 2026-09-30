@@ -433,13 +433,16 @@ export async function persistSettledAttemptContextTotalTokens(params: {
     storePath: sessionTarget.storePath,
     sessionKey: sessionTarget.sessionKey,
     totalTokens: candidateTotalTokens,
-    expectedSession: fence
-      ? {
-          sessionId: fence.sessionId,
-          lifecycleRevision: fence.lifecycleRevision,
-          compactionCount: fence.compactionCount,
-        }
-      : { sessionId: sessionIdUsed },
+    // Fence on the session this attempt ran in: a row rotated by /new or a
+    // reset mid-run must not receive the old run's context total.
+    expectedSession:
+      fence?.sessionId === sessionIdUsed
+        ? {
+            sessionId: sessionIdUsed,
+            lifecycleRevision: fence.lifecycleRevision,
+            compactionCount: fence.compactionCount,
+          }
+        : { sessionId: sessionIdUsed },
   });
 }
 
