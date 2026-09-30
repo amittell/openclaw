@@ -517,7 +517,12 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
   const fragments: RuntimeContextFragment[] = [
     ...((escapedProjection ? attempt.currentInboundContext?.fragments : undefined) ??
       (attempt.currentInboundContext?.text
-        ? [{ kind: "conversation-data" as const, text: attempt.currentInboundContext.text }]
+        ? [
+            {
+              kind: "conversation-data" as const,
+              text: attempt.currentInboundContext.carrierText ?? attempt.currentInboundContext.text,
+            },
+          ]
         : [])),
     ...eventFragments,
   ];

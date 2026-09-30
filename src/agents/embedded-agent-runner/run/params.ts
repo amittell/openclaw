@@ -68,6 +68,12 @@ export type CurrentInboundPromptContext = {
   text: string;
   /** Producer-owned fragments for model projection; text remains the legacy rendering. */
   fragments?: import("../../internal-runtime-context.js").RuntimeContextFragment[];
+  /**
+   * Legacy rendering for a separate runtime-context carrier. `text` may leave a
+   * block for `promptJoiner` to complete with the user body; this states it.
+   * Absent when identical to `text`.
+   */
+  carrierText?: string;
   resumableText?: string;
   promptJoiner?: "\n\n" | "\n" | " ";
   /** Generated goal blocks owned by inbound-context assembly, never user text. */

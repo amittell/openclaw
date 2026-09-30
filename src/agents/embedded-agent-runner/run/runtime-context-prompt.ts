@@ -36,6 +36,7 @@ export function appendCurrentInboundContext(
   return {
     ...context,
     text: append(context?.text),
+    ...(context?.carrierText !== undefined ? { carrierText: append(context.carrierText) } : {}),
     ...(context?.resumableText !== undefined
       ? { resumableText: append(context.resumableText) }
       : {}),

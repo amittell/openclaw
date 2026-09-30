@@ -216,23 +216,29 @@ function collectCurrentInboundContext(items: FollowupRun[]): FollowupRun["curren
   if (contexts.length === 1) {
     return contexts[0]?.context;
   }
-  const renderField = (field: "text" | "resumableText") => {
+  const renderField = (
+    select: (context: (typeof contexts)[number]["context"]) => string | undefined,
+  ) => {
     const blocks = contexts.flatMap(({ context, index }) => {
-      const value = context[field];
+      const value = select(context);
       return value ? [`Queued #${index + 1} context:\n${value}`] : [];
     });
     return blocks.length > 0 ? blocks.join("\n\n") : undefined;
   };
-  const text = renderField("text");
+  const text = renderField((context) => context.text);
   if (!text) {
     return undefined;
   }
-  const resumableText = renderField("resumableText");
+  const carrierText = contexts.some(({ context }) => context.carrierText !== undefined)
+    ? renderField((context) => context.carrierText ?? context.text)
+    : undefined;
+  const resumableText = renderField((context) => context.resumableText);
   const injectedGoalContexts = [
     ...new Set(contexts.flatMap(({ context }) => context.injectedGoalContexts ?? [])),
   ];
   return {
     text,
+    ...(carrierText ? { carrierText } : {}),
     ...(resumableText ? { resumableText } : {}),
     fragments: contexts.flatMap(
       ({ context }) =>

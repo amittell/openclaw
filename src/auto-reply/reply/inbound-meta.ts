@@ -107,12 +107,18 @@ export function refreshActiveGoalContext(
         activeGoalContext,
       })
     : undefined;
+  const refreshedCarrierText = context.carrierText
+    ? refreshActiveGoalContextText({ text: context.carrierText, injectedGoals, activeGoalContext })
+    : undefined;
   if (!refreshedText) {
     return undefined;
   }
   return {
     ...context,
     text: refreshedText,
+    ...(refreshedCarrierText !== undefined
+      ? { carrierText: refreshedCarrierText || undefined }
+      : {}),
     ...(refreshedResumableText !== undefined
       ? { resumableText: refreshedResumableText || undefined }
       : {}),
