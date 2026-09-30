@@ -2228,3 +2228,124 @@ sender; plugins that return `null` for non-owners without opting into
 None of those 9 files is one these commits touch. Not run: the
 full suite, `pnpm build`, and any live proof; the prompt-cache effect on the
 bots is expected from the prefix test, not observed.
+
+## Two bot fixes onto the 9.6 carry (2026-09-30)
+
+Four commits on top of the deployed `1d5d6c85986`, then this note. Approved by
+Alex on 2026-09-30 after rh-bot's RequestHub group looped for 2.5 h on
+2026-09-29 and lost two messages at ingress. None is deployed.
+
+| commit        | kind                       | what it changes                                                                                          |
+| ------------- | -------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `9e0cdd2c129` | fork fix, pending upstream | version-3 session carriers state the Telegram current-message body (`carrierText`)                       |
+| `da9b206fc93` | port, pending upstream     | upstream #132409 at `217ef6a3a1f`: a stalled claim is held until its old dispatch quiesces, then retried |
+| `72d328e364b` | review fix (test)          | the fix-1 test goes through `buildReplyPromptEnvelope` and its append path                               |
+| `45d6c57f661` | ratchet fix (test)         | keeps the carried #132409 tests under the line-cap ratchet without removing any                          |
+
+### Version-3 carriers lost the Telegram body in this carry (`9e0cdd2c129`)
+
+The 9.6 pull-forward of #151099 (`f759ee4e478`) moved the stated body out of
+`CurrentInboundPromptContext.text` and into the producer's fragments, because
+the CLI inline prompt joins `text` to the body and would repeat it. Only
+version-4 sessions read the fragments (`usesEscapedRuntimeContext`); version-3
+sessions send `text` as their runtime-context carrier, so a reply-quoted
+Telegram turn ended in a bare `#<id>:`. The deployed 9.5 fork stated the body
+in `text` and covered both. The bots' long-lived sessions are version 3 (the
+RequestHub group session `a3dfb22c`, created 2026-09-04), so the 09-24 deploy
+of 9.6 regressed them. The 09-24 ledger above recorded only the CLI change.
+
+The producer now also renders `carrierText`, the legacy text with the
+Telegram block completed, set only when it differs from `text`. Append,
+collected queued turns and goal refresh keep it in step as they do
+`resumableText`; the embedded runner's version-3 carrier prefers it. Not
+changed: the session version, stored transcript bytes, the CLI inline prompt,
+and the version-4 carrier (pinned byte-for-byte at `1d5d6c85986`).
+`prependCliSessionDriftUserContext` does not update `carrierText`; its result
+reaches only the CLI runner, which never reads it.
+
+### #132409 carried at its 09-10 head (`da9b206fc93`)
+
+The 9.6 tag's ingress files equal upstream main of 2026-09-22
+(`814a7e752af`). The PR's latest head `cc8f0d00870` merges main of 09-27 and
+integrates with #158637 (claim custody through settlement), which the tag
+lacks; it conflicts in 4 production files here, and its hosted CI shows one
+PR-caused error (an unused `ChannelIngressDrain` import in `ingress-monitor.ts`).
+`217ef6a3a1f` predates #158637, applies with one import conflict, and has a
+green hosted CI run (34543782080). The 09-27 additions
+(`waitForQuiescenceOrStop`, `IngressAdoptionLostError("aborted")`,
+`waitForIdleWake`/`hasIdleWake`) serve only #158637's retained owner and main's
+reworked monitor; they are not carried. Here the owner is deregistered at
+abort, a replacement drain recovers the claim at once, and an in-flight
+settlement attempt that makes its release write after stop is fenced by the
+claim token.
+
+Conflict resolutions: `ingress-monitor.ts` import-only; in
+`ingress-drain.watchdog.test.ts` main's two newer tests are kept and the tag's
+1,666 ms heartbeat-cadence assertion stays in the PR's rewritten test
+(`cc8f0d00870` dropped it); the PR's hunk for "requeues buffered spooled claims
+when deferred processing times out" is not applied, because at the tag the
+deferred participant settles itself on owner abort (#150080) and main later
+deleted the test (#155040). `ingress-drain.ts` equals `217ef6a3a1f` plus the
+tag's own 09-08..09-22 drift (20 = 20 changed lines).
+
+Behavior change to know about (upstream's accepted trade, same at
+`cc8f0d00870`): on channels that hold the lane while deferred (feishu,
+googlechat, irc, mattermost, nextcloud-talk, nostr, synology-chat, tlon, zalo,
+zalouser) a dispatch that ignores its abort now holds its claim and lane until
+it returns or the gateway restarts, where before the watchdog freed the lane
+after 5 minutes. The only trace is the one stall log line. Telegram, Slack,
+LINE and WhatsApp release the lane on deferral; for Telegram, grammY
+`sequentialize` already serialized the chat.
+
+### The line-cap ratchet (`45d6c57f661`)
+
+`check:line-cap-ratchet --base 1d5d6c85986` refused the carry: three Telegram
+test files are over the cap here (upstream main has since shrunk them). The
+PR's update-tracker test moved unchanged into
+`bot.create-telegram-bot.spooled-owner-abort.test.ts`;
+`polling-session.test.ts` uses the SDK's `waitForAbortSignal` instead of a
+local copy; `webhook.test.ts` builds its fixture with the spool test-support's
+`directUpdate`. No test removed or weakened.
+
+### Review
+
+Independent review found no P0 or P1. Fixed: the fix-1 test skipped the
+envelope's append step (`72d328e364b`), and the commit message's wording on
+stop. Left, with reasons:
+
+- No test drives the real grammY `sequentialize` with the update tracker and
+  the drain: every Telegram harness mocks `sequentialize` as a pass-through.
+  The incident path (B blocked behind a deferred A, watchdog, retry) was
+  traced by reading and is covered in parts by the PR's polling-session and
+  watchdog tests. A live group message on rh-bot after deploy is the proof.
+- The bot-core tracker change (`!wasOwnerAbortedWhilePending()`) is redundant
+  at this tag outside a settlement hold, because #150080 already settles an
+  owner-aborted participant `failed-retryable`; its test passes without the
+  change. Whether a completion committed under a hold should count as
+  completed is an upstream question for #132409.
+- `carrierText` is not updated by the CLI drift note (harmless, above).
+
+### Validation (2026-09-29/30, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                    | result                                                                                                                                 |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| fix 1 tests at `1d5d6c85986` production code                             | version-3 case fails (carrier ends in bare `#19452:`); 2 of 8 queued-turn cases fail; the version-4 pin passes                         |
+| fix 1 tests at the tip                                                   | `attempt-prompt-context` 26/26, `inbound-meta.current-message` 8/8; 14 sibling files 866/866                                           |
+| fix 2 carried tests at `1d5d6c85986` production code                     | 10 fail across 5 files; the polling-session stall case sees `[42, 42, 43]` while the first handler is still blocked                    |
+| fix 2 tests at the tip                                                   | watchdog 21/21, drain 28/28, polling-session 81/81, webhook 111/111, bot.create 163/163 + 1/1, mattermost 18/18, zalouser 14/14        |
+| `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:root` | rc=0, 0 errors each                                                                                                                    |
+| `tsgo:core:test`                                                         | rc=0, 25 of 25 shards (3,137 s under load); `agents-other` re-run after the test commits, rc=0                                         |
+| `node scripts/check-changed.mjs --base 1d5d6c85986`                      | 13 checks pass, then stops at `config:docs:check` (fail-fast); the other 18 planned non-tsgo commands run one by one: 17 pass          |
+| the two that fail, `config:docs:check` and `check-deadcode-exports`      | byte-identical output at `1d5d6c85986` (config counts 2455/3750/4353 over budget; unused exports in 9 files the branch does not touch) |
+
+Not run: the full suite, and any live proof.
+
+rh-bot's checkout is on `fix/per-attempt-total-tokens-persist`
+(`ad67756d28e` = `1d5d6c85986` + 2 unbuilt commits in `attempt-finalize.ts`
+and `session-usage.ts`). No file overlaps these four commits; the same four
+cherry-picked onto it are the local branch `fix/v2026.9.6-bot-fixes-on-ad67756`.
+Which one deploys is Alex's call.
+
+Drop `da9b206fc93` and `45d6c57f661` when #132409 (or an equivalent) reaches
+the fork's base tag; drop `9e0cdd2c129` and `72d328e364b` when #151099 lands
+upstream with the version-3 case.
