@@ -5,7 +5,6 @@ import { createServer, request } from "node:http";
 import os from "node:os";
 import nodePath from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Update } from "grammy/types";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests as createChannelIngressQueue,
@@ -39,6 +38,7 @@ import {
 } from "./bot-processing-outcome.js";
 import { commitTelegramMessageDispatchReplay } from "./message-dispatch-dedupe.js";
 import { monitorTelegramProvider } from "./monitor.js";
+import { directUpdate, type TestTelegramUpdate } from "./polling-session-spool.test-support.js";
 import { installTelegramIngressQueueRuntime } from "./runtime-state.test-support.js";
 import { setTelegramRuntime } from "./runtime.js";
 import { clearTelegramRuntimeForTest as clearTelegramRuntime } from "./runtime.test-support.js";
@@ -105,22 +105,7 @@ const TELEGRAM_SECRET = "secret";
 const TELEGRAM_WEBHOOK_PATH = "/hook";
 const TELEGRAM_WEBHOOK_RATE_LIMIT_BURST = WEBHOOK_RATE_LIMIT_DEFAULTS.maxRequests + 10;
 
-type TestTelegramMessageUpdate = Update & {
-  message: NonNullable<Update["message"]> & { text: string };
-};
-
-function telegramMessageUpdate(updateId: number, text: string): TestTelegramMessageUpdate {
-  return {
-    update_id: updateId,
-    message: {
-      message_id: updateId,
-      date: 1_736_380_800,
-      from: { id: 111, is_bot: false, first_name: "Ada" },
-      chat: { id: 111, type: "private", first_name: "Ada" },
-      text,
-    },
-  };
-}
+const telegramMessageUpdate = (updateId: number, text: string) => directUpdate(updateId, 111, text);
 
 async function waitForWebhookState<T>(
   assertion: () => T | Promise<T>,
@@ -344,8 +329,8 @@ async function withStartedWebhook<T>(
 }
 
 function expectSingleNearLimitUpdate(params: {
-  seenUpdates: TestTelegramMessageUpdate[];
-  expected: TestTelegramMessageUpdate;
+  seenUpdates: TestTelegramUpdate[];
+  expected: TestTelegramUpdate;
 }) {
   expect(params.seenUpdates).toHaveLength(1);
   expect(params.seenUpdates[0]?.update_id).toBe(params.expected.update_id);
@@ -358,15 +343,15 @@ function expectSingleNearLimitUpdate(params: {
 async function runNearLimitPayloadTestAndExpectUpdate(
   mode: "single" | "random-chunked",
 ): Promise<void> {
-  const seenUpdates: TestTelegramMessageUpdate[] = [];
+  const seenUpdates: TestTelegramUpdate[] = [];
   handleUpdateSpy.mockImplementationOnce((update: unknown) => {
-    seenUpdates.push(update as TestTelegramMessageUpdate);
+    seenUpdates.push(update as TestTelegramUpdate);
   });
 
   const { payload, sizeBytes } = createNearLimitTelegramPayload();
   expect(sizeBytes).toBeLessThan(1_024 * 1_024);
   expect(sizeBytes).toBeGreaterThan(256 * 1_024);
-  const expected = JSON.parse(payload) as TestTelegramMessageUpdate;
+  const expected = JSON.parse(payload) as TestTelegramUpdate;
 
   await withStartedWebhook(
     {

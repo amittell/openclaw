@@ -18,6 +18,7 @@ import {
   createChannelIngressQueueForTests as createChannelIngressQueue,
   executeSqliteQuerySync,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { waitForAbortSignal } from "openclaw/plugin-sdk/runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { commitTelegramMessageDispatchReplay } from "./message-dispatch-dedupe.js";
 import {
@@ -449,15 +450,6 @@ function createPollingSession(params: {
     ...(params.createTelegramTransport
       ? { createTelegramTransport: params.createTelegramTransport }
       : {}),
-  });
-}
-
-async function waitForAbortSignal(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    signal.addEventListener("abort", () => resolve(), { once: true });
   });
 }
 
