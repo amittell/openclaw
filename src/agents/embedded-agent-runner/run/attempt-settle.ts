@@ -293,7 +293,8 @@ export async function runEmbeddedAttemptSettledPhase(
     messagesSnapshot = settledStream.messagesSnapshot;
     sessionIdUsed = settledStream.sessionIdUsed;
     sessionRuntimeState.promptCache = settledStream.promptCache;
-    // Turn-completion accounting is authoritative; no per-call write may land after it.
+    // The run's usage accounting, after this attempt returns, is authoritative;
+    // flush per-call writes before after-turn work so none can land after it.
     await contextTotalTokensAdvance.close();
 
     await completeEmbeddedAttemptAfterTurn(input, settledStream, {
@@ -343,9 +344,6 @@ export async function runEmbeddedAttemptSettledPhase(
       messagesSnapshot = [...messagesSnapshot, note];
     }
   } finally {
-    // Error paths skip the close above. Drop the pending offer and wait out the
-    // write in flight so none lands after turn-completion accounting.
-    await contextTotalTokensAdvance.abandon();
     cleanupError = cleanupEmbeddedAttemptStreamExecution({
       attempt,
       clearAttemptTimeoutTimers,
@@ -355,6 +353,10 @@ export async function runEmbeddedAttemptSettledPhase(
       unsubscribe,
       deferredLifecycleOwner: preparedStreamRuntime.stream.deferredLifecycleOwner,
     });
+    // Error paths skip the close above. After timers and the subscription are
+    // gone, drop the pending offer and wait out the write in flight so none
+    // lands after the run's usage accounting.
+    await contextTotalTokensAdvance.abandon();
   }
 
   if (cleanupError !== undefined) {

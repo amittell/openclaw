@@ -111,6 +111,35 @@ describe("persistSessionTotalTokensAdvance", () => {
     });
   });
 
+  it("lowers only the writer's own earlier value and reports whether it applied", async () => {
+    await withAdvanceFixture(async (fixture) => {
+      const expectedSession = { sessionId: fixture.entry.sessionId };
+      await expect(
+        persistSessionTotalTokensAdvance({ ...fixture.scope, expectedSession, totalTokens: 9000 }),
+      ).resolves.toBe(true);
+      // Another writer's value (say, 9000 from turn accounting) never moves down.
+      await expect(
+        persistSessionTotalTokensAdvance({
+          ...fixture.scope,
+          expectedSession,
+          totalTokens: 3000,
+          replaceOwnValue: 7000,
+        }),
+      ).resolves.toBe(false);
+      expect(fixture.read()?.totalTokens).toBe(9000);
+      // The writer's own publish follows the context down, e.g. after compaction.
+      await expect(
+        persistSessionTotalTokensAdvance({
+          ...fixture.scope,
+          expectedSession,
+          totalTokens: 3000,
+          replaceOwnValue: 9000,
+        }),
+      ).resolves.toBe(true);
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(3000);
+    });
+  });
+
   it("rejects non-positive and non-finite candidates without touching the entry", async () => {
     await withAdvanceFixture(async (fixture) => {
       const before = fixture.read();

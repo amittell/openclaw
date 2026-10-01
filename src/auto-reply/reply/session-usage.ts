@@ -284,9 +284,11 @@ export async function persistSessionUsageUpdate(params: {
  * revalidation that {@link persistSessionUsageUpdate} relies on.
  *
  * Safety properties:
- * - Advance-only: only writes when the candidate strictly exceeds the current
- *   fresh persisted value, so it never shrinks and cannot regress the turn-end
- *   authoritative snapshot (which is the largest context observation).
+ * - Advance-only against values this writer did not publish: a candidate must
+ *   exceed the current fresh value, unless that value is `replaceOwnValue`, the
+ *   writer's own earlier publish in the same attempt. That lets the snapshot
+ *   follow the context down after the attempt compacts without ever lowering a
+ *   value another writer (such as turn-completion accounting) produced.
  * - Fenced: the `expectedSession` guard compares every present field. Session
  *   rotation/reset/fork changes `sessionId`/`lifecycleRevision`; compaction is
  *   the one same-session generation advance and stamps `compactionCount`
@@ -297,6 +299,8 @@ export async function persistSessionUsageUpdate(params: {
  *   snapshot revalidation.
  * - Goal accounting uses the same {@link resolveSessionGoalDisplayState} seam as
  *   the turn-completion path so goal token usage stays consistent.
+ *
+ * Resolves true only when the patch was applied.
  */
 export async function persistSessionTotalTokensAdvance(params: {
   agentId?: string;
@@ -308,25 +312,25 @@ export async function persistSessionTotalTokensAdvance(params: {
       "sessionId" | "lifecycleRevision" | "compactionCount" | "activeWriterRunId"
     >
   >;
-  authorize?: () => boolean;
   /** Candidate context snapshot: prompt tokens for the latest settled model call. */
   totalTokens: number;
-}): Promise<void> {
-  const { agentId, storePath, sessionKey, expectedSession, authorize } = params;
+  /** This writer's previous applied value; the entry may move down from it. */
+  replaceOwnValue?: number;
+}): Promise<boolean> {
+  const { agentId, storePath, sessionKey, expectedSession, replaceOwnValue } = params;
   if (!storePath || !sessionKey) {
-    return;
+    return false;
   }
   const candidate = asNonNegativeFiniteNumber(params.totalTokens);
   if (candidate === undefined || candidate <= 0) {
-    return;
+    return false;
   }
+  let patched = false;
   try {
-    await patchSessionEntryCore(
+    const result = await patchSessionEntryCore(
       { agentId, storePath, sessionKey },
       (entry) => {
-        if (!(authorize?.() ?? true)) {
-          return null;
-        }
+        patched = false;
         if (expectedSession) {
           // Absent fields are "no expectation", mirroring the turn-completion fence.
           if (
@@ -356,15 +360,18 @@ export async function persistSessionTotalTokensAdvance(params: {
             return null;
           }
         }
-        // Advance-only: only move forward, never shrink. A stale/compacted entry
-        // reads as "unknown" (not fresh) and accepts the first fresh value; a
-        // fresh entry only advances.
+        // A stale/compacted entry reads as "unknown" (not fresh) and accepts the
+        // first fresh value; another writer's fresh value only advances.
         const currentFresh =
           entry.totalTokensFresh === true &&
           entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION
             ? entry.totalTokens
             : undefined;
-        if (currentFresh !== undefined && candidate <= currentFresh) {
+        if (
+          currentFresh !== undefined &&
+          (candidate === currentFresh ||
+            (candidate < currentFresh && currentFresh !== replaceOwnValue))
+        ) {
           return null;
         }
         const updatedAt = Date.now();
@@ -378,11 +385,14 @@ export async function persistSessionTotalTokensAdvance(params: {
         if (accountedGoal) {
           patch.goal = accountedGoal;
         }
+        patched = true;
         return patch;
       },
       { skipMaintenance: true },
     );
+    return patched && result !== null;
   } catch (err) {
     logVerbose(`failed to persist per-attempt totalTokens advance: ${String(err)}`);
+    return false;
   }
 }

@@ -94,6 +94,28 @@ describe("createContextTotalTokensAdvance", () => {
     });
   });
 
+  it("follows its own value down after compaction but never lowers another writer's", async () => {
+    await withStore(async (fixture) => {
+      const advance = createContextTotalTokensAdvance({
+        attempt: attemptFor(fixture.scope, fixture.entry),
+      });
+      advance.offer(usage({ input: 180_000, output: 100 }));
+      await vi.waitFor(() => expect(fixture.read()?.totalTokens).toBe(180_000));
+      // The attempt compacted: the next call's context is much smaller.
+      advance.offer(usage({ input: 50_000, output: 100 }));
+      await advance.close();
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(50_000);
+      // A fresh value this writer did not publish only advances.
+      await replaceSessionEntry(fixture.scope, { ...fixture.entry, totalTokens: 200_000 });
+      const later = createContextTotalTokensAdvance({
+        attempt: attemptFor(fixture.scope, fixture.entry),
+      });
+      later.offer(usage({ input: 150_000, output: 100 }));
+      await later.close();
+      expect(fixture.read()?.totalTokens).toBe(200_000);
+    });
+  });
+
   it("does not stamp a session that rotated while the attempt ran", async () => {
     await withStore(async (fixture) => {
       const advance = createContextTotalTokensAdvance({
@@ -164,6 +186,8 @@ describe("createContextTotalTokensAdvance", () => {
       });
       await closed.close();
       closed.offer(usage({ input: 10_000, output: 20 }));
+      // Draining again would wait out any write the late offer started.
+      await closed.close();
       const detached = createContextTotalTokensAdvance({
         attempt: { ...attemptFor(fixture.scope, fixture.entry), sessionPersistence: "detached" },
       });

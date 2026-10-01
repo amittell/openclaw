@@ -27,7 +27,8 @@ const DISABLED: ContextTotalTokensAdvance = {
  * latest offer wins, so a fast tool loop never queues store writes behind the
  * model. Every write is fenced on the generation the attempt was admitted
  * under. Compaction accounting belongs to the host loop and lands at run
- * settlement, after the attempt has closed this writer.
+ * settlement, after the attempt has closed this writer; until then the writer
+ * may lower only a value it published itself.
  */
 export function createContextTotalTokensAdvance(params: {
   attempt: Pick<EmbeddedRunAttemptParams, "sessionId" | "sessionTarget" | "sessionPersistence">;
@@ -53,6 +54,7 @@ export function createContextTotalTokensAdvance(params: {
   };
   let closed = false;
   let next: number | undefined;
+  let published: number | undefined;
   let inFlight: Promise<void> | undefined;
 
   const pump = () => {
@@ -61,13 +63,23 @@ export function createContextTotalTokensAdvance(params: {
     }
     const totalTokens = next;
     next = undefined;
-    // The primitive logs and swallows its own write failures.
-    inFlight = persistSessionTotalTokensAdvance({ ...scope, totalTokens, expectedSession }).finally(
-      () => {
+    // The primitive logs and swallows its own write failures. Replacing our
+    // own publish lets the snapshot follow the context down after compaction.
+    inFlight = persistSessionTotalTokensAdvance({
+      ...scope,
+      totalTokens,
+      expectedSession,
+      ...(published !== undefined ? { replaceOwnValue: published } : {}),
+    })
+      .then((applied) => {
+        if (applied) {
+          published = totalTokens;
+        }
+      })
+      .finally(() => {
         inFlight = undefined;
         pump();
-      },
-    );
+      });
   };
 
   const drain = async () => {

@@ -391,10 +391,24 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       "agent:main",
       "/tmp/session.jsonl",
     );
-    // Per-call context totals flush before turn-completion accounting can run.
+    // Per-call context totals flush before after-turn work runs.
     const [closedAt] = fixture.contextTotalTokensAdvance.close.mock.invocationCallOrder;
     const [afterTurnAt] = mocks.completeAfterTurn.mock.invocationCallOrder;
     expect(closedAt).toBeLessThan(afterTurnAt ?? 0);
+  });
+
+  it("waits for the per-call flush to finish before after-turn work", async () => {
+    const fixture = createFixture();
+    let releaseFlush!: () => void;
+    fixture.contextTotalTokensAdvance.close.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => (releaseFlush = () => resolve(undefined))),
+    );
+    const run = runEmbeddedAttemptSettledPhase(fixture.input);
+    await vi.waitFor(() => expect(fixture.contextTotalTokensAdvance.close).toHaveBeenCalled());
+    expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
+    releaseFlush();
+    await run;
+    expect(mocks.completeAfterTurn).toHaveBeenCalledOnce();
   });
 
   it("persists image failure notes after after-turn transcript reconciliation", async () => {
