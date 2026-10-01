@@ -2342,9 +2342,19 @@ Not run: the full suite, and any live proof.
 
 rh-bot's checkout is on `fix/per-attempt-total-tokens-persist`
 (`ad67756d28e` = `1d5d6c85986` + 2 unbuilt commits in `attempt-finalize.ts`
-and `session-usage.ts`). No file overlaps these four commits; the same four
-cherry-picked onto it are the local branch `fix/v2026.9.6-bot-fixes-on-ad67756`.
-Which one deploys is Alex's call.
+and `session-usage.ts`). Review found two defects there: the advance re-read
+its fence from the row after the attempt (so `/new` or a reset mid-run let
+the old run's total land on the new session), and it ran once per attempt,
+after the whole tool loop, so it never showed growth mid-run. Three local
+commits fix both (`fix/per-attempt-total-tokens-fence`): `a1306ba7254` and
+`a8acd97fc01` fence on the attempt's admission facts, and `bd02247c7fe`
+moves the write to every successful model response (`onModelCallSettled`,
+`attempt-context-total-tokens.ts`; settle flushes it before turn-completion
+accounting and abandons it on error paths). The bot fixes cherry-picked onto
+that are `fix/v2026.9.6-bot-fixes-combined`. Which branch deploys is Alex's
+call. Known gap: runs that preserve user-facing session model state
+(progress-card refresh) can still advance the value; that flag stays in the
+command layer.
 
 Drop `da9b206fc93` and `45d6c57f661` when #132409 (or an equivalent) reaches
 the fork's base tag; drop `9e0cdd2c129` and `72d328e364b` when #151099 lands
