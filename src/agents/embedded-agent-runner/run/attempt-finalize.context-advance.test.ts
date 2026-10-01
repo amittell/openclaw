@@ -172,6 +172,42 @@ describe("persistSettledAttemptContextTotalTokens", () => {
     });
   });
 
+  it("rejects the write when the admission lifecycle revision or writer claim moved", async () => {
+    await withStore(async (fixture) => {
+      await replaceSessionEntry(fixture.scope, {
+        ...fixture.entry,
+        activeWriterRunId: "run-later",
+      });
+      const fenced = (expectedLifecycleRevision: string, expectedWriterRunId: string) => ({
+        ...attempt(fixture.scope),
+        sessionTarget: {
+          ...attempt(fixture.scope).sessionTarget,
+          expectedLifecycleRevision,
+          expectedWriterRunId,
+        },
+      });
+      for (const target of [
+        fenced(randomUUID(), "run-later"),
+        fenced(fixture.entry.lifecycleRevision ?? "", "run-earlier"),
+      ]) {
+        await persistSettledAttemptContextTotalTokens({
+          attempt: target,
+          sessionIdUsed: fixture.entry.sessionId,
+          lastCallUsage: usage({ input: 50_000, output: 100 }),
+          compactionOccurredThisAttempt: false,
+        });
+      }
+      expect(fixture.read()?.totalTokens).toBe(0);
+      await persistSettledAttemptContextTotalTokens({
+        attempt: fenced(fixture.entry.lifecycleRevision ?? "", "run-later"),
+        sessionIdUsed: fixture.entry.sessionId,
+        lastCallUsage: usage({ input: 50_000, output: 100 }),
+        compactionOccurredThisAttempt: false,
+      });
+      expect(fixture.read()?.totalTokens).toBe(50_100);
+    });
+  });
+
   it("is a no-op for detached runs and when compaction occurred during the attempt", async () => {
     await withStore(async (fixture) => {
       await persistSettledAttemptContextTotalTokens({

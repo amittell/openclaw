@@ -3,10 +3,7 @@ import { persistSessionTotalTokensAdvance } from "../../../auto-reply/reply/sess
  * Finalizes post-turn state, abort resources, and terminal trajectory artifacts.
  * It may assume stream execution and transcript writes are settled.
  */
-import {
-  loadSessionEntryReadOnly,
-  readActiveTranscriptEntryAnchor,
-} from "../../../config/sessions/session-accessor.js";
+import { readActiveTranscriptEntryAnchor } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -400,10 +397,10 @@ export async function completeEmbeddedAttemptAfterTurn(
 
 /**
  * Persists the per-attempt context-snapshot advance for a settled stream.
- * No-op when the attempt's settle raced a compaction commit (the fence read
- * happens after settle waits compaction out, so the read is post-compaction;
- * a stale pre-compaction write is rejected by the primitive's generation
- * fence) or when the run writes no session record.
+ * Fenced on the generation this attempt was admitted under: the session it ran
+ * in, plus the lifecycle revision and writer claim stamped on its target at
+ * admission. No-op when compaction ran during the attempt or the run writes no
+ * session record.
  */
 export async function persistSettledAttemptContextTotalTokens(params: {
   attempt: Pick<EmbeddedRunAttemptParams, "sessionTarget" | "sessionPersistence">;
@@ -423,26 +420,23 @@ export async function persistSettledAttemptContextTotalTokens(params: {
   if (candidateTotalTokens === undefined) {
     return;
   }
-  const fence = loadSessionEntryReadOnly({
-    agentId: sessionTarget.agentId,
-    storePath: sessionTarget.storePath,
-    sessionKey: sessionTarget.sessionKey,
-  });
   await persistSessionTotalTokensAdvance({
     agentId: sessionTarget.agentId,
     storePath: sessionTarget.storePath,
     sessionKey: sessionTarget.sessionKey,
     totalTokens: candidateTotalTokens,
-    // Fence on the session this attempt ran in: a row rotated by /new or a
-    // reset mid-run must not receive the old run's context total.
-    expectedSession:
-      fence?.sessionId === sessionIdUsed
-        ? {
-            sessionId: sessionIdUsed,
-            lifecycleRevision: fence.lifecycleRevision,
-            compactionCount: fence.compactionCount,
-          }
-        : { sessionId: sessionIdUsed },
+    // A row re-read after settle always matches itself; fence on the attempt's
+    // own admission facts so /new, a reset or a lost writer claim mid-run
+    // rejects the old run's context total.
+    expectedSession: {
+      sessionId: sessionIdUsed,
+      ...(sessionTarget.expectedLifecycleRevision !== undefined
+        ? { lifecycleRevision: sessionTarget.expectedLifecycleRevision }
+        : {}),
+      ...(sessionTarget.expectedWriterRunId !== undefined
+        ? { activeWriterRunId: sessionTarget.expectedWriterRunId }
+        : {}),
+    },
   });
 }
 
