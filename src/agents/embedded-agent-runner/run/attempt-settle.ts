@@ -123,6 +123,7 @@ export async function runEmbeddedAttemptSettledPhase(
   } = preparedStreamRuntime;
   const {
     subscription,
+    contextTotalTokensAdvance,
     queueHandle,
     getBeforeAgentFinalizeRevisionReason,
     getBeforeAgentFinalizeRevisionEntryId,
@@ -292,6 +293,8 @@ export async function runEmbeddedAttemptSettledPhase(
     messagesSnapshot = settledStream.messagesSnapshot;
     sessionIdUsed = settledStream.sessionIdUsed;
     sessionRuntimeState.promptCache = settledStream.promptCache;
+    // Turn-completion accounting is authoritative; no per-call write may land after it.
+    await contextTotalTokensAdvance.close();
 
     await completeEmbeddedAttemptAfterTurn(input, settledStream, {
       yieldAborted: promptState.yieldAborted,
@@ -340,6 +343,9 @@ export async function runEmbeddedAttemptSettledPhase(
       messagesSnapshot = [...messagesSnapshot, note];
     }
   } finally {
+    // Error paths skip the close above. Drop the pending offer and wait out the
+    // write in flight so none lands after turn-completion accounting.
+    await contextTotalTokensAdvance.abandon();
     cleanupError = cleanupEmbeddedAttemptStreamExecution({
       attempt,
       clearAttemptTimeoutTimers,

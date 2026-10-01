@@ -55,6 +55,11 @@ type SettledInput = Parameters<typeof runEmbeddedAttemptSettledPhase>[0];
 function createFixture() {
   const order: string[] = [];
   const queueHandle = { kind: "embedded", runId: "run-1" };
+  const contextTotalTokensAdvance = {
+    offer: vi.fn(),
+    close: vi.fn(async () => undefined),
+    abandon: vi.fn(async () => undefined),
+  };
   const unsubscribe = vi.fn(() => order.push("unsubscribe"));
   const waitForPendingEvents = vi.fn(async () => undefined);
   const subscription = {
@@ -163,6 +168,7 @@ function createFixture() {
     promptActiveSession,
     stream: {
       subscription,
+      contextTotalTokensAdvance,
       queueHandle,
       stopAcceptingSteerMessages: vi.fn(),
       getBeforeAgentFinalizeRevisionReason,
@@ -315,6 +321,7 @@ function createFixture() {
   return {
     cacheTrace,
     clearTimers,
+    contextTotalTokensAdvance,
     detachBackend,
     getBeforeAgentFinalizeRevisionReason,
     input,
@@ -384,6 +391,10 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       "agent:main",
       "/tmp/session.jsonl",
     );
+    // Per-call context totals flush before turn-completion accounting can run.
+    const [closedAt] = fixture.contextTotalTokensAdvance.close.mock.invocationCallOrder;
+    const [afterTurnAt] = mocks.completeAfterTurn.mock.invocationCallOrder;
+    expect(closedAt).toBeLessThan(afterTurnAt ?? 0);
   });
 
   it("persists image failure notes after after-turn transcript reconciliation", async () => {
@@ -509,6 +520,9 @@ describe("runEmbeddedAttemptSettledPhase", () => {
 
     expect(mocks.settleStream).not.toHaveBeenCalled();
     expect(mocks.completeResult).not.toHaveBeenCalled();
+    // A failed prompt drops pending per-call totals instead of flushing them.
+    expect(fixture.contextTotalTokensAdvance.close).not.toHaveBeenCalled();
+    expect(fixture.contextTotalTokensAdvance.abandon).toHaveBeenCalledOnce();
     expect(fixture.clearTimers).toHaveBeenCalledOnce();
     expect(fixture.detachBackend).toHaveBeenCalledWith(fixture.queueHandle);
     expect(mocks.logError).toHaveBeenCalledWith(

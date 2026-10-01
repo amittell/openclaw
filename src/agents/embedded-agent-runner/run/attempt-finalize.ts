@@ -1,4 +1,3 @@
-import { persistSessionTotalTokensAdvance } from "../../../auto-reply/reply/session-usage.js";
 /**
  * Finalizes post-turn state, abort resources, and terminal trajectory artifacts.
  * It may assume stream execution and transcript writes are settled.
@@ -21,7 +20,6 @@ import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js"
 import { finalizeHarnessContextEngineTurn } from "../../harness/context-engine-lifecycle.js";
 import type { AgentSession, SessionMessageEntry } from "../../sessions/index.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
-import { deriveContextPromptTokens, type NormalizedUsage } from "../../usage.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { log } from "../logger.js";
 import { markActiveEmbeddedRunAbandoned, type EmbeddedAgentQueueHandle } from "../runs.js";
@@ -379,97 +377,6 @@ export async function completeEmbeddedAttemptAfterTurn(
       hookRunner,
     });
   }
-
-  // Per-attempt context-snapshot advance: long single-turn runs persist the
-  // latest settled model call's prompt/context total mid-run so status probes
-  // see a growing count instead of the bootstrap zero. Turn-completion
-  // accounting stays authoritative; this advance is fenced by the freshly read
-  // generation facts (compaction stamps compactionCount atomically with its
-  // totalTokens clear/re-stamp) and is advance-only, so it never shrinks a
-  // fresh value.
-  await persistSettledAttemptContextTotalTokens({
-    attempt,
-    sessionIdUsed,
-    lastCallUsage,
-    compactionOccurredThisAttempt,
-  });
-}
-
-/**
- * Persists the per-attempt context-snapshot advance for a settled stream.
- * Fenced on the generation this attempt was admitted under: the session it ran
- * in, plus the lifecycle revision and writer claim stamped on its target at
- * admission. No-op when compaction ran during the attempt or the run writes no
- * session record.
- */
-export async function persistSettledAttemptContextTotalTokens(params: {
-  attempt: Pick<EmbeddedRunAttemptParams, "sessionTarget" | "sessionPersistence">;
-  sessionIdUsed: string;
-  lastCallUsage?: NormalizedUsage;
-  compactionOccurredThisAttempt: boolean;
-}): Promise<void> {
-  const { attempt, sessionIdUsed, lastCallUsage, compactionOccurredThisAttempt } = params;
-  if (compactionOccurredThisAttempt || attempt.sessionPersistence === "detached") {
-    return;
-  }
-  const sessionTarget = attempt.sessionTarget;
-  if (!sessionTarget?.storePath || !sessionTarget.sessionKey) {
-    return;
-  }
-  const candidateTotalTokens = resolvePerAttemptContextTotalTokens(lastCallUsage);
-  if (candidateTotalTokens === undefined) {
-    return;
-  }
-  await persistSessionTotalTokensAdvance({
-    agentId: sessionTarget.agentId,
-    storePath: sessionTarget.storePath,
-    sessionKey: sessionTarget.sessionKey,
-    totalTokens: candidateTotalTokens,
-    // A row re-read after settle always matches itself; fence on the attempt's
-    // own admission facts so /new, a reset or a lost writer claim mid-run
-    // rejects the old run's context total.
-    expectedSession: {
-      sessionId: sessionIdUsed,
-      ...(sessionTarget.expectedLifecycleRevision !== undefined
-        ? { lifecycleRevision: sessionTarget.expectedLifecycleRevision }
-        : {}),
-      ...(sessionTarget.expectedWriterRunId !== undefined
-        ? { activeWriterRunId: sessionTarget.expectedWriterRunId }
-        : {}),
-    },
-  });
-}
-
-/**
- * Resolves the candidate context total for a settled model call without
- * requiring a provider contextUsage snapshot. A usable provider snapshot is
- * preferred using the same derivation as turn-completion accounting; otherwise
- * the candidate is the greater of the reported call total and the summed usage
- * components, when any component is positive. `normalizeUsage` folds the
- * `totalTokens`/`total_tokens` aliases into `total`, so the reported total is
- * `lastCallUsage.total`.
- */
-export function resolvePerAttemptContextTotalTokens(
-  lastCallUsage?: NormalizedUsage,
-): number | undefined {
-  if (!lastCallUsage) {
-    return undefined;
-  }
-  if (lastCallUsage.contextUsage?.state === "available") {
-    const snapshot = deriveContextPromptTokens({ lastCallUsage });
-    if (typeof snapshot === "number" && snapshot > 0) {
-      return snapshot;
-    }
-  }
-  const componentSum =
-    (lastCallUsage.input ?? 0) +
-    (lastCallUsage.cacheRead ?? 0) +
-    (lastCallUsage.cacheWrite ?? 0) +
-    (lastCallUsage.output ?? 0);
-  const reportedTotal =
-    typeof lastCallUsage.total === "number" && lastCallUsage.total > 0 ? lastCallUsage.total : 0;
-  const candidate = Math.max(reportedTotal, componentSum);
-  return candidate > 0 ? candidate : undefined;
 }
 
 /**
