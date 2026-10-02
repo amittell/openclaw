@@ -36,6 +36,8 @@ const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
+const LENGTH_STOP_ANSWER_ONLY_INSTRUCTION =
+  "Your previous response used its whole output budget on reasoning and stopped before it wrote an answer. Write the final answer for the user now from the reasoning you already did, and keep any further reasoning short. Tools are unavailable in this step: reply with plain text and do not attempt any tool call.";
 // Under message_tool_only delivery, text that never went through the message
 // tool is dropped by the channel layer: the user sees nothing. One bounded
 // continuation asks the model to actually deliver before the turn is accepted.
@@ -187,6 +189,45 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   }
 
   return REASONING_ONLY_RETRY_INSTRUCTION;
+}
+
+/**
+ * Builds the single answer-only pass for a turn whose final response spent the
+ * whole output budget on reasoning. The pass runs with tools disabled and low
+ * reasoning effort, so it cannot replay earlier side effects: unlike the
+ * ordinary reasoning-only retry it may run when the attempt is not replay-safe.
+ * Unfinished or handed-off work still owns the turn.
+ */
+export function resolveLengthStopAnswerOnlyInstruction(params: {
+  provider?: string;
+  modelId?: string;
+  modelApi?: string;
+  executionContract?: string;
+  payloadCount: number;
+  hasTerminalToolPresentation?: boolean;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  const assistant = resolveCurrentAttemptAssistant(params.attempt);
+  if (
+    assistant?.stopReason !== "length" ||
+    !hasOnlyAssistantReasoningContent(assistant) ||
+    joinAssistantTexts(params.attempt.assistantTexts).length > 0 ||
+    params.payloadCount !== 0 ||
+    params.hasTerminalToolPresentation ||
+    params.attempt.hasToolMediaBlockReply ||
+    shouldSkipNonVisibleTurnRetry({ ...params, tolerateSideEffects: true }) ||
+    !shouldApplyNonVisibleTurnRetryGuard({
+      provider: params.provider,
+      modelId: params.modelId,
+      modelApi: params.modelApi,
+      executionContract: params.executionContract,
+    })
+  ) {
+    return null;
+  }
+  return LENGTH_STOP_ANSWER_ONLY_INSTRUCTION;
 }
 
 type SettledToolCall = { id: string | null; name: string | null };
