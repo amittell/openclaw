@@ -38,6 +38,9 @@ const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
 const LENGTH_STOP_ANSWER_ONLY_INSTRUCTION =
   "Your previous response used its whole output budget on reasoning and stopped before it wrote an answer. Write the final answer for the user now from the reasoning you already did, and keep any further reasoning short. Tools are unavailable in this step: reply with plain text and do not attempt any tool call.";
+/** Added to the one tools-off retry after a finalization pass stopped at a tool call. */
+export const SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION =
+  "Your previous reply in this step called a tool, and no tools are available here. Write the final answer as plain text now.";
 // Under message_tool_only delivery, text that never went through the message
 // tool is dropped by the channel layer: the user sees nothing. One bounded
 // continuation asks the model to actually deliver before the turn is accepted.

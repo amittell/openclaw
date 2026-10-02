@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../llm/types.js";
 import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
-import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
+import {
+  EmptySettledTurnFinalizationError,
+  RejectedToolCallSettledTurnFinalizationError,
+} from "./settled-turn-finalization-outcome.js";
 import {
   assertSettledTurnFinalizationResult,
   projectSettledTurnFinalizationAttemptResult,
@@ -206,10 +209,10 @@ describe("assertSettledTurnFinalizationResult", () => {
       });
     });
 
-    it("still rejects a pass that ended on its tool call", () => {
+    it("classifies a pass that ended on its rejected tool call for the host's retry", () => {
       expect(() =>
         projectSettledTurnFinalizationAttemptResult(afterRejectedCall(rejectedCall)),
-      ).toThrow("returned a tool call");
+      ).toThrow(RejectedToolCallSettledTurnFinalizationError);
     });
 
     it.each<[string, Partial<EmbeddedRunAttemptResult>]>([

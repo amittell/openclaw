@@ -14,6 +14,7 @@ import {
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { appendAssistantMirrorMessageByIdentity } from "../../../plugin-sdk/session-transcript-runtime.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import { RejectedToolCallSettledTurnFinalizationError } from "../../harness/settled-turn-finalization-outcome.js";
 import { resolveSettledTurnFinalizationText } from "../../harness/settled-turn-finalization-result.js";
 import type {
   AgentHarness,
@@ -40,6 +41,7 @@ import {
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
 import {
   resolveSettledToolBatchEvidence,
+  SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
@@ -199,27 +201,46 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   );
   let finalizationOutcome: "answered" | "empty" | "failed" | "silent-fallback" = "failed";
   try {
-    let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
+    let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>> | undefined;
     let finalizationAttempt = 0;
+    let attemptPrompt = prompt;
     do {
       finalizationAttempt += 1;
       assertFinalizationActive();
-      finalization = await runPreparedSettledTurnFinalization({
-        attempt: {
-          ...input.finalization.preparedAttempt,
-          // The first transcript append may have committed the writer after
-          // dispatch preparation. The summary must retain that original fence.
-          ...(committedSessionTarget ? { sessionTarget: committedSessionTarget } : {}),
-          sessionId: committedSessionTarget?.sessionId ?? initial.sessionIdUsed,
-          sessionFile: initial.sessionFileUsed ?? input.finalization.preparedAttempt.sessionFile,
-          ...(answerOnlyThinkLevel ? { thinkLevel: answerOnlyThinkLevel } : {}),
-        },
-        settledAttempt: initial.attempt,
-        harness: input.finalization.harness,
-        prompt,
-        createAttemptControls: input.finalization.createAttemptControls,
-        abortSignal: input.finalization.abortSignal,
-      });
+      try {
+        finalization = await runPreparedSettledTurnFinalization({
+          attempt: {
+            ...input.finalization.preparedAttempt,
+            // The first transcript append may have committed the writer after
+            // dispatch preparation. The summary must retain that original fence.
+            ...(committedSessionTarget ? { sessionTarget: committedSessionTarget } : {}),
+            sessionId: committedSessionTarget?.sessionId ?? initial.sessionIdUsed,
+            sessionFile: initial.sessionFileUsed ?? input.finalization.preparedAttempt.sessionFile,
+            ...(answerOnlyThinkLevel ? { thinkLevel: answerOnlyThinkLevel } : {}),
+          },
+          settledAttempt: initial.attempt,
+          harness: input.finalization.harness,
+          prompt: attemptPrompt,
+          createAttemptControls: input.finalization.createAttemptControls,
+          abortSignal: input.finalization.abortSignal,
+        });
+      } catch (error) {
+        // A pass that stopped at a rejected tool call did no work. It spends
+        // the same bounded attempt an empty pass would, never a new budget.
+        if (
+          !(error instanceof RejectedToolCallSettledTurnFinalizationError) ||
+          finalizationAttempt >= maxFinalizationAttempts
+        ) {
+          throw error;
+        }
+        log.warn(
+          `settled-turn finalization stopped at a tool call with tools disabled: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+            `provider=${errorContext.provider}/${errorContext.model} tools=${error.toolNames.join(",")} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
+        );
+        attemptPrompt = `${prompt}\n\n${SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION}`;
+        finalization = undefined;
+        continue;
+      }
       assertFinalizationActive();
       attempt = finalization.attempt;
       // The harness retains authored silence as an empty result; only the host
@@ -248,7 +269,10 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
             `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
         );
       }
-    } while (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts);
+    } while (
+      !finalization ||
+      (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts)
+    );
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(

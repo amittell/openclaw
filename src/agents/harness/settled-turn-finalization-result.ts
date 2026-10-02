@@ -1,7 +1,10 @@
 import { isSilentReplyText } from "../../auto-reply/tokens.js";
 import { normalizeAgentRunAttemptTerminal } from "../agent-run-terminal-outcome.js";
 import { resolveFinalAssistantVisibleText } from "../embedded-agent-runner/run/helpers.js";
-import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
+import {
+  EmptySettledTurnFinalizationError,
+  RejectedToolCallSettledTurnFinalizationError,
+} from "./settled-turn-finalization-outcome.js";
 import type {
   AgentHarnessAttemptResult,
   AgentHarnessSettledTurnFinalizationResult,
@@ -148,6 +151,12 @@ export function projectSettledTurnFinalizationAttemptResult(
   const assistant = result.currentAttemptCompletedAssistant;
   if (!assistant) {
     throw new Error("Settled-turn finalization attempt returned no completed assistant message");
+  }
+  // The pass stopped at a call its own tool surface rejected: no work happened.
+  if (hasOnlyRejectedToolCalls(result) && assistantContainsToolCall(assistant)) {
+    throw new RejectedToolCallSettledTurnFinalizationError(
+      result.toolMetas.map((tool) => tool.toolName),
+    );
   }
   return assertSettledTurnFinalizationResult({
     assistant,

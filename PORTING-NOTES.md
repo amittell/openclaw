@@ -2464,7 +2464,7 @@ passing `loopDetection` from `invokeGatewayTool` (unchanged on main
 
 Three commits on `fix/v2026.9.6-length-stop-and-memory`, based on
 `f0c5175ad38` (the tip of `fix/v2026.9.6-bot-fixes-combined`), then this
-note. Approved by Alex on 2026-10-02 (UTC) from what the bots logged between
+note, then one follow-up commit that adds the extra finalization attempt. Approved by Alex on 2026-10-02 (UTC) from what the bots logged between
 2026-09-24 and 10-01. Nothing here is deployed or pushed.
 
 | commit        | kind              | what it changes                                                                                                         |
@@ -2535,13 +2535,27 @@ answer that followed was rejected as "capability activity"
   a pass that ends on its tool call is rejected as "returned a tool call".
 
 With the stop in place, the built-in harness's pass ends on the tool call,
-so the projection change never fires for it. The rh-bot case now ends after
-one call with the fallback reply instead of four calls and the same fallback.
-The projection change covers harnesses that run their own loop through the
-SDK projection (copilot). Delivering an answer in the built-in case would
-need one more tools-disabled finalization after the stop (the existing
-two-attempt bound for empty passes could carry it). That is a re-prompt after
-a tool call, which this change was asked not to do, so it is left for Alex.
+so the relaxed acceptance only applies to harnesses that run their own loop
+through the SDK projection (copilot).
+
+#### One extra tools-off attempt after the stop (follow-up commit)
+
+Alex chose to add the extra attempt. When a finalization pass ends on a tool
+call that its own tool surface rejected (the same evidence as above), the
+projection throws `RejectedToolCallSettledTurnFinalizationError` instead of a
+plain error. The finalization loop treats it like an empty pass: it spends
+the existing two-attempt bound (`MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS`) and
+adds no new budget, so at most one extra model call. The extra attempt is
+still tools-off, and its prompt adds `SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION`,
+because a not-found result is not guaranteed to survive transcript replay.
+The log line is `settled-turn finalization stopped at a tool call with tools disabled: ... tools=write — retrying 1/1 with tools disabled`.
+A clean answer from the extra attempt is accepted. A second tool call ends
+with the original fallback, and there is no third call. The answer-only pass
+keeps its one-attempt bound, so it never gets the extra attempt.
+
+For rh-bot this means: call 1 emits `write`, the stop records "Tool write
+not found" without another model call, and call 2 either answers or ends with
+the fallback.
 
 ### memory-lancedb kept OpenClaw's own system turns (`ca2dd003e8a`)
 
@@ -2569,9 +2583,10 @@ rows. Its preview shows the count first. No real store was written here.
 
 ### Review
 
-An independent read-only review of the three commits found no P0. Its P1 is the point above: in
-the built-in harness the stop makes the relaxed projection unreachable, so
-rh-bot gets the fallback after one call, not the answer. Fixed after review:
+An independent read-only review of the three commits found no P0. Its P1 was
+that in the built-in harness the stop made the relaxed projection
+unreachable, so rh-bot got the fallback after one call, not the answer. Alex
+chose the extra attempt above. Also fixed after review:
 
 - The projection waived `replayMetadata` along with the name-based
   current-attempt marking. A not-found call leaves `replayMetadata` clean, so
@@ -2606,6 +2621,10 @@ Left as is, with reasons:
 | `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:root`    | rc=0 each (71 s, 109 s, 250 s, 113 s)                                                                                                                                                   |
 | `tsgo:test:src`                                                             | first run failed in `agents-tools` on a readonly `as const` test table (fixed); rerun rc=0, 21 of 21 shards                                                                             |
 | `tsgo:core`, `tsgo:test:src` again at `ca2dd003e8a`, after the review fixes | rc=0 each; 21 of 21 shards                                                                                                                                                              |
+| extra attempt: rh-bot test at `c128b5d280a` production code                 | 2 of 2 fail: only one finalization pass runs (`[1]` model calls, expected `[1, 1]`)                                                                                                     |
+| extra attempt at its commit                                                 | 2/2; finalization, terminal and incomplete-turn files 23 files 384/384; harness, lifecycle, session, copilot and codex finalizer files 10 files 562/562                                 |
+| extra attempt: `check:line-cap-ratchet`, oxfmt, `git diff --check`          | OK, 22 changed source files; clean                                                                                                                                                      |
+| extra attempt: `tsgo:core`, `tsgo:test:src`                                 | rc=0 each (59 s; 21 of 21 shards)                                                                                                                                                       |
 | `check:line-cap-ratchet --base f0c5175ad38`                                 | OK, 20 changed source files                                                                                                                                                             |
 | `format:docs:check`, `git diff --check`                                     | clean                                                                                                                                                                                   |
 | pre-existing, not this branch                                               | `run.plugin-runtime-refresh.integration.test.ts`: the same 3 media cases fail (3 attempts, expected 2) with this branch's production code reverted                                      |
