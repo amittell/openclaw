@@ -19,6 +19,7 @@ import {
   emptySessionEntryMaintenancePlan,
 } from "./session-accessor.sqlite-maintenance-store.js";
 import { finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort } from "./session-accessor.sqlite-maintenance.js";
+import { SqliteReclamationInputsChangedError } from "./session-accessor.sqlite-reclamation-worker-diagnostics.js";
 import {
   createSessionMaintenancePlanningOperation,
   runSqliteSessionReclamation,
@@ -232,14 +233,18 @@ async function runPendingMaintenance(
           ))
       ) {
         planningChanged = true;
-        throw new Error("SQLite automatic maintenance inputs changed before commit");
+        throw new SqliteReclamationInputsChangedError(
+          "SQLite automatic maintenance inputs changed before commit",
+        );
       }
     };
     const assertCurrent = () => {
       assertInputsCurrent();
       if (!isSessionEntryMaintenanceAgeCaptureCurrent(owner.database.db, ageCapture)) {
         planningChanged = true;
-        throw new Error("SQLite automatic maintenance age fact changed before commit");
+        throw new SqliteReclamationInputsChangedError(
+          "SQLite automatic maintenance age fact changed before commit",
+        );
       }
       if (!operation && !isOpenClawAgentDatabasePathCurrent(owner.database)) {
         planningChanged = true;
