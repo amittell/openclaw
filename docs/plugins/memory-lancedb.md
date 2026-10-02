@@ -230,8 +230,11 @@ triggers cover common English, Czech, Chinese, Japanese, and Korean memory
 phrases (`remember`, `prefer`, `记住`, `覚えて`, `기억해`, and similar).
 
 Auto-capture also rejects text that looks like envelope/transport metadata,
-prompt-injection payloads, or already-injected `<relevant-memories>` context,
-and caps at 3 captured memories per agent turn.
+prompt-injection payloads, already-injected `<relevant-memories>` context, or
+OpenClaw's own system-turn prompts (user-role turns starting with `[System]`,
+such as the gateway restart recovery prompt), and caps at 3 captured memories
+per agent turn. System-turn prompts that earlier versions captured are left out
+of recall, and `openclaw doctor --fix` deletes them.
 
 Completed message occurrences are not processed again while they remain in the
 conversation transcript, including after compaction. The last 60 completed text

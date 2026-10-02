@@ -10,7 +10,7 @@ import {
   type MemoryCategory,
 } from "./config.js";
 import type { MemorySearchResult } from "./lancedb-store.js";
-import { looksLikeEnvelopeSludge } from "./memory-capture-sanitization.js";
+import { isSystemTurnPromptText, looksLikeEnvelopeSludge } from "./memory-capture-sanitization.js";
 
 export function extractUserTextContent(message: unknown): string[] {
   const msgObj = asOptionalRecord(message);
@@ -201,8 +201,10 @@ export function escapeMemoryForPrompt(text: string): string {
 // Legacy label-only rows slip past now that header detection keys on the provenance marker, and the
 // marker-free checks catch only payload/bracket shapes. `doctor --fix` deletes sentinel and fenced rows
 // (memory-lancedb-legacy-envelope-rows); dynamic-label prose survives both, accepted over a reader here.
+// System-turn prompts captured before capture rejected them stay out of recall until `doctor --fix`
+// deletes them (memory-lancedb-system-turn-rows).
 function isRecallableMemoryText(text: string): boolean {
-  return text.trim().length > 0 && !looksLikeEnvelopeSludge(text);
+  return text.trim().length > 0 && !looksLikeEnvelopeSludge(text) && !isSystemTurnPromptText(text);
 }
 
 function normalizeStoredMemoryText(text: string): string {
@@ -274,7 +276,7 @@ export function shouldCapture(
   text: string,
   options?: { customTriggers?: string[]; maxChars?: number },
 ): boolean {
-  if (looksLikeEnvelopeSludge(text)) {
+  if (looksLikeEnvelopeSludge(text) || isSystemTurnPromptText(text)) {
     return false;
   }
   const maxChars = normalizeMaxChars(options?.maxChars, DEFAULT_CAPTURE_MAX_CHARS);

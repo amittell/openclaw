@@ -14,12 +14,13 @@ import {
   MEMORY_TABLE_NAME,
   quoteLanceSqlString,
 } from "./lancedb-schema.js";
+import { isSystemTurnPromptText } from "./memory-capture-sanitization.js";
 
 type LanceDbModule = typeof import("@lancedb/lancedb");
 type LanceDbConnection = Awaited<ReturnType<LanceDbModule["connect"]>>;
 type LanceDbTable = Awaited<ReturnType<LanceDbConnection["openTable"]>>;
 
-const LEGACY_ENVELOPE_DELETE_BATCH_SIZE = 500;
+const ROW_DELETE_BATCH_SIZE = 500;
 
 function resolveLegacyMemoryOwner(config: OpenClawConfig): {
   agentId: string;
@@ -72,22 +73,44 @@ function isLegacyEnvelopeContaminatedText(text: unknown): boolean {
   );
 }
 
-async function scanLegacyEnvelopeRowIds(table: LanceDbTable): Promise<string[]> {
-  const contaminatedIds: string[] = [];
+type RowCleanup = {
+  /** Phrase completing "N memory rows ..." in previews and change notes. */
+  reason: string;
+  /** Names the rows in errors. */
+  kind: string;
+  matches: (text: unknown) => boolean;
+};
+
+const LEGACY_ENVELOPE_ROWS: RowCleanup = {
+  reason: "contaminated with legacy envelope metadata",
+  kind: "legacy envelope",
+  matches: isLegacyEnvelopeContaminatedText,
+};
+
+// Capture used to accept OpenClaw's own `[System]` turns, such as the restart
+// recovery prompt, and recall then replayed them as facts about the user.
+const SYSTEM_TURN_ROWS: RowCleanup = {
+  reason: "captured from OpenClaw system-turn prompts",
+  kind: "system-turn",
+  matches: (text) => typeof text === "string" && isSystemTurnPromptText(text),
+};
+
+async function scanMatchingRowIds(table: LanceDbTable, cleanup: RowCleanup): Promise<string[]> {
+  const matchingIds: string[] = [];
   // Stream record batches instead of toArray(): scan holds one batch of
   // id/text at a time so large or remote tables do not materialize fully.
   for await (const batch of table.query().select(["id", "text"])) {
     for (const row of batch.toArray() as Array<Record<string, unknown>>) {
-      if (!isLegacyEnvelopeContaminatedText(row.text)) {
+      if (!cleanup.matches(row.text)) {
         continue;
       }
       if (typeof row.id !== "string") {
-        throw new Error("LanceDB legacy envelope row is missing a string id");
+        throw new Error(`LanceDB ${cleanup.kind} row is missing a string id`);
       }
-      contaminatedIds.push(row.id);
+      matchingIds.push(row.id);
     }
   }
-  return contaminatedIds;
+  return matchingIds;
 }
 
 export function resolveMemoryLanceDbPluginRoot(moduleUrl: string): string {
@@ -230,68 +253,86 @@ export function createMemoryLanceDbStateMigrations(
         }
       },
     },
-    {
+    createRowDeletionMigration({
       id: "memory-lancedb-legacy-envelope-rows",
       label: "Memory LanceDB legacy envelope contamination",
-      // Row deletion is destructive; gate it behind explicit `doctor --fix` so
-      // startup auto-migration never purges memories without operator intent.
-      doctorOnly: true,
-      async detectLegacyState(params: StateMigrationParams) {
-        const opened = await openMemoryTable({ ...params, pluginRoot });
-        try {
-          if (!opened.table) {
-            return null;
-          }
-          const contaminatedIds = await scanLegacyEnvelopeRowIds(opened.table);
-          if (contaminatedIds.length === 0) {
-            return null;
-          }
-          return {
-            preview: [
-              `- Memory LanceDB: delete ${contaminatedIds.length} memory ${contaminatedIds.length === 1 ? "row" : "rows"} contaminated with legacy envelope metadata at ${opened.dbPath}`,
-            ],
-          };
-        } finally {
-          opened.table?.close();
-          opened.connection?.close();
-        }
-      },
-      async migrateLegacyState(params: StateMigrationParams) {
-        const opened = await openMemoryTable({ ...params, pluginRoot });
-        try {
-          if (!opened.table) {
-            return { changes: [], warnings: [] };
-          }
-          const contaminatedIds = await scanLegacyEnvelopeRowIds(opened.table);
-          if (contaminatedIds.length === 0) {
-            return { changes: [], warnings: [] };
-          }
-          for (
-            let offset = 0;
-            offset < contaminatedIds.length;
-            offset += LEGACY_ENVELOPE_DELETE_BATCH_SIZE
-          ) {
-            const batch = contaminatedIds.slice(offset, offset + LEGACY_ENVELOPE_DELETE_BATCH_SIZE);
-            await opened.table.delete(
-              `id IN (${batch.map((id) => quoteLanceSqlString(id)).join(", ")})`,
-            );
-          }
-          if ((await scanLegacyEnvelopeRowIds(opened.table)).length !== 0) {
-            throw new Error("LanceDB legacy envelope row migration verification failed");
-          }
-          return {
-            changes: [
-              `Deleted ${contaminatedIds.length} Memory LanceDB ${contaminatedIds.length === 1 ? "row" : "rows"} contaminated with legacy envelope metadata`,
-            ],
-            warnings: [],
-          };
-        } finally {
-          opened.table?.close();
-          opened.connection?.close();
-        }
-      },
-    },
+      cleanup: LEGACY_ENVELOPE_ROWS,
+      pluginRoot,
+    }),
+    createRowDeletionMigration({
+      id: "memory-lancedb-system-turn-rows",
+      label: "Memory LanceDB captured system-turn prompts",
+      cleanup: SYSTEM_TURN_ROWS,
+      pluginRoot,
+    }),
   ];
+}
+
+function createRowDeletionMigration(params: {
+  id: string;
+  label: string;
+  cleanup: RowCleanup;
+  pluginRoot: string;
+}): PluginDoctorStateMigration {
+  const { cleanup, pluginRoot } = params;
+  const rows = (count: number) => (count === 1 ? "row" : "rows");
+  return {
+    id: params.id,
+    label: params.label,
+    // Row deletion is destructive; gate it behind explicit `doctor --fix` so
+    // startup auto-migration never purges memories without operator intent.
+    doctorOnly: true,
+    async detectLegacyState(state: StateMigrationParams) {
+      const opened = await openMemoryTable({ ...state, pluginRoot });
+      try {
+        if (!opened.table) {
+          return null;
+        }
+        const matchingIds = await scanMatchingRowIds(opened.table, cleanup);
+        if (matchingIds.length === 0) {
+          return null;
+        }
+        return {
+          preview: [
+            `- Memory LanceDB: delete ${matchingIds.length} memory ${rows(matchingIds.length)} ${cleanup.reason} at ${opened.dbPath}`,
+          ],
+        };
+      } finally {
+        opened.table?.close();
+        opened.connection?.close();
+      }
+    },
+    async migrateLegacyState(state: StateMigrationParams) {
+      const opened = await openMemoryTable({ ...state, pluginRoot });
+      try {
+        if (!opened.table) {
+          return { changes: [], warnings: [] };
+        }
+        const matchingIds = await scanMatchingRowIds(opened.table, cleanup);
+        if (matchingIds.length === 0) {
+          return { changes: [], warnings: [] };
+        }
+        for (let offset = 0; offset < matchingIds.length; offset += ROW_DELETE_BATCH_SIZE) {
+          const batch = matchingIds.slice(offset, offset + ROW_DELETE_BATCH_SIZE);
+          await opened.table.delete(
+            `id IN (${batch.map((id) => quoteLanceSqlString(id)).join(", ")})`,
+          );
+        }
+        if ((await scanMatchingRowIds(opened.table, cleanup)).length !== 0) {
+          throw new Error(`LanceDB ${cleanup.kind} row migration verification failed`);
+        }
+        return {
+          changes: [
+            `Deleted ${matchingIds.length} Memory LanceDB ${rows(matchingIds.length)} ${cleanup.reason}`,
+          ],
+          warnings: [],
+        };
+      } finally {
+        opened.table?.close();
+        opened.connection?.close();
+      }
+    },
+  };
 }
 
 export const stateMigrations = createMemoryLanceDbStateMigrations();

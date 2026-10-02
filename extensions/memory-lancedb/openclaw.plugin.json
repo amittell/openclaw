@@ -4,7 +4,8 @@
   "doctorContract": {
     "stateMigrations": [
       { "id": "memory-lancedb-agent-scope" },
-      { "id": "memory-lancedb-legacy-envelope-rows", "doctorOnly": true }
+      { "id": "memory-lancedb-legacy-envelope-rows", "doctorOnly": true },
+      { "id": "memory-lancedb-system-turn-rows", "doctorOnly": true }
     ]
   },
   "name": "Memory LanceDB",

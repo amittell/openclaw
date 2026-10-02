@@ -187,6 +187,17 @@ function matchKnownChannelMarkerFreeEnvelopePrefix(
 }
 
 /**
+ * OpenClaw prefixes the user-role turns it generates for itself (restart
+ * recovery, stranded-reply retry, recovery continuation) with `[System]`. They
+ * instruct the agent and state nothing about the user, so they must never be
+ * stored or recalled as memories. Keep the marker byte-identical with
+ * `formatSystemTurnPrompt` in `src/sessions/system-turn-prompt.ts`.
+ */
+export function isSystemTurnPromptText(text: string): boolean {
+  return text.trimStart().startsWith("[System]");
+}
+
+/**
  * Returns true if `text` looks like it contains OpenClaw-injected envelope or
  * transport metadata that should never be persisted as a long-term memory.
  */
