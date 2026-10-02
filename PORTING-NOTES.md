@@ -2469,11 +2469,11 @@ note, then one follow-up commit that adds the extra finalization attempt. Approv
 
 | commit        | kind              | what it changes                                                                                                         |
 | ------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `065179023dd` | fork fix          | a reasoning-only final response stopped on length gets one answer-only finalization, even when the run is replay-unsafe |
-| `ba62af3a59c` | fork fix          | tool-free finalization stops at its first tool call; its result projection accepts a clean answer after rejected calls  |
-| `ca2dd003e8a` | fork fix (plugin) | memory-lancedb never captures or recalls `[System]` turns; a doctor-only migration deletes the ones already stored      |
+| `83d5abc1577` | fork fix          | a reasoning-only final response stopped on length gets one answer-only finalization, even when the run is replay-unsafe |
+| `fd1dae0bde9` | fork fix          | tool-free finalization stops at its first tool call; its result projection accepts a clean answer after rejected calls  |
+| `f2c2804572b` | fork fix (plugin) | memory-lancedb never captures or recalls `[System]` turns; a doctor-only migration deletes the ones already stored      |
 
-### One answer-only pass after a reasoning-exhausted response (`065179023dd`)
+### One answer-only pass after a reasoning-exhausted response (`83d5abc1577`)
 
 qwen3.8-27b at `/think xhigh` gets a 32,768-token reasoning budget from the
 gpufarm gateway, equal to its `maxTokens`. Eleven calls spent at least 32,765
@@ -2510,7 +2510,7 @@ into `settled-turn-finalization-request.ts` beside the new resolver, because
 `terminal-resolution.ts` is over the line cap (727 grandfathered). Four test
 files changed only their import path.
 
-### Tool-free finalization stops at its first tool call (`ba62af3a59c`)
+### Tool-free finalization stops at its first tool call (`fd1dae0bde9`)
 
 On rh-bot (2026-10-01 19:05:35 EDT) the isolated finalization ran with tools
 disabled, the model called write, edit and exec anyway, and each "Tool X not
@@ -2557,7 +2557,7 @@ For rh-bot this means: call 1 emits `write`, the stop records "Tool write
 not found" without another model call, and call 2 either answers or ends with
 the fallback.
 
-### memory-lancedb kept OpenClaw's own system turns (`ca2dd003e8a`)
+### memory-lancedb kept OpenClaw's own system turns (`f2c2804572b`)
 
 With `autoCapture` on, the gateway restart recovery prompt
 (`main-session-restart-dispatch.ts`, a user-role turn built by
@@ -2620,8 +2620,8 @@ Left as is, with reasons:
 | fix 3 at the tip                                                            | 15 memory-lancedb files + doctor declarations + `system-turn-prompt`: 17 files pass; root `test/memory-lancedb-system-turn-capture.test.ts` 1/1; 5 doctor-contract registry files 50/50 |
 | `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:root`    | rc=0 each (71 s, 109 s, 250 s, 113 s)                                                                                                                                                   |
 | `tsgo:test:src`                                                             | first run failed in `agents-tools` on a readonly `as const` test table (fixed); rerun rc=0, 21 of 21 shards                                                                             |
-| `tsgo:core`, `tsgo:test:src` again at `ca2dd003e8a`, after the review fixes | rc=0 each; 21 of 21 shards                                                                                                                                                              |
-| extra attempt: rh-bot test at `c128b5d280a` production code                 | 2 of 2 fail: only one finalization pass runs (`[1]` model calls, expected `[1, 1]`)                                                                                                     |
+| `tsgo:core`, `tsgo:test:src` again at `f2c2804572b`, after the review fixes | rc=0 each; 21 of 21 shards                                                                                                                                                              |
+| extra attempt: rh-bot test at `75bd6a2df86` production code                 | 2 of 2 fail: only one finalization pass runs (`[1]` model calls, expected `[1, 1]`)                                                                                                     |
 | extra attempt at its commit                                                 | 2/2; finalization, terminal and incomplete-turn files 23 files 384/384; harness, lifecycle, session, copilot and codex finalizer files 10 files 562/562                                 |
 | extra attempt: `check:line-cap-ratchet`, oxfmt, `git diff --check`          | OK, 22 changed source files; clean                                                                                                                                                      |
 | extra attempt: `tsgo:core`, `tsgo:test:src`                                 | rc=0 each (59 s; 21 of 21 shards)                                                                                                                                                       |
