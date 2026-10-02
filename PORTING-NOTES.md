@@ -2359,3 +2359,103 @@ command layer.
 Drop `da9b206fc93` and `45d6c57f661` when #132409 (or an equivalent) reaches
 the fork's base tag; drop `9e0cdd2c129` and `72d328e364b` when #151099 lands
 upstream with the version-3 case.
+
+## SQLite maintenance noise and HTTP loop pooling onto the 9.6 carry (2026-10-01)
+
+Four commits on top of `f0c5175ad38` (the tip of
+`fix/v2026.9.6-bot-fixes-combined`), then this note, on
+`fix/v2026.9.6-sqlite-noise-and-http-loop`. Approved by Alex on 2026-10-02
+(UTC). None is deployed.
+
+| commit        | kind                       | source                                             | apply result                                                                                   |
+| ------------- | -------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `379547c4789` | port                       | upstream #156583, `20445202d31` (main, 2026-09-23) | `cherry-pick -x`, clean: the kick module and its test equal upstream's blobs                   |
+| `d11d26a4a5f` | port, adapted              | upstream #157834, `f5833978f3b` (main, 2026-09-25) | applied without #155988; 2 of upstream's 4 typed guards exist here; diagnostics equal upstream |
+| `bd3810976fb` | port, adapted              | upstream #157121, `1b32a8b3c7f` (main, 2026-09-24) | the WAL scheduler returns a promise (upstream's came with #155631, not carried)                |
+| `68d40047169` | fork fix, pending upstream | none (no upstream issue or PR found, 2026-10-01)   | `/tools/invoke` and `tools.invoke` no longer feed session tool-loop detection                  |
+
+### Why the bots carry it
+
+The deployed bot logs "SQLite reclamation Worker failed ... inputs changed
+before commit" about 95 times a day; those runs are superseded automatic
+maintenance that retries and succeeds. #156583 coalesces superseded plans
+behind a write-quiet timer (1 s, then 2 s) and pauses after three rejections;
+#157834 types the commit guards' refusal, so a fast superseded Worker logs at
+debug as "SQLite reclamation Worker superseded by newer inputs". #157121 waits
+up to 350 ms for the shared-state lifecycle coordinator, records contention as
+`blocked` health, retries once after 1 s, and reports only every fifth
+consecutive block. Its holder naming reads `/proc/locks`, so off Linux the
+holder stays `unknown` and the error text is unchanged.
+
+openclaw-scheduler polls `sessions_list` on `agent:main:main` every 20 s
+through `/tools/invoke`. The shared engine (`tools-invoke-shared.ts`) ran
+`before_tool_call` with that session's key and `loopDetection` but no `runId`,
+so each poll entered the session's tool-loop history in a run-less bucket: the
+eleventh identical poll logged a loop warning against the session, and the
+polls shared the 30-entry history window with the session's model runs. The
+engine now omits `loopDetection`; plugin hooks, trusted policies and approvals
+still run. MCP loopback (`mcp-http.ts`) carries the CLI run's `runId` and is
+unchanged.
+
+### #155988 was not carried
+
+Upstream #155988 (`1ed98e67c92`, "move maintenance planning and archive
+metadata into workers") sits between #156583 and #157834 on main. Here it
+applies with four conflicts, and once one tag-private function is exported,
+`tsgo:core` reports three errors. Two are the `signal` argument to
+`runExclusiveSqliteSessionWrite`, which arrived with #155288 (55 files,
+cancellable FIFO writer admission); the third is a missing import. Carried
+with that argument dropped, as the tag's other worker-lifetime users already
+queue, `tsgo:core` passed but two of its own tests failed: "cancels queued
+pending writer publication at agent close / state close without waiting on
+another queue owner" ("close waited on an unrelated queue owner"). Its archive
+half needs #155288. The adapted attempt is not on the branch.
+
+Without it, #157834 types the two guards that exist at the tag ("inputs
+changed before commit", "age fact changed before commit"). The two "after
+no-op planning" guards upstream also typed are #155988 code. The tag's
+in-process skip path still throws an untyped "database path changed"; it never
+reaches the Worker diagnostics. Upstream's test "reschedules maintenance
+superseded by a write during Worker planning without a Worker failure warning"
+passes here, and fails with the kick module at its previous blob.
+
+### Review
+
+An independent read-only review of the four commits found no P0, P1 or P2.
+Left, with reasons:
+
+- A superseded maintenance Worker that runs 1 s or longer still logs "slow
+  SQLite reclamation Worker operation" at warn (upstream behaves the same), so
+  part of the bot's noise may move to that line. Later upstream changes to the
+  kick and diagnostics modules are not carried: #158878, #158885, #159083,
+  #160815, #162212 and `5ca95288927` (main, 2026-09-26 to 2026-10-01).
+- `kick.ts` still throws a plain "owner retired" Error when the database
+  handle closes or is replaced mid-run; that is not a superseding write, and
+  upstream has the same throw.
+- No test covers #157121's 1 s retry through deferred write admission, here or
+  upstream; the unadmitted path is covered.
+- `68d40047169` is fork-only and will conflict on each upgrade until upstream
+  takes an equivalent.
+
+### Validation (2026-10-01, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                   | result                                                                                                                                                         |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session-accessor.sqlite-maintenance-kick` at `379547c4789`             | 21/21                                                                                                                                                          |
+| `session-accessor.sqlite-reclamation-worker` at `d11d26a4a5f`           | 3/3; the superseded-write test fails with the kick module at its previous blob (plain `Error`, not the typed one)                                              |
+| 11 sessions maintenance and reclamation neighbor files at `d11d26a4a5f` | 11 files, 150/150                                                                                                                                              |
+| #157121's tests and 8 WAL and coordinator neighbors at `bd3810976fb`    | 10 files, 115 passed, 8 skipped; checkpoint 13/13 and state-db coordinator 14/14 include both new tests (the Linux-only holder assertions do not run on macOS) |
+| `tools-invoke-http.loop-detection` with the engine change reverted      | fails: the eleventh HTTP call emits a loop warning with count 10                                                                                               |
+| the same test at `68d40047169`                                          | passes                                                                                                                                                         |
+| the 5 `tools-invoke*` gateway test files and `tool-loop-admission`      | 6 files, 85/85                                                                                                                                                 |
+| `oxfmt --check` and `git diff --check` over the branch                  | clean (21 files)                                                                                                                                               |
+| `tsgo:core`                                                             | rc=0, 0 errors                                                                                                                                                 |
+| `tsgo:test:src`                                                         | rc=0, 21 of 21 shards, 0 errors (1,094 s); a first run had stopped at `gateway-root` on two narrowing errors in the new test, fixed before the commit          |
+
+Not run: `check-changed`, the full suite, `pnpm build`, and any live proof; the
+log-volume drop on the bot is expected from the tests, not observed.
+
+Drop `379547c4789`, `d11d26a4a5f` and `bd3810976fb` when the fork's base tag
+contains #156583, #157834 and #157121. Drop `68d40047169` when upstream stops
+passing `loopDetection` from `invokeGatewayTool` (unchanged on main
+`949f3f52121`, 2026-10-02).
