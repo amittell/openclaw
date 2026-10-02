@@ -2459,3 +2459,155 @@ Drop `379547c4789`, `d11d26a4a5f` and `bd3810976fb` when the fork's base tag
 contains #156583, #157834 and #157121. Drop `68d40047169` when upstream stops
 passing `loopDetection` from `invokeGatewayTool` (unchanged on main
 `949f3f52121`, 2026-10-02).
+
+## Length-stop, tool-free finalization and memory fixes (2026-10-01)
+
+Three commits on `fix/v2026.9.6-length-stop-and-memory`, based on
+`f0c5175ad38` (the tip of `fix/v2026.9.6-bot-fixes-combined`), then this
+note. Approved by Alex on 2026-10-02 (UTC) from what the bots logged between
+2026-09-24 and 10-01. Nothing here is deployed or pushed.
+
+| commit        | kind              | what it changes                                                                                                         |
+| ------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `065179023dd` | fork fix          | a reasoning-only final response stopped on length gets one answer-only finalization, even when the run is replay-unsafe |
+| `ba62af3a59c` | fork fix          | tool-free finalization stops at its first tool call; its result projection accepts a clean answer after rejected calls  |
+| `ca2dd003e8a` | fork fix (plugin) | memory-lancedb never captures or recalls `[System]` turns; a doctor-only migration deletes the ones already stored      |
+
+### One answer-only pass after a reasoning-exhausted response (`065179023dd`)
+
+qwen3.8-27b at `/think xhigh` gets a 32,768-token reasoning budget from the
+gpufarm gateway, equal to its `maxTokens`. Eleven calls spent at least 32,765
+tokens on reasoning and stopped on `length` with nothing visible. On mac-mini
+(2026-10-01 03:54:15Z) earlier tools had made the run replay-unsafe, so
+`shouldSkipNonVisibleTurnRetry` refused the reasoning-only retry and the user
+got "Agent couldn't generate a response".
+
+`resolveLengthStopAnswerOnlyInstruction` (`incomplete-turn-recovery.ts`)
+matches a current response with `stopReason=length`, reasoning blocks only
+(`hasOnlyAssistantReasoningContent`, so no text and no tool call), and no
+payload, tool presentation or tool media. It reuses
+`shouldSkipNonVisibleTurnRetry` with `tolerateSideEffects`, so only the
+replay-safety clause is waived; client tool calls, yields, approvals, tool
+errors, spawns, and unsettled or async work still block it. The pass runs
+through the settled-turn finalization owner, which is already tools-disabled
+and independent of replay state. It takes precedence over the settled-tool
+request, caps `thinkLevel` at `low` (`minimal` and `low` are kept; `off`
+becomes `low`, since exhausting the budget at `off` shows the transport
+ignored it), makes one attempt, and on an empty or failed pass keeps the original
+incomplete-turn outcome instead of the "tool run finished" fallback. Log line:
+`running one answer-only finalization (tools disabled, thinking=low)`.
+
+Behavior change: a replay-safe turn of the same shape used to get up to two
+ordinary reasoning-only retries at the session's reasoning level. It now gets
+this one pass instead, because a retry at the level that just exhausted the
+budget tends to exhaust it again. Whether the model sees its earlier reasoning
+depends on the transport replaying it (`openai-completions` sends it back under
+the thinking block's signature field); otherwise it answers from the
+transcript at low effort.
+
+`resolveSettledTurnFinalizationRequest` moved from `terminal-resolution.ts`
+into `settled-turn-finalization-request.ts` beside the new resolver, because
+`terminal-resolution.ts` is over the line cap (727 grandfathered). Four test
+files changed only their import path.
+
+### Tool-free finalization stops at its first tool call (`ba62af3a59c`)
+
+On rh-bot (2026-10-01 19:05:35 EDT) the isolated finalization ran with tools
+disabled, the model called write, edit and exec anyway, and each "Tool X not
+found" got another model call: 4 calls in 4m42s. The clean 4,193-character
+answer that followed was rejected as "capability activity"
+(`settled-turn-finalization-result.ts:119` at the base).
+
+- `settled-finalization-tool-stop.ts`, installed from
+  `attempt-session-runtime-prepare.ts`, wraps `prepareNextTurnWithContext`
+  only when `operation === "settled-tool-finalization"` and
+  `disableTools === true`. After an assistant turn with a tool call it returns
+  `{ stop: true }`, so the not-found result is recorded but never answered.
+  `attempt-session-prepare.ts` would have been the natural home, but it sits
+  exactly at the 700-line cap.
+- `projectSettledTurnFinalizationAttemptResult` accepts a clean final answer
+  when every tool meta is an error (not async, terminating or suspended), the
+  last tool error has `executionStarted === false`, and nothing is still
+  running. Only then does it ignore the current attempt's replay marking,
+  which goes by tool name. The execution-based `replayMetadata`, which only
+  an executed side-effecting call marks, stays strict. Message sends, media,
+  cron adds, spawns, client tool calls, yields and the rest still reject, and
+  a pass that ends on its tool call is rejected as "returned a tool call".
+
+With the stop in place, the built-in harness's pass ends on the tool call,
+so the projection change never fires for it. The rh-bot case now ends after
+one call with the fallback reply instead of four calls and the same fallback.
+The projection change covers harnesses that run their own loop through the
+SDK projection (copilot). Delivering an answer in the built-in case would
+need one more tools-disabled finalization after the stop (the existing
+two-attempt bound for empty passes could carry it). That is a re-prompt after
+a tool call, which this change was asked not to do, so it is left for Alex.
+
+### memory-lancedb kept OpenClaw's own system turns (`ca2dd003e8a`)
+
+With `autoCapture` on, the gateway restart recovery prompt
+(`main-session-restart-dispatch.ts`, a user-role turn built by
+`formatSystemTurnPrompt`, ending "never claim completion or success") matched
+the capture triggers and was stored. Agents later told users "the gateway
+restarted" when none had. At this base the prompt is 729 characters, which is
+over the 500-character default `captureMaxChars`. So the bots either raise that
+limit or ran a shorter prompt. Not checked.
+
+`isSystemTurnPromptText` (`memory-capture-sanitization.ts`) matches text that
+starts with `[System]`, the marker every generated system turn carries:
+restart recovery, stranded-reply retry and recovery continuation. The marker
+is copied from core because a plugin cannot import it. `shouldCapture` rejects
+these turns, and recall and duplicate detection skip them, so stored rows stop
+surfacing as soon as the plugin is deployed. `memory-lancedb-system-turn-rows`
+is a plugin-owned, doctor-only state migration that deletes them on
+`openclaw doctor --fix`; startup never runs it. It shares one implementation
+with `memory-lancedb-legacy-envelope-rows`, whose messages are unchanged (its
+test asserts them). The plugin manifest declares the new id.
+
+After deploy, run `openclaw doctor --fix` on each bot to delete the stored
+rows. Its preview shows the count first. No real store was written here.
+
+### Review
+
+An independent read-only review of the three commits found no P0. Its P1 is the point above: in
+the built-in harness the stop makes the relaxed projection unreachable, so
+rh-bot gets the fallback after one call, not the answer. Fixed after review:
+
+- The projection waived `replayMetadata` along with the name-based
+  current-attempt marking. A not-found call leaves `replayMetadata` clean, so
+  it is now strict, and its test fixture uses the real shape.
+- `off` was kept for the answer-only pass; it now becomes `low`.
+- The replay-safe pre-emption had no test; the answer-only test now covers a
+  replay-safe turn at `off`.
+
+Left as is, with reasons:
+
+- A leftover `lastToolError` blocks the answer-only pass. Only replay safety
+  was to be waived; the measured incident had none (its "couldn't generate"
+  text requires `!lastToolError`).
+- Copilot's finalizer reads `reasoningEffort`, not `thinkLevel`. Neither
+  copilot nor codex produces a `length` stop, so the trigger cannot fire there.
+- `memory_store` still accepts `[System]` text that recall will then hide.
+  Envelope text has the same gap today. Follow-up.
+- The doctor cleanup matches on the prefix across all agents, so a
+  user-written memory starting with `[System]` would be deleted too.
+
+### Validation (2026-10-01/02, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                       | result                                                                                                                                                                                  |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| fix 1 tests at `f0c5175ad38` production code                                | 4 of 6 fail: finalization never runs (0 calls) with no tool batch in the attempt; with a settled batch it runs at `thinkLevel: "xhigh"`; the 2 precision guards pass                    |
+| fix 1 at the tip                                                            | 6/6; 17 sibling files (terminal resolution, finalization, moved-resolver importers) 269/269                                                                                             |
+| fix 2 tests at `f0c5175ad38` production code                                | runner: 2 model calls instead of 1; projection: the clean later answer throws "reported capability activity"                                                                            |
+| fix 2 at the tip                                                            | runtime-prepare 5/5, projection 23/23; with builtin harness, selection, session, copilot and codex finalizer suites: 9 files 536/536                                                    |
+| rerun after the review fixes                                                | answer-only, 4 more finalization files, projection, builtin and copilot harness: 8 files 200/200                                                                                        |
+| fix 3 tests at `f0c5175ad38` plugin code                                    | `shouldCapture` returns true for the `[System]` prompt; recall keeps the row; the migration is absent                                                                                   |
+| fix 3 at the tip                                                            | 15 memory-lancedb files + doctor declarations + `system-turn-prompt`: 17 files pass; root `test/memory-lancedb-system-turn-capture.test.ts` 1/1; 5 doctor-contract registry files 50/50 |
+| `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:root`    | rc=0 each (71 s, 109 s, 250 s, 113 s)                                                                                                                                                   |
+| `tsgo:test:src`                                                             | first run failed in `agents-tools` on a readonly `as const` test table (fixed); rerun rc=0, 21 of 21 shards                                                                             |
+| `tsgo:core`, `tsgo:test:src` again at `ca2dd003e8a`, after the review fixes | rc=0 each; 21 of 21 shards                                                                                                                                                              |
+| `check:line-cap-ratchet --base f0c5175ad38`                                 | OK, 20 changed source files                                                                                                                                                             |
+| `format:docs:check`, `git diff --check`                                     | clean                                                                                                                                                                                   |
+| pre-existing, not this branch                                               | `run.plugin-runtime-refresh.integration.test.ts`: the same 3 media cases fail (3 attempts, expected 2) with this branch's production code reverted                                      |
+
+Not run: the full suite, `check-changed`, and any live proof on a bot.
