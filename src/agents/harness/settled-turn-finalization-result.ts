@@ -69,8 +69,34 @@ export function resolveSettledTurnFinalizationText(
 }
 
 /**
+ * The finalizer runs with tools disabled, so a tool call it makes is rejected
+ * before execution. Calls that all failed, never started (proven for the last
+ * one), and left nothing running did no work. They still mark the current
+ * attempt replay-unsafe, because that marking goes by tool name; the
+ * execution-based `replayMetadata` stays strict. Any other tool evidence is
+ * capability activity.
+ */
+function hasOnlyRejectedToolCalls(result: AgentHarnessAttemptResult): boolean {
+  return (
+    result.toolMetas.length > 0 &&
+    result.toolMetas.every(
+      (tool) =>
+        tool.isError === true &&
+        tool.asyncStarted !== true &&
+        tool.terminate !== true &&
+        tool.codeModeSuspended !== true,
+    ) &&
+    result.lastToolError?.executionStarted === false &&
+    result.itemLifecycle.activeCount === 0 &&
+    result.itemLifecycle.completedCount === result.itemLifecycle.startedCount
+  );
+}
+
+/**
  * Projects a harness-owned full attempt engine into the narrow finalization
- * contract, rejecting canonical failure or capability evidence first.
+ * contract, rejecting canonical failure or capability evidence first. A clean
+ * final answer that follows rejected tool calls is accepted; the answer itself
+ * is still checked for tool calls below.
  */
 export function projectSettledTurnFinalizationAttemptResult(
   result: AgentHarnessAttemptResult,
@@ -89,14 +115,16 @@ export function projectSettledTurnFinalizationAttemptResult(
     throw new Error("Settled-turn finalization attempt did not complete successfully");
   }
   if (
-    result.toolMetas.length > 0 ||
-    result.itemLifecycle.startedCount > 0 ||
-    result.itemLifecycle.completedCount > 0 ||
-    result.itemLifecycle.activeCount > 0 ||
+    (!hasOnlyRejectedToolCalls(result) &&
+      (result.toolMetas.length > 0 ||
+        result.itemLifecycle.startedCount > 0 ||
+        result.itemLifecycle.completedCount > 0 ||
+        result.itemLifecycle.activeCount > 0 ||
+        result.currentAttemptReplayMetadata?.hadPotentialSideEffects ||
+        (result.currentAttemptReplayMetadata && !result.currentAttemptReplayMetadata.replaySafe) ||
+        result.lastToolError)) ||
     result.replayMetadata.hadPotentialSideEffects ||
     !result.replayMetadata.replaySafe ||
-    result.currentAttemptReplayMetadata?.hadPotentialSideEffects ||
-    (result.currentAttemptReplayMetadata && !result.currentAttemptReplayMetadata.replaySafe) ||
     (result.clientToolCalls?.length ?? 0) > 0 ||
     (result.acceptedSessionSpawns?.length ?? 0) > 0 ||
     result.didSendViaMessagingTool ||
@@ -112,7 +140,6 @@ export function projectSettledTurnFinalizationAttemptResult(
     result.toolAudioAsVoice ||
     result.toolTrustedLocalMedia ||
     result.hasToolMediaBlockReply ||
-    result.lastToolError ||
     (result.successfulCronAdds ?? 0) > 0 ||
     result.yieldDetected
   ) {

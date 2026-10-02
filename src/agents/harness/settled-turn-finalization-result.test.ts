@@ -169,6 +169,73 @@ describe("assertSettledTurnFinalizationResult", () => {
     },
   );
 
+  describe("after tool calls the tools-disabled pass rejected", () => {
+    const rejectedCall = assistantMessage(
+      [{ type: "toolCall", id: "call-write", name: "write", arguments: {} }],
+      "toolUse",
+    );
+    function afterRejectedCall(
+      final: AssistantMessage,
+      overrides: Partial<EmbeddedRunAttemptResult> = {},
+    ): EmbeddedRunAttemptResult {
+      return successfulAttempt({
+        messagesSnapshot: [rejectedCall, final],
+        lastAssistant: final,
+        currentAttemptAssistant: final,
+        currentAttemptCompletedAssistant: final,
+        toolMetas: [{ toolCallId: "call-write", toolName: "write", isError: true }],
+        lastToolError: {
+          toolName: "write",
+          executionStarted: false,
+          error: "Tool write not found",
+        },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        // A call that never started leaves the execution-based replay state
+        // clean; only the name-based current-attempt marking goes unsafe.
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        ...overrides,
+      });
+    }
+
+    it("accepts a later clean final answer instead of reporting capability activity", () => {
+      const final = assistantMessage([{ type: "text", text: "The clean final answer." }]);
+
+      expect(projectSettledTurnFinalizationAttemptResult(afterRejectedCall(final))).toEqual({
+        assistant: final,
+      });
+    });
+
+    it("still rejects a pass that ended on its tool call", () => {
+      expect(() =>
+        projectSettledTurnFinalizationAttemptResult(afterRejectedCall(rejectedCall)),
+      ).toThrow("returned a tool call");
+    });
+
+    it.each<[string, Partial<EmbeddedRunAttemptResult>]>([
+      [
+        "a tool that started executing",
+        { lastToolError: { toolName: "write", executionStarted: true, error: "denied" } },
+      ],
+      ["a tool that succeeded", { toolMetas: [{ toolName: "write", isError: false }] }],
+      [
+        "an executed side effect",
+        { replayMetadata: { hadPotentialSideEffects: true, replaySafe: false } },
+      ],
+      [
+        "a tool still running",
+        { itemLifecycle: { startedCount: 1, completedCount: 0, activeCount: 1 } },
+      ],
+      ["a message send", { didSendViaMessagingTool: true, messagingToolSentTexts: ["sent"] }],
+    ])("still reports capability activity for %s", (_name, overrides) => {
+      const final = assistantMessage([{ type: "text", text: "The clean final answer." }]);
+
+      expect(() =>
+        projectSettledTurnFinalizationAttemptResult(afterRejectedCall(final, overrides)),
+      ).toThrow("reported capability activity");
+    });
+  });
+
   it("rejects partial or stale assistants without current-attempt completion evidence", () => {
     expect(() =>
       projectSettledTurnFinalizationAttemptResult(
