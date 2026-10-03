@@ -45,6 +45,7 @@ import {
   requiresCompletionRequiredAsyncTaskWait,
   type AsyncStartedToolMeta,
 } from "./attempt-async-tasks.js";
+import { createContextTotalTokensAdvance } from "./attempt-context-total-tokens.js";
 import {
   readAttemptNestedToolActivity,
   type AttemptNestedToolActivityState,
@@ -326,9 +327,11 @@ function prepareStream(
   // Terminal callbacks run after queue construction; keep the queue in this
   // phase so active-run clearing and subscription teardown share one owner.
   let deferredLifecycleOwner: EmbeddedAttemptDeferredLifecycleOwner | undefined;
+  const contextTotalTokensAdvance = createContextTotalTokensAdvance(attempt);
   const streamSubscription = subscribeEmbeddedAgentSession({
     session: activeSession,
     onModelUsage: input.onModelUsage,
+    onModelCallSettled: contextTotalTokensAdvance.offer,
     runId: attempt.runId,
     lifecycleGeneration: attempt.lifecycleGeneration,
     messageChannel: input.runtimeChannel,
@@ -655,6 +658,7 @@ function prepareStream(
 
   return {
     subscription,
+    contextTotalTokensAdvance,
     queueHandle,
     deferredLifecycleOwner,
     toolSearchCatalogExecutor,
