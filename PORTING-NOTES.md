@@ -2630,3 +2630,120 @@ Left as is, with reasons:
 | pre-existing, not this branch                                               | `run.plugin-runtime-refresh.integration.test.ts`: the same 3 media cases fail (3 attempts, expected 2) with this branch's production code reverted                                      |
 
 Not run: the full suite, `check-changed`, and any live proof on a bot.
+
+## Per-call context total brought to the upstream design (2026-10-03)
+
+One commit on `fix/v2026.9.6-token-writer-upstream-parity`, based on
+`939c4e8ea12` (the tip of `upgrade-v2026.9.6`), then this note. Requested by
+Alex on 2026-10-03 after reviewing the upstream port. Nothing here is deployed
+or pushed.
+
+| commit        | kind     | what it changes                                                                                                                                   |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `1b80d2fcd83` | fork fix | the mid-turn writer from `bd02247c7fe` / `f0c5175ad38` takes the upstream port's design; both "latest row wins" finalizers keep their final total |
+
+The upstream draft is local branch `feat/per-call-context-total-tokens` on
+upstream/main `79a0cdbc881c` (`d8e413e3215`, `484558b2b98`, `c53ad182f06`), not
+opened. This branch carries the same design onto the 9.6 tag.
+
+### What was wrong in the carry
+
+An independent review of the upstream port found these, and each one is in
+the carry (tests from this branch, run against `939c4e8ea12` production code):
+
+- **Open fence after a reset.** The writer fenced only on facts it had. A run
+  that created its row is admitted before the row exists, so it had no
+  lifecycle or claim fact, and reset keeps the session id
+  (`session-reset-service.ts`: `currentEntry?.sessionId ?? randomUUID()`).
+  The writer could stamp the reset row: `expected 80000 to be +0`.
+- **Per-attempt ownership.** Advance-only refused any value below a fresh one
+  the attempt had not written, so a retry after tool-result truncation could
+  not lower the previous attempt's peak (`expected 50000 to be 30000`), and a
+  larger pre-run total, such as one from before a model switch, stayed fresh
+  for the whole run (`expected 200000 to be 150000`).
+- **Progress-card refresh still advanced the value** (the known gap in the
+  earlier note): `expected 10000 to be +0`.
+- **The agent-command finalizer drops its own total.**
+  `updateSessionStoreAfterAgentRun` merges with
+  `projectSessionSnapshotChanges`, where "the latest row wins conflicts". The
+  run's own per-call writes change `totalTokens` under the run's snapshot, so
+  the finalizer skipped its final value: `expected 185000 to be 120000`, and
+  `185000` kept fresh where the final call had no context snapshot.
+- **The cron persist has the same drop.** `createPersistCronSessionEntry`
+  merges with `mergeSessionSnapshotChanges` against the run's baseline, and
+  `run-finalize.ts` writes the final total into the live entry before
+  `settleUsage` persists it. The per-call 190000 stayed on the row instead of
+  the run's 120000. This applies when the cron run uses the base row
+  (`runSessionKey === agentSessionKey`).
+
+### What changed
+
+- The latest settled call wins under the fence: session id, the writer claim
+  (`expectedWriterRunId`, or the run's own id when it created the row, which
+  the initial writer stamps as `activeWriterRunId`), and the lifecycle
+  revision when the run was admitted with one. Alex ruled out the
+  "never lower another writer's value" rule on 2026-10-03: nothing else writes
+  the field while the run holds its claim, and turn-completion and compaction
+  accounting land after every attempt has closed its writer.
+- Skipped: detached runs, input provenance for which
+  `shouldPreserveUserFacingSessionStateForInputProvenance` is true (what
+  turn-completion accounting already leaves alone), and incognito sessions.
+- The agent-command finalizer and the cron persist apply the run's final
+  `totalTokens`, `totalTokensFresh` and `totalTokensVersion` after the merge.
+  In cron, `run-finalize.ts` sets `contextTotalsAccounted` only when the run
+  used the base row, and the persist clears it after the commit, so earlier
+  candidate persists and the merge's rule for benign concurrent writes are
+  unchanged.
+- `abandon()` runs in a nested `finally`, so it still runs if stream cleanup
+  throws.
+- Names match the upstream draft: `createContextTotalTokensWriter`,
+  `persistSessionContextTotalTokens`, `contextTotalTokensWriter`.
+
+### What is different from the upstream draft, and why
+
+- **No worker path.** Upstream routes the write through the SQLite worker
+  (`workerGuard: {}`) because its AGENTS.md forbids new main-thread database
+  access. The 9.6 tag has no worker-routed session patch, so the write uses
+  the same `patchSessionEntryCore` path as `persistSessionUsageUpdate` here.
+  The writer keeps at most one write in flight per attempt and coalesces the
+  rest, so the added load is at most one entry patch per model call.
+- **Incognito.** Upstream skips incognito sessions because their store has no
+  worker path. Here every store is in-process, so the skip is kept only for
+  parity; incognito rows are excluded from session listings anyway.
+- **Tests.** The settle gate is an inline race (this tag has no
+  `awaitGateBeforeSettlement`). The composition test stays in
+  `attempt-stream-prepare.test.ts`, which is under its line cap here. The
+  finalizer cases are in `session-store.context-totals.test.ts`, because
+  `session-store.test.ts` is over its cap (3519 counted lines) and the ratchet
+  rejects growth. `session-usage.total-tokens-advance.test.ts` is removed: it
+  covered advance-only and `compactionCount` fence behavior that no longer
+  exists, and the writer tests cover the primitive through its only caller.
+- The subscriber (`onModelCallSettled` in `embedded-agent-subscribe.model-state.ts`)
+  is unchanged; it already matched.
+
+### Not covered
+
+- Codex app-server and CLI backend runs still update only at turn completion.
+- The value lands on `turn_end`, which the agent loop emits after the call's
+  tool batch, so during a long tool call readers see the previous call's
+  total.
+- A call that reports an unavailable context snapshot does not clear the
+  previous per-call value; turn completion marks it unknown.
+- A goal with a token budget can reach `budget_limited` mid-turn, since goal
+  accounting runs with each published total.
+- The cron case sets finalization's marker directly; that suite mocks the
+  session writer, so finalize itself is not exercised end to end.
+
+### Validation (2026-10-03, on this Air, node v24.18.0, pnpm 12.4.0)
+
+| check                                                                                         | result                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| writer tests at `939c4e8ea12` production code (adapter for the call signature)                | 4 of 8 fail, one per defect above                                                                                                                                                                                          |
+| finalizer and cron tests at `939c4e8ea12` production code                                     | `session-store.context-totals` 2 of 2 fail; `run-session-state` 1 of 27 fails                                                                                                                                              |
+| at the tip                                                                                    | writer 8/8, `session-store.context-totals` 2/2, `session-store` 105/105, `run-session-state` 27/27, `model-state` 32/32, `attempt-execution-settle` 11/11, `attempt-stream-finalize` 14/14, `attempt-stream-prepare` 34/34 |
+| `tsgo:core`                                                                                   | rc=0, 0 errors (145 s)                                                                                                                                                                                                     |
+| core-test graphs for the changed paths (`run-tsgo-core-test-shards.mjs --changed-paths-json`) | rc=0, 25 of 25 graphs (1,123 s)                                                                                                                                                                                            |
+| `check:line-cap-ratchet --base 939c4e8ea12`                                                   | OK, 13 changed source files (first run rejected `session-store.test.ts` 3519 -> 3581; the cases moved)                                                                                                                     |
+| oxfmt, `git diff --check`, `format:docs:check`                                                | clean                                                                                                                                                                                                                      |
+
+Not run: the full suite, `check-changed`, and any live proof on a bot.
