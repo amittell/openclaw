@@ -222,15 +222,11 @@ export async function persistSessionUsageUpdate(params: {
 
 /**
  * Publishes one settled model call's context snapshot while its turn is still
- * running, so status readers see a long turn's context grow.
- *
- * Turn-completion accounting stays authoritative and lands after the caller has
- * stopped writing. Until then a candidate only advances a fresh value from
- * another writer; it may replace `replaceOwnValue`, the caller's own last
- * applied value, so the snapshot can follow the context down after compaction.
- * Resolves true only when committed.
+ * running, so status readers see a long turn's context grow. The latest settled
+ * call wins, including a smaller one after compaction; turn-completion
+ * accounting stays authoritative and lands after the caller has stopped writing.
  */
-export async function persistSessionTotalTokensAdvance(params: {
+export async function persistSessionContextTotalTokens(params: {
   agentId?: string;
   storePath: string;
   sessionKey: string;
@@ -240,10 +236,8 @@ export async function persistSessionTotalTokensAdvance(params: {
   };
   /** Prompt-token context snapshot of the latest settled model call. */
   totalTokens: number;
-  replaceOwnValue?: number;
-}): Promise<boolean> {
+}): Promise<void> {
   const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
-  let applied = false;
   try {
     await patchSessionEntryCore(
       { agentId, storePath, sessionKey },
@@ -252,20 +246,10 @@ export async function persistSessionTotalTokensAdvance(params: {
           entry.sessionId !== expectedSession.sessionId ||
           entry.activeWriterRunId !== expectedSession.activeWriterRunId ||
           (expectedSession.lifecycleRevision !== undefined &&
-            entry.lifecycleRevision !== expectedSession.lifecycleRevision)
-        ) {
-          return null;
-        }
-        // A stale or unknown value is no baseline; the first fresh observation wins.
-        const currentFresh =
-          entry.totalTokensFresh === true &&
-          entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION
-            ? entry.totalTokens
-            : undefined;
-        if (
-          currentFresh !== undefined &&
-          (totalTokens === currentFresh ||
-            (totalTokens < currentFresh && currentFresh !== params.replaceOwnValue))
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision) ||
+          (entry.totalTokens === totalTokens &&
+            entry.totalTokensFresh === true &&
+            entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION)
         ) {
           return null;
         }
@@ -282,16 +266,9 @@ export async function persistSessionTotalTokensAdvance(params: {
         }
         return patch;
       },
-      {
-        skipMaintenance: true,
-        onCommitted: () => {
-          applied = true;
-        },
-        workerGuard: {},
-      },
+      { skipMaintenance: true, workerGuard: {} },
     );
   } catch (err) {
     logVerbose(`failed to persist per-call context total: ${String(err)}`);
   }
-  return applied;
 }

@@ -146,7 +146,7 @@ describe("runEmbeddedAttemptSettledPhase", () => {
     const fixture = createFixture(mocks);
     const closeStarted = createDeferredCore();
     const flushed = createDeferredCore();
-    fixture.contextTotalTokensAdvance.close.mockImplementationOnce(async () => {
+    fixture.contextTotalTokensWriter.close.mockImplementationOnce(async () => {
       closeStarted.resolve();
       await flushed.promise;
     });
@@ -856,7 +856,7 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       expect.stringContaining("unsubscribe failed, possible resource leak"),
     );
     // A failed prompt drops its pending per-call total once the subscription is released.
-    expect(fixture.contextTotalTokensAdvance.close).not.toHaveBeenCalled();
+    expect(fixture.contextTotalTokensWriter.close).not.toHaveBeenCalled();
     expect(fixture.order.slice(-2)).toEqual(["clear-active-run", "context-total-abandon"]);
   });
 
