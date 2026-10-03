@@ -219,3 +219,79 @@ export async function persistSessionUsageUpdate(params: {
     }
   }
 }
+
+/**
+ * Publishes one settled model call's context snapshot while its turn is still
+ * running, so status readers see a long turn's context grow.
+ *
+ * Turn-completion accounting stays authoritative and lands after the caller has
+ * stopped writing. Until then a candidate only advances a fresh value from
+ * another writer; it may replace `replaceOwnValue`, the caller's own last
+ * applied value, so the snapshot can follow the context down after compaction.
+ * Resolves true only when committed.
+ */
+export async function persistSessionTotalTokensAdvance(params: {
+  agentId?: string;
+  storePath: string;
+  sessionKey: string;
+  /** Admission facts. Reset keeps the session id, so the writer claim is always checked. */
+  expectedSession: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision"> & {
+    activeWriterRunId: string;
+  };
+  /** Prompt-token context snapshot of the latest settled model call. */
+  totalTokens: number;
+  replaceOwnValue?: number;
+}): Promise<boolean> {
+  const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
+  let applied = false;
+  try {
+    await patchSessionEntryCore(
+      { agentId, storePath, sessionKey },
+      (entry) => {
+        if (
+          entry.sessionId !== expectedSession.sessionId ||
+          entry.activeWriterRunId !== expectedSession.activeWriterRunId ||
+          (expectedSession.lifecycleRevision !== undefined &&
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision)
+        ) {
+          return null;
+        }
+        // A stale or unknown value is no baseline; the first fresh observation wins.
+        const currentFresh =
+          entry.totalTokensFresh === true &&
+          entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION
+            ? entry.totalTokens
+            : undefined;
+        if (
+          currentFresh !== undefined &&
+          (totalTokens === currentFresh ||
+            (totalTokens < currentFresh && currentFresh !== params.replaceOwnValue))
+        ) {
+          return null;
+        }
+        const updatedAt = Date.now();
+        const patch: Partial<SessionEntry> = {
+          totalTokens,
+          totalTokensFresh: true,
+          totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+          updatedAt,
+        };
+        const accountedGoal = resolveSessionGoalDisplayState({ ...entry, ...patch }, updatedAt);
+        if (accountedGoal) {
+          patch.goal = accountedGoal;
+        }
+        return patch;
+      },
+      {
+        skipMaintenance: true,
+        onCommitted: () => {
+          applied = true;
+        },
+        workerGuard: {},
+      },
+    );
+  } catch (err) {
+    logVerbose(`failed to persist per-call context total: ${String(err)}`);
+  }
+  return applied;
+}
