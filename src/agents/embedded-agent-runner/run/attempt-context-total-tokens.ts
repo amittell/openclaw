@@ -1,10 +1,10 @@
-import { persistSessionTotalTokensAdvance } from "../../../auto-reply/reply/session-usage.js";
+import { persistSessionContextTotalTokens } from "../../../auto-reply/reply/session-usage.js";
 import { isIncognitoSessionKey } from "../../../routing/session-key.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../../sessions/input-provenance.js";
 import { deriveSessionTotalTokens, type NormalizedUsage } from "../../usage.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
-type ContextTotalTokensAdvance = {
+type ContextTotalTokensWriter = {
   /** Offers a settled model call's usage. Never awaits; safe on the event hot path. */
   offer: (usage: NormalizedUsage | undefined) => void;
   /** Stops accepting offers and waits until the latest accepted offer is written. */
@@ -13,36 +13,26 @@ type ContextTotalTokensAdvance = {
   abandon: () => Promise<void>;
 };
 
-const DISABLED: ContextTotalTokensAdvance = {
+const DISABLED: ContextTotalTokensWriter = {
   offer: () => {},
   close: async () => {},
   abandon: async () => {},
 };
 
-// Retries and fallbacks reuse the run's admitted context, so ownership of a
-// published value spans the run's attempts and is released with the run.
-const publishedByRun = new WeakMap<EmbeddedRunAttemptParams["admittedRunContext"], number>();
-
 /**
  * Publishes the session's context total after each settled model call of an
  * attempt, before turn-completion accounting lands. One write is in flight at a
  * time and the latest offer wins, so a fast tool loop never queues store writes.
- * Every write is fenced on the session, lifecycle revision and writer claim the
- * run was admitted under. Compaction accounting lands at run settlement, after
- * every attempt has closed its writer; until then the run may lower only a value
- * it published itself.
+ * Every write is fenced on the session, writer claim and lifecycle revision the
+ * run was admitted under, and turn-completion and compaction accounting land
+ * only after every attempt has closed its writer.
  */
-export function createContextTotalTokensAdvance(
+export function createContextTotalTokensWriter(
   attempt: Pick<
     EmbeddedRunAttemptParams,
-    | "admittedRunContext"
-    | "runId"
-    | "sessionId"
-    | "sessionTarget"
-    | "sessionPersistence"
-    | "inputProvenance"
+    "runId" | "sessionId" | "sessionTarget" | "sessionPersistence" | "inputProvenance"
   >,
-): ContextTotalTokensAdvance {
+): ContextTotalTokensWriter {
   const target = attempt.sessionTarget;
   if (
     attempt.sessionPersistence === "detached" ||
@@ -55,7 +45,6 @@ export function createContextTotalTokensAdvance(
   ) {
     return DISABLED;
   }
-  const run = attempt.admittedRunContext;
   const scope = {
     agentId: target.agentId,
     storePath: target.storePath,
@@ -79,20 +68,10 @@ export function createContextTotalTokensAdvance(
     const totalTokens = next;
     next = undefined;
     // The primitive logs and absorbs its own write failures.
-    inFlight = persistSessionTotalTokensAdvance({
-      ...scope,
-      totalTokens,
-      replaceOwnValue: publishedByRun.get(run),
-    })
-      .then((applied) => {
-        if (applied) {
-          publishedByRun.set(run, totalTokens);
-        }
-      })
-      .finally(() => {
-        inFlight = undefined;
-        pump();
-      });
+    inFlight = persistSessionContextTotalTokens({ ...scope, totalTokens }).finally(() => {
+      inFlight = undefined;
+      pump();
+    });
   };
 
   const drain = async () => {

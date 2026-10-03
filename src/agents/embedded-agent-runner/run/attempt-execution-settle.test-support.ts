@@ -65,7 +65,7 @@ export function createFixture(mocks: {
     waitForCompactionRetry: vi.fn(async () => undefined),
     waitForPendingEvents,
   };
-  const contextTotalTokensAdvance = {
+  const contextTotalTokensWriter = {
     offer: vi.fn(),
     close: vi.fn(async () => {
       order.push("context-total-close");
@@ -143,7 +143,7 @@ export function createFixture(mocks: {
     promptActiveSession,
     stream: {
       subscription,
-      contextTotalTokensAdvance,
+      contextTotalTokensWriter,
       queueHandle,
       stopAcceptingSteerMessages: vi.fn(),
       getBeforeAgentFinalizeRevisionReason,
@@ -298,7 +298,7 @@ export function createFixture(mocks: {
   return {
     cacheTrace,
     clearTimers,
-    contextTotalTokensAdvance,
+    contextTotalTokensWriter,
     detachBackend,
     getBeforeAgentFinalizeRevisionReason,
     input,
