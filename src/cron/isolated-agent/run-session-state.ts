@@ -47,6 +47,8 @@ type MutableCronSessionEntry = SessionEntry;
 export type MutableCronSession = ReturnType<typeof resolveCronSession> & {
   store: MutableSessionStore;
   sessionEntry: MutableCronSessionEntry;
+  /** Run finalization set the entry's context total; the next persist commits it. */
+  contextTotalsAccounted?: true;
 };
 /** Live provider/model/auth-profile selection reported by the running session. */
 export type CronLiveSelection = LiveSessionModelSelection;
@@ -235,16 +237,31 @@ export function createPersistCronSessionEntry(params: {
           currentEntry &&
           params.cronSession.initialSessionEntry
         ) {
-          committedEntry = mergeSessionSnapshotChanges({
-            initial: params.cronSession.initialSessionEntry,
-            next: persistedEntry,
-            current: currentEntry,
-          });
-          mergedLiveEntry = mergeSessionSnapshotChanges({
-            initial: params.cronSession.initialSessionEntry,
-            next: liveEntry,
-            current: currentEntry,
-          });
+          // The run's final accounting supersedes the per-call totals it published
+          // under this snapshot, which the merge would keep as concurrent changes.
+          const runContextTotals = params.cronSession.contextTotalsAccounted
+            ? {
+                totalTokens: liveEntry.totalTokens,
+                totalTokensFresh: liveEntry.totalTokensFresh,
+                totalTokensVersion: liveEntry.totalTokensVersion,
+              }
+            : undefined;
+          committedEntry = {
+            ...mergeSessionSnapshotChanges({
+              initial: params.cronSession.initialSessionEntry,
+              next: persistedEntry,
+              current: currentEntry,
+            }),
+            ...runContextTotals,
+          };
+          mergedLiveEntry = {
+            ...mergeSessionSnapshotChanges({
+              initial: params.cronSession.initialSessionEntry,
+              next: liveEntry,
+              current: currentEntry,
+            }),
+            ...runContextTotals,
+          };
         }
         return committedEntry;
       },
@@ -255,6 +272,7 @@ export function createPersistCronSessionEntry(params: {
       sessionKey: params.agentSessionKey,
     });
     params.cronSession.resetBoundaryPending = undefined;
+    params.cronSession.contextTotalsAccounted = undefined;
     // The storage projection may intentionally omit resume identity until its
     // transcript exists. Keep that projection out of the active run object.
     params.cronSession.sessionEntry = mergedLiveEntry;

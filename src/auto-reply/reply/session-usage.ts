@@ -272,111 +272,43 @@ export async function persistSessionUsageUpdate(params: {
 }
 
 /**
- * Advance-only per-model-call context snapshot persist.
- *
- * `totalTokens` on the session entry is a prompt/context snapshot. A long agent
- * turn is a single reply run with many model calls (the tool loop is internal to
- * one embedded `agent.prompt()`), so the turn-completion accounting in
- * {@link persistSessionUsageUpdate} only lands at the very end. This primitive
- * publishes the latest model call's context snapshot mid-run so status probes see
- * a growing count, reusing the same guarded entry-patch primitive, the
- * `sessionId`/`lifecycleRevision` generation fence, and the commit-edge row
- * revalidation that {@link persistSessionUsageUpdate} relies on.
- *
- * Safety properties:
- * - Advance-only against values this writer did not publish: a candidate must
- *   exceed the current fresh value, unless that value is `replaceOwnValue`, the
- *   writer's own earlier publish in the same attempt. That lets the snapshot
- *   follow the context down after the attempt compacts without ever lowering a
- *   value another writer (such as turn-completion accounting) produced.
- * - Fenced: the `expectedSession` guard compares every present field. Session
- *   rotation/reset/fork changes `sessionId`/`lifecycleRevision`; compaction is
- *   the one same-session generation advance and stamps `compactionCount`
- *   atomically with its `totalTokens*` clear/re-stamp
- *   ({@link projectCompactionAccountingPatch} and the compaction transaction),
- *   so a write carrying pre-compaction facts is rejected. A write prepared
- *   straddling any entry rewrite is additionally rejected by the commit-edge
- *   snapshot revalidation.
- * - Goal accounting uses the same {@link resolveSessionGoalDisplayState} seam as
- *   the turn-completion path so goal token usage stays consistent.
- *
- * Resolves true only when the patch was applied.
+ * Publishes one settled model call's context snapshot while its turn is still
+ * running, so status readers see a long turn's context grow. The latest settled
+ * call wins, including a smaller one after compaction; turn-completion
+ * accounting stays authoritative and lands after the caller has stopped writing.
  */
-export async function persistSessionTotalTokensAdvance(params: {
+export async function persistSessionContextTotalTokens(params: {
   agentId?: string;
-  storePath?: string;
-  sessionKey?: string;
-  expectedSession?: Partial<
-    Pick<
-      InternalSessionEntry,
-      "sessionId" | "lifecycleRevision" | "compactionCount" | "activeWriterRunId"
-    >
-  >;
-  /** Candidate context snapshot: prompt tokens for the latest settled model call. */
+  storePath: string;
+  sessionKey: string;
+  /** Admission facts. Reset keeps the session id, so the writer claim is always checked. */
+  expectedSession: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision"> & {
+    activeWriterRunId: string;
+  };
+  /** Prompt-token context snapshot of the latest settled model call. */
   totalTokens: number;
-  /** This writer's previous applied value; the entry may move down from it. */
-  replaceOwnValue?: number;
-}): Promise<boolean> {
-  const { agentId, storePath, sessionKey, expectedSession, replaceOwnValue } = params;
-  if (!storePath || !sessionKey) {
-    return false;
-  }
-  const candidate = asNonNegativeFiniteNumber(params.totalTokens);
-  if (candidate === undefined || candidate <= 0) {
-    return false;
-  }
-  let patched = false;
+}): Promise<void> {
+  const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
   try {
-    const result = await patchSessionEntryCore(
+    // Same guarded entry patch as turn-completion accounting; this base has no
+    // worker-routed variant, and the caller keeps at most one write in flight.
+    await patchSessionEntryCore(
       { agentId, storePath, sessionKey },
       (entry) => {
-        patched = false;
-        if (expectedSession) {
-          // Absent fields are "no expectation", mirroring the turn-completion fence.
-          if (
-            Object.hasOwn(expectedSession, "sessionId") &&
-            entry.sessionId !== expectedSession.sessionId
-          ) {
-            return null;
-          }
-          if (
-            Object.hasOwn(expectedSession, "lifecycleRevision") &&
-            entry.lifecycleRevision !== expectedSession.lifecycleRevision
-          ) {
-            return null;
-          }
-          // Compaction advances this generation without re-stamping the session
-          // identity, so it is the fence that rejects stale per-attempt facts.
-          if (
-            Object.hasOwn(expectedSession, "compactionCount") &&
-            entry.compactionCount !== expectedSession.compactionCount
-          ) {
-            return null;
-          }
-          if (
-            Object.hasOwn(expectedSession, "activeWriterRunId") &&
-            entry.activeWriterRunId !== expectedSession.activeWriterRunId
-          ) {
-            return null;
-          }
-        }
-        // A stale/compacted entry reads as "unknown" (not fresh) and accepts the
-        // first fresh value; another writer's fresh value only advances.
-        const currentFresh =
-          entry.totalTokensFresh === true &&
-          entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION
-            ? entry.totalTokens
-            : undefined;
         if (
-          currentFresh !== undefined &&
-          (candidate === currentFresh ||
-            (candidate < currentFresh && currentFresh !== replaceOwnValue))
+          entry.sessionId !== expectedSession.sessionId ||
+          entry.activeWriterRunId !== expectedSession.activeWriterRunId ||
+          (expectedSession.lifecycleRevision !== undefined &&
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision) ||
+          (entry.totalTokens === totalTokens &&
+            entry.totalTokensFresh === true &&
+            entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION)
         ) {
           return null;
         }
         const updatedAt = Date.now();
         const patch: Partial<SessionEntry> = {
-          totalTokens: candidate,
+          totalTokens,
           totalTokensFresh: true,
           totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
           updatedAt,
@@ -385,14 +317,11 @@ export async function persistSessionTotalTokensAdvance(params: {
         if (accountedGoal) {
           patch.goal = accountedGoal;
         }
-        patched = true;
         return patch;
       },
       { skipMaintenance: true },
     );
-    return patched && result !== null;
   } catch (err) {
-    logVerbose(`failed to persist per-attempt totalTokens advance: ${String(err)}`);
-    return false;
+    logVerbose(`failed to persist per-call context total: ${String(err)}`);
   }
 }

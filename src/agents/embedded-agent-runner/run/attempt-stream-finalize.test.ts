@@ -196,7 +196,7 @@ function createFixture(overrides: FixtureOverrides = {}) {
       promptActiveSession: vi.fn(async () => undefined),
       stream: {
         subscription,
-        contextTotalTokensAdvance: {
+        contextTotalTokensWriter: {
           offer: vi.fn(),
           close: vi.fn(async () => undefined),
           abandon: vi.fn(async () => undefined),

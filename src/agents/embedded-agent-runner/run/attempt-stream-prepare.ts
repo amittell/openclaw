@@ -54,7 +54,7 @@ import {
   requiresCompletionRequiredAsyncTaskWait,
   type AsyncStartedToolMeta,
 } from "./attempt-async-tasks.js";
-import { createContextTotalTokensAdvance } from "./attempt-context-total-tokens.js";
+import { createContextTotalTokensWriter } from "./attempt-context-total-tokens.js";
 import {
   claimEmbeddedPendingUserInputAnswer,
   steerActiveSessionWithOptionalDeliveryWait,
@@ -271,11 +271,11 @@ export function prepareEmbeddedAttemptStream(input: {
   // Terminal callbacks run after queue construction; keep the queue in this
   // phase so active-run clearing and subscription teardown share one owner.
   let deferredLifecycleOwner: EmbeddedAttemptDeferredLifecycleOwner | undefined;
-  const contextTotalTokensAdvance = createContextTotalTokensAdvance({ attempt });
+  const contextTotalTokensWriter = createContextTotalTokensWriter(attempt);
   const subscription = subscribeEmbeddedAgentSession({
     session: input.activeSession,
     onModelUsage: input.onModelUsage,
-    onModelCallSettled: contextTotalTokensAdvance.offer,
+    onModelCallSettled: contextTotalTokensWriter.offer,
     runId: attempt.runId,
     lifecycleGeneration: attempt.lifecycleGeneration,
     messageChannel: input.runtimeChannel,
@@ -587,7 +587,7 @@ export function prepareEmbeddedAttemptStream(input: {
 
   return {
     subscription,
-    contextTotalTokensAdvance,
+    contextTotalTokensWriter,
     queueHandle,
     deferredLifecycleOwner,
     toolSearchCatalogExecutor,

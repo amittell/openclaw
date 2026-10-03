@@ -123,7 +123,7 @@ export async function runEmbeddedAttemptSettledPhase(
   } = preparedStreamRuntime;
   const {
     subscription,
-    contextTotalTokensAdvance,
+    contextTotalTokensWriter,
     queueHandle,
     getBeforeAgentFinalizeRevisionReason,
     getBeforeAgentFinalizeRevisionEntryId,
@@ -295,7 +295,7 @@ export async function runEmbeddedAttemptSettledPhase(
     sessionRuntimeState.promptCache = settledStream.promptCache;
     // The run's usage accounting, after this attempt returns, is authoritative;
     // flush per-call writes before after-turn work so none can land after it.
-    await contextTotalTokensAdvance.close();
+    await contextTotalTokensWriter.close();
 
     await completeEmbeddedAttemptAfterTurn(input, settledStream, {
       yieldAborted: promptState.yieldAborted,
@@ -344,19 +344,22 @@ export async function runEmbeddedAttemptSettledPhase(
       messagesSnapshot = [...messagesSnapshot, note];
     }
   } finally {
-    cleanupError = cleanupEmbeddedAttemptStreamExecution({
-      attempt,
-      clearAttemptTimeoutTimers,
-      isProbeSession,
-      queueHandle,
-      state,
-      unsubscribe,
-      deferredLifecycleOwner: preparedStreamRuntime.stream.deferredLifecycleOwner,
-    });
-    // Error paths skip the close above. After timers and the subscription are
-    // gone, drop the pending offer and wait out the write in flight so none
-    // lands after the run's usage accounting.
-    await contextTotalTokensAdvance.abandon();
+    try {
+      cleanupError = cleanupEmbeddedAttemptStreamExecution({
+        attempt,
+        clearAttemptTimeoutTimers,
+        isProbeSession,
+        queueHandle,
+        state,
+        unsubscribe,
+        deferredLifecycleOwner: preparedStreamRuntime.stream.deferredLifecycleOwner,
+      });
+    } finally {
+      // Attempts that throw before after-turn work skip the flush above. Once
+      // timers and the subscription are released, drop the pending offer and
+      // wait out the write in flight; after a flush this is a no-op.
+      await contextTotalTokensWriter.abandon();
+    }
   }
 
   if (cleanupError !== undefined) {

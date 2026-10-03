@@ -1,4 +1,5 @@
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMessageInjectionAuthority } from "../../../auto-reply/reply/message-injection-authority.js";
 import {
@@ -8,11 +9,18 @@ import {
 } from "../../../auto-reply/reply/reply-run-registry.js";
 import { CliPluginInvocationResources } from "../../../cli/plugin-invocation-resources.js";
 import { resolveDefaultSessionStorePath } from "../../../config/sessions/paths.js";
-import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
+import {
+  loadSessionEntry,
+  replaceSessionEntry,
+} from "../../../config/sessions/session-accessor.js";
 import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
+import {
+  resolveFreshSessionTotalTokens,
+  SESSION_TOTAL_TOKENS_VERSION,
+} from "../../../config/sessions/types.js";
 import { createDiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
 import {
   projectNestedToolActivityForHooks,
@@ -38,8 +46,11 @@ import {
   isAgentRunSupersededAbortReason,
 } from "../../run-termination.js";
 import {
+  createAssistant,
+  createAssistantResultStream,
   createTestSession,
   registerAgentSessionLoopTestLifecycle,
+  streamMocks,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import type { AgentSession } from "../../sessions/agent-session.js";
 import { SessionManager } from "../../sessions/session-manager.js";
@@ -205,6 +216,65 @@ describe("prepareEmbeddedAttemptStream", () => {
     expect(mocks.subscribe).toHaveBeenCalledWith(
       expect.objectContaining({ trustedLocalMediaToolNames }),
     );
+  });
+
+  it("publishes a tool-use call's context total from the real subscription", async () => {
+    await withStateDirEnv("openclaw-context-total-", async () => {
+      const target = {
+        agentId: "main",
+        sessionId: "session-context-total",
+        sessionKey: "agent:main:context-total",
+        storePath: resolveDefaultSessionStorePath("main"),
+      };
+      // The run holds the writer claim, as lane admission installs it.
+      await replaceSessionEntry(target, {
+        sessionId: target.sessionId,
+        activeWriterRunId: "run-output-schema",
+        updatedAt: Date.now(),
+        totalTokens: 0,
+        totalTokensFresh: true,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+      });
+      const { session } = await createTestSession({
+        customTools: [
+          {
+            name: "lookup",
+            label: "Lookup",
+            description: "Lookup",
+            parameters: Type.Object({}),
+            execute: async () => ({ content: [{ type: "text", text: "found" }], details: {} }),
+          },
+        ],
+      });
+      const toolCall = { type: "toolCall" as const, id: "call-1", name: "lookup", arguments: {} };
+      streamMocks.streamSimple
+        .mockImplementationOnce((model) =>
+          createAssistantResultStream(createAssistant(model, [toolCall], "toolUse", 12_000)),
+        )
+        .mockImplementationOnce((model) => {
+          const final = createAssistant(model, [{ type: "text", text: "Done." }]);
+          // The final call has no context snapshot, so only the tool-use call can publish.
+          final.usage.contextUsage = { state: "unavailable" };
+          return createAssistantResultStream(final);
+        });
+      const { subscribeEmbeddedAgentSession } = await vi.importActual<
+        typeof import("../../embedded-agent-subscribe.js")
+      >("../../embedded-agent-subscribe.js");
+      mocks.subscribe.mockImplementation(subscribeEmbeddedAgentSession);
+      const prepared = prepareCatalogExecutor([], {
+        activeSession: session,
+        sessionKey: target.sessionKey,
+        attempt: { ...target, sessionTarget: target },
+      });
+      try {
+        await session.prompt("Look it up.");
+        await prepared.contextTotalTokensWriter.close();
+      } finally {
+        prepared.subscription.unsubscribe();
+      }
+      const row = loadSessionEntry({ ...target, readConsistency: "latest" });
+      expect(resolveFreshSessionTotalTokens(row)).toBe(12_000);
+    });
   });
 
   it.each(["current", "aborted", "replacement", "cancelled"] as const)(

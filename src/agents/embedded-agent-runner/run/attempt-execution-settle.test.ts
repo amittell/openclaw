@@ -55,7 +55,7 @@ type SettledInput = Parameters<typeof runEmbeddedAttemptSettledPhase>[0];
 function createFixture() {
   const order: string[] = [];
   const queueHandle = { kind: "embedded", runId: "run-1" };
-  const contextTotalTokensAdvance = {
+  const contextTotalTokensWriter = {
     offer: vi.fn(),
     close: vi.fn(async () => undefined),
     abandon: vi.fn(async () => undefined),
@@ -168,7 +168,7 @@ function createFixture() {
     promptActiveSession,
     stream: {
       subscription,
-      contextTotalTokensAdvance,
+      contextTotalTokensWriter,
       queueHandle,
       stopAcceptingSteerMessages: vi.fn(),
       getBeforeAgentFinalizeRevisionReason,
@@ -321,7 +321,7 @@ function createFixture() {
   return {
     cacheTrace,
     clearTimers,
-    contextTotalTokensAdvance,
+    contextTotalTokensWriter,
     detachBackend,
     getBeforeAgentFinalizeRevisionReason,
     input,
@@ -392,19 +392,28 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       "/tmp/session.jsonl",
     );
     // Per-call context totals flush before after-turn work runs.
-    const [closedAt] = fixture.contextTotalTokensAdvance.close.mock.invocationCallOrder;
+    const [closedAt] = fixture.contextTotalTokensWriter.close.mock.invocationCallOrder;
     const [afterTurnAt] = mocks.completeAfterTurn.mock.invocationCallOrder;
     expect(closedAt).toBeLessThan(afterTurnAt ?? 0);
   });
 
   it("waits for the per-call flush to finish before after-turn work", async () => {
     const fixture = createFixture();
+    let closeStarted!: () => void;
+    const started = new Promise<void>((resolve) => (closeStarted = resolve));
     let releaseFlush!: () => void;
-    fixture.contextTotalTokensAdvance.close.mockImplementationOnce(
-      () => new Promise<undefined>((resolve) => (releaseFlush = () => resolve(undefined))),
-    );
+    fixture.contextTotalTokensWriter.close.mockImplementationOnce(() => {
+      closeStarted();
+      return new Promise<undefined>((resolve) => (releaseFlush = () => resolve(undefined)));
+    });
     const run = runEmbeddedAttemptSettledPhase(fixture.input);
-    await vi.waitFor(() => expect(fixture.contextTotalTokensAdvance.close).toHaveBeenCalled());
+    // Settling without reaching the flush fails at once instead of waiting.
+    await Promise.race([
+      started,
+      run.then(() => {
+        throw new Error("settlement finished without flushing the per-call context total");
+      }),
+    ]);
     expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
     releaseFlush();
     await run;
@@ -535,8 +544,8 @@ describe("runEmbeddedAttemptSettledPhase", () => {
     expect(mocks.settleStream).not.toHaveBeenCalled();
     expect(mocks.completeResult).not.toHaveBeenCalled();
     // A failed prompt drops pending per-call totals instead of flushing them.
-    expect(fixture.contextTotalTokensAdvance.close).not.toHaveBeenCalled();
-    expect(fixture.contextTotalTokensAdvance.abandon).toHaveBeenCalledOnce();
+    expect(fixture.contextTotalTokensWriter.close).not.toHaveBeenCalled();
+    expect(fixture.contextTotalTokensWriter.abandon).toHaveBeenCalledOnce();
     expect(fixture.clearTimers).toHaveBeenCalledOnce();
     expect(fixture.detachBackend).toHaveBeenCalledWith(fixture.queueHandle);
     expect(mocks.logError).toHaveBeenCalledWith(

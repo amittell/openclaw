@@ -1,198 +1,210 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { resolveFreshSessionTotalTokens } from "../../../config/sessions.js";
+import { describe, expect, it } from "vitest";
 import {
   loadSessionEntry,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
-import { SESSION_TOTAL_TOKENS_VERSION } from "../../../config/sessions/types.js";
-import type { InternalSessionEntry } from "../../../config/sessions/types.js";
+import {
+  resolveFreshSessionTotalTokens,
+  SESSION_TOTAL_TOKENS_VERSION,
+  type InternalSessionEntry,
+} from "../../../config/sessions/types.js";
+import { PROGRESS_CARD_REFRESH_SOURCE_TOOL } from "../../../sessions/input-provenance.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import type { NormalizedUsage } from "../../usage.js";
-import { createContextTotalTokensAdvance } from "./attempt-context-total-tokens.js";
+import { createContextTotalTokensWriter } from "./attempt-context-total-tokens.js";
 
-type Scope = {
-  agentId: string;
-  storePath: string;
-  sessionKey: string;
-};
+type Attempt = Parameters<typeof createContextTotalTokensWriter>[0];
 
-async function withStore(
+async function withSession(
   body: (fixture: {
-    scope: Scope;
-    entry: InternalSessionEntry;
+    attempt: (overrides?: Partial<Attempt>) => Attempt;
+    replace: (patch: Partial<InternalSessionEntry>) => Promise<unknown>;
     read: () => InternalSessionEntry | undefined;
   }) => Promise<void>,
 ) {
   await withOpenClawTestState(
-    { label: "attempt-context-advance", scenario: "minimal" },
+    { label: "attempt-context-total-tokens", scenario: "minimal" },
     async (state) => {
-      const scope: Scope = {
+      const scope = {
         agentId: "main",
         storePath: path.join(state.agentDir(), "openclaw-agent.sqlite"),
-        sessionKey: "agent:main:attempt-context-advance",
+        sessionKey: "agent:main:attempt-context-total-tokens",
       };
+      // Bootstrap stamps a known zero; status readers see it for the whole turn without this writer.
       const entry: InternalSessionEntry = {
         sessionId: randomUUID(),
         lifecycleRevision: randomUUID(),
         activeWriterRunId: "run-1",
         updatedAt: 1,
-        compactionCount: 0,
         totalTokens: 0,
         totalTokensFresh: true,
         totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
       };
       await replaceSessionEntry(scope, entry);
       await body({
-        scope,
-        entry,
+        attempt: (overrides) => ({
+          runId: "run-1",
+          sessionId: entry.sessionId,
+          sessionPersistence: "durable",
+          sessionTarget: {
+            ...scope,
+            sessionId: entry.sessionId,
+            expectedLifecycleRevision: entry.lifecycleRevision,
+            expectedWriterRunId: "run-1",
+          },
+          ...overrides,
+        }),
+        replace: (patch) => replaceSessionEntry(scope, { ...entry, ...patch }),
         read: () => loadSessionEntry({ ...scope, readConsistency: "latest" }),
       });
     },
   );
 }
 
-const usage = (partial: NormalizedUsage): NormalizedUsage => ({
+const usage = (partial: Partial<NormalizedUsage>): NormalizedUsage => ({
   input: 0,
   output: 0,
   ...partial,
 });
 
-const attemptFor = (
-  scope: Scope,
-  entry: InternalSessionEntry,
-  overrides: { lifecycleRevision?: string; writerRunId?: string } = {},
-) => ({
-  sessionId: entry.sessionId,
-  sessionTarget: {
-    agentId: scope.agentId,
-    sessionId: entry.sessionId,
-    sessionKey: scope.sessionKey,
-    storePath: scope.storePath,
-    expectedLifecycleRevision: overrides.lifecycleRevision ?? entry.lifecycleRevision,
-    expectedWriterRunId: overrides.writerRunId ?? "run-1",
-  },
-  sessionPersistence: "durable" as const,
-});
-
-describe("createContextTotalTokensAdvance", () => {
-  it("publishes each settled call while the attempt runs, coalescing to the latest", async () => {
-    await withStore(async (fixture) => {
-      const advance = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      advance.offer(usage({ input: 20_000, cacheRead: 15_000, output: 700 }));
-      // Visible while the attempt is still running, not only once it closes.
-      await vi.waitFor(() => expect(fixture.read()?.totalTokens).toBe(35_000));
-      advance.offer(usage({ input: 60_000, output: 100 }));
-      advance.offer(usage({ input: 80_000, output: 100 }));
-      await advance.close();
-      const row = fixture.read();
-      expect(row?.totalTokens).toBe(80_000);
-      expect(resolveFreshSessionTotalTokens(row)).toBe(80_000);
+describe("createContextTotalTokensWriter", () => {
+  it("writes a settled call as it is offered and drops only the pending one on abandon", async () => {
+    await withSession(async (fixture) => {
+      const writer = createContextTotalTokensWriter(fixture.attempt());
+      writer.offer(usage({ input: 20_000, cacheRead: 15_000, output: 700 }));
+      writer.offer(usage({ input: 60_000, output: 100 }));
+      await writer.abandon();
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(35_000);
     });
   });
 
-  it("follows its own value down after compaction but never lowers another writer's", async () => {
-    await withStore(async (fixture) => {
-      const advance = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      advance.offer(usage({ input: 180_000, output: 100 }));
-      await vi.waitFor(() => expect(fixture.read()?.totalTokens).toBe(180_000));
-      // The attempt compacted: the next call's context is much smaller.
-      advance.offer(usage({ input: 50_000, output: 100 }));
-      await advance.close();
+  it("lands the latest offer on close, including a smaller one after compaction", async () => {
+    await withSession(async (fixture) => {
+      const writer = createContextTotalTokensWriter(fixture.attempt());
+      writer.offer(usage({ input: 180_000, output: 100 }));
+      // The attempt compacted; the next call's context is much smaller.
+      writer.offer(usage({ input: 50_000, output: 100 }));
+      await writer.close();
       expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(50_000);
-      // A fresh value this writer did not publish only advances.
-      await replaceSessionEntry(fixture.scope, { ...fixture.entry, totalTokens: 200_000 });
-      const later = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      later.offer(usage({ input: 150_000, output: 100 }));
-      await later.close();
-      expect(fixture.read()?.totalTokens).toBe(200_000);
+
+      // A retry after truncating tool results is another attempt of the same run.
+      const retry = createContextTotalTokensWriter(fixture.attempt());
+      retry.offer(usage({ input: 30_000, output: 100 }));
+      await retry.close();
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(30_000);
     });
   });
 
-  it("does not stamp a session that rotated while the attempt ran", async () => {
-    await withStore(async (fixture) => {
-      const advance = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      // /new or a reset replaces the row with a fresh generation mid-run.
-      const rotated: InternalSessionEntry = {
-        sessionId: randomUUID(),
+  it.each([
+    { name: "a fresh", totalTokensFresh: true },
+    { name: "an unknown", totalTokensFresh: false },
+  ])("replaces $name pre-run value with the first settled call", async ({ totalTokensFresh }) => {
+    await withSession(async (fixture) => {
+      // The previous turn ended larger than this run's first call, e.g. before a model switch.
+      await fixture.replace({ totalTokens: 200_000, totalTokensFresh });
+      const writer = createContextTotalTokensWriter(fixture.attempt());
+      writer.offer(usage({ input: 150_000, output: 100 }));
+      await writer.close();
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(150_000);
+    });
+  });
+
+  it("does not stamp a session that lost the attempt's admission or rotated", async () => {
+    await withSession(async (fixture) => {
+      const target = fixture.attempt().sessionTarget;
+      for (const attempt of [
+        fixture.attempt({ sessionTarget: { ...target, expectedLifecycleRevision: randomUUID() } }),
+        fixture.attempt({ sessionTarget: { ...target, expectedWriterRunId: "run-0" } }),
+      ]) {
+        const writer = createContextTotalTokensWriter(attempt);
+        writer.offer(usage({ input: 80_000, output: 500 }));
+        await writer.close();
+      }
+      expect(fixture.read()?.totalTokens).toBe(0);
+
+      const writer = createContextTotalTokensWriter(fixture.attempt());
+      // /new replaces the row with a fresh session mid-run.
+      const rotatedSessionId = randomUUID();
+      await fixture.replace({
+        sessionId: rotatedSessionId,
         lifecycleRevision: randomUUID(),
-        updatedAt: 2,
-        compactionCount: 0,
-      };
-      await replaceSessionEntry(fixture.scope, rotated);
-      advance.offer(usage({ input: 80_000, output: 500 }));
-      await advance.close();
+        totalTokens: undefined,
+        totalTokensFresh: undefined,
+        totalTokensVersion: undefined,
+      });
+      writer.offer(usage({ input: 80_000, output: 500 }));
+      await writer.close();
       const row = fixture.read();
-      expect(row?.sessionId).toBe(rotated.sessionId);
+      expect(row?.sessionId).toBe(rotatedSessionId);
       expect(resolveFreshSessionTotalTokens(row)).toBeUndefined();
     });
   });
 
-  it("rejects the write when the admission lifecycle revision or writer claim moved", async () => {
-    await withStore(async (fixture) => {
-      for (const overrides of [{ lifecycleRevision: randomUUID() }, { writerRunId: "run-0" }]) {
-        const advance = createContextTotalTokensAdvance({
-          attempt: attemptFor(fixture.scope, fixture.entry, overrides),
-        });
-        advance.offer(usage({ input: 50_000, output: 100 }));
-        await advance.close();
-      }
+  it("fences a run admitted before its row existed on the writer it created", async () => {
+    await withSession(async (fixture) => {
+      const target = fixture.attempt().sessionTarget;
+      const unclaimed = fixture.attempt({
+        sessionTarget: {
+          ...target,
+          expectedLifecycleRevision: undefined,
+          expectedWriterRunId: undefined,
+        },
+      });
+      const first = createContextTotalTokensWriter(unclaimed);
+      first.offer(usage({ input: 50_000, output: 100 }));
+      await first.close();
+      expect(fixture.read()?.totalTokens).toBe(50_000);
+
+      // A reset keeps the session id, mints a new lifecycle and drops the writer claim.
+      await fixture.replace({
+        lifecycleRevision: randomUUID(),
+        activeWriterRunId: undefined,
+        totalTokens: 0,
+      });
+      const afterReset = createContextTotalTokensWriter(unclaimed);
+      afterReset.offer(usage({ input: 80_000, output: 100 }));
+      await afterReset.close();
       expect(fixture.read()?.totalTokens).toBe(0);
     });
   });
 
   it("stores prompt tokens only and leaves an unavailable snapshot unknown", async () => {
-    await withStore(async (fixture) => {
-      const advance = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      advance.offer(usage({ input: 9_000, output: 100, contextUsage: { state: "unavailable" } }));
-      await advance.close();
+    await withSession(async (fixture) => {
+      const unknown = createContextTotalTokensWriter(fixture.attempt());
+      unknown.offer(usage({ input: 9_000, output: 100, contextUsage: { state: "unavailable" } }));
+      await unknown.close();
       expect(fixture.read()?.totalTokens).toBe(0);
-      const next = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      next.offer(usage({ input: 10_000, cacheRead: 30_000, cacheWrite: 500, output: 800 }));
-      await next.close();
+
+      const known = createContextTotalTokensWriter(fixture.attempt());
+      known.offer(usage({ input: 10_000, cacheRead: 30_000, cacheWrite: 500, output: 800 }));
+      await known.close();
       expect(fixture.read()?.totalTokens).toBe(40_500);
     });
   });
 
-  it("abandon drops the pending offer but still waits out the write in flight", async () => {
-    await withStore(async (fixture) => {
-      const advance = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
-      advance.offer(usage({ input: 30_000, output: 100 }));
-      advance.offer(usage({ input: 70_000, output: 100 }));
-      await advance.abandon();
-      expect(fixture.read()?.totalTokens).toBe(30_000);
-    });
-  });
-
-  it("ignores offers after close and for detached runs", async () => {
-    await withStore(async (fixture) => {
-      const closed = createContextTotalTokensAdvance({
-        attempt: attemptFor(fixture.scope, fixture.entry),
-      });
+  it("writes nothing after close, for detached runs, or for runs that preserve session state", async () => {
+    await withSession(async (fixture) => {
+      const closed = createContextTotalTokensWriter(fixture.attempt());
       await closed.close();
       closed.offer(usage({ input: 10_000, output: 20 }));
-      // Draining again would wait out any write the late offer started.
+      // A second drain would wait out any write the late offer started.
       await closed.close();
-      const detached = createContextTotalTokensAdvance({
-        attempt: { ...attemptFor(fixture.scope, fixture.entry), sessionPersistence: "detached" },
-      });
-      detached.offer(usage({ input: 10_000, output: 20 }));
-      await detached.close();
+      const disabled: Partial<Attempt>[] = [
+        { sessionPersistence: "detached" },
+        {
+          inputProvenance: {
+            kind: "internal_system",
+            sourceTool: PROGRESS_CARD_REFRESH_SOURCE_TOOL,
+          },
+        },
+      ];
+      for (const overrides of disabled) {
+        const writer = createContextTotalTokensWriter(fixture.attempt(overrides));
+        writer.offer(usage({ input: 10_000, output: 20 }));
+        await writer.close();
+      }
       expect(fixture.read()?.totalTokens).toBe(0);
     });
   });

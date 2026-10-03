@@ -1,13 +1,10 @@
-/**
- * Publishes the session entry's context snapshot after each model call of a
- * long attempt, so status readers see a growing count before turn-completion
- * accounting lands.
- */
-import { persistSessionTotalTokensAdvance } from "../../../auto-reply/reply/session-usage.js";
+import { persistSessionContextTotalTokens } from "../../../auto-reply/reply/session-usage.js";
+import { isIncognitoSessionKey } from "../../../routing/session-key.js";
+import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../../sessions/input-provenance.js";
 import { deriveSessionTotalTokens, type NormalizedUsage } from "../../usage.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
-export type ContextTotalTokensAdvance = {
+type ContextTotalTokensWriter = {
   /** Offers a settled model call's usage. Never awaits; safe on the event hot path. */
   offer: (usage: NormalizedUsage | undefined) => void;
   /** Stops accepting offers and waits until the latest accepted offer is written. */
@@ -16,45 +13,53 @@ export type ContextTotalTokensAdvance = {
   abandon: () => Promise<void>;
 };
 
-const DISABLED: ContextTotalTokensAdvance = {
+const DISABLED: ContextTotalTokensWriter = {
   offer: () => {},
   close: async () => {},
   abandon: async () => {},
 };
 
 /**
- * Creates the per-attempt writer. One write is in flight at a time and the
- * latest offer wins, so a fast tool loop never queues store writes behind the
- * model. Every write is fenced on the generation the attempt was admitted
- * under. Compaction accounting belongs to the host loop and lands at run
- * settlement, after the attempt has closed this writer; until then the writer
- * may lower only a value it published itself.
+ * Publishes the session's context total after each settled model call of an
+ * attempt, before turn-completion accounting lands. One write is in flight at a
+ * time and the latest offer wins, so a fast tool loop never queues store writes.
+ * Every write is fenced on the session, writer claim and lifecycle revision the
+ * run was admitted under, and turn-completion and compaction accounting land
+ * only after every attempt has closed its writer.
  */
-export function createContextTotalTokensAdvance(params: {
-  attempt: Pick<EmbeddedRunAttemptParams, "sessionId" | "sessionTarget" | "sessionPersistence">;
-}): ContextTotalTokensAdvance {
-  const { attempt } = params;
+export function createContextTotalTokensWriter(
+  attempt: Pick<
+    EmbeddedRunAttemptParams,
+    "runId" | "sessionId" | "sessionTarget" | "sessionPersistence" | "inputProvenance"
+  >,
+): ContextTotalTokensWriter {
   const target = attempt.sessionTarget;
-  if (attempt.sessionPersistence === "detached" || !target?.storePath || !target.sessionKey) {
+  if (
+    attempt.sessionPersistence === "detached" ||
+    !target?.storePath ||
+    !target.sessionKey ||
+    // Incognito rows are excluded from session listings; keep their writes at
+    // turn completion, as upstream does for stores without a worker path.
+    isIncognitoSessionKey(target.sessionKey) ||
+    // Turn-completion accounting leaves these runs' context total untouched too.
+    shouldPreserveUserFacingSessionStateForInputProvenance(attempt.inputProvenance)
+  ) {
     return DISABLED;
   }
   const scope = {
     agentId: target.agentId,
     storePath: target.storePath,
     sessionKey: target.sessionKey,
-  };
-  const expectedSession = {
-    sessionId: attempt.sessionId,
-    ...(target.expectedLifecycleRevision !== undefined
-      ? { lifecycleRevision: target.expectedLifecycleRevision }
-      : {}),
-    ...(target.expectedWriterRunId !== undefined
-      ? { activeWriterRunId: target.expectedWriterRunId }
-      : {}),
+    expectedSession: {
+      sessionId: attempt.sessionId,
+      lifecycleRevision: target.expectedLifecycleRevision,
+      // A run that created its row is admitted before the row exists, so it has
+      // no claim fact yet; the row it creates carries this run as its writer.
+      activeWriterRunId: target.expectedWriterRunId ?? attempt.runId,
+    },
   };
   let closed = false;
   let next: number | undefined;
-  let published: number | undefined;
   let inFlight: Promise<void> | undefined;
 
   const pump = () => {
@@ -63,23 +68,11 @@ export function createContextTotalTokensAdvance(params: {
     }
     const totalTokens = next;
     next = undefined;
-    // The primitive logs and swallows its own write failures. Replacing our
-    // own publish lets the snapshot follow the context down after compaction.
-    inFlight = persistSessionTotalTokensAdvance({
-      ...scope,
-      totalTokens,
-      expectedSession,
-      ...(published !== undefined ? { replaceOwnValue: published } : {}),
-    })
-      .then((applied) => {
-        if (applied) {
-          published = totalTokens;
-        }
-      })
-      .finally(() => {
-        inFlight = undefined;
-        pump();
-      });
+    // The primitive logs and absorbs its own write failures.
+    inFlight = persistSessionContextTotalTokens({ ...scope, totalTokens }).finally(() => {
+      inFlight = undefined;
+      pump();
+    });
   };
 
   const drain = async () => {
@@ -94,7 +87,7 @@ export function createContextTotalTokensAdvance(params: {
       if (closed) {
         return;
       }
-      // Same derivation as turn-completion accounting: prompt tokens only, and
+      // Prompt tokens only, as turn-completion accounting derives a call's total;
       // an explicitly unavailable context snapshot stays unknown.
       const totalTokens = deriveSessionTotalTokens({ lastCallUsage: usage });
       if (totalTokens === undefined) {
