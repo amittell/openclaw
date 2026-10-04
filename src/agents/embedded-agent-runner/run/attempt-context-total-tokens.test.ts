@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { buildCreatedSessionGoal } from "../../../config/sessions/goals-transitions.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
@@ -108,6 +109,32 @@ describe("createContextTotalTokensWriter", () => {
       writer.offer(usage({ input: 150_000, output: 100 }));
       await writer.close();
       expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(150_000);
+    });
+  });
+
+  it("runs goal accounting with each published total and limits the goal at its budget", async () => {
+    await withSession(async (fixture) => {
+      const row = fixture.read();
+      if (!row) {
+        throw new Error("expected the seeded session row");
+      }
+      await fixture.replace({
+        goal: buildCreatedSessionGoal(row, { objective: "ship", tokenBudget: 50_000 }, 1),
+      });
+
+      const below = createContextTotalTokensWriter(fixture.attempt());
+      below.offer(usage({ input: 40_000, output: 100 }));
+      await below.close();
+      expect(fixture.read()?.goal).toMatchObject({ status: "active", tokensUsed: 40_000 });
+
+      const crossing = createContextTotalTokensWriter(fixture.attempt());
+      crossing.offer(usage({ input: 60_000, output: 100 }));
+      await crossing.close();
+      expect(fixture.read()?.goal).toMatchObject({
+        status: "budget_limited",
+        tokensUsed: 60_000,
+        budgetLimitedAt: expect.any(Number),
+      });
     });
   });
 
