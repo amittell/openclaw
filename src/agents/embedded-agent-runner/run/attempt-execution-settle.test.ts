@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
+import { createDeferredCore } from "../../../shared/deferred.js";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import { createUsageAccumulator } from "../usage-accumulator.js";
 
@@ -399,23 +400,22 @@ describe("runEmbeddedAttemptSettledPhase", () => {
 
   it("waits for the per-call flush to finish before after-turn work", async () => {
     const fixture = createFixture();
-    let closeStarted!: () => void;
-    const started = new Promise<void>((resolve) => (closeStarted = resolve));
-    let releaseFlush!: () => void;
+    const started = createDeferredCore();
+    const flush = createDeferredCore<undefined>();
     fixture.contextTotalTokensWriter.close.mockImplementationOnce(() => {
-      closeStarted();
-      return new Promise<undefined>((resolve) => (releaseFlush = () => resolve(undefined)));
+      started.resolve();
+      return flush.promise;
     });
     const run = runEmbeddedAttemptSettledPhase(fixture.input);
     // Settling without reaching the flush fails at once instead of waiting.
     await Promise.race([
-      started,
+      started.promise,
       run.then(() => {
         throw new Error("settlement finished without flushing the per-call context total");
       }),
     ]);
     expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
-    releaseFlush();
+    flush.resolve(undefined);
     await run;
     expect(mocks.completeAfterTurn).toHaveBeenCalledOnce();
   });
