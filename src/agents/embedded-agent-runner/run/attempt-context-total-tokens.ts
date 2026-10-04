@@ -74,10 +74,13 @@ export function createContextTotalTokensWriter(
     });
   };
 
-  const drain = async () => {
-    // Each settled write re-pumps the latest pending offer before it resolves.
-    while (inFlight) {
-      await inFlight;
+  const drain = async (): Promise<void> => {
+    // Each settled write re-pumps the latest pending offer before it resolves,
+    // so wait again until no write is left in flight.
+    const current = inFlight;
+    if (current) {
+      await current;
+      await drain();
     }
   };
 
