@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveInboundMediaReference } from "../../media/media-reference.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   appendTranscriptEvent,
   loadTranscriptEvents,
@@ -30,6 +31,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const REDACTED = "[unverified media reference removed]";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+// Registered after the temp-dir tracker so it runs first: close the agent databases
+// before their state directory is removed.
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
+});
 
 describe("readRecentUserAssistantTextForSession grounding", () => {
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;

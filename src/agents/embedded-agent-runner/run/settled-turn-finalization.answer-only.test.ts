@@ -24,7 +24,9 @@ const backendMocks = vi.hoisted(() => ({
 
 vi.mock("./backend.js", () => ({
   resolveRuntimeModelAttempt: () => undefined,
-  runEmbeddedSettledTurnFinalizationWithBackend: backendMocks.runSettledFinalization,
+}));
+vi.mock("../../harness/selection.js", () => ({
+  runAgentHarnessSettledTurnFinalization: backendMocks.runSettledFinalization,
 }));
 vi.mock("../../../plugin-sdk/session-transcript-runtime.js", () => ({
   appendAssistantMirrorMessageByIdentity: vi.fn(),
