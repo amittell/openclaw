@@ -312,7 +312,6 @@ describe("telegram ingress worker foreign offset", () => {
         token: "test-auth-token",
         accountId: "acct",
         initialUpdateId: 760_546_622,
-        spoolDir: "/tmp/openclaw-telegram-ingress-worker-foreign-offset-test",
         apiRoot: "http://localhost:8081",
         timeoutSeconds: 1,
       },

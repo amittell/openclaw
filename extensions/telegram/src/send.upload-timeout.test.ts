@@ -11,8 +11,8 @@ const { loadWebMedia, resolveTelegramTransport } = vi.hoisted(() => ({
   resolveTelegramTransport: vi.fn(),
 }));
 
-vi.mock("./send.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./send.runtime.js")>()),
+vi.mock("openclaw/plugin-sdk/web-media", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/web-media")>()),
   loadWebMedia,
 }));
 
