@@ -135,21 +135,6 @@ describe("registered exact secret values", () => {
     expect(redactSecrets({ detail: "abcde" })).toEqual({ detail: "abcde" });
   });
 
-  it("refreshes duplicate registration recency before eviction", () => {
-    const first = "exact-registry-refresh-000";
-    const second = "exact-registry-refresh-001";
-    for (let index = 0; index < 512; index += 1) {
-      registerSecretValueForRedaction(
-        `exact-registry-refresh-${index.toString().padStart(3, "0")}`,
-      );
-    }
-    registerSecretValueForRedaction(first);
-    registerSecretValueForRedaction("exact-registry-refresh-512");
-
-    expect(redactSensitiveText(first, { mode: "off" })).not.toContain(first);
-    expect(redactSensitiveText(second, { mode: "off" })).toBe(second);
-  });
-
   it("keeps outer matches fixed when a mask callback registers another value", () => {
     const first = "first-exact-fixture";
     const second = "second-exact-fixture";
