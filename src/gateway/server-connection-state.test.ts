@@ -602,6 +602,7 @@ describe("gateway connection state", () => {
 
   it("broadcasts health runtimeConfig only to clients that advertise runtime-config-health", () => {
     const state = createGatewayConnectionState({
+      scheduler: createTestGatewayScheduler(),
       bootId: "health-runtime-config",
       cfg: {} as OpenClawConfig,
     });
