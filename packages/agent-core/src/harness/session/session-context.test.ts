@@ -536,7 +536,7 @@ describe("buildSessionContext", () => {
 });
 
 describe("compaction checkpoint handle", () => {
-  function compactionEntry(
+  function checkpointCompactionEntry(
     id: string,
     parentId: string,
     summary: string,
@@ -559,7 +559,7 @@ describe("compaction checkpoint handle", () => {
     assistantEntry("a1", "u1", "two"),
     userEntry("u2", "a1", "three"),
     assistantEntry("a2", "u2", "four"),
-    compactionEntry("c1", "a2", "first summary", "u2"),
+    checkpointCompactionEntry("c1", "a2", "first summary", "u2"),
     userEntry("u3", "c1", "five"),
     assistantEntry("a3", "u3", "six"),
     {
@@ -571,7 +571,7 @@ describe("compaction checkpoint handle", () => {
       modelId: "test-model",
     },
     userEntry("u4", "model", "seven"),
-    compactionEntry("c2", "u4", "second summary", "u4"),
+    checkpointCompactionEntry("c2", "u4", "second summary", "u4"),
     userEntry("u5", "c2", "eight"),
   ];
 

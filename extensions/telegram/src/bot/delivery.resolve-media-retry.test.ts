@@ -487,7 +487,7 @@ describe("resolveMedia chat provenance scope", () => {
     expect(buildTelegramMediaScope(-5240776892)).toBe("tg--5240776892");
     expect(buildTelegramMediaScope(-5240776892, 123)).toBe("tg--5240776892-t123");
     expect(buildTelegramMediaScope(undefined)).toBeUndefined();
-    expect(buildTelegramMediaScope(NaN)).toBeUndefined();
+    expect(buildTelegramMediaScope(Number.NaN)).toBeUndefined();
   });
 
   it("stamps remote downloads with the originating chat scope", async () => {

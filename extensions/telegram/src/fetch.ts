@@ -794,5 +794,3 @@ export function resolveTelegramFetch(
 ): typeof fetch {
   return resolveTelegramTransport(proxyFetch, options).fetch;
 }
-
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

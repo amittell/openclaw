@@ -39,10 +39,7 @@ vi.mock("../../model-auth.js", async () => {
   };
 });
 
-import {
-  createEmbeddedRunAuthController,
-  resolveEmbeddedAuthCooldownProbePolicy,
-} from "./auth-controller.js";
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.js";
 import {
   createMutableAuthControllerHarness,
   createMutableEmbeddedRunAuthController,
