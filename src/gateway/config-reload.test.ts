@@ -2414,6 +2414,32 @@ describe("startGatewayConfigReloader", () => {
     );
   });
 
+  it("notifies lifecycle owners when hybrid mode applies a restart-only change", async () => {
+    const initialConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "hybrid" }, port: 18789 },
+    };
+    const nextConfig: OpenClawConfig = {
+      gateway: { reload: { mode: "hybrid" }, port: 18790 },
+    };
+    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "hot" }));
+    const harness = createReloaderHarness(readSnapshot, { initialConfig });
+    await harness.reloader.ready;
+
+    await flushWatcherChange(harness);
+
+    // Hybrid mode must not silently drop restart-required changes: it queues
+    // the restart and notifies lifecycle owners so runtime state cannot go
+    // stale, and logs why a hot-capable reload ended in a restart.
+    expect(harness.onConfigChange).toHaveBeenCalledOnce();
+    expect(harness.onHotReload).not.toHaveBeenCalled();
+    const [plan] = getOnlyRestartCall(harness);
+    expect(plan.restartReasons).toEqual(["gateway.port"]);
+    expect(harness.log.warn).toHaveBeenCalledWith(
+      "config reload requires gateway restart; hybrid mode scheduling restart (gateway.port)",
+    );
+    await harness.reloader.stop();
+  });
+
   it("caps missing-file retries and skips reload after retry budget is exhausted", async () => {
     const readSnapshot = vi
       .fn<() => Promise<ConfigFileSnapshot>>()

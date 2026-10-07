@@ -98,6 +98,7 @@ import { invalidSessionRequest as invalid } from "./session-request-error.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 import { applySessionsPatchDisplayMetadata } from "./sessions-patch-display-metadata.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
+import { applySessionPatchTemperature } from "./sessions-patch-temperature.js";
 
 type SessionPatchProjectionParams = {
   cfg: OpenClawConfig;
@@ -434,6 +435,11 @@ function* projectSessionPatchSteps(
     next.fastMode = normalized;
   }
 
+  const temperatureError = applySessionPatchTemperature(next, patch);
+  if (temperatureError) {
+    return invalid(temperatureError);
+  }
+
   if ("toolOverrides" in patch) {
     const raw = patch.toolOverrides;
     if (raw === null) {
@@ -466,11 +472,10 @@ function* projectSessionPatchSteps(
   }
 
   if ("reasoningLevel" in patch) {
-    const raw = patch.reasoningLevel;
-    if (raw === null) {
+    if (patch.reasoningLevel === null) {
       delete next.reasoningLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeReasoningLevel(raw);
+    } else if (patch.reasoningLevel !== undefined) {
+      const normalized = normalizeReasoningLevel(patch.reasoningLevel);
       if (!normalized) {
         return invalid('invalid reasoningLevel (use "on"|"off"|"stream")');
       }
@@ -492,11 +497,10 @@ function* projectSessionPatchSteps(
   }
 
   if ("elevatedLevel" in patch) {
-    const raw = patch.elevatedLevel;
-    if (raw === null) {
+    if (patch.elevatedLevel === null) {
       delete next.elevatedLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeElevatedLevel(raw);
+    } else if (patch.elevatedLevel !== undefined) {
+      const normalized = normalizeElevatedLevel(patch.elevatedLevel);
       if (!normalized) {
         return invalid('invalid elevatedLevel (use "on"|"off"|"ask"|"full")');
       }

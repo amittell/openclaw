@@ -5,6 +5,18 @@ export const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 export const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
 const MAX_OTEL_ERROR_MESSAGE_CHARS = 4 * 1024;
 const PRELOADED_OTEL_SDK_ENV = "OPENCLAW_OTEL_PRELOADED";
+const TRUNCATED_TEXT_SUFFIX = "...(truncated)";
+// Redaction runs on the event-loop thread, so its cost must follow what an attribute exports,
+// not what a model call carries (megabytes of tool output or image data). Clipped text is
+// redacted with this much context past its export cut: a secret that starts in the exported
+// prefix and ends within the lookahead is matched as it would be in the whole text.
+const OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
+// Bounds the clipped text one truncated JSON candidate may send to the redactor; a candidate
+// over it falls through to the next, smaller budget.
+const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
+// A private key clipped before its END line gives the PEM rule nothing to match.
+const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
+const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
 
 export type OtelContentCapturePolicy = {
   inputMessages: boolean;
@@ -26,12 +38,32 @@ const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
   logBodies: false,
 };
 
-function clampOtelLogText(value: string, maxChars: number): string {
-  return value.length > maxChars ? `${truncateUtf16Safe(value, maxChars)}...(truncated)` : value;
+/** Redacts the part of `value` an export of `keepChars` can show; `clipped` means text was dropped. */
+function redactExportPrefix(value: string, keepChars: number): { text: string; clipped: boolean } {
+  const windowChars = keepChars + OTEL_REDACTION_LOOKAHEAD_CHARS;
+  if (value.length <= windowChars) {
+    return { text: redactSensitiveText(value), clipped: false };
+  }
+  return {
+    text: omitUnterminatedPrivateKey(redactSensitiveText(truncateUtf16Safe(value, windowChars))),
+    clipped: true,
+  };
+}
+
+function omitUnterminatedPrivateKey(text: string): string {
+  let lastEnd = 0;
+  for (const end of text.matchAll(PRIVATE_KEY_END_RE)) {
+    lastEnd = end.index + end[0].length;
+  }
+  const begin = text.slice(lastEnd).search(PRIVATE_KEY_BEGIN_RE);
+  return begin < 0 ? text : text.slice(0, lastEnd + begin);
 }
 
 export function normalizeOtelLogString(value: string, maxChars: number): string {
-  return clampOtelLogText(redactSensitiveText(value), maxChars);
+  const { text, clipped } = redactExportPrefix(value, maxChars);
+  return clipped || text.length > maxChars
+    ? `${truncateUtf16Safe(text, maxChars)}${TRUNCATED_TEXT_SUFFIX}`
+    : text;
 }
 
 export function normalizeOtelErrorMessage(value: string | undefined): string | undefined {
@@ -82,7 +114,6 @@ export function normalizeOtelContentValue(value: unknown): string | undefined {
   return undefined;
 }
 
-const TRUNCATED_JSON_TEXT_SUFFIX = "...(truncated)";
 const JSON_TRUNCATION_STRING_BUDGETS = [8192, 4096, 2048, 1024, 512, 256, 128, 64, 32] as const;
 const JSON_TRUNCATION_ARRAY_ITEM_BUDGETS = [
   MAX_OTEL_CONTENT_ARRAY_ITEMS,
@@ -102,24 +133,48 @@ type JsonTruncationOptions = {
   maxObjectFields: number;
   maxStringChars: number;
   seen: WeakSet<object>;
+  truncateText: (value: string, maxChars: number) => string;
 };
 
 export function safeJsonString(value: unknown, maxChars: number): string | undefined {
-  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+  if (isOmittedFromJson(value)) {
     return undefined;
   }
-  const exact = stringifyJsonForOtelAttribute(value);
-  if (exact && exact.length <= maxChars) {
-    return exact;
+  const unredactedExact = exceedsJsonChars(value, maxChars) ? undefined : stringifyJson(value);
+  if (unredactedExact && unredactedExact.length <= maxChars) {
+    const exact = stringifyJsonForOtelAttribute(value, { redactStrings: true });
+    if (exact && exact.length <= maxChars) {
+      return exact;
+    }
   }
+  // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
+  const maxRedactionChars = maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR;
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
-      const candidate = truncateJsonValueForOtelAttribute(value, {
+      let redactionChars = 0;
+      const budget = {
         maxArrayItems,
         maxDepth: JSON_TRUNCATION_MAX_DEPTH,
         maxObjectFields: JSON_TRUNCATION_MAX_OBJECT_FIELDS,
         maxStringChars,
+      };
+      const unredacted = stringifyJson(
+        truncateJsonValueForOtelAttribute(value, {
+          ...budget,
+          seen: new WeakSet<object>(),
+          truncateText: (text, textMaxChars) => {
+            redactionChars += Math.min(text.length, textMaxChars + OTEL_REDACTION_LOOKAHEAD_CHARS);
+            return text.length > textMaxChars ? clipJsonText(text, textMaxChars) : text;
+          },
+        }),
+      );
+      if (!unredacted || unredacted.length > maxChars || redactionChars > maxRedactionChars) {
+        continue;
+      }
+      const candidate = truncateJsonValueForOtelAttribute(value, {
+        ...budget,
         seen: new WeakSet<object>(),
+        truncateText: truncateJsonTextForOtelAttribute,
       });
       const json = stringifyJsonForOtelAttribute(candidate);
       if (json && json.length <= maxChars) {
@@ -129,15 +184,69 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
   }
   const summary = stringifyJsonForOtelAttribute({
     truncated: true,
-    reason: exact ? "max_attribute_size" : "unserializable_value",
+    reason: stringifyJson(value) ? "max_attribute_size" : "unserializable_value",
     type: describeJsonValue(value),
   });
   return summary && summary.length <= maxChars ? summary : undefined;
 }
 
-function stringifyJsonForOtelAttribute(value: unknown): string | undefined {
+function isOmittedFromJson(value: unknown): boolean {
+  return value === undefined || typeof value === "function" || typeof value === "symbol";
+}
+
+// Lower bound on JSON.stringify(value).length, walked only until it passes maxChars: every
+// emitted value takes a character and every emitted string or key appears at least once.
+function exceedsJsonChars(value: unknown, maxChars: number): boolean {
+  const pending: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  let chars = 0;
+  while (pending.length > 0 && chars <= maxChars) {
+    const item = pending.pop();
+    chars += typeof item === "string" ? item.length + 2 : 1;
+    if (typeof item !== "object" || item === null || seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    if (Array.isArray(item)) {
+      for (let index = 0; index < item.length && chars <= maxChars; index++) {
+        chars += 1;
+        pending.push(item[index]);
+      }
+      continue;
+    }
+    for (const [key, field] of Object.entries(item)) {
+      if (chars > maxChars) {
+        break;
+      }
+      if (!isOmittedFromJson(field)) {
+        chars += key.length + 3;
+        pending.push(field);
+      }
+    }
+  }
+  return chars > maxChars;
+}
+
+function stringifyJson(value: unknown): string | undefined {
   try {
-    const json = JSON.stringify(value);
+    return JSON.stringify(value) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function redactJsonStringField(_key: string, field: unknown): unknown {
+  return typeof field === "string" ? redactSensitiveText(field) : field;
+}
+
+// Strings are redacted on their own as well as inside the serialized JSON: escaping rewrites
+// line breaks and quotes, which hides assignments that start a line from the text rules.
+function stringifyJsonForOtelAttribute(
+  value: unknown,
+  options?: { redactStrings: boolean },
+): string | undefined {
+  try {
+    const json = JSON.stringify(value, options?.redactStrings ? redactJsonStringField : undefined);
     if (!json) {
       return undefined;
     }
@@ -152,15 +261,15 @@ function truncateJsonValueForOtelAttribute(
   options: JsonTruncationOptions,
 ): unknown {
   if (typeof value === "string") {
-    return truncateJsonTextForOtelAttribute(value, options.maxStringChars);
+    return options.truncateText(value, options.maxStringChars);
   }
   if (typeof value === "number" || typeof value === "boolean" || value === null) {
     return value;
   }
   if (typeof value === "bigint") {
-    return truncateJsonTextForOtelAttribute(String(value), options.maxStringChars);
+    return options.truncateText(String(value), options.maxStringChars);
   }
-  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+  if (isOmittedFromJson(value)) {
     return undefined;
   }
   if (options.maxDepth <= 0) {
@@ -204,9 +313,7 @@ function truncateJsonObjectForOtelAttribute(
   options.seen.add(value);
   const nextOptions = { ...options, maxDepth: options.maxDepth - 1 };
   const result: Record<string, unknown> = {};
-  const entries = Object.entries(value).filter(
-    ([, field]) => field !== undefined && typeof field !== "function" && typeof field !== "symbol",
-  );
+  const entries = Object.entries(value).filter(([, field]) => !isOmittedFromJson(field));
   for (const [key, field] of entries.slice(0, options.maxObjectFields)) {
     result[key] = truncateJsonValueForOtelAttribute(field, nextOptions);
   }
@@ -218,16 +325,17 @@ function truncateJsonObjectForOtelAttribute(
   return result;
 }
 
-function truncateJsonTextForOtelAttribute(value: string, maxChars: number): string {
-  const redacted = redactSensitiveText(value);
-  if (redacted.length <= maxChars) {
-    return redacted;
-  }
-  const suffixBudget = Math.min(TRUNCATED_JSON_TEXT_SUFFIX.length, maxChars);
+function clipJsonText(value: string, maxChars: number): string {
+  const suffixBudget = Math.min(TRUNCATED_TEXT_SUFFIX.length, maxChars);
   const prefixBudget = Math.max(0, maxChars - suffixBudget);
-  return `${truncateUtf16Safe(redacted, prefixBudget)}${TRUNCATED_JSON_TEXT_SUFFIX.slice(
-    TRUNCATED_JSON_TEXT_SUFFIX.length - suffixBudget,
+  return `${truncateUtf16Safe(value, prefixBudget)}${TRUNCATED_TEXT_SUFFIX.slice(
+    TRUNCATED_TEXT_SUFFIX.length - suffixBudget,
   )}`;
+}
+
+function truncateJsonTextForOtelAttribute(value: string, maxChars: number): string {
+  const { text, clipped } = redactExportPrefix(value, maxChars);
+  return clipped || text.length > maxChars ? clipJsonText(text, maxChars) : text;
 }
 
 function describeJsonValue(value: unknown): string {

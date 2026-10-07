@@ -232,7 +232,7 @@ export function resolveModelKeysFromEntries(
   );
 }
 
-function resolveKnownAgentId(cfg: OpenClawConfig, rawAgentId: string): string {
+export function resolveKnownAgentId(cfg: OpenClawConfig, rawAgentId: string): string {
   const agentId = normalizeAgentId(rawAgentId);
   if (!listAgentIds(cfg).includes(agentId)) {
     throw new Error(

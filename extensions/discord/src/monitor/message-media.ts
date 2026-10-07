@@ -57,9 +57,20 @@ type DiscordMediaOperation = DiscordMediaResolveOptions & {
   endpointRuntime: DiscordEndpointRuntime | null;
   maxBytes: number;
   out: DiscordMediaInfo[];
+  scope?: string;
 };
 
+/**
+ * Provenance scope for inbound Discord media: the originating channel id, stamped as
+ * "discord-<channelId>" so a flat media/inbound file identifies its conversation.
+ */
+function resolveDiscordMediaScope(message: { channelId?: string | null }): string | undefined {
+  const channelId = message.channelId;
+  return typeof channelId === "string" && channelId ? `discord-${channelId}` : undefined;
+}
+
 function createDiscordMediaOperation(
+  message: Message,
   maxBytes: number,
   options?: DiscordMediaResolveOptions,
 ): DiscordMediaOperation {
@@ -69,6 +80,7 @@ function createDiscordMediaOperation(
     endpointRuntime: getDiscordEndpointRuntime() ?? null,
     maxBytes,
     out: [],
+    scope: resolveDiscordMediaScope(message),
   };
 }
 
@@ -184,7 +196,7 @@ export async function resolveMediaList(
 ): Promise<DiscordMediaInfo[]> {
   return resolveMessageMedia(
     message,
-    createDiscordMediaOperation(maxBytes, options),
+    createDiscordMediaOperation(message, maxBytes, options),
     "discord: failed to download",
   );
 }
@@ -195,7 +207,7 @@ export async function resolveForwardedMediaList(
   options?: DiscordMediaResolveOptions,
 ): Promise<DiscordMediaInfo[]> {
   const snapshots = resolveDiscordMessageSnapshots(message);
-  const operation = createDiscordMediaOperation(maxBytes, options);
+  const operation = createDiscordMediaOperation(message, maxBytes, options);
   if (snapshots.length > 0) {
     for (const snapshot of snapshots) {
       await appendResolvedMediaFromAttachments({
@@ -226,7 +238,7 @@ export async function resolveReferencedReplyMediaList(
   return referencedReply
     ? resolveMessageMedia(
         referencedReply,
-        createDiscordMediaOperation(maxBytes, options),
+        createDiscordMediaOperation(message, maxBytes, options),
         "discord: failed to download referenced reply",
       )
     : [];
@@ -260,6 +272,7 @@ async function fetchDiscordMedia(
     readIdleTimeoutMs: params.readIdleTimeoutMs,
     fallbackContentType: params.fallbackContentType,
     originalFilename: params.originalFilename,
+    scope: params.scope,
     ...(signal ? { requestInit: { signal } } : {}),
   }).catch((error: unknown) => {
     if (timedOut) {
@@ -319,6 +332,7 @@ async function appendResolvedMediaFromAttachments(
         endpointRuntime: params.endpointRuntime,
         fallbackContentType: attachment.content_type,
         originalFilename: attachment.filename,
+        scope: params.scope,
       });
       const classification = resolveDiscordMediaClassification({
         attachment,
@@ -424,6 +438,7 @@ async function appendResolvedMediaFromStickers(
           endpointRuntime: params.endpointRuntime,
           fallbackContentType: inferStickerContentType(sticker),
           originalFilename: candidate.fileName,
+          scope: params.scope,
         });
         params.out.push({
           path: saved.path,

@@ -44,6 +44,15 @@ export type ChatHistoryPageKernelOptions = {
   resolveCronJobName?: ChatDisplayProjectionOptions["resolveCronJobName"];
   cliSessionId?: string;
   readCliTailPage?: (tail: ChatHistoryCliTail) => Promise<ChatHistoryPage>;
+  /**
+   * Reads the span a compaction summary shadowed (fork: chat.history / sessions_history
+   * `compactionId`). Host-supplied because the span reader is not in the worker's admitted
+   * reader set; `undefined` from it means the id is not a compaction in this transcript.
+   */
+  readCompactionShadowPage?: (
+    readScope: SessionTranscriptReadScope,
+    opts: { compactionId: string; maxMessages: number; offset: number },
+  ) => Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined>;
 };
 
 export function resolveChatHistoryNextOffset(params: {
@@ -214,6 +223,30 @@ export function capChatHistoryAroundMessage(params: {
   return params.messages.slice(start, end);
 }
 
+/**
+ * Anchored reads (messageId, compaction span) bypass the incremental tail.
+ *
+ * Bound snapshots are terminal by contract, so a messageId read falls through to the
+ * CLI-import merge when the session carries an import binding, because that merge
+ * still centers on messageId at the handler cap. Offset pages use the tail reader.
+ *
+ * A compaction span never falls through. It is a fixed historical window in this
+ * session's own transcript, so an import binding cannot change what the boundary
+ * shadowed, and the merge would answer a span request with the live tail while
+ * reporting success -- the caller could not tell the span was never read.
+ */
+export function shouldReadAnchoredWindow(params: {
+  messageId: string | undefined;
+  compactionId: string | undefined;
+  cliSessionId: string | undefined;
+}): boolean {
+  const { messageId, compactionId, cliSessionId } = params;
+  if (compactionId) {
+    return true;
+  }
+  return Boolean(messageId) && !cliSessionId;
+}
+
 /** Assemble one page from admitted readers; host imports and profile discovery stay outside. */
 export async function readChatHistoryPageKernel(
   params: ChatHistoryPageParams,
@@ -230,6 +263,7 @@ export async function readChatHistoryPageKernel(
     effectiveMaxChars,
     offset,
     messageId,
+    compactionId,
   } = params;
   if (!sessionId || !storePath) {
     if (messageId) {
@@ -255,20 +289,36 @@ export async function readChatHistoryPageKernel(
   // full snapshot. Paging oversized imports needs an opaque snapshot cursor and
   // is deferred to a follow-up issue. Anchored reads fall through with them: the
   // full-snapshot merge below still centers on messageId at the handler cap.
-  if (messageId && !cliSessionId) {
-    const readPage = await options.readers.readSessionMessagesAroundIdWithStatsAsync(readScope, {
-      messageId,
-      maxMessages: max,
-      allowResetArchiveFallback: true,
-      readOnly: options.readOnly,
-    });
-    if (!readPage.found) {
+  if (shouldReadAnchoredWindow({ messageId, compactionId, cliSessionId })) {
+    let readPage: (ReadRecentSessionMessagesResult & { offset: number }) | undefined;
+    let hasOverreadContext = false;
+    if (compactionId) {
+      // A shadowed span is a fixed historical window: no live tail cursor and no CLI merge.
+      readPage = await options.readCompactionShadowPage?.(readScope, {
+        compactionId,
+        maxMessages: max,
+        offset: offset ?? 0,
+      });
+    } else if (messageId) {
+      const anchoredPage = await options.readers.readSessionMessagesAroundIdWithStatsAsync(
+        readScope,
+        {
+          messageId,
+          maxMessages: max,
+          allowResetArchiveFallback: true,
+          readOnly: options.readOnly,
+        },
+      );
+      if (anchoredPage.found) {
+        hasOverreadContext = anchoredPage.hasOverreadContext;
+        readPage = anchoredPage;
+      }
+    }
+    if (!readPage) {
       return { messages: [] };
     }
     const overreadContextMessage =
-      readPage.hasOverreadContext || readPage.messages.length > max
-        ? readPage.messages[0]
-        : undefined;
+      hasOverreadContext || readPage.messages.length > max ? readPage.messages[0] : undefined;
     const localMessages = dropChatHistoryOverreadContextMessage(
       dropPreSessionStartAnnouncePairs(
         readPage.messages,
@@ -313,10 +363,29 @@ export async function readChatHistoryPageKernel(
         );
       }
     }
+    if (compactionId) {
+      // The span pages by offset inside the shadowed window, so it keeps its pagination.
+      const pageOffset = readPage.offset;
+      return {
+        messages: augmentChatHistoryWithCanvasBlocks(projected),
+        ...(projection.activity.length ? { activity: projection.activity } : {}),
+        responseOffset: pageOffset,
+        pagination: {
+          offset: pageOffset,
+          totalMessages: readPage.totalMessages,
+          rawPageMessages: Math.min(
+            max,
+            Math.max(readPage.messages.length, readPage.totalMessages > pageOffset ? 1 : 0),
+          ),
+        },
+      };
+    }
     // Numeric offsets do not encode the selected historical transcript source.
     return {
       messages: augmentChatHistoryWithCanvasBlocks(
-        capChatHistoryAroundMessage({ messages: projected, messageId, maxCost: max }),
+        messageId
+          ? capChatHistoryAroundMessage({ messages: projected, messageId, maxCost: max })
+          : projected,
       ),
       ...(projection.activity.length ? { activity: projection.activity } : {}),
     };

@@ -26,6 +26,7 @@ import {
   setChannelSourceTurnId,
   setChannelSourceTurnSameThreadRequired,
 } from "../../auto-reply/reply/source-turn-id.js";
+import { recordSessionPendingInputCompletedTurn } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
@@ -172,6 +173,27 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         );
       const recorder = prepared.userTurn.recorder;
       return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
+    };
+    /**
+     * Fire-and-forget answered-turn marker. Reached only from the success exit below
+     * (`await execution` returned without throwing and without an abort), so a run that
+     * died, threw or was cancelled leaves no marker and stays re-drivable.
+     */
+    const recordCompletedTurnMarker = () => {
+      const requestHash = prepared.userTurn.recorder?.getPendingInputRequestHash?.();
+      const markerSessionKey = params.resolvedSessionKey;
+      const expectedSessionId = params.resolvedSessionId;
+      if (!requestHash || !markerSessionKey || !expectedSessionId) {
+        return;
+      }
+      void recordSessionPendingInputCompletedTurn(
+        {
+          agentId: params.activeSessionAgentId,
+          sessionKey: markerSessionKey,
+          ...(params.storePath ? { storePath: params.storePath } : {}),
+        },
+        { expectedSessionId, requestHash },
+      ).catch(diagnostics.warning("failed to record answered agent turn marker"));
     };
     return await prepared.activeGatewayWorkAdmission.run(async () => {
       await yieldAfterAgentAcceptedAck();
@@ -609,6 +631,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         );
         dispatched = true;
         await execution;
+        recordCompletedTurnMarker();
       } catch (err) {
         if (prepared.activeRunAbort.controller.signal.aborted && isAbortError(err)) {
           await finishUndispatchedAbort();

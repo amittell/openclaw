@@ -81,7 +81,10 @@ describe("sandbox container environment config validation", () => {
       } else {
         expect(issue.message).toContain("mounted file or custom image");
       }
-      for (const fragment of value.split(/[\r\n\0]/u).filter(Boolean)) {
+      for (const fragment of value
+        .split(/[\r\n]/u)
+        .flatMap((part) => part.split("\u0000"))
+        .filter(Boolean)) {
         expect(issue.message).not.toContain(fragment);
       }
     }

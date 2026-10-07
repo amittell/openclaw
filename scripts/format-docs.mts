@@ -98,7 +98,7 @@ function commandLineBytes(args: string[]) {
   return args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8") + 3, 0);
 }
 
-function chunkFilesForCommand(
+export function chunkFilesForCommand(
   files: string[],
   prefixArgs: string[],
   maxBytes = DOCS_FORMAT_MAX_COMMAND_LINE_BYTES,

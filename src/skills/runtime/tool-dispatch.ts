@@ -3,6 +3,7 @@ import { resolveEffectiveToolPolicy } from "../../agents/agent-tools.policy.js";
 import type { AnyAgentTool } from "../../agents/agent-tools.types.js";
 import type { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { filterRequesterYieldTools } from "../../agents/openclaw-tools.requester-yield.js";
+import { isOwnerOnlyToolStub } from "../../agents/owner-only-tool-stub-marker.js";
 import { resolveRequesterToolPolicies } from "../../agents/requester-tool-policy.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { buildDeclaredToolAllowlistContext } from "../../agents/tool-policy-declared-context.js";
@@ -198,7 +199,8 @@ export function resolveSkillDispatchTools(
     inheritedToolDenylist: explicitDenylist,
   });
   const policyFiltered = applyToolPolicyPipeline({
-    tools,
+    // Skill dispatch omits owner-only tools for non-owners; stubs serve agent prompts.
+    tools: tools.filter((tool) => !isOwnerOnlyToolStub(tool)),
     toolMeta: getPluginToolMeta,
     warn: logVerbose,
     steps: [

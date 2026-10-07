@@ -128,6 +128,8 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
     allowCurrentJob?: boolean;
     checkVisibility?: boolean;
     preserveCronGetWireMessage?: boolean;
+    /** Only an unscoped caller sees every job, so only it may learn that an id is absent. */
+    respondMissingToUnscopedCaller?: (respond: RespondFn) => void;
   } = {},
 ): GatewayRequestHandler {
   return defineValidatedGatewayHandler(method, validate, async (options) => {
@@ -152,6 +154,10 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
       }
       const callerScope = readCronCallerScope(client);
       const job = prepareVisibility ? context.cron.getJob(jobId) : loaded;
+      if (!job && !callerScope && scope.respondMissingToUnscopedCaller) {
+        scope.respondMissingToUnscopedCaller(respond);
+        return;
+      }
       const visibility = scope.checkVisibility ? visibilityRead.resolve() : undefined;
       if (
         !job ||

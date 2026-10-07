@@ -138,6 +138,32 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       "agent:main",
       "/tmp/session.jsonl",
     );
+    // Per-call context totals flush before after-turn work runs.
+    const [closedAt] = fixture.contextTotalTokensWriter.close.mock.invocationCallOrder;
+    const [afterTurnAt] = mocks.completeAfterTurn.mock.invocationCallOrder;
+    expect(closedAt).toBeLessThan(afterTurnAt ?? 0);
+  });
+
+  it("waits for the per-call flush to finish before after-turn work", async () => {
+    const fixture = createFixture(mocks);
+    const started = createDeferredCore();
+    const flush = createDeferredCore<undefined>();
+    fixture.contextTotalTokensWriter.close.mockImplementationOnce(() => {
+      started.resolve();
+      return flush.promise;
+    });
+    const run = runEmbeddedAttemptSettledPhase(fixture.input);
+    // Settling without reaching the flush fails at once instead of waiting.
+    await Promise.race([
+      started.promise,
+      run.then(() => {
+        throw new Error("settlement finished without flushing the per-call context total");
+      }),
+    ]);
+    expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
+    flush.resolve(undefined);
+    await run;
+    expect(mocks.completeAfterTurn).toHaveBeenCalledOnce();
   });
 
   it("persists image failure notes after after-turn transcript reconciliation", async () => {
@@ -861,6 +887,9 @@ describe("runEmbeddedAttemptSettledPhase", () => {
 
     expect(mocks.settleStream).not.toHaveBeenCalled();
     expect(mocks.completeResult).not.toHaveBeenCalled();
+    // A failed prompt drops pending per-call totals instead of flushing them.
+    expect(fixture.contextTotalTokensWriter.close).not.toHaveBeenCalled();
+    expect(fixture.contextTotalTokensWriter.abandon).toHaveBeenCalledOnce();
     expect(fixture.clearTimers).toHaveBeenCalledOnce();
     expect(fixture.detachBackend).toHaveBeenCalledWith(fixture.queueHandle);
     expect(mocks.logError).toHaveBeenCalledWith(
