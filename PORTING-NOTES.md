@@ -2750,3 +2750,211 @@ the carry (tests from this branch, run against `939c4e8ea12` production code):
 | `pnpm build` (independent review, 2026-10-04)                                                 | rc=0                                                                                                                                                                                                                                                                                           |
 
 Not run: the full suite, `check-changed`, and any live proof on a bot.
+
+# Carrying onto v2026.9.8 (9.6 -> 9.8), 2026-10-07
+
+Branch `upgrade-v2026.9.8`, built from `upgrade-v2026.9.6` at `442bed7de46`,
+which both bots ran when the carry started (read per host 2026-10-07 05:30Z:
+HEAD and `dist/build-info.json` both `442bed7de46`, trees clean). Alex chose
+`v2026.9.8` (GitHub "Latest", 2026-10-02) over `v2026.10.1-beta.2` (newest
+tag, cut 2026-10-06, no published release) on 2026-10-07.
+
+## Topology
+
+    v2026.9.6^{commit}          eb377ac59e6
+    v2026.9.8^{commit}          fc23bc864e4
+    merge-base                  814a7e752af   (upstream main, 2026-09-22)
+    commits merge-base..9.8     3,396
+    9.6 -> 9.8                  27,978 files, +1,571,903 / -1,656,164
+    9.8 vs v2026.10.1-beta.2    separate release branches (9.8 is not an ancestor)
+
+Same squash-and-cherry-pick as 9.4, 9.5 and 9.6:
+
+    SQUASH=$(git commit-tree <reduced-fork>^{tree} -p v2026.9.6^{commit})
+    git cherry-pick -n $SQUASH        # onto v2026.9.8
+
+## Revert pass: what 9.8 already contains
+
+Every amittell PR number and every PR the fork ported was matched against the
+subjects AND bodies of the 3,396 commits `814a7e752af..v2026.9.8`. No amittell PR
+lands in 9.8. Five fork commits were reverted in a scratch worktree before
+squashing, and each reverted file was then byte-identical to the 9.6 tag (the
+one exception, `run.overflow-context-recovery.test.ts`, carries older fork
+content that stays):
+
+| fork commit   | what                                         | 9.8                                               |
+| ------------- | -------------------------------------------- | ------------------------------------------------- |
+| `bd3810976fb` | port of #157121 (WAL coordinator contention) | `1b32a8b3c7f` in 9.8                              |
+| `d11d26a4a5f` | port of #157834 (typed superseded Worker)    | `f5833978f3b` in 9.8                              |
+| `379547c4789` | port of #156583 (maintenance replan backoff) | `20445202d31` in 9.8                              |
+| `e173e39a3fd` | port of #157673 (proxy completions budget)   | `63944b8a1df` in 9.8                              |
+| `6e1031f10f0` | fork all-modes delta on top of #157673       | re-applied after the squash, on 9.8's own #157673 |
+
+#155988 and #155288, which the 9.6 carry could not take, are in 9.8 natively.
+
+The #132409 port (`66b068ec4ab`, `daba3c89f03`) was also reverted before
+squashing. It was carried at its 09-10 head because 9.6 lacked #158637; 9.8 has
+#158637 (`75e416f1ac2`), and the PR's current head `606f04bfa59` (on main of
+2026-10-03) applies to 9.8 with 2 conflicts against many for the old head. It is
+re-applied at `606f04bfa59` as its own commit.
+
+    fork delta vs 9.6     482 files -> 472 after the reverts
+    conflicts             124 -> 120 (117 content + 7 modify/delete before the #132409 revert;
+                          113 content + 7 modify/delete after)
+
+The 120 matched `git merge-tree --write-tree --merge-base v2026.9.6^{commit}`
+exactly.
+
+## Deleted-file decisions
+
+9.8 deleted seven test files the fork modifies; no fork-modified production
+file was deleted (fork-modified files absent at 9.8: 8 of 378, the eighth a
+rename, `automatic-startup-config-repair.test.ts` ->
+`automatic-config-repair.test.ts`).
+
+| file (deleted upstream by)                                                   | fork delta                                    | ruling                                            |
+| ---------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------- |
+| telegram `bot-native-command-plugins.test.ts` (#155040)                      | harness re-anchor                             | dropped with the file                             |
+| telegram `bot-native-commands.test.ts`, `bot.command-menu.test.ts` (#155040) | `/dashboard` filter on upstream tests         | dropped with the files                            |
+| telegram `send.test.ts` (#155040)                                            | #151923's 1860 s pins                         | dropped with the file                             |
+| `embedded-agent-subscribe.deferred-reply-supersession.test.ts` (#160205)     | import path                                   | dropped with the file                             |
+| telegram `request-timeouts.test.ts` (#155040)                                | #151923's upload-sizing tests                 | kept as #151923's own file at `fe89fffb2d4`       |
+| telegram `bot-processing-outcome.test.ts` (#155040)                          | fork tests of the visible-reply delivery fact | kept as a fork-only file holding just those tests |
+
+Trap-5 sweep: 179 fork test files, 544 added test/describe names, 15 found in
+another 9.8 file. None is a duplicate in the carry: 13 are fork line-cap splits
+whose originals the fork delta removed (0 copies left in the 9.8 files), one is
+a `describe` name over disjoint tests, one is an unrelated UI test name.
+
+## Per-file rulings (120 conflicts: 113 content, 7 modify/delete)
+
+Resolved in six parallel lanes split by subsystem; every lane diffed each
+resolved file against stage 2 (9.8) and confirmed the remainder is the fork's
+stage 1 -> 3 delta. Full per-file reports were kept with the session; the
+notable rulings, where 9.8 moved the code the fork changed:
+
+| area / file                                                                                                                                   | 9.8 change that collided                                                                                   | ruling                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/media/store.ts` (+ `media/fetch.ts`, whatsapp, telegram `delivery.resolve-media.ts`)                                                     | `saveMediaBuffer`/`saveMediaStream` gained a 7th `options` parameter in the fork's positional `scope` slot | the fork's scope moved into `options?: { assertCommitAllowed?, scope? }`; every caller updated; inbound-save log (56cb4a3b826) kept                                      |
+| `src/media/media-reference.ts` -> `inbound-media-uri.ts`                                                                                      | 9.8 moved `parseInboundMediaUri`                                                                           | #101866's raw-authority guard re-applied at the new home (now also covers 9.8's `parse-output.ts`)                                                                       |
+| `run/params.ts` -> `src/agents/internal-runtime-context.ts`                                                                                   | 9.8 moved `CurrentInboundPromptContext`                                                                    | the version-3 `carrierText` field lives there now                                                                                                                        |
+| `run/attempt-stream-prepare.ts`, `attempt-execution-settle.test-support.ts`                                                                   | `subscription` renamed `streamSubscription`; fixture moved to test-support                                 | per-call context-total writer re-attached; writer mock moved into 9.8's fixture                                                                                          |
+| `run/auth-controller.ts`                                                                                                                      | AWS-SDK and key paths merged into one `prepareRuntimeAuthForModel`                                         | #93952-family 360 s deadlines wrap the inlined credential resolution and the single runtime-auth call; refresh-path deadline unchanged                                   |
+| `failover/context-overflow.ts`                                                                                                                | exclusions folded into one condition                                                                       | split to keep the fork's #111913 long-context check ahead of the billing exclusion                                                                                       |
+| `agent-hooks/compaction-safeguard.ts`                                                                                                         | #157505 removed the `modelRegistry` cast                                                                   | 9.8's typed `requestAuth`; #138416/#130393 pull-forwards, #721 block, #722 degrade intact; `resolveCompactionSummaryBudgetChars` stays absent                            |
+| `auth-profiles/oauth-refresh-failure.ts`                                                                                                      | classifier rewritten as an ordered signal table                                                            | the fork's reuse prose signals and `refresh_token_expired` rename added as table rows                                                                                    |
+| `src/agents/agent-tools.ts`, `scheduled-message-invocation.ts`, `plugins/tools.ts`, `skills/runtime/tool-dispatch.ts`, `memory-core/index.ts` | new policy-filter diagnostics (`onFilter`), undeclared-tool check, lazy memory tool loop                   | owner-only stubs re-applied on 9.8's shapes; `onPolicyFilter` threaded through the fork's `filterTurn` so 9.8's diagnostics still fire (owner-only event now fires last) |
+| `src/agents/command/session-store.ts`                                                                                                         | runtime-model branch rewritten                                                                             | #73790 fallback guard first, then 9.8's branch; per-call total finalizer kept                                                                                            |
+| `cron/isolated-agent/run-session-state.ts`, `run-prepare.ts`                                                                                  | `MutableCronSession` collapsed; `PreparedCronRunContext` now inferred                                      | `contextTotalsAccounted` added on 9.8's type; the producer in `run-prepare.ts` annotated so the flag type flows                                                          |
+| `src/gateway/server-connection-state.ts`                                                                                                      | per-client projectors return `SessionEventProjection`                                                      | #89526's health projection returns `{ payload }` (the hook runs for every event family, so it is on the production path)                                                 |
+| `src/gateway/config-reload.ts`                                                                                                                | watcher moved to `config/source-file.ts`; pending writes validate the notification snapshot                | #89526 observation re-expressed on 9.8's revisions; hybrid restart warning kept; fork `config-reload-watcher.ts` deleted (9.8's `resolveUsePolling` owns it)             |
+| `server-methods/chat-history-*.ts`                                                                                                            | history reads moved to a worker; offset pages use the incremental tail                                     | compactionId span read kept in-process (fork design), messageId anchoring on 9.8's branch                                                                                |
+| `server-methods/cron.ts`, `cron-job-access.ts`                                                                                                | `cron.remove` moved onto `scopedCronJobHandler`                                                            | idempotent missing-id answer is a new `respondMissingToUnscopedCaller` scope option                                                                                      |
+| `agent-turn/agent-run-execution-phase.ts` (+ types, service)                                                                                  | `storePath` param deleted as unused (30a2198d2de)                                                          | restored; the answered-turn marker writes to the session's resolved store                                                                                                |
+| `channels/turn/lifecycle.ts`, `delivery-visibility.ts`                                                                                        | 9.8 rewrote two helpers inline (trap 3)                                                                    | fork extraction kept; 9.8's `isRecord` rewrite ported into it                                                                                                            |
+| `auto-reply/reply/inbound-meta.ts`                                                                                                            | new delivery-format prompt; pragma removed                                                                 | #151099 extraction kept; collision resolved to 9.8's import set                                                                                                          |
+| `auto-reply/reply/agent-runner-failure-reply.ts`                                                                                              | `resolveReplyFailoverFacts` moved; local-worker timeout branch added                                       | fork transport-failure copy runs after 9.8's local-worker check                                                                                                          |
+| `infra/heartbeat-events-filter.ts`                                                                                                            | relay predicate collapsed to one line                                                                      | #156537's killed exclusion folded in: `Boolean(output) \|\| (!killed && !succeeded)`                                                                                     |
+| telegram `bot-core.ts`, `send-context.ts`, `fetch.ts`, `outbound-media.ts`                                                                    | timeout helpers deleted (#159258); bot async; #156842 pool `pipelining`                                    | #151923 guards: 1860 s client timer set directly, upload transformer, byte tagging; pool options module with 9.8's `pipelining`                                          |
+| telegram `update-offset-store.ts`, `monitor.ts`                                                                                               | `prepareTelegramAccount` replaced read-and-delete-on-rotation                                              | fork v4 store (Bot API root tracking) re-applied on it; identity marker records `apiRoot`                                                                                |
+| telegram `bot-native-commands.ts`                                                                                                             | `builtinCommands`                                                                                          | `/dashboard` yield to the Mini App command kept                                                                                                                          |
+| telegram `bot-handlers.*`, `bot-processing-outcome.ts`                                                                                        | import churn                                                                                               | bot-pair loop guard, replied-before-failing guard, #155273 dedupe, #100565 all intact                                                                                    |
+| discord `monitor/message-media.ts`                                                                                                            | `DiscordMediaOperation` factory                                                                            | media scope stamped from the top-level message                                                                                                                           |
+| memory-lancedb `doctor-contract-api.ts`, `lancedb-store.ts`, `config.ts`, `index.ts`                                                          | `withMemoryTable` helper; `count()` and `api.ts` deleted; `isRecord` narrowing                             | system-turn and envelope migrations on `withMemoryTable`; `memory_refresh` kept and now calls 9.8's `assertRetainedToolEnabled`                                          |
+| `extensions/codex` projection test, diagnostics-otel `service.test.ts`                                                                        | low-value test removals                                                                                    | 9.8's deletions kept; fork checkpoint/turn-scope assertions re-applied to surviving tests                                                                                |
+| `scripts/check-changed.mts`, `scripts/format-docs.mts`                                                                                        | `chunkFilesForCommand` un-exported                                                                         | export restored for the fork's chunked format check                                                                                                                      |
+| `src/cli/gateway-cli/run.ts`, `cli/models-cli.ts`, `register.status-health-sessions.ts`                                                       | startup options spread; shared paste paths; Tasks removed                                                  | supervised-lock watchdog after `...startupOptions`; `models auth clean`; `sessions abort` kept, Tasks registration dropped                                               |
+| `test/scripts/mantis-telegram-failure.test.ts`                                                                                                | 9.8 fixed the macOS socket path (#159078)                                                                  | took 9.8; the proof-test half of #144979 stays (9.8 did not fix that file)                                                                                               |
+
+## Commits after the squash
+
+| commit        | what                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `755f44fd9bb` | the squash, conflicts resolved (above)                                                                                                                                                                                                                                                                                                                                                         |
+| `9c74721c3b1` | 5 tests meet 9.8 APIs (auto-recall `cooldownMs`; `send.runtime.ts` deleted, mock `plugin-sdk/web-media`; worker options lost the spool dir; 2 importers of the moved `resolveSettledTurnFinalizationRequest`)                                                                                                                                                                                  |
+| `092cf9743ab` | #132409 at `606f04bfa59` (see "Revert pass"). On the carry a third conflict: the PR moves 9.8's spooled-retry tests into `test-support/bot-spooled-retry.ts`, and its moved copy of "persists recorded dispatch failures during normal polling" contradicts the fork's #100565. That test is replaced there by the fork's "keeps recorded dispatch failures retryable", marked FORK DIVERGENCE |
+| `61d3199c9bb` | #158145 moved from `31f7e210dfe` (its first commit) to `452a23f4716`: the bounded OTel redaction no longer exports parts of open-quoted values, long registered secrets, JWTs, configured redact patterns or URL passwords. Every PR file equals the head except `redact.test.ts` (9.8's low-value deletions kept). +2 `plugin-sdk/logging-core` exports                                       |
+| `c2a6d6f1bac` | #158161 at `57d604fb5ce` instead of re-applying `6e1031f10f0` (see "Changes the bots will see")                                                                                                                                                                                                                                                                                                |
+| `49a1839c61e` | 4 fork tests re-anchored: #89526 observation tests to 9.8's write-notification snapshots (the it.each pinning 9.6's reread is removed; the reread no longer exists), the strict-probe test to the configured probe, a missing `scheduler`, `toMatchObject` for `disableMessageTool`                                                                                                            |
+| `2e186c305e6` | regenerated prompt snapshots, assertion ratchet pruned (19 lowered, 0 raised), 4 carry-caused lint fixes                                                                                                                                                                                                                                                                                       |
+
+## Changes the bots will see (against the deployed 9.6 build `442bed7de46`)
+
+- Everything upstream between 9.6 and 9.8 (3,396 commits), including agent schema 23 -> 24
+  (session snapshots split out of hot entries) and state schema 18 -> 19 (two nullable
+  profile-authority columns). Both one-way: rollback needs the pre-doctor DB backups.
+- #158161: non-thinking requests near the context limit are re-budgeted from the unmargined
+  estimate instead of refused, so qwen sessions compact at about 81% real fill instead of
+  65-73%; TGI context errors now compact.
+- #158145: content capture redacts the five secret shapes above.
+- #132409 at its newer head (claim custody through settlement, #158637, now in the base).
+- `memory_refresh` revalidates that memory is still enabled after a hot reload (9.8 parity).
+
+## Census of Alex's PRs against 9.8 (2026-10-07)
+
+No amittell PR lands in 9.8 (subjects and bodies of all 3,396 commits searched). Changes
+from the 9.6 rulings:
+
+- #158145, #158161: re-pulled at their current heads (above).
+- #144979: the failure-test half is superseded by 9.8's #159078; the proof-test half stays
+  (9.8 did not fix `mantis-telegram-proof.test.ts`).
+- #164551: fork variant kept; 9.8 has no worker-routed session patch (`workerGuard`
+  arrived on main with #163378 after the 9.8 cut), so the head cannot be carried as-is.
+- #151924: fork wiring kept (taking the restored head too would count each message twice).
+- #68280: test-only, skipped (its expected wording is main's, not 9.8's).
+- Fork PR #8: nothing left to carry; 9.8 removed the Tasks runtime (#159179).
+- Fork PR #11 (re-dispatch and steer dedupe, opened 09-28): NOT carried, held for Alex. It
+  targets the fork's July `main` (`pi-embedded-runner` paths) and would need re-deriving;
+  the deployed build never had it; the 09-29 loop it targets was handled by the v3 carrier
+  body, #132409 and fork #10.
+- Dead or duplicated fork code left as it was (behaviour-neutral, a separate decision):
+  `overloadBackoffMaxMs` (no production caller since 9.2; 9.8's own transient retry covers
+  overload), and #73790's session-store half (9.8's `post-run.ts` preserves the runtime model).
+
+## Guards (2026-10-07, on the Air, node v26.8.2, pnpm 12.5.1)
+
+| check                                                                                                                                                                        | result                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:root`, `tsgo:test:src` (21 of 21 shards), `tsgo:test:packages`, `tsgo:test:ui`, `tsgo:ui`, `tsgo:scripts` | rc=0, 0 errors each                                                                                                                                                                |
+| `pnpm build`                                                                                                                                                                 | rc=0, 6m11s, `build-info` names the head                                                                                                                                           |
+| `plugins:assets:check`                                                                                                                                                       | generated assets match the committed bytes (the workboard hash is 9.8's own)                                                                                                       |
+| `prompt:snapshots:check`                                                                                                                                                     | rc=0 after regeneration                                                                                                                                                            |
+| `protocol:check`                                                                                                                                                             | registry, schema, Swift and Kotlin pass and regenerate byte-identical; its `check-protocol-since` step fails on the guard-base trap (`origin` is the WritHub mirror's July `main`) |
+| `check:env-var-count`                                                                                                                                                        | rc=0 (477)                                                                                                                                                                         |
+| `check:assertion-safety --base v2026.9.8^{commit}`                                                                                                                           | rc=0 after a shrink-only prune                                                                                                                                                     |
+| `check:max-lines-ratchet`                                                                                                                                                    | rc=0                                                                                                                                                                               |
+| `check:line-cap-ratchet --base v2026.9.8^{commit}`                                                                                                                           | rc=1, 10 over-cap files grown by the fork. Pre-existing class (48 on the 9.6 carry, issue #9); not split here                                                                      |
+| `config:docs:check`                                                                                                                                                          | rc=1, config counts over budget (core 2474/2473, channel 3796/3786, plugin 4432/4431) from fork config keys. Pre-existing class (the 9.6 carry failed identically)                 |
+| oxfmt over 471 changed code files                                                                                                                                            | clean                                                                                                                                                                              |
+| oxlint over the same                                                                                                                                                         | 4 carry-caused errors fixed; the rest are lines present verbatim in the deployed `442bed7de46` (pre-existing fork lint) or the over-cap class                                      |
+
+## Tests (2026-10-07, on the Air, node v26.8.2)
+
+`node --import ./scripts/tsx.mjs scripts/test-projects.mts --changed v2026.9.8^{commit}`
+with `OPENCLAW_TEST_PROJECTS_PARALLEL=2`: at concurrency 1 the runner stops scheduling at
+the first red shard (the 9.6 run lost 14 of 35 shards that way); a parallel multi-config
+run does not. 42 shards, 22 min, at `2e186c305e6`: 39 passed, 3 failed, all test seams:
+
+| shard                     | cause                                                                                                                                                                                                        | fix (`06f89bfdfc2`)                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| agents-embedded-agent-run | the fork's answer-only and tools-off-retry tests mocked the 9.6 `backend.ts` wrapper; 9.8 calls `runAgentHarnessSettledTurnFinalization` from `harness/selection.js` directly, so the mock was never reached | mock 9.8's seam, as 9.8's sibling tests do                                                           |
+| runtime-config            | #101866's `transcript-grounding.test.ts`: 12/12 pass, then teardown fails 9.8's agent-database custody check (state dir removed while a DB is held)                                                          | close agent DBs in an `afterEach` registered after the temp-dir tracker                              |
+| agents-tools              | 9.8's new message-tool case reuses one runId and one text; the fork's duplicate-send guard (per-runId, process-global) suppresses the third case                                                             | reset the guard before each core test in `test/setup.ts`, as `test/setup.extensions.ts` already does |
+
+Rerun of the three shards' full file sets after the fix: 33 files, 1,104 tests, 0 failures.
+`tsgo:test:root` and all 21 `tsgo:test:src` shards rc=0 again at `06f89bfdfc2`.
+
+Not run: the full 744-shard suite, and live proof (the deploy below is the live proof).
+
+## Open for Alex
+
+1. Fork PR #11 (re-dispatch and steer dedupe) is not carried; it needs re-deriving for 9.8 and
+   a decision that it is still wanted.
+2. #158161's head changes when qwen sessions compact (about 81% real fill instead of 65-73%).
+   Revert `c2a6d6f1bac` and re-apply `6e1031f10f0` to restore the 9.6 behaviour.
+3. Telegram `resetUpdateOffset` still deletes the offset record, as the fork always did; in 9.8
+   that record is also the bot-identity marker, so a token change between a reset and the next
+   start would skip 9.8's ingress purge. Rewriting the marker instead would change fork behaviour.
+4. Dead or duplicate fork code to delete or rewire (behaviour-neutral today): `overloadBackoffMaxMs`
+   and `maybeBackoffBeforeOverloadFailover`; #73790's session-store half; the cooldown-probe
+   extraction in `auth-controller.cooldown-probe.ts` (only for a line budget 9.8 no longer needs).
