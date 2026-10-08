@@ -506,6 +506,30 @@ describe("subscribeEmbeddedAgentSession model state", () => {
     });
   });
 
+  it("reports every successful provider response, not only the first", async () => {
+    const onModelCallSettled = vi.fn();
+    const harness = createSubscribedSessionHarness({ runId: "run-each-call", onModelCallSettled });
+    await runUsageCalls(
+      harness,
+      [1_000, 2_000, 3_000].map((input) => ({ usage: makeUsage({ input, output: 10 }) })),
+    );
+    expect(onModelCallSettled.mock.calls.map(([usage]) => usage.input)).toEqual([
+      1_000, 2_000, 3_000,
+    ]);
+  });
+
+  it("does not report a failed provider response as settled", async () => {
+    const onModelCallSettled = vi.fn();
+    const harness = createSubscribedSessionHarness({
+      runId: "run-failed-call",
+      onModelCallSettled,
+    });
+    await runUsageCalls(harness, [
+      { usage: makeUsage({ input: 1_000, output: 10 }), stopReason: "error" },
+    ]);
+    expect(onModelCallSettled).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "keeps a successful retry call when later post-call processing fails",

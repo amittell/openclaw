@@ -511,7 +511,10 @@ describe("isMessagingToolDuplicate", () => {
       ["Checking the deploy logs now."],
       false,
     ],
-    ["CHECKING 👋 the deploy logs now. All good!", ["Checking the deploy logs now."], true],
+    ["CHECKING 👋 the deploy logs now. All good!", ["Checking the deploy logs now."], false],
+    ["Deployment finished. Actually it failed.", ["Deployment finished."], false],
+    ["Deployment finished. 2 hosts restarted.", ["Deployment finished."], false],
+    ["DEPLOYMENT 👋 finished!!!", ["Deployment finished"], true],
   ] satisfies [string, string[], boolean][])(
     "checks sent-text overlap: %s",
     (input, sentTexts, expected) => {

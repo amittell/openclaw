@@ -52,6 +52,7 @@ import {
   setCronSessionRuntimeModel,
   persistCronSkillsSnapshotIfChanged,
   type CronSessionRowWriter,
+  type MutableCronSession,
 } from "./run-session-state.js";
 import { resolveCronRunTimeoutOverrideMs } from "./run-timeout.js";
 import { prepareCronSessionWorkspace, type CronWorkspaceLease } from "./run-workspace.js";
@@ -154,7 +155,7 @@ export async function prepareCronRunContext(params: {
   const isGmailHook = hookExternalContentSource === "gmail";
   const now = Date.now();
   const sandbox = resolveCreatorSandbox(runtimeCfg, { actor: input.job.createdActor });
-  const cronSession = await prepareCronSession({
+  const cronSession: MutableCronSession = await prepareCronSession({
     cfg: runtimeCfg,
     sessionKey: agentSessionKey,
     sourceSessionKey,

@@ -40,7 +40,7 @@ import {
   reportOmittedChatHistory,
 } from "./chat-history-budget.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
-import { readChatHistoryPage } from "./chat-history-pages.js";
+import { readChatHistoryCompactionSpanPage, readChatHistoryPage } from "./chat-history-pages.js";
 import {
   resolveEmbeddedAgentRunRecoverySnapshot,
   respondChatHistoryUnavailable,
@@ -85,6 +85,7 @@ export async function handleChatHistoryRequest({
     offset,
     cursor,
     messageId,
+    compactionId,
     sessionId: wireSessionId,
     maxChars,
     maxBytes,
@@ -96,8 +97,13 @@ export async function handleChatHistoryRequest({
   let selectorError: string | undefined;
   if (offset !== undefined && messageId !== undefined) {
     selectorError = "offset and messageId cannot be used together";
-  } else if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
-    selectorError = "cursor cannot be used with offset or messageId";
+  } else if (compactionId !== undefined && messageId !== undefined) {
+    selectorError = "compactionId and messageId cannot be used together";
+  } else if (
+    cursor !== undefined &&
+    (offset !== undefined || messageId !== undefined || compactionId !== undefined)
+  ) {
+    selectorError = "cursor cannot be used with offset, messageId, or compactionId";
   } else if (wireSessionId !== undefined && messageId === undefined) {
     selectorError = "sessionId requires messageId";
   }
@@ -253,31 +259,49 @@ export async function handleChatHistoryRequest({
         ? [{ runId: receipt.runId, consumedByEventId: receipt.consumedByEventId }]
         : [],
     );
-    let historyPage: Awaited<ReturnType<typeof readChatHistoryPage>>;
+    let historyPage: Awaited<ReturnType<typeof readChatHistoryCompactionSpanPage>>;
     try {
       historyPage = cursor
         ? { messages: [] }
         : await measureDiagnosticsTimelineSpan(
             `gateway.${method}.history_page`,
             () =>
-              readChatHistoryPage(
-                {
-                  // Internal adapters may inspect message objects before responding.
-                  encodeResponse: acceptsSerializedJson && method === req.method,
-                  entry: historyEntry,
-                  provider: resolvedSessionModel.provider,
-                  sessionId,
-                  storePath,
-                  sessionAgentId,
-                  canonicalKey,
-                  max,
-                  maxHistoryBytes,
-                  effectiveMaxChars,
-                  offset,
-                  messageId,
-                },
-                signal,
-              ),
+              compactionId !== undefined
+                ? readChatHistoryCompactionSpanPage(
+                    {
+                      entry: historyEntry,
+                      provider: resolvedSessionModel.provider,
+                      sessionId,
+                      storePath,
+                      sessionAgentId,
+                      canonicalKey,
+                      max,
+                      maxHistoryBytes,
+                      effectiveMaxChars,
+                      offset,
+                      messageId,
+                      compactionId,
+                    },
+                    signal,
+                  )
+                : readChatHistoryPage(
+                    {
+                      // Internal adapters may inspect message objects before responding.
+                      encodeResponse: acceptsSerializedJson && method === req.method,
+                      entry: historyEntry,
+                      provider: resolvedSessionModel.provider,
+                      sessionId,
+                      storePath,
+                      sessionAgentId,
+                      canonicalKey,
+                      max,
+                      maxHistoryBytes,
+                      effectiveMaxChars,
+                      offset,
+                      messageId,
+                    },
+                    signal,
+                  ),
             {
               config: cfg,
               phase: method,
@@ -294,6 +318,18 @@ export async function handleChatHistoryRequest({
         throw error;
       }
       respondChatHistoryUnavailable(method, respond, unavailableMessage);
+      return;
+    }
+    if (!historyPage) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `compactionId "${compactionId}" is not a compaction checkpoint in this session; ` +
+            'compaction rows in history carry __openclaw.kind "compaction" and the id in __openclaw.id',
+        ),
+      );
       return;
     }
     const responsePage = historyPage.encodedResponse

@@ -116,16 +116,20 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
       },
     },
     agents: {
+      ownership: "explicit",
       defaults: {
         model: {
           primary: "openai/gpt-5.6-luna",
         },
         contextTokens: 64000,
         skills: ["memory"],
+        authInheritance: { agentId: "main" },
+        heartbeat: { agentId: "main" },
+        sessionStore: { agentId: "main" },
+        systemAgent: { agentId: "main" },
       },
       entries: {
         main: {
-          default: true,
           name: "Main",
           workspace: "~/workspace",
           model: {
@@ -145,6 +149,11 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
         },
       },
     },
+    bindings: [
+      { agentId: "main", match: { channel: "discord", accountId: "*" } },
+      { agentId: "main", match: { channel: "telegram", accountId: "*" } },
+      { agentId: "main", match: { channel: "whatsapp", accountId: "*" } },
+    ],
     skills: {
       allowBundled: ["memory", "openclaw-testing"],
       limits: {
@@ -165,10 +174,8 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
       discord: {
         enabled: true,
         token: { source: "env", provider: "default", id: "DISCORD_BOT_TOKEN" },
-        dm: {
-          policy: "allowlist",
-          allowFrom: ["111111111111111111"],
-        },
+        dmPolicy: "allowlist",
+        allowFrom: ["111111111111111111"],
         groupPolicy: "allowlist",
         guilds: {
           "222222222222222222": {
@@ -366,16 +373,6 @@ function renderShellSnippet(options: TestStateOptions = {}) {
 }
 
 function renderShellFunction() {
-  const survivor = upgradeSurvivorConfig();
-  const { entries, ...agents } = survivor.agents;
-  // The reusable function seeds published baselines that still use agents.list.
-  const legacySurvivor = {
-    ...survivor,
-    agents: {
-      ...agents,
-      list: Object.entries(entries).map(([id, agent]) => Object.assign({ id }, agent)),
-    },
-  };
   return `openclaw_test_state_create() {
   local raw_label="\${1:-state}"
   local label="$raw_label"
@@ -420,7 +417,7 @@ function renderShellFunction() {
       ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', scenarioConfig("update-stable"))}
       ;;
     upgrade-survivor)
-      ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', legacySurvivor)}
+      ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', scenarioConfig("upgrade-survivor"))}
       ;;
     gateway-loopback)
       ${renderConfigWrite('"$OPENCLAW_CONFIG_PATH"', scenarioConfig("gateway-loopback"))}

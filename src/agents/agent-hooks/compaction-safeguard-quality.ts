@@ -1,7 +1,7 @@
 /** Quality contract, fallback, and audit helpers for compaction safeguard summaries. */
 import { localeLowercasePreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { extractKeywords, isQueryStopWordToken } from "../../memory-host-sdk/query.js";
 import type { CompactionSummarizationInstructions } from "../compaction.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
@@ -10,6 +10,18 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 // and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
+// The audit itself is the cap for the full corrective defect list: it carries at most
+// five missing sections plus one missing-identifiers line. The 4000-char untrusted
+// wrapper is for operator-supplied context only; never route the defect list through it.
+const MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS = 8000;
+// Identifier length is unbounded (extractOpaqueIdentifiers' URL branch matches greedily to
+// whitespace), so no budget can always name all MAX_EXTRACTED_IDENTIFIERS values. Every other
+// audit reason is a fixed string from a closed set (<=530 chars joined), so this reserve keeps
+// a wrapper cap from ever being what cuts the list. Sized against the block the defect list
+// actually travels in here (wrapUntrustedQualityFeedbackBlock, not the narrower operator-text
+// block upstream uses), so this port omits nothing that the fork already delivered whole. The
+// reserve covers the other reasons (<=530 chars joined) plus the sentence around them.
+const MAX_MISSING_IDENTIFIER_REASON_CHARS = MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS - 800;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
@@ -24,6 +36,8 @@ const PENDING_ASK_SECTION_INDEX = 3;
 const EXACT_IDENTIFIERS_SECTION_INDEX = 4;
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
+const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
+const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
   "For ## Exact identifiers, preserve literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
 const POLICY_OFF_EXACT_IDENTIFIERS_INSTRUCTION =
@@ -47,6 +61,21 @@ export function wrapUntrustedInstructionBlock(label: string, text: string): stri
   });
 }
 
+/**
+ * Wraps quality-audit feedback (missing sections, missing identifiers) as untrusted
+ * prompt data for the corrective regeneration pass. The budget must fit the whole
+ * defect list (up to the MAX_EXTRACTED_IDENTIFIERS missing-identifier values): a
+ * list truncated mid-item hands the model defects it cannot repair, so the same
+ * audit fails on retry (#721).
+ */
+export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): string {
+  return wrapUntrustedPromptDataBlock({
+    label,
+    text,
+    maxChars: MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS,
+  });
+}
+
 function resolveExactIdentifierSectionInstruction(
   summarizationInstructions?: CompactionSummarizationInstructions,
 ): string {
@@ -66,6 +95,19 @@ function resolveExactIdentifierSectionInstruction(
     );
   }
   return STRICT_EXACT_IDENTIFIERS_INSTRUCTION;
+}
+
+/** Bounds the latest ask to the head and tail the retention plan protects verbatim. */
+export function formatRequiredAskContext(rawAsk: string): string {
+  const source = rawAsk.trim();
+  if (source.length <= MAX_REQUIRED_ASK_CONTEXT_CHARS) {
+    return source;
+  }
+  const contentBudget =
+    MAX_REQUIRED_ASK_CONTEXT_CHARS - REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER.length;
+  const headBudget = Math.floor(contentBudget / 2);
+  const tailBudget = contentBudget - headBudget;
+  return `${truncateUtf16Safe(source, headBudget)}${REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(source, -tailBudget)}`;
 }
 
 /** Build the required structured summary instructions for compaction. */
@@ -470,6 +512,30 @@ function hasAskOverlap(summary: string, latestAsk: string | null): boolean {
   return overlapCount >= requirement.requiredMatches;
 }
 
+/**
+ * Names only the missing identifiers that fit whole, and counts the rest. A value cut
+ * mid-string is a wrong value: the corrective pass restores something the source never
+ * contained and fails the same audit, so the omitted count records the gap instead.
+ */
+function missingIdentifierAuditReasons(missing: string[]): string[] {
+  const named: string[] = [];
+  let used = 0;
+  for (const identifier of missing) {
+    // Skip rather than stop: one pathological value must not hide the short ones behind it.
+    const cost = named.length === 0 ? identifier.length : identifier.length + 1;
+    if (used + cost > MAX_MISSING_IDENTIFIER_REASON_CHARS) {
+      continue;
+    }
+    used += cost;
+    named.push(identifier);
+  }
+  const omitted = missing.length - named.length;
+  return [
+    ...(named.length > 0 ? [`missing_identifiers:${named.join(",")}`] : []),
+    ...(omitted > 0 ? [`missing_identifiers_omitted:${omitted}`] : []),
+  ];
+}
+
 /** Audits a candidate summary for required sections, pending asks, and identifier preservation. */
 export function auditSummaryQuality(params: {
   summary: string;
@@ -500,9 +566,11 @@ export function auditSummaryQuality(params: {
     const missingIdentifiers = params.identifiers.filter(
       (identifier) => !summaryIncludesIdentifier(params.summary, identifier),
     );
-    if (missingIdentifiers.length > 0) {
-      reasons.push(`missing_identifiers:${missingIdentifiers.slice(0, 3).join(",")}`);
-    }
+    // The FULL list used to go out joined, bounded only by MAX_EXTRACTED_IDENTIFIERS, so a
+    // dozen long URLs overran the wrapper and the list was cut mid-identifier: unrecoverable,
+    // because the model never learns which identifier to restore and the retry fails the same
+    // audit (#721). Name what fits WHOLE and count the rest instead.
+    reasons.push(...missingIdentifierAuditReasons(missingIdentifiers));
   }
   const leadingPendingAsk = extractLeadingPendingAsk(params.structuralSummary);
   if (

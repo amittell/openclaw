@@ -15,6 +15,7 @@ import {
 } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { classifyCompactionReason } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import {
+  describeFailoverError,
   findCliTerminalStopError,
   findCliTimeoutError,
   isFailoverError,
@@ -45,6 +46,7 @@ import {
   readErrorCauses,
   readErrorName,
 } from "../../infra/errors.js";
+import { formatTransportErrorCopy } from "../../shared/assistant-error-format.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
   copyReplyPayloadMetadata,
@@ -59,6 +61,32 @@ import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 
 type ReplyFailoverFacts = ReturnType<typeof resolveReplyFailoverFacts>;
+
+// A transport failure never reached the provider, so it carries no HTTP status and no
+// server-side timeout. The classifier still buckets it as `timeout` so retry and
+// failover behave exactly as before, but the classified copy would then tell the user
+// "request timed out, HTTP 408 ... usually temporary" for a connection that failed in
+// milliseconds and does not clear on its own (EHOSTUNREACH from a macOS Local Network
+// denial, a refused port, a DNS miss). Name what actually failed instead.
+function renderTransportFailureReplyCopy(
+  facts: ReplyFailoverFacts,
+  error: unknown,
+  normalizedMessage: string,
+): string | undefined {
+  if (facts.reason !== "timeout") {
+    return undefined;
+  }
+  const rawText = describeFailoverError(error ?? normalizedMessage).rawError ?? normalizedMessage;
+  const transportCopy = formatTransportErrorCopy(rawText);
+  if (!transportCopy) {
+    return undefined;
+  }
+  const provider = facts.provider?.trim();
+  const model = facts.model?.trim();
+  const target = provider && model ? `${provider}/${model}` : provider || model;
+  const detail = transportCopy.replace(/^LLM request failed:\s*/, "");
+  return target ? `⚠️ ${target} request failed: ${detail}` : `⚠️ ${transportCopy}`;
+}
 
 function readFallbackAttempts(error: unknown): readonly ReplyFallbackAttempt[] {
   return isFailoverError(error) && Array.isArray(error.attempts) ? error.attempts : [];
@@ -371,6 +399,10 @@ export function buildExternalRunFailureReply(
       text: "A local worker task timed out. Please try again.",
       isGenericRunnerFailure: false,
     };
+  }
+  const transportFailure = renderTransportFailureReplyCopy(failoverFacts, error, normalizedMessage);
+  if (transportFailure) {
+    return { text: transportFailure, isGenericRunnerFailure: false };
   }
   const classifiedFailure =
     failoverFacts.formatFailureText ?? renderAssistantRequestFailureCopy(failoverFacts);

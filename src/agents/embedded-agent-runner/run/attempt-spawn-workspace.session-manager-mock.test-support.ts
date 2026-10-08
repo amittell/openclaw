@@ -29,4 +29,5 @@ export type SessionManagerMocks = {
   reloadPersistedTranscript: UnknownMock;
   clearNextUserMessagePersistenceSuppression: UnknownMock;
   removeTrailingEntries: UnknownMock;
+  setCompactionCheckpointHandleFormatter: UnknownMock;
 };

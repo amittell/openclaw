@@ -3,8 +3,9 @@
  * The adapter and wrapper both consult this map so later execution can use the
  * normalized payload selected by hook processing.
  */
+export const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 export const adjustedParamsByToolCallId = new Map<string, unknown>();
-export const preExecutionBlockedToolCallIds = new Set<string>();
+const preExecutionBlockedToolCallIds = new Set<string>();
 export const structuredReplaySafeToolCallIds = new Set<string>();
 const startedToolCallIds = new Set<string>();
 const trackedToolCallIds = new Set<string>();
@@ -15,6 +16,20 @@ export function buildAdjustedParamsKey(params: { runId?: string; toolCallId: str
     return `${params.runId}:${params.toolCallId}`;
   }
   return params.toolCallId;
+}
+
+export function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {
+  if (!toolCallId) {
+    return;
+  }
+  preExecutionBlockedToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
+  while (preExecutionBlockedToolCallIds.size > MAX_TRACKED_ADJUSTED_PARAMS) {
+    const oldest = preExecutionBlockedToolCallIds.values().next().value;
+    if (!oldest) {
+      break;
+    }
+    preExecutionBlockedToolCallIds.delete(oldest);
+  }
 }
 
 /** Consume and remove hook-adjusted params for a completed tool call. */

@@ -3,7 +3,7 @@ import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 // Telegram tests cover delivery.resolve media retry plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveMedia } from "./delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./delivery.resolve-media.js";
 import {
   expectMediaFetchError,
   expectRecordFields,
@@ -33,6 +33,11 @@ const saveRemoteMedia = vi.fn(async (...args: unknown[]) => {
           fetched.fileName ??
           (args[0] as { filePathHint?: unknown }).filePathHint)
       : undefined,
+    undefined,
+    {
+      scope:
+        args[0] && typeof args[0] === "object" ? (args[0] as { scope?: unknown }).scope : undefined,
+    },
   );
 });
 const rootRead = vi.fn();
@@ -466,5 +471,84 @@ describe("resolveMedia original filename preservation", () => {
       url: `${customApiRoot}/file/bot${BOT_TOKEN}/stickers/file_0.webp`,
     });
     requireResolvedMedia(result, "custom apiRoot sticker URL");
+  });
+});
+
+describe("resolveMedia chat provenance scope", () => {
+  beforeEach(() => {
+    readRemoteMediaBuffer.mockReset();
+    saveMediaBuffer.mockReset();
+    saveRemoteMedia.mockClear();
+    rootRead.mockReset();
+  });
+
+  it("builds the scope from the chat id with the thread id when present", () => {
+    expect(buildTelegramMediaScope(1)).toBe("tg-1");
+    expect(buildTelegramMediaScope(-5240776892)).toBe("tg--5240776892");
+    expect(buildTelegramMediaScope(-5240776892, 123)).toBe("tg--5240776892-t123");
+    expect(buildTelegramMediaScope(undefined)).toBeUndefined();
+    expect(buildTelegramMediaScope(Number.NaN)).toBeUndefined();
+  });
+
+  it("stamps remote downloads with the originating chat scope", async () => {
+    const getFile = vi.fn().mockResolvedValue({ file_path: "documents/report.pdf" });
+    readRemoteMediaBuffer.mockResolvedValueOnce({
+      buffer: Buffer.from("pdf-data"),
+      contentType: "application/pdf",
+      fileName: "report.pdf",
+    });
+    saveMediaBuffer.mockResolvedValueOnce({
+      path: "/tmp/report.pdf",
+      contentType: "application/pdf",
+    });
+
+    const result = await resolveMediaWithDefaults(makeCtx("document", getFile), {
+      scope: buildTelegramMediaScope(-5240776892, 123),
+    });
+
+    expect(result?.path).toBe("/tmp/report.pdf");
+    expect(saveRemoteMedia).toHaveBeenCalledTimes(1);
+    expect(saveRemoteMedia.mock.calls[0]?.[0]).toMatchObject({
+      scope: "tg--5240776892-t123",
+    });
+    // The scope must reach the actual save call so the stored id carries it.
+    expect(saveMediaBuffer).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      "application/pdf",
+      "inbound",
+      MAX_MEDIA_BYTES,
+      "report.pdf",
+      undefined,
+      { scope: "tg--5240776892-t123" },
+    );
+  });
+
+  it("stamps trusted local copies with the originating chat scope", async () => {
+    const getFile = vi.fn().mockResolvedValue({ file_path: "/var/lib/telegram-bot-api/file.pdf" });
+    rootRead.mockResolvedValueOnce({
+      buffer: Buffer.from("pdf-data"),
+      realPath: "/var/lib/telegram-bot-api/file.pdf",
+      stat: { size: 8 },
+    });
+    saveMediaBuffer.mockResolvedValueOnce({
+      path: "/tmp/inbound/file.pdf",
+      contentType: "application/pdf",
+    });
+
+    const result = await resolveMediaWithDefaults(
+      makeCtx("document", getFile, { mime_type: "application/pdf" }),
+      { trustedLocalFileRoots: ["/var/lib/telegram-bot-api"], scope: "tg-1" },
+    );
+
+    expect(result?.path).toBe("/tmp/inbound/file.pdf");
+    expect(saveMediaBuffer).toHaveBeenCalledWith(
+      Buffer.from("pdf-data"),
+      "application/pdf",
+      "inbound",
+      MAX_MEDIA_BYTES,
+      "file.pdf",
+      undefined,
+      { scope: "tg-1" },
+    );
   });
 });

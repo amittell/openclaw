@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   sessionsCleanupCommand: vi.fn(),
   sessionsTailCommand: vi.fn(),
   sessionsCompactCommand: vi.fn(),
+  sessionsAbortCommand: vi.fn(),
   sessionsArchiveCommand: vi.fn(),
   sessionsDeleteCommand: vi.fn(),
   exportTrajectoryCommand: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock("../../commands/sessions-tail.js", () => {
 vi.mock("../../commands/sessions-compact.js", () => {
   mocks.ownerLoaded();
   return { sessionsCompactCommand: mocks.sessionsCompactCommand };
+});
+vi.mock("../../commands/sessions-abort.js", () => {
+  mocks.ownerLoaded();
+  return { sessionsAbortCommand: mocks.sessionsAbortCommand };
 });
 vi.mock("../../commands/sessions-lifecycle.js", () => {
   mocks.ownerLoaded();
@@ -134,6 +139,16 @@ describe("registerStatusHealthSessionsCommands", () => {
     [
       `sessions compact ${key} --timeout 0 --json`,
       mocks.sessionsCompactCommand,
+      "--timeout must be a positive integer (milliseconds).",
+    ],
+    [
+      `sessions --store /tmp/other.sqlite abort ${key} --json`,
+      mocks.sessionsAbortCommand,
+      "`sessions abort` does not support the parent `sessions` option --store; the gateway resolves the target store from <key> and --agent.",
+    ],
+    [
+      `sessions abort ${key} --timeout 0 --json`,
+      mocks.sessionsAbortCommand,
       "--timeout must be a positive integer (milliseconds).",
     ],
   ] as const)("rejects %s before loading the session owner", async (args, owner, message) => {
@@ -243,6 +258,20 @@ describe("registerStatusHealthSessionsCommands", () => {
       `sessions --agent ${override ? "main" : "work"} --json compact ${key}${override ? " --agent work" : ""}`,
     );
     expectOptions(mocks.sessionsCompactCommand, { key, agent: "work", json: true });
+  });
+  // Same hazard as compact's #91378 regression, with a worse outcome: dropping an
+  // inherited --agent would abort a different agent's live session.
+  it("inherits the parent sessions --agent for abort", async () => {
+    await run(`sessions --agent work abort ${key}`);
+    expectOptions(mocks.sessionsAbortCommand, { key, agent: "work" });
+  });
+  it("forwards abort run scoping and queue clearing", async () => {
+    await run("sessions abort agent:main:main --run-id run-77 --clear-queued");
+    expectOptions(mocks.sessionsAbortCommand, {
+      key: "agent:main:main",
+      runId: "run-77",
+      clearQueued: true,
+    });
   });
   it("forwards archive keys, inherited scope and RPC options", async () => {
     await run(

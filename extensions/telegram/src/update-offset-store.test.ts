@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setTelegramRuntime } from "./runtime.js";
 import { clearTelegramRuntimeForTest } from "./runtime.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
+import { fingerprintTelegramBotToken } from "./token-fingerprint.js";
 import {
   deleteTelegramUpdateOffset,
   prepareTelegramAccount,
@@ -128,6 +129,8 @@ describe("deleteTelegramUpdateOffset", () => {
           previousBotId: "111111",
           currentBotId: "222222",
           staleLastUpdateId: 1500,
+          previousApiRoot: "https://api.telegram.org",
+          currentApiRoot: null,
         },
       ]);
     });
@@ -156,6 +159,8 @@ describe("deleteTelegramUpdateOffset", () => {
           previousBotId: null,
           currentBotId: "333333",
           staleLastUpdateId: 777,
+          previousApiRoot: null,
+          currentApiRoot: null,
         },
       ]);
     });
@@ -218,7 +223,103 @@ describe("deleteTelegramUpdateOffset", () => {
           previousBotId: "111111",
           currentBotId: "111111",
           staleLastUpdateId: 42,
+          previousApiRoot: "https://api.telegram.org",
+          currentApiRoot: null,
         },
+      ]);
+    });
+  });
+
+  it("rotates when the Bot API root changes, because update ids are server-scoped", async () => {
+    await withStateDirEnv("openclaw-tg-offset-", async () => {
+      const token = "111111:same-secret";
+      await writeTelegramUpdateOffset({
+        accountId: "default",
+        updateId: 760_546_622,
+        botToken: token,
+      });
+
+      expect(
+        await readTelegramUpdateOffset({
+          accountId: "default",
+          botToken: token,
+          apiRoot: "https://api.telegram.org/",
+        }),
+      ).toBe(760_546_622);
+
+      const rotations: Array<Record<string, unknown>> = [];
+      const offset = await readTelegramUpdateOffset({
+        accountId: "default",
+        botToken: token,
+        apiRoot: "http://localhost:8081",
+        onRotationDetected: (info) => {
+          rotations.push({ ...info });
+        },
+      });
+
+      expect(offset).toBeNull();
+      expect(rotations).toEqual([
+        {
+          reason: "api-root-changed",
+          previousBotId: "111111",
+          currentBotId: "111111",
+          staleLastUpdateId: 760_546_622,
+          previousApiRoot: "https://api.telegram.org",
+          currentApiRoot: "http://localhost:8081",
+        },
+      ]);
+
+      await writeTelegramUpdateOffset({
+        accountId: "default",
+        updateId: 592_426_393,
+        botToken: token,
+        apiRoot: "http://localhost:8081/",
+      });
+      expect(
+        await readTelegramUpdateOffset({
+          accountId: "default",
+          botToken: token,
+          apiRoot: "http://localhost:8081",
+        }),
+      ).toBe(592_426_393);
+    });
+  });
+
+  it("treats offsets persisted before root tracking as cloud offsets", async () => {
+    await withStateDirEnv("openclaw-tg-offset-", async () => {
+      const token = "111111:same-secret";
+      await updateOffsetStore.register("default", {
+        version: 3,
+        lastUpdateId: 760_546_622,
+        botId: "111111",
+        tokenFingerprint: fingerprintTelegramBotToken(token),
+      });
+
+      expect(
+        await readTelegramUpdateOffset({
+          accountId: "default",
+          botToken: token,
+          apiRoot: "https://api.telegram.org",
+        }),
+      ).toBe(760_546_622);
+
+      const rotations: Array<Record<string, unknown>> = [];
+      expect(
+        await readTelegramUpdateOffset({
+          accountId: "default",
+          botToken: token,
+          apiRoot: "http://localhost:8081",
+          onRotationDetected: (info) => {
+            rotations.push({ ...info });
+          },
+        }),
+      ).toBeNull();
+      expect(rotations).toEqual([
+        expect.objectContaining({
+          reason: "api-root-changed",
+          previousApiRoot: null,
+          currentApiRoot: "http://localhost:8081",
+        }),
       ]);
     });
   });
@@ -247,6 +348,8 @@ describe("deleteTelegramUpdateOffset", () => {
           previousBotId: "111111",
           currentBotId: "111111",
           staleLastUpdateId: 999,
+          previousApiRoot: null,
+          currentApiRoot: null,
         },
       ]);
     });

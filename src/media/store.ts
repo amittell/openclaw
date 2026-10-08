@@ -20,10 +20,12 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { FsSafeError, isPathInside, readLocalFileSafely } from "../infra/fs-safe.js";
 import { retryAsync } from "../infra/retry.js";
 import { writeSiblingTempFile } from "../infra/sibling-temp-file.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { captureChannelReadScope } from "../shared/channel-read-authority.js";
 import { resolveConfigDir } from "../utils.js";
 import { MEDIA_FILE_MODE, SaveMediaSourceError } from "./store.shared.js";
 
+const mediaStoreLog = createSubsystemLogger("media/store");
 /** Default per-file media-store byte cap used by store and plugin SDK callers. */
 export const MEDIA_MAX_BYTES = 5 * 1024 * 1024;
 export const PLAYBACK_TRANSCODE_SUBDIR = "playback-transcode";
@@ -321,16 +323,82 @@ function buildSavedMediaId(params: {
   baseId: string;
   ext: string;
   originalFilename?: string;
+  scope?: string;
 }): string {
+  const scope = params.scope ? `${params.scope}---` : "";
   if (!params.originalFilename) {
-    return params.ext ? `${params.baseId}${params.ext}` : params.baseId;
+    return params.ext ? `${scope}${params.baseId}${params.ext}` : `${scope}${params.baseId}`;
   }
 
   const base = nameFromAnyPath(params.originalFilename);
   const sanitized = sanitizeFilename(base);
   return sanitized
-    ? `${sanitized}---${params.baseId}${params.ext}`
-    : `${params.baseId}${params.ext}`;
+    ? `${sanitized}---${scope}${params.baseId}${params.ext}`
+    : `${scope}${params.baseId}${params.ext}`;
+}
+
+/**
+ * Validates and sanitizes a provenance scope stamp (a single path segment, e.g.
+ * "tg--5240776892"). Returns the sanitized scope, or undefined when the value is
+ * empty or unsafe (path separators, traversal, or an absolute path). Unsafe values
+ * are dropped with a warning rather than throwing, so a bad stamp never blocks a save.
+ *
+ * Unlike the original-filename sanitizer, this preserves dashes (including runs) so a
+ * negative chat id keeps its sign: "tg--5240776892" stays "tg--5240776892".
+ */
+function sanitizeMediaScope(scope: string | undefined, caller: string): string | undefined {
+  if (scope === undefined || scope === null || typeof scope !== "string") {
+    return undefined;
+  }
+  const trimmed = scope.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("\0") ||
+    trimmed === "." ||
+    trimmed === ".." ||
+    path.isAbsolute(trimmed) ||
+    path.posix.isAbsolute(trimmed) ||
+    path.win32.isAbsolute(trimmed)
+  ) {
+    mediaStoreLog.warn(`${caller}: omitting unsafe media scope stamp: ${JSON.stringify(scope)}`);
+    return undefined;
+  }
+  // Strip control characters and replace Windows-invalid characters so the stamp
+  // is a safe single filename segment. Dashes are preserved (not collapsed) so a
+  // negative chat id keeps its sign: "tg--5240776892" stays "tg--5240776892".
+  const sanitized = trimmed
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .replace(/[<>:"|?\*]/g, "_")
+    .trim();
+  if (!sanitized || sanitized === "." || sanitized === "..") {
+    mediaStoreLog.warn(`${caller}: omitting empty media scope stamp: ${JSON.stringify(scope)}`);
+    return undefined;
+  }
+  return sanitized;
+}
+
+/**
+ * Emits the file-to-chat mapping that was missing from the gateway log. Only
+ * inbound saves are logged; outbound and other subdirs stay quiet.
+ */
+function logInboundMediaSaved(params: {
+  id: string;
+  scope?: string;
+  size: number;
+  subdir: string;
+}): void {
+  if (params.subdir !== "inbound") {
+    return;
+  }
+  mediaStoreLog.info(
+    `inbound media saved: id=${params.id} scope=${params.scope ?? "-"} size=${params.size} subdir=${params.subdir}`,
+    { id: params.id, scope: params.scope ?? "-", size: params.size, subdir: params.subdir },
+  );
 }
 
 function safeOriginalFilenameExtension(originalFilename?: string): string | undefined {
@@ -387,13 +455,14 @@ async function writeSavedMediaBuffer(params: {
   id: string;
   buffer: Buffer;
   assertCommitAllowed?: () => void;
+  scope?: string;
 }): Promise<string> {
   params.assertCommitAllowed?.();
   const readScope = captureChannelReadScope();
   readScope?.assertCurrent();
   const dir = resolveMediaScopedDir(params.subdir, "writeSavedMediaBuffer");
   const relativePath = resolveMediaRelativePath(params.id, params.subdir, "writeSavedMediaBuffer");
-  return await retryAfterRecreatingDir(dir, async () => {
+  const filePath = await retryAfterRecreatingDir(dir, async () => {
     if (readScope || params.assertCommitAllowed) {
       const { writeReadScopeMedia } = await import("./store.read-scope.js");
       await writeReadScopeMedia({
@@ -415,6 +484,13 @@ async function writeSavedMediaBuffer(params: {
       tempPrefix: `.${params.id}`,
     });
   });
+  logInboundMediaSaved({
+    id: params.id,
+    scope: params.scope,
+    size: params.buffer.byteLength,
+    subdir: params.subdir,
+  });
+  return filePath;
 }
 
 async function writeMediaStreamToFile(params: {
@@ -538,7 +614,7 @@ export async function saveMediaBuffer(
   maxBytes = MEDIA_MAX_BYTES,
   originalFilename?: string,
   detectionFilePathHint?: string,
-  options?: { assertCommitAllowed?: () => void },
+  options?: { assertCommitAllowed?: () => void; scope?: string },
 ): Promise<SavedMedia> {
   options?.assertCommitAllowed?.();
   if (buffer.byteLength > maxBytes) {
@@ -560,12 +636,14 @@ export async function saveMediaBuffer(
     originalFilename,
     detectionFilePathHint,
   });
-  const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename });
+  const safeScope = sanitizeMediaScope(options?.scope, "saveMediaBuffer");
+  const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename, scope: safeScope });
   await writeSavedMediaBuffer({
     subdir,
     id,
     buffer,
     assertCommitAllowed: options?.assertCommitAllowed,
+    scope: safeScope,
   });
   return { id, path: path.join(dir, id), size: buffer.byteLength, contentType: mime };
 }
@@ -578,7 +656,7 @@ export async function saveMediaStream(
   maxBytes = MEDIA_MAX_BYTES,
   originalFilename?: string,
   detectionFilePathHint?: string,
-  options?: { assertCommitAllowed?: () => void },
+  options?: { assertCommitAllowed?: () => void; scope?: string },
 ): Promise<SavedMedia> {
   options?.assertCommitAllowed?.();
   const readScope = captureChannelReadScope();
@@ -587,6 +665,7 @@ export async function saveMediaStream(
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const baseId = crypto.randomUUID();
   const headerExt = extensionForAuthoritativeHeaderMime(contentType);
+  const safeScope = sanitizeMediaScope(options?.scope, "saveMediaStream");
   // Directory setup may retry before iteration starts. A consumed stream cannot
   // be replayed after a write or publication failure.
   let consumptionStarted = false;
@@ -618,7 +697,7 @@ export async function saveMediaStream(
       originalFilename,
       detectionFilePathHint,
     });
-    const id = buildSavedMediaId({ baseId, ext, originalFilename });
+    const id = buildSavedMediaId({ baseId, ext, originalFilename, scope: safeScope });
     return { id, size, contentType: mime };
   };
   const result = await retryAfterRecreatingDir(
@@ -652,6 +731,7 @@ export async function saveMediaStream(
     },
     () => !consumptionStarted,
   );
+  logInboundMediaSaved({ id: result.id, scope: safeScope, size: result.size, subdir });
   return {
     id: result.id,
     path: path.join(dir, result.id),

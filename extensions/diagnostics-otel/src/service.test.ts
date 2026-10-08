@@ -3430,9 +3430,12 @@ describe("diagnostics-otel service", () => {
 
     const runContexts = startedSpanParentContextsByName("openclaw.run");
 
+    // Both runs parent to the materialized upstream scope (a real, exported span), never
+    // to each other through a shared alias.
     expect(runContexts).toHaveLength(2);
-    expect(runContexts[0]?.parentContext).toBeUndefined();
-    expect(runContexts[1]?.parentContext).toBeUndefined();
+    const scopeSpanId = spanByName("openclaw.turn.scope").spanContext().spanId;
+    expect(runContexts[0]?.parentContext?.spanId).toBe(scopeSpanId);
+    expect(runContexts[1]?.parentContext?.spanId).toBe(scopeSpanId);
   });
 
   test("parents retained upstream alias events only when the owner matches", async () => {
@@ -3444,11 +3447,13 @@ describe("diagnostics-otel service", () => {
     });
     await emitTrustedEventAndFlush("run.completed", {});
 
-    const runSpanContext = spanByName("openclaw.run").spanContext();
     const modelParentContext = startedSpanParentContexts("openclaw.model.call")[0];
+    const scopeSpanContext = spanByName("openclaw.turn.scope").spanContext();
 
+    // The run's upstream scope is materialized and tracked, so the model event parents to
+    // the scope span (a real, exported span) rather than through a run alias.
     expect(modelParentContext?.traceId).toBe(TRACE_ID);
-    expect(modelParentContext?.spanId).toBe(runSpanContext.spanId);
+    expect(modelParentContext?.spanId).toBe(scopeSpanContext.spanId);
   });
 
   // Background commands can finish long after run.completed ended the parent span.
@@ -3497,15 +3502,16 @@ describe("diagnostics-otel service", () => {
   test("bounds retained run contexts by evicting the oldest completed runs", async () => {
     await startServiceFixture(["traces", "metrics"]);
 
-    // Each completed run retains its own span id plus its upstream alias, so
-    // this comfortably overflows the bound and evicts the earliest run.
-    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS; index += 1) {
+    // Each completed run retains its own span id. (The upstream alias is no longer
+    // created because the fix materializes the shared upstream scope into a real
+    // tracked span, so this overflows the bound by one and evicts the earliest run.)
+    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS + 1; index += 1) {
       const runId = `run-${index}`;
       const runTrace = createTestTrace(numberedSpanId(index), SPAN_ID);
       emitTrustedEvent("run.started", { runId, trace: runTrace });
       emitTrustedEvent("run.completed", { runId, trace: runTrace });
     }
-    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS - 1);
+    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS);
     const newestRunSpan = telemetryState.spans.findLast((span) => span.name === "openclaw.run");
     telemetryState.tracer.startSpan.mockClear();
 
@@ -3518,7 +3524,14 @@ describe("diagnostics-otel service", () => {
 
     const usageParents = startedSpanParentContexts("openclaw.model.usage");
     expect(usageParents[0]?.spanId).toBe(newestRunSpan?.spanContext().spanId);
-    expect(usageParents[1]).toBeUndefined();
+    // The evicted run's upstream scope is now materialized into a real, exported span, so
+    // the late usage links to that scope span instead of being parentless.
+    const evictedScopeSpan = telemetryState.spans.findLast(
+      (span) => span.name === "openclaw.turn.scope",
+    );
+    expect(usageParents[1]?.spanId).toBe(
+      evictedScopeSpan?.spanContext.mock.results[0]?.value?.spanId,
+    );
   });
 
   test("does not create live started spans for untrusted lifecycle diagnostics", async () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { normalizeTextForComparison } from "./embedded-agent-helpers.js";
 import {
   createMessageEndContext,
   createMessageToolEnvelope,
@@ -67,6 +68,24 @@ describe("handleMessageEnd", () => {
       message: { ...textMessage("Done."), provider: "openclaw", model: "delivery-mirror" },
     });
     expect(ctx.state.assistantTurnCount).toBe(0);
+  });
+
+  it.each([
+    { text: "Deployment finished.", delivered: false },
+    { text: "Deployment finished. Actually it failed.", delivered: true },
+  ])("block-streams $text after a message-tool send: $delivered", async ({ text, delivered }) => {
+    const onBlockReply = vi.fn();
+    const ctx = createMessageEndContext({
+      onBlockReply,
+      state: {
+        messagingToolSentTextsNormalized: [normalizeTextForComparison("Deployment finished.")],
+      },
+    });
+
+    await endMessage(ctx, { message: textMessage(text) });
+
+    const texts = onBlockReply.mock.calls.map(([payload]) => (payload as { text?: string }).text);
+    expect(texts).toEqual(delivered ? [text] : []);
   });
 
   it("diagnoses text pretending to call a registered tool", async () => {

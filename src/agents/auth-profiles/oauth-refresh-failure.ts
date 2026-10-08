@@ -15,7 +15,7 @@ import type { AuthProfileFailureReason, AuthProfileStore, OAuthCredential } from
 
 export type OAuthRefreshFailureReason =
   | "refresh_token_reused"
-  | "expired"
+  | "refresh_token_expired"
   | "invalid_grant"
   | "sign_in_again"
   | "invalid_refresh_token"
@@ -415,8 +415,22 @@ export function classifyOAuthRefreshFailureReason(
 const OAUTH_REFRESH_REASON_SIGNALS: ReadonlyArray<
   readonly [OAuthRefreshFailureReason, readonly string[]]
 > = [
-  ["refresh_token_reused", ["refresh_token_reused"]],
-  ["expired", ["refresh_token_expired"]],
+  // The rotation race also surfaces as prose when the raw code does not leak
+  // into the message, and the real wording ends with "Please try signing in
+  // again" (#111827) - match reuse first so the race can never be tombstoned
+  // as a permanent sign_in_again failure.
+  [
+    "refresh_token_reused",
+    [
+      "refresh_token_reused",
+      "refresh token has already been used",
+      "already been used to generate a new access token",
+    ],
+  ],
+  // Codex answers a dead grant with the exact code `refresh_token_expired` and
+  // prose naming no other reason. It must stay below the reuse check: the reuse
+  // body is also an expiry-shaped 401, and only reuse is recoverable in store.
+  ["refresh_token_expired", ["refresh_token_expired"]],
   ["invalid_grant", ["invalid_grant"]],
   ["token_invalidated", ["token_invalidated"]],
   ["sign_in_again", ["sign_in_again", "signing in again", "sign in again", "log in again"]],
@@ -539,4 +553,36 @@ export function buildAuthProfileUnusableHint(params: {
     return "Top up credits (provider billing) or switch provider.";
   }
   return "Wait for cooldown or switch provider.";
+}
+
+// refresh_token_reused is excluded: it signals a rotation race with its own
+// in-store recovery path, not a grant that can never work again.
+const PERMANENT_OAUTH_REFRESH_FAILURE_REASONS: ReadonlySet<OAuthRefreshFailureReason> = new Set([
+  "refresh_token_expired",
+  "invalid_grant",
+  "invalid_refresh_token",
+  "token_invalidated",
+  "revoked",
+  "sign_in_again",
+]);
+
+/** True when a refresh failure means the stored refresh grant can never succeed again. */
+export function isPermanentOAuthRefreshFailure(error: unknown): boolean {
+  const seen = new Set<object>();
+  let candidate: unknown = error;
+  while (candidate && typeof candidate === "object") {
+    if (seen.has(candidate)) {
+      return false;
+    }
+    seen.add(candidate);
+    if (candidate instanceof Error) {
+      const reason = classifyOAuthRefreshFailureReason(candidate.message);
+      if (reason) {
+        return PERMANENT_OAUTH_REFRESH_FAILURE_REASONS.has(reason);
+      }
+    }
+    // SAFETY: the loop guard above narrows candidate to a non-null object; reading an optional cause yields unknown and is re-narrowed next pass.
+    candidate = (candidate as { cause?: unknown }).cause;
+  }
+  return false;
 }

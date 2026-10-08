@@ -270,3 +270,58 @@ export async function persistSessionUsageUpdate(params: {
     }
   }
 }
+
+/**
+ * Publishes one settled model call's context snapshot while its turn is still
+ * running, so status readers see a long turn's context grow. The latest settled
+ * call wins, including a smaller one after compaction; turn-completion
+ * accounting stays authoritative and lands after the caller has stopped writing.
+ */
+export async function persistSessionContextTotalTokens(params: {
+  agentId?: string;
+  storePath: string;
+  sessionKey: string;
+  /** Admission facts. Reset keeps the session id, so the writer claim is always checked. */
+  expectedSession: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision"> & {
+    activeWriterRunId: string;
+  };
+  /** Prompt-token context snapshot of the latest settled model call. */
+  totalTokens: number;
+}): Promise<void> {
+  const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
+  try {
+    // Same guarded entry patch as turn-completion accounting; this base has no
+    // worker-routed variant, and the caller keeps at most one write in flight.
+    await patchSessionEntryCore(
+      { agentId, storePath, sessionKey },
+      (entry) => {
+        if (
+          entry.sessionId !== expectedSession.sessionId ||
+          entry.activeWriterRunId !== expectedSession.activeWriterRunId ||
+          (expectedSession.lifecycleRevision !== undefined &&
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision) ||
+          (entry.totalTokens === totalTokens &&
+            entry.totalTokensFresh === true &&
+            entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION)
+        ) {
+          return null;
+        }
+        const updatedAt = Date.now();
+        const patch: Partial<SessionEntry> = {
+          totalTokens,
+          totalTokensFresh: true,
+          totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+          updatedAt,
+        };
+        const accountedGoal = resolveSessionGoalDisplayState({ ...entry, ...patch }, updatedAt);
+        if (accountedGoal) {
+          patch.goal = accountedGoal;
+        }
+        return patch;
+      },
+      { skipMaintenance: true },
+    );
+  } catch (err) {
+    logVerbose(`failed to persist per-call context total: ${String(err)}`);
+  }
+}

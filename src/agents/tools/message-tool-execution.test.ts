@@ -39,8 +39,8 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
 import { isDeliveredMessageToolOnlySourceReplyResult } from "../embedded-agent-message-tool-source-reply.js";
+import { resolveSettledTurnFinalizationRequest } from "../embedded-agent-runner/run/settled-turn-finalization-request.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "../embedded-agent-runner/run/terminal-outcome.js";
-import { resolveSettledTurnFinalizationRequest } from "../embedded-agent-runner/run/terminal-resolution.js";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,

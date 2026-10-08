@@ -13,6 +13,7 @@ import { resolveInternalTurnTranscript } from "../internal-turn-source.js";
 import { buildInboundMediaNoteProjection } from "../media-note.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import { appendChannelPromptContext } from "./channel-prompt-context.js";
+import { projectTelegramCurrentMessageCarrier } from "./inbound-meta.current-message.js";
 
 const ROOM_EVENT_PROMPT = "[OpenClaw room event]";
 const ROOM_EVENT_PARTICIPATION_RULE =
@@ -192,12 +193,24 @@ export function buildReplyPromptEnvelopeBase(
   const softResetTail = params.softResetTail?.trim() ?? "";
   const isRoomEvent = params.inboundEventKind === "room_event";
   const inboundUserContext = params.inboundUserContext.trim();
+  const carrierUserContext = projectTelegramCurrentMessageCarrier(
+    inboundUserContext,
+    params.sessionCtx,
+  );
   const resumableRoomEventContext = isRoomEvent
     ? buildRoomEventContext(params, buildResumableRoomContext(inboundUserContext))
     : undefined;
-  const currentInboundContextText = isRoomEvent
-    ? buildRoomEventContext(params, inboundUserContext)
-    : [inboundUserContext, resolvePerTurnDeliveryDirective(params)].filter(Boolean).join("\n\n");
+  const renderCurrentInboundContext = (userContext: string) =>
+    isRoomEvent
+      ? buildRoomEventContext(params, userContext)
+      : [userContext, resolvePerTurnDeliveryDirective(params)].filter(Boolean).join("\n\n");
+  const currentInboundContextText = renderCurrentInboundContext(inboundUserContext);
+  // Version-3 sessions send the legacy text as its own carrier message, where
+  // no prompt joiner completes Telegram's bare "#<id>:" header.
+  const carrierText =
+    carrierUserContext === inboundUserContext
+      ? undefined
+      : renderCurrentInboundContext(carrierUserContext);
   const resetModelBody = params.isBareSessionReset
     ? [
         params.inboundUserContext,
@@ -228,7 +241,7 @@ export function buildReplyPromptEnvelopeBase(
   const fragments: RuntimeContextFragment[] = [
     ...(isRoomEvent ? [{ kind: "runtime-instruction" as const, text: ROOM_EVENT_PROMPT }] : []),
     ...(inboundUserContext
-      ? [{ kind: "conversation-data" as const, text: inboundUserContext }]
+      ? [{ kind: "conversation-data" as const, text: carrierUserContext }]
       : []),
     ...(deliveryDirective
       ? [{ kind: "runtime-instruction" as const, text: deliveryDirective }]
@@ -239,6 +252,7 @@ export function buildReplyPromptEnvelopeBase(
       ? {
           text: currentInboundContextText,
           fragments,
+          ...(carrierText ? { carrierText } : {}),
           ...(resumableRoomEventContext ? { resumableText: resumableRoomEventContext } : {}),
           promptJoiner: params.inboundUserContextPromptJoiner,
           ...(params.activeGoalContext ? { injectedGoalContexts: [params.activeGoalContext] } : {}),

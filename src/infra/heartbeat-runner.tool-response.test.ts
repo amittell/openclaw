@@ -124,6 +124,7 @@ function expectToolPrompt(replySpy: HeartbeatReplySpy) {
   expect(call?.[0].Body).toContain("heartbeat_respond");
   expect(call?.[0].Body).not.toContain("HEARTBEAT_OK");
   expect(call?.[1]).toMatchObject({
+    disableMessageTool: true,
     enableHeartbeatTool: true,
     forceHeartbeatTool: true,
     sourceReplyDeliveryMode: "message_tool_only",
@@ -288,6 +289,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
         const call = replySpy.mock.calls[0];
         expect(call?.[0].Body).toContain(SILENT_REPLY_TOKEN);
         expect(call?.[0].Body).not.toContain("heartbeat_respond");
+        expect(call?.[1]).toMatchObject({ disableMessageTool: true });
       },
       { messages: { visibleReplies: "automatic" } },
     );

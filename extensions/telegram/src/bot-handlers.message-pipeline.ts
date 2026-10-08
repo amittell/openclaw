@@ -17,6 +17,7 @@ import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import type { TelegramMediaRef } from "./bot-message-context.js";
 import type { TelegramMessageContextOptions } from "./bot-message-context.types.js";
 import {
+  captureTelegramVisibleReplyDelivered,
   createTelegramSpooledReplayDeferredParticipant,
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
@@ -27,7 +28,7 @@ import {
   type TelegramSpooledReplayDeferredParticipant,
   type TelegramSpooledReplaySettlementHold,
 } from "./bot-processing-outcome.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   describeReplyTarget,
   resolveTelegramMessageThreadSpec,
@@ -75,6 +76,7 @@ function resolveRetainedTelegramMedia(params: {
     ? {
         path,
         kind: media.kind,
+        fileUniqueId: media.fileUniqueId,
         ...(media.contentType ? { contentType: media.contentType } : {}),
         ...(fileName ? { fileName } : {}),
         ...(media.stickerMetadata ? { stickerMetadata: media.stickerMetadata } : {}),
@@ -223,6 +225,7 @@ export function createTelegramMessagePipeline({
   const resolveReplyMediaForChain = async (
     ctx: TelegramContext,
     chain: TelegramCachedMessageNode[],
+    currentMedia: readonly TelegramMediaRef[],
     shouldHydrateMedia: (
       sender: Pick<TelegramReplyChainEntry, "senderId" | "senderUsername">,
       index: number,
@@ -233,9 +236,17 @@ export function createTelegramMessagePipeline({
     const mediaRuntime = resolveMediaRuntime(...participantSignals);
     const replyMedia: TelegramMediaRef[] = [];
     const replyChain: TelegramReplyChainEntry[] = [];
+    // Only current media that reached the agent claims its source. An unavailable
+    // attachment has no bytes, so a replied-to copy of it may still hydrate.
+    const seenFileUniqueIds = new Set(
+      currentMedia.flatMap((media) =>
+        media.fileUniqueId && !media.unavailable ? [media.fileUniqueId] : [],
+      ),
+    );
     const hydrateMedia = async (
       sourceMessage: Parameters<typeof resolveMedia>[0]["ctx"]["message"],
       replyFileId: string,
+      scope: string | undefined,
       node?: TelegramCachedMessageNode,
     ): Promise<TelegramMediaRef | undefined> => {
       let mediaRef: TelegramMediaRef | undefined;
@@ -258,6 +269,7 @@ export function createTelegramMessagePipeline({
           },
           maxBytes: mediaMaxBytes,
           ...mediaRuntime,
+          scope,
         });
         if (!media) {
           return undefined;
@@ -265,6 +277,7 @@ export function createTelegramMessagePipeline({
         mediaRef = {
           path: media.path,
           kind: media.kind,
+          fileUniqueId: media.fileUniqueId,
           ...(media.contentType ? { contentType: media.contentType } : {}),
           ...(media.fileName ? { fileName: media.fileName } : {}),
           ...(media.stickerMetadata ? { stickerMetadata: media.stickerMetadata } : {}),
@@ -292,28 +305,55 @@ export function createTelegramMessagePipeline({
       return mediaRef;
     };
     for (const [index, node] of chain.entries()) {
-      const replyFileId = resolveTelegramPrimaryMedia(node.sourceMessage)?.fileRef.file_id;
+      const replyPrimaryMedia = resolveTelegramPrimaryMedia(node.sourceMessage);
+      const replyFileId = replyPrimaryMedia?.fileRef.file_id;
+      const replyFileUniqueId =
+        node.resolvedMedia?.fileUniqueId ?? replyPrimaryMedia?.fileRef.file_unique_id;
       const mediaRef =
-        replyFileId && (await shouldHydrateMedia(node, index))
-          ? await hydrateMedia(node.sourceMessage, replyFileId, node)
+        replyFileId &&
+        // file_unique_id is Telegram's source identity. Check it before hydration,
+        // because each save assigns a fresh path even when the bytes are the same.
+        (!replyFileUniqueId || !seenFileUniqueIds.has(replyFileUniqueId)) &&
+        (await shouldHydrateMedia(node, index))
+          ? await hydrateMedia(
+              node.sourceMessage,
+              replyFileId,
+              buildTelegramMediaScope(
+                node.sourceMessage.chat?.id,
+                node.sourceMessage.message_thread_id,
+              ),
+              node,
+            )
           : undefined;
       if (mediaRef) {
         replyMedia.push(mediaRef);
+        if (mediaRef.fileUniqueId) {
+          seenFileUniqueIds.add(mediaRef.fileUniqueId);
+        }
       }
       replyChain.push(toReplyChainEntry(node, ctx, mediaRef));
     }
     // An explicit external reply belongs to this turn, not to the current chat's cache.
     const externalReply =
       chain.length === 0 && !ctx.message.reply_to_message ? ctx.message.external_reply : undefined;
-    const externalFileId = resolveTelegramPrimaryMedia(externalReply)?.fileRef.file_id;
+    const externalPrimaryMedia = resolveTelegramPrimaryMedia(externalReply);
+    const externalFileId = externalPrimaryMedia?.fileRef.file_id;
+    const externalFileUniqueId = externalPrimaryMedia?.fileRef.file_unique_id;
     const externalTarget = externalFileId ? describeReplyTarget(ctx.message) : null;
     if (
       externalReply &&
       externalFileId &&
       externalTarget &&
+      (!externalFileUniqueId || !seenFileUniqueIds.has(externalFileUniqueId)) &&
       (await shouldHydrateMedia(externalTarget, 0))
     ) {
-      const mediaRef = await hydrateMedia(externalReply, externalFileId);
+      // Stamp the chat this turn arrived in: the scope keeps inbound files attributable
+      // to the conversation that saved them, not to the external message's origin.
+      const mediaRef = await hydrateMedia(
+        externalReply,
+        externalFileId,
+        buildTelegramMediaScope(ctx.message.chat?.id, ctx.message.message_thread_id),
+      );
       if (mediaRef) {
         replyMedia.push(mediaRef);
       }
@@ -335,6 +375,10 @@ export function createTelegramMessagePipeline({
     let dispatchDedupeCommitted = false;
     let spooledReplayFinalResult: TelegramMessageProcessingResult | undefined;
     let spooledReplayFinalization: Promise<TelegramMessageProcessingResult> | undefined;
+    // Settlement below is also invoked from contexts this dispatch does not own
+    // (the reply queue's retained onAbandoned runs on the followup drain chain),
+    // so bind the visible-reply fact here while this attempt's frame is current.
+    const hasDeliveredVisibleReply = captureTelegramVisibleReplyDelivered();
     // Callback-submit retries also set options.spooledReplay without durable ingress.
     // Media aborts retry only when the update frame or a buffered participant owns replay.
     const durableMediaReplay =
@@ -385,7 +429,14 @@ export function createTelegramMessagePipeline({
         return await spooledReplayFinalization;
       }
       const finalization = (async () => {
-        if (result.kind === "completed") {
+        // A retryable failure that ALREADY delivered a reply is not safely
+        // retryable: releasing the guard lets the spool replay a turn that has
+        // spoken, and the user sees the answer twice. Commit the guard instead so
+        // the replay is duplicate-suppressed. Only the guard is committed - the
+        // spool row still follows its own retry/dead-letter policy.
+        const repliedBeforeFailing =
+          result.kind === "failed-retryable" && hasDeliveredVisibleReply();
+        if (result.kind === "completed" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
           const releaseSettlementHolds = beginSpooledReplaySettlementHolds(
@@ -476,6 +527,7 @@ export function createTelegramMessagePipeline({
       const { replyMedia, replyChain } = await resolveReplyMediaForChain(
         params.ctx,
         replyChainNodes,
+        params.allMedia,
         shouldHydrateReplyMedia,
         durableMediaReplay,
         ...spooledReplayParticipants.map((participant) => participant.abortSignal),

@@ -30,6 +30,7 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import { SessionManager } from "./session-manager.js";
 
 const { uuidQueue } = vi.hoisted(() => ({ uuidQueue: [] as string[] }));
@@ -495,10 +496,16 @@ it("retains the forward cut after consecutive excluded first-kept entries", asyn
     throw new Error("missing first-kept fixture");
   }
   manager.appendMessage({ role: "user", content: "retained", timestamp: 3 });
-  manager.appendCompaction("summary", firstKept, 100);
+  const compactionId = manager.appendCompaction("summary", firstKept, 100);
   const expected = manager.buildSessionContext();
   expect(expected.messages).toMatchObject([
-    { role: "compactionSummary", summary: "summary" },
+    {
+      role: "compactionSummary",
+      summary: expectedCompactionSummary("summary", {
+        entryId: compactionId,
+        shadowedEntryCount: 1,
+      }),
+    },
     { role: "user", content: "retained" },
   ]);
   const bounded = SessionManager.openBounded(scope, { maxEvents: 4, maxBytes: 4096 });

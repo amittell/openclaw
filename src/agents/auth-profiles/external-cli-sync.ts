@@ -4,8 +4,10 @@
  * safely bootstrap local auth profiles, and returns runtime/persisted overlays.
  */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { coerceSecretRef } from "../../config/types.secrets.js";
 import { resolveRequiredOsHomeDir } from "../../infra/home-dir.js";
 import { readMiniMaxCliCredentialsCached } from "../cli-credentials.js";
+import { cloneAuthProfileStore } from "./clone.js";
 import { EXTERNAL_CLI_SYNC_TTL_MS, MINIMAX_CLI_PROFILE_ID, authProfilesLog } from "./constants.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import { isSafeToCopyOAuthIdentity } from "./oauth-identity.js";
@@ -275,6 +277,60 @@ function backfillExternalCliIdentity(params: {
     credential.email === params.existingOAuth.email
     ? null
     : credential;
+}
+
+/**
+ * Sync env-var-backed token credentials into the store.
+ *
+ * When `openclaw.json` declares auth profiles with `mode: "token"`, the actual
+ * bearer token may live in an env var loaded from `credentials/*.env` at boot.
+ * The persisted `auth-profiles.json`/SQLite entry is written once at setup and
+ * goes stale when the token refreshes. The gateway main session (WebSocket
+ * path) keeps live in-memory auth, but isolated embedded runs read the store
+ * from disk, so a stale token makes every LLM request fail across all
+ * profiles until the session is aborted. This sync resolves the env var and
+ * returns a store clone with the fresh token so the caller can persist it.
+ *
+ * Env var naming convention: the profile id upper-cased with every character
+ * outside `[A-Z0-9_]` replaced by `_`, suffixed with `_TOKEN` (e.g.
+ * `anthropic:me.com` -> `ANTHROPIC_ME_COM_TOKEN`, `anthropic:work-acct` ->
+ * `ANTHROPIC_WORK_ACCT_TOKEN`), so every profile id maps to a name a shell can
+ * set. The earlier rule replaced only `:` and `.`; its name is still read as a
+ * fallback so an environment set under it keeps syncing. Profiles whose token is backed by a secret ref
+ * (explicit `tokenRef` or `${ENV}` template) are resolved by the credential
+ * pipeline and are never touched here.
+ */
+export function syncEnvBackedTokenCredentials(
+  store: AuthProfileStore,
+  options?: ExternalCliAuthProfileOptions & { env?: NodeJS.ProcessEnv },
+): AuthProfileStore | null {
+  const env = options?.env ?? process.env;
+  let next: AuthProfileStore | undefined;
+  for (const [profileId, credential] of Object.entries(store.profiles)) {
+    if (credential.type !== "token") {
+      continue;
+    }
+    if (coerceSecretRef(credential.tokenRef) || coerceSecretRef(credential.token)) {
+      continue;
+    }
+    const upperId = profileId.toUpperCase();
+    const portableEnvVarName = upperId.replace(/[^A-Z0-9_]/g, "_") + "_TOKEN";
+    const legacyEnvVarName = upperId.replace(/[:.]/g, "_") + "_TOKEN";
+    const envVarName =
+      env[portableEnvVarName] === undefined && env[legacyEnvVarName] !== undefined
+        ? legacyEnvVarName
+        : portableEnvVarName;
+    const envValue = env[envVarName]?.trim();
+    if (!envValue || credential.token === envValue) {
+      continue;
+    }
+    next ??= cloneAuthProfileStore(store);
+    next.profiles[profileId] = { ...credential, token: envValue };
+    authProfilesLog.info(`synced token credential from env var ${envVarName}`, {
+      profileId,
+    });
+  }
+  return next ?? null;
 }
 
 /** Resolve scoped external CLI auth profiles available to overlay or persist. */

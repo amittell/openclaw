@@ -39,7 +39,6 @@ const hookMocks = vi.hoisted(() => ({
     content: [],
     details: {},
   })),
-  resolveToolLoopDetectionConfig: vi.fn(() => ({ warnAt: 3 })),
   runBeforeToolCallHook: vi.fn(
     async (args: RunBeforeToolCallHookArgs): Promise<RunBeforeToolCallHookResult> => ({
       blocked: false,
@@ -267,10 +266,6 @@ vi.mock("../agents/openclaw-tools.js", async () => {
   };
 });
 
-vi.mock("../agents/agent-tools.js", () => ({
-  resolveToolLoopDetectionConfig: hookMocks.resolveToolLoopDetectionConfig,
-}));
-
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: hookMocks.runBeforeToolCallHook,
 }));
@@ -298,8 +293,6 @@ beforeEach(() => {
   lastCreateOpenClawToolsContext = undefined;
   hookMocks.uploadToolExecute.mockClear();
   sessionEntries.clear();
-  hookMocks.resolveToolLoopDetectionConfig.mockClear();
-  hookMocks.resolveToolLoopDetectionConfig.mockImplementation(() => ({ warnAt: 3 }));
   hookMocks.runBeforeToolCallHook.mockClear();
   hookMocks.runBeforeToolCallHook.mockImplementation(
     async (args: RunBeforeToolCallHookArgs): Promise<RunBeforeToolCallHookResult> => ({
@@ -771,7 +764,6 @@ describe("POST /tools/invoke", () => {
     expect(hookCtx.agentId).toBe("main");
     expect(hookCtx.config).toBe(cfg);
     expect(hookCtx.sessionKey).toBe("agent:main:main");
-    expect(hookCtx.loopDetection).toEqual({ warnAt: 3 });
   });
 
   it("keeps plugin tools enabled for non-core tool invokes", async () => {
