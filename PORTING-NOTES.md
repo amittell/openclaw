@@ -2958,3 +2958,66 @@ Not run: the full 744-shard suite, and live proof (the deploy below is the live 
 4. Dead or duplicate fork code to delete or rewire (behaviour-neutral today): `overloadBackoffMaxMs`
    and `maybeBackoffBeforeOverloadFailover`; #73790's session-store half; the cooldown-probe
    extraction in `auth-controller.cooldown-probe.ts` (only for a line budget 9.8 no longer needs).
+
+# Carrying onto v2026.9.9 (9.8 -> 9.9), 2026-10-08
+
+`upgrade-v2026.9.9` carries the deployed 9.8 fork (`upgrade-v2026.9.8` = `2a92460fe12`) onto
+`v2026.9.9` (released 2026-10-08 10:23Z; `v2026.10.1` exists only as beta.1 and beta.2).
+
+## Topology
+
+    v2026.9.8^{commit}          fc23bc864e4
+    v2026.9.9^{commit}          bcfc88812a3
+    9.8 ancestor of 9.9         yes (same release line, 185 commits, 1,111 files)
+    fork delta vs 9.8           509 files; 19 also changed by 9.9
+    git merge-tree fork vs 9.9  0 conflicted paths
+
+Because 9.9 descends from 9.8, the carry is `git merge --squash` of the fork tip onto the tag
+(no reduced fork, no conflict lanes).
+
+## Revert pass: what 9.9 already contains
+
+Every PR number named in the fork's commits was checked against `v2026.9.8..v2026.9.9` by
+subject and by `git patch-id --stable`, not by ancestry of upstream's main-branch sha:
+
+| fork commit   | what                                                  | 9.9                                                      |
+| ------------- | ----------------------------------------------------- | -------------------------------------------------------- |
+| `7bc0ee9aa0c` | port of #146905 (openai-completions `contextUsage`)   | `ab24b53b879`                                            |
+| `6a7e3150c4a` | port of #163742 (Telegram final replies after reload) | `00602f4d22c`, release-branch cherry-pick, same patch-id |
+
+Both drop out (the squash staged 500 of the 509 files). The #163742 check in the 9.8 notes
+compared ancestry of main's `9564f5783594`, which cannot see a release-branch cherry-pick.
+Our regression test from `2a92460fe12` stays and now covers 9.9's copy. #89526, #101866,
+#132409, #151923, #158145 and #158161 are still open upstream and stay carried.
+
+## Commits
+
+| commit        | what                                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| `ab86a49d625` | the squash                                                                               |
+| `5aa2a53c34f` | upstream #155320 at `82dfc68daa49` (still open): a failed child delivery whose cleanup   |
+|               | completed is no longer "outstanding", so it stops reappearing in every prompt (677f2ddc) |
+| `2e74e0c8d5e` | the fork's model-catalog self-poll test moved to 9.9's `acquireGatewayE2ePortBlock` /    |
+|               | `startClaimedGateway` (9.9 #166341 removed `getGatewayE2ePortBlock`)                     |
+| `2baf16b06b0` | shrink-only prune of the stale max-lines entry for telegram `fetch.ts`                   |
+
+## Guards (2026-10-08, on the Air, node v26.8.2, pnpm 12.5.1)
+
+- `tsgo:core`, `tsgo:extensions`, `tsgo:scripts`, `tsgo:test:src`, `tsgo:test:packages`,
+  `tsgo:extensions:test`, `tsgo:test:root`: rc=0, 0 `error TS` lines.
+- `check:no-conflict-markers`, `check:max-lines-ratchet` (after the prune): rc=0.
+- `check:assertion-safety --base v2026.9.9^{commit}`: rc=0.
+- `check:line-cap-ratchet --base v2026.9.9^{commit}`: rc=1, 34 over-cap files, all grown by the
+  fork. Pre-existing class (10 on the 9.8 carry, issue #9); why the count rose was not measured.
+  Without `--base` both guards also fail on plain 9.9 (712 line-cap files).
+
+## Tests (2026-10-08, on the Air, node v26.8.2)
+
+`scripts/test-projects.mts --changed v2026.9.9` with `OPENCLAW_TEST_PROJECTS_PARALLEL=2`, 42
+shards, 39 min, at `5aa2a53c34f`: 291 files / 9,910 tests, 2 failures, both in
+`server-model-catalog.selfpoll-boundary.test.ts` (fixed by `2e74e0c8d5e`, 2/2 after).
+`durable-delivery.channel-reload.test.ts` 4/4 on 9.9's #163742. #155320's real-Gateway case
+(`server-rpc-restart-owner.test.ts`, which the `--changed` selection does not reach) passes 3/3,
+and fails 1 with the production change reverted.
+
+Not run: the full suite, and live proof.
