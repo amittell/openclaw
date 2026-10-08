@@ -15,11 +15,8 @@ import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/e
 import { GatewayClient } from "./client.js";
 import { loadGatewayModelCatalogSnapshot } from "./server-model-catalog.js";
 import { startGatewayServer } from "./server.js";
-import {
-  connectGatewayClient,
-  disconnectGatewayClient,
-  getGatewayE2ePortBlock,
-} from "./test-helpers.e2e.js";
+import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
+import { acquireGatewayE2ePortBlock, startClaimedGateway } from "./test-helpers.listener.js";
 import {
   configureManualGatewayBackgroundEnv,
   MANUAL_GATEWAY_ENV_KEYS,
@@ -108,7 +105,8 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     configureManualGatewayBackgroundEnv(tempHome);
 
-    const port = await getGatewayE2ePortBlock();
+    const claim = await acquireGatewayE2ePortBlock();
+    const port = claim.port;
     const token = "pr2-boundary-token";
     const url = `ws://127.0.0.1:${port}`;
     setTestEnvValue("OPENCLAW_GATEWAY_PORT", String(port));
@@ -121,12 +119,14 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     );
     clearRuntimeConfigSnapshot();
 
-    const server = await startGatewayServer(port, {
-      bind: "loopback",
-      auth: { mode: "token", token },
-      controlUiEnabled: false,
-      sidecarStartup: "defer",
-    });
+    const server = await startClaimedGateway(claim, () =>
+      startGatewayServer(port, {
+        bind: "loopback",
+        auth: { mode: "token", token },
+        controlUiEnabled: false,
+        sidecarStartup: "defer",
+      }),
+    );
 
     try {
       const client = await connectGatewayClient({
@@ -170,7 +170,8 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     configureManualGatewayBackgroundEnv(tempHome);
 
-    const port = await getGatewayE2ePortBlock();
+    const claim = await acquireGatewayE2ePortBlock();
+    const port = claim.port;
     const token = "pr2-selfpoll-token";
     setTestEnvValue("OPENCLAW_GATEWAY_PORT", String(port));
 
@@ -182,12 +183,14 @@ describe("PR2 gateway model-catalog self-poll boundary", () => {
     );
     clearRuntimeConfigSnapshot();
 
-    const server = await startGatewayServer(port, {
-      bind: "loopback",
-      auth: { mode: "token", token },
-      controlUiEnabled: false,
-      sidecarStartup: "defer",
-    });
+    const server = await startClaimedGateway(claim, () =>
+      startGatewayServer(port, {
+        bind: "loopback",
+        auth: { mode: "token", token },
+        controlUiEnabled: false,
+        sidecarStartup: "defer",
+      }),
+    );
 
     try {
       // The unscoped self-poll read (chat-metadata / chat.startup projection path in
