@@ -57,6 +57,8 @@ export type UsageCostWorkerInput = {
   location: UsageCostWorkerLocation;
   databases: UsageCostWorkerDatabase[];
   operation: UsageCostWorkerOperation;
+  /** Captured transcript selection; supplied actor work never discovers disk artifacts. */
+  transcriptFiles?: string[];
 };
 
 export type UsageCostWorkerResult =
@@ -72,7 +74,7 @@ export type UsageCostWorkerResult =
       staleSessionFiles: string[];
       invalidRows: SessionCostUsageRollupRow[];
     }
-  | { kind: "refresh" };
+  | { kind: "refresh"; changed: boolean };
 
 export type UsageCostWorkerFailure = {
   message: string;

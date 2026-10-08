@@ -17,30 +17,27 @@ import {
   beginDraftQueuedFollowup,
   cleanupDrafts,
   enqueueDraftEvent,
+  dropQueuedAnswerBlockRotation,
   ingestDraftLaneSegments,
   prepareQueuedAnswerBlock,
   repositionLaneForNewMessage,
   resetLaneState,
   rotateLaneForNewMessage,
-  waitForDraftEvents,
 } from "./bot-message-dispatch-draft.js";
 import { formatTelegramGroupThreadReply } from "./bot-message-dispatch-payload.js";
 import {
   canPushToolProgress,
-  handleApprovalEvent,
   handleCompactionEnd,
   handleCompactionStart,
   handleItemEvent,
   handlePlanUpdate,
   handleToolStart,
-  pushReasoningProgress,
   pushThinkingTokenProgress,
   pushToolProgress,
 } from "./bot-message-dispatch-progress.js";
 import {
   deliverReply,
   deliverPreparedReply,
-  handleBeforeDeliverCancelled,
   handleReplyError,
   handleReplySkip,
   resetReasoningStepState,
@@ -54,7 +51,6 @@ const TELEGRAM_MAX_CONSECUTIVE_TYPING_FAILURES = 5;
 
 export async function runTelegramDispatchTurn(turn: Turn) {
   const { context } = turn;
-  let sessionMetaTask: Promise<unknown> | undefined;
   const isRoomEvent = context.ctxPayload.InboundEventKind === "room_event";
   const toolProgressEnabled =
     turn.streamMode !== "off" &&
@@ -74,6 +70,8 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       { inboundEventKind: context.ctxPayload.InboundEventKind },
     );
   const endDeliveryCorrelation = beginDeliveryCorrelation();
+  const queueDraftProgress = (task: () => Promise<void>) =>
+    enqueueDraftEvent(turn, task).then(() => false);
 
   try {
     const { onModelSelected, ...replyPipeline } = (
@@ -100,13 +98,6 @@ export async function runTelegramDispatchTurn(turn: Turn) {
         },
       },
     });
-    const handleDeliveryError = async (err: unknown, info: { kind: string }) => {
-      await Promise.resolve(
-        handleReplyError(turn, err, info as Parameters<typeof handleReplyError>[2]),
-      ).catch((callbackError: unknown) => {
-        logVerbose(`telegram reply error callback failed: ${String(callbackError)}`);
-      });
-    };
     const turnResult = await runChannelInboundEvent({
       channel: "telegram",
       accountId: context.route.accountId,
@@ -132,15 +123,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             sessionKey: context.route.sessionKey,
           },
           ctxPayload: context.ctxPayload,
-          record: {
-            ...context.turn.record,
-            trackSessionMetaTask: (task) => {
-              sessionMetaTask = task;
-            },
-          },
-          afterRecord: async () => {
-            await sessionMetaTask;
-          },
+          record: context.turn.record,
           botLoopProtection: resolveTelegramBotLoopProtection({
             cfg: turn.cfg,
             accountId: context.route.accountId,
@@ -153,10 +136,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
               await deliverReply(turn, payload, info),
             deliverPreparedWithProviderMessageSending: async (plan, info) =>
               await deliverPreparedReply(turn, plan, info),
-            // The shipped SDK declaration stays void; core still awaits the runtime promise.
-            onError: handleDeliveryError as NonNullable<
-              ChannelInboundTurnPlan["delivery"]["onError"]
-            >,
+            onError: (err, info) => handleReplyError(turn, err, info),
             onDelivered: (_payload, info, result) => {
               const reason = result?.suppression?.reason;
               if (
@@ -174,7 +154,11 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             humanDelay: resolveHumanDelayConfig(turn.cfg, context.route.agentId),
             beforeDeliver: async (payload) => payload,
             onBeforeDeliverCancelled: (payload, info) =>
-              handleBeforeDeliverCancelled(turn, payload, info),
+              info.kind === "block"
+                ? enqueueDraftEvent(turn, async () => {
+                    dropQueuedAnswerBlockRotation(turn, payload, info.assistantMessageIndex);
+                  })
+                : undefined,
             onSkip: (payload, info) => handleReplySkip(turn, payload, info),
           },
           replyOptions: {
@@ -199,7 +183,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             suppressTyping: isRoomEvent,
             onObservedReplyDelivery: async () => {
               turn.previewLifecycle.beginFinalDelivery();
-              await waitForDraftEvents(turn);
+              await turn.draftEventQueue;
               turn.deliveryState.markDelivered();
               await turn.previewLifecycle.observeDelivery({ visibleReplySent: true });
             },
@@ -222,31 +206,25 @@ export async function runTelegramDispatchTurn(turn: Turn) {
                   }
                 : undefined,
             onBlockReplyQueued: turn.answerLane.stream
-              ? (payload, blockContext) => {
-                  const queued = enqueueDraftEvent(turn, async () => {
-                    await prepareQueuedAnswerBlock(turn, payload, blockContext);
-                  });
-                  return queued.then(() => false);
-                }
+              ? (payload, blockContext) =>
+                  queueDraftProgress(() => prepareQueuedAnswerBlock(turn, payload, blockContext))
               : undefined,
             onReasoningStream: turn.reasoningLane.stream
-              ? (payload) => {
-                  const queued = enqueueDraftEvent(turn, async () => {
+              ? (payload) =>
+                  queueDraftProgress(async () => {
                     if (turn.splitReasoningOnNextStream) {
                       repositionLaneForNewMessage(turn, turn.reasoningLane);
                       turn.splitReasoningOnNextStream = false;
                     }
                     await ingestDraftLaneSegments(turn, payload, true);
-                  });
-                  return queued.then(() => false);
-                }
+                  })
               : turn.streamReasoningInProgressDraft
-                ? (payload) => {
-                    const queued = enqueueDraftEvent(turn, async () => {
-                      await pushReasoningProgress(turn, payload);
-                    });
-                    return queued.then(() => false);
-                  }
+                ? (payload) =>
+                    queueDraftProgress(async () => {
+                      await turn.progressCompositor.pushReasoningProgress(payload.text, {
+                        snapshot: payload.isReasoningSnapshot === true,
+                      });
+                    })
                 : undefined,
             onReasoningProgress: turn.answerLane.stream
               ? (payload) =>
@@ -255,8 +233,8 @@ export async function runTelegramDispatchTurn(turn: Turn) {
                   })
               : undefined,
             onAssistantMessageStart: turn.answerLane.stream
-              ? () => {
-                  const queued = enqueueDraftEvent(turn, async () => {
+              ? () =>
+                  queueDraftProgress(async () => {
                     resetReasoningStepState(turn);
                     const previousAnswerDelivered = turn.previewLifecycle.finalDelivered;
                     turn.previewLifecycle.reset();
@@ -279,18 +257,14 @@ export async function runTelegramDispatchTurn(turn: Turn) {
                       // keep editing its unfinished preview instead of retaining it as final.
                       turn.rotateAnswerLaneWhenQueuedBlocksSettle = true;
                     }
-                  });
-                  return queued.then(() => false);
-                }
+                  })
               : undefined,
             onReasoningEnd: turn.reasoningLane.stream
-              ? () => {
-                  const queued = enqueueDraftEvent(turn, async () => {
+              ? () =>
+                  queueDraftProgress(async () => {
                     turn.splitReasoningOnNextStream = turn.reasoningLane.hasStreamedMessage;
                     turn.progressCompositor.resetReasoningProgress();
-                  });
-                  return queued.then(() => false);
-                }
+                  })
               : () => false,
             onQueuedFollowupAdmitted: () => {
               beginDraftQueuedFollowup(turn);
@@ -300,15 +274,16 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             },
             onQueuedFollowupSettled: async () => {
               turn.progressCompositor.cancel();
-              await waitForDraftEvents(turn);
+              await turn.draftEventQueue;
               await cleanupDrafts(turn, turn.isSuperseded());
             },
             suppressDefaultToolProgressMessages:
               !turn.streamDeliveryEnabled || Boolean(turn.answerLane.stream),
+            progressRequiresReply: turn.streamMode === "progress" ? true : undefined,
             suppressToolProgressMessages: !toolProgressEnabled,
             allowProgressCallbacksWhenSourceDeliverySuppressed:
               !isRoomEvent && Boolean(turn.answerLane.stream),
-            onVerboseProgressVisibility: (isActive) => {
+            onVerboseProgressVisibilityAsync: (isActive) => {
               turn.verboseProgressActive = isActive;
             },
             commentaryProgressEnabled:
@@ -324,7 +299,10 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             onToolStart: (payload) => handleToolStart(turn, payload),
             onItemEvent: (payload) => handleItemEvent(turn, payload),
             onPlanUpdate: (payload) => handlePlanUpdate(turn, payload),
-            onApprovalEvent: (payload) => handleApprovalEvent(turn, payload),
+            onApprovalEvent: async (payload) =>
+              (await canPushToolProgress(turn))
+                ? await turn.progressCompositor.pushApprovalEvent(payload)
+                : false,
             onToolResult: async (payload) => {
               const text = payload.text?.trim();
               if (!text) {
@@ -338,7 +316,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
               if (updatedDraft) {
                 return true;
               }
-              if (isFastModeAutoProgressPayload(payload) && !canPushToolProgress(turn)) {
+              if (isFastModeAutoProgressPayload(payload) && !(await canPushToolProgress(turn))) {
                 return (await sendPayload(turn, payload)).visibleReplySent;
               }
               return false;
