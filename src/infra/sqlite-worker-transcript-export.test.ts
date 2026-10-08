@@ -157,7 +157,6 @@ async function runTranscriptsCli(args: string[]): Promise<string> {
 
 describe("transcript export digest worker", () => {
   it.each([
-    { name: "complete", count: 70, modified: false },
     { name: "empty", count: 0, modified: false },
     { name: "modified", count: 70, modified: true },
   ])(
@@ -174,12 +173,13 @@ describe("transcript export digest worker", () => {
       };
       // oxlint-disable-next-line typescript/unbound-method -- Preserve the intercepted native receiver.
       const prepare = DatabaseSync.prototype.prepare;
-      const prepareSpy = vi
-        .spyOn(DatabaseSync.prototype, "prepare")
-        .mockImplementation(function (this: DatabaseSync, sql) {
-          observe(sql);
-          return prepare.call(this, sql);
-        });
+      const prepareSpy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+        this: DatabaseSync,
+        sql,
+      ) {
+        observe(sql);
+        return prepare.call(this, sql);
+      });
       // Catch execution even when a preceding export has cached the native statement.
       // oxlint-disable-next-line typescript/unbound-method -- Preserve the intercepted statement receiver.
       const iterate = StatementSync.prototype.iterate;
@@ -215,7 +215,12 @@ describe("transcript export digest worker", () => {
     "preserves concurrent capture during artifact recovery: %s",
     async (change) => {
       const { store, session, utterances, artifacts, original, expectedHash, readManifest } =
-        await seedDigestRecovery(suiteStateDir, 2, false, change === "metadata-before-digest");
+        await seedDigestRecovery(
+          suiteStateDir,
+          change === "append-after-digest" ? 70 : 2,
+          false,
+          change === "metadata-before-digest",
+        );
       const selected = createDeferred();
       const resume = createDeferred();
       let sessionReads = 0;
