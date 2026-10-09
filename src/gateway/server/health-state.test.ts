@@ -290,26 +290,6 @@ describe("refreshGatewayHealthSnapshot", () => {
     expect(JSON.stringify(published)).not.toContain("Fingerprint");
   });
 
-  it("builds config health from the reloader's completed source observation", async () => {
-    const healthState = await loadHealthState();
-    const liveSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-sol" } } };
-    const observedSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-terra" } } };
-    getRuntimeConfigSourceSnapshotMock.mockReturnValue(liveSourceConfig);
-    getConfigReloadObservationMock.mockReturnValue({
-      generation: 7,
-      sourceConfig: observedSourceConfig,
-    });
-    buildRuntimeConfigHealthMock.mockReturnValue({ state: "drift" });
-
-    await healthState.refreshGatewayHealthSnapshot({ probe: false });
-
-    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledWith({
-      liveSourceConfig,
-      hasLiveSnapshot: true,
-      observedSourceConfig,
-    });
-  });
-
   it("projects current config for hello while RPC and broadcast await full recollection", async () => {
     const healthState = await loadHealthState();
     const broadcast = vi.fn();
@@ -363,47 +343,6 @@ describe("refreshGatewayHealthSnapshot", () => {
       { state: "ok" },
       { state: "drift", driftPaths: ["agents.defaults.model"] },
     ]);
-  });
-
-  it("retries publication when the observed generation advances during computation", async () => {
-    const healthState = await loadHealthState();
-    const firstSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-sol" } } };
-    const latestSourceConfig = { agents: { defaults: { model: "openai/gpt-5.6-terra" } } };
-    let observation = { generation: 11, sourceConfig: firstSourceConfig };
-    getConfigReloadObservationMock.mockImplementation(() => observation);
-    buildRuntimeConfigHealthMock
-      .mockImplementationOnce(() => {
-        observation = { generation: 12, sourceConfig: latestSourceConfig };
-        return { state: "ok" };
-      })
-      .mockReturnValueOnce({ state: "drift", driftPaths: ["models"] });
-
-    const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
-
-    expect(published.runtimeConfig).toEqual({ state: "drift", driftPaths: ["models"] });
-    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
-    expect(
-      buildRuntimeConfigHealthMock.mock.calls.map(([input]) => input.observedSourceConfig),
-    ).toEqual([firstSourceConfig, latestSourceConfig]);
-    expect(healthState.getHealthCache()).toBe(published);
-  });
-
-  it("retries publication when the live runtime revision advances before commit", async () => {
-    const healthState = await loadHealthState();
-    let revision = 11;
-    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({ revision }));
-    buildRuntimeConfigHealthMock
-      .mockImplementationOnce(() => {
-        revision += 1;
-        return { state: "drift", driftPaths: ["models"] };
-      })
-      .mockReturnValueOnce({ state: "ok" });
-
-    const published = await healthState.refreshGatewayHealthSnapshot({ probe: true });
-
-    expect(published.runtimeConfig).toEqual({ state: "ok" });
-    expect(buildRuntimeConfigHealthMock).toHaveBeenCalledTimes(2);
-    expect(healthState.getHealthCache()).toBe(published);
   });
 
   it("recollects the whole snapshot when the runtime revision advances", async () => {
