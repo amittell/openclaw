@@ -1,30 +1,27 @@
-// Media reference helpers resolve media refs to file, URL, or inline payloads.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { safeFileURLToPath } from "@openclaw/fs-safe/advanced";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
-import { safeFileURLToPath } from "../infra/local-file-access.js";
 import { resolveUserPath } from "../utils.js";
+import {
+  MediaReferenceError,
+  normalizeMediaReferenceSource,
+  parseInboundMediaUri,
+} from "./inbound-media-uri.js";
 import { MAX_GROUNDING_PATHS } from "./media-grounding-limits.js";
 import { getMediaDir, resolveMediaBufferPath } from "./store.js";
+
+export {
+  MediaReferenceError,
+  normalizeMediaReferenceSource,
+  parseInboundMediaUri,
+} from "./inbound-media-uri.js";
 
 const MAX_GROUNDING_ALIASES = MAX_GROUNDING_PATHS * 16,
   MAX_GROUNDING_REFERENCE_CHARS = 4_096;
 // `parseInboundMediaUri` resolves only this host, so it is the one managed URI root.
 const INBOUND_MEDIA_URI_ROOT = "media://inbound";
-
-type MediaReferenceErrorCode = "invalid-path" | "path-not-allowed";
-
-/** Error raised when a media reference cannot be mapped to an allowed local media file. */
-export class MediaReferenceError extends Error {
-  code: MediaReferenceErrorCode;
-
-  constructor(code: MediaReferenceErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.code = code;
-    this.name = "MediaReferenceError";
-  }
-}
 
 type InboundMediaReference = {
   id: string;
@@ -32,20 +29,6 @@ type InboundMediaReference = {
   physicalPath: string;
   sourceType: "uri" | "path";
 };
-
-type InboundMediaUri = {
-  id: string;
-  normalizedSource: string;
-};
-
-/** Strips legacy MEDIA: prefixes while preserving canonical media:// references. */
-export function normalizeMediaReferenceSource(source: string): string {
-  const trimmed = source.trim();
-  if (/^media:\/\//i.test(trimmed)) {
-    return trimmed;
-  }
-  return trimmed.replace(/^\s*MEDIA\s*:\s*/i, "").trim();
-}
 
 type MediaReferenceSourceInfo = {
   hasScheme: boolean;
@@ -121,59 +104,6 @@ async function resolvePathForContainment(candidate: string): Promise<string> {
   }
 }
 
-/** Parses canonical inbound media-store URIs and rejects nested or cross-bucket references. */
-export function parseInboundMediaUri(source: string): InboundMediaUri | null {
-  const normalizedSource = normalizeMediaReferenceSource(source);
-  if (!/^media:\/\//i.test(normalizedSource)) {
-    return null;
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(normalizedSource);
-  } catch (err) {
-    throw new MediaReferenceError("invalid-path", `Invalid media URI: ${normalizedSource}`, {
-      cause: err,
-    });
-  }
-
-  // `new URL` reports hostname "inbound" for inbound:, inbound:123, user@inbound and
-  // user:pw@inbound:9 alike, so no combination of parsed fields separates them from the
-  // canonical spelling: a bare colon sets no port at all. The grounding matcher keys on
-  // the exact portless root and would not redact any of those forms, leaving a reference
-  // that still resolves here. Compare the raw authority instead; this scheme names no
-  // network location, so userinfo and ports are never valid.
-  const rawAuthority = normalizedSource.slice("media://".length).split(/[/?#]/u, 1)[0] ?? "";
-  if (parsed.hostname !== "inbound" || rawAuthority !== "inbound") {
-    throw new MediaReferenceError(
-      "path-not-allowed",
-      `Unsupported media URI location: ${rawAuthority || "(missing)"}`,
-    );
-  }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new MediaReferenceError("invalid-path", `Invalid media URI: ${normalizedSource}`);
-  }
-
-  let id: string;
-  try {
-    id = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-  } catch (err) {
-    throw new MediaReferenceError("invalid-path", `Invalid media URI: ${normalizedSource}`, {
-      cause: err,
-    });
-  }
-
-  const invalidId = !id || id === "." || id === "..";
-  if (invalidId || id.includes("/") || id.includes("\\") || id.includes("\0")) {
-    throw new MediaReferenceError("invalid-path", `Invalid media URI: ${normalizedSource}`);
-  }
-
-  return {
-    id,
-    normalizedSource,
-  };
-}
-
 /** Converts a managed inbound path to a URI without exposing paths outside its store. */
 export function buildInboundMediaUriFromPath(source: string): string | undefined {
   const localPath = maybeLocalPathFromSource(source.trim());
@@ -202,20 +132,6 @@ export function buildInboundMediaUriFromPath(source: string): string | undefined
   }
 }
 
-async function resolveInboundMediaUri(
-  normalizedSource: string,
-): Promise<InboundMediaReference | null> {
-  const uri = parseInboundMediaUri(normalizedSource);
-  if (!uri) {
-    return null;
-  }
-  return {
-    ...uri,
-    physicalPath: await resolveInboundMediaPath(uri.id, uri.normalizedSource),
-    sourceType: "uri",
-  };
-}
-
 /** Rewrites inbound media-store URIs to sandbox-relative paths for staged agent inputs. */
 export function resolveMediaReferenceSandboxPath(
   source: string,
@@ -241,9 +157,13 @@ export async function resolveInboundMediaReference(
     return null;
   }
 
-  const uriSource = await resolveInboundMediaUri(normalizedSource);
-  if (uriSource) {
-    return uriSource;
+  const uri = parseInboundMediaUri(normalizedSource);
+  if (uri) {
+    return {
+      ...uri,
+      physicalPath: await resolveInboundMediaPath(uri.id, uri.normalizedSource),
+      sourceType: "uri",
+    };
   }
 
   const localPath = maybeLocalPathFromSource(normalizedSource);

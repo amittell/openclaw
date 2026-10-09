@@ -1,105 +1,54 @@
-/** Extracts and trust-filters media from embedded-agent tool results. */
+import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
 import {
   asNonNegativeFiniteNumber,
   asPositiveFiniteNumber,
 } from "@openclaw/normalization-core/number-coercion";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalObjectRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
 import { MAX_GROUNDING_PATHS } from "../media/media-grounding-limits.js";
 import { extractToolResultText } from "./embedded-agent-tool-results.js";
+import { mapAgentHarnessMessagingMediaValues } from "./harness/messaging-media.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
 import { readToolResultDetails } from "./tool-result-error.js";
 import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 import { getCoreTtsToolResultMediaUrls } from "./tools/tts-tool-result-provenance.js";
 
-function pushUniqueMessagingMediaUrl(urls: string[], seen: Set<string>, value: unknown): void {
-  if (typeof value !== "string") {
-    return;
+function pushUniqueMessagingMediaUrl(urls: Set<string>, value: unknown): void {
+  const normalized = normalizeOptionalString(value);
+  if (normalized) {
+    urls.add(normalized);
   }
-  const normalized = value.trim();
-  if (!normalized || seen.has(normalized)) {
-    return;
-  }
-  seen.add(normalized);
-  urls.push(normalized);
 }
 
-/** Collects messaging attachment references from tool-call arguments or result records. */
 export function collectMessagingMediaUrlsFromRecord(record: Record<string, unknown>): string[] {
-  const urls: string[] = [];
-  const seen = new Set<string>();
-  const pushAttachment = (value: unknown) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return;
-    }
-    const attachment = value as Record<string, unknown>;
-    for (const candidate of [
-      attachment.media,
-      attachment.mediaUrl,
-      attachment.path,
-      attachment.filePath,
-      attachment.fileUrl,
-      attachment.url,
-    ]) {
-      pushUniqueMessagingMediaUrl(urls, seen, candidate);
-    }
-  };
-
-  for (const candidate of [
-    record.media,
-    record.mediaUrl,
-    record.path,
-    record.filePath,
-    record.fileUrl,
-  ]) {
-    pushUniqueMessagingMediaUrl(urls, seen, candidate);
-  }
-  if (Array.isArray(record.mediaUrls)) {
-    for (const mediaUrl of record.mediaUrls) {
-      pushUniqueMessagingMediaUrl(urls, seen, mediaUrl);
-    }
-  }
-  if (Array.isArray(record.attachments)) {
-    for (const attachment of record.attachments) {
-      pushAttachment(attachment);
-    }
-  }
-  return urls;
+  const urls = new Set<string>();
+  mapAgentHarnessMessagingMediaValues(
+    record,
+    (value) => {
+      pushUniqueMessagingMediaUrl(urls, value);
+      return value;
+    },
+    false,
+  );
+  return [...urls];
 }
 
-/** Collects messaging attachment references from a completed tool result. */
 export function collectMessagingMediaUrlsFromToolResult(result: unknown): string[] {
-  const urls: string[] = [];
-  const seen = new Set<string>();
-  const appendFromRecord = (value: unknown) => {
-    if (!value || typeof value !== "object") {
-      return;
-    }
-    for (const url of collectMessagingMediaUrlsFromRecord(value as Record<string, unknown>)) {
-      if (!seen.has(url)) {
-        seen.add(url);
-        urls.push(url);
-      }
-    }
-  };
-
-  appendFromRecord(result);
-  if (result && typeof result === "object") {
-    appendFromRecord((result as Record<string, unknown>).details);
-  }
+  const records = [result, asOptionalObjectRecord(result)?.details];
   const outputText = extractToolResultText(result);
   if (outputText) {
-    try {
-      appendFromRecord(JSON.parse(outputText));
-    } catch {
-      // Ignore non-JSON tool output.
-    }
+    records.push(safeParseJson(outputText));
   }
-  return urls;
+  return [
+    ...new Set(
+      records.flatMap((value) => {
+        const record = asOptionalObjectRecord(value);
+        return record ? collectMessagingMediaUrlsFromRecord(record) : [];
+      }),
+    ),
+  ];
 }
-
-/** Extract an internal source-reply payload from a completed message tool result. */
 
 const TRUSTED_TOOL_RESULT_MEDIA = new Set([
   "agents_list",
@@ -137,18 +86,12 @@ const HTTP_URL_RE = /^https?:\/\//i;
 const LOCAL_MEDIA_REPLAY_AUTHORIZED = "localMediaReplayAuthorized";
 
 export function isCoreToolResultMediaTrustedName(toolName?: string): boolean {
-  if (!toolName) {
-    return false;
-  }
-  return TRUSTED_TOOL_RESULT_MEDIA.has(normalizeToolPolicyName(toolName));
+  return Boolean(toolName && TRUSTED_TOOL_RESULT_MEDIA.has(normalizeToolPolicyName(toolName)));
 }
 
 function isExternalToolResult(result: unknown): boolean {
   const details = readToolResultDetails(result);
-  if (!details) {
-    return false;
-  }
-  return typeof details.mcpServer === "string" || typeof details.mcpTool === "string";
+  return typeof details?.mcpServer === "string" || typeof details?.mcpTool === "string";
 }
 
 function isToolResultMediaTrusted(
@@ -164,12 +107,6 @@ function isToolResultMediaTrusted(
     return true;
   }
   return isCoreToolResultMediaTrustedName(toolName);
-}
-
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[
-    Symbol.for("openclaw.embeddedSubscribeToolsTestApi")
-  ] = { isToolResultMediaTrusted };
 }
 
 function getTrustedOwnedTtsLocalMediaUrls(
@@ -277,17 +214,6 @@ export function filterPersistedToolResultMediaUrls(
   return filterToolResultMediaUrls(toolName, mediaUrls, result, exactNames);
 }
 
-/**
- * Extract media file paths from a tool result.
- *
- * Strategy (first match wins):
- * 1. Read structured `details.media` attachments from tool details.
- * 2. Fall back to `details.path` when image content exists (legacy imageResult).
- *
- * Returns an empty array when no media is found (e.g. embedded `read` tool
- * returns base64 image data but no file path; those need a different delivery
- * path like saving to a temp file).
- */
 type ToolResultMediaArtifact = {
   mediaUrls: string[];
   attachments?: ReplyMediaAttachment[];
@@ -305,11 +231,9 @@ function readToolResultDetailsMedia(
   result: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   const details = readToolResultDetails(result);
-  const media =
-    details?.media && typeof details.media === "object" && !Array.isArray(details.media)
-      ? (details.media as Record<string, unknown>)
-      : undefined;
-  return media;
+  return details?.media && typeof details.media === "object" && !Array.isArray(details.media)
+    ? (details.media as Record<string, unknown>)
+    : undefined;
 }
 
 const REPLY_ATTACHMENT_METADATA_KEYS = new Set([
@@ -325,13 +249,13 @@ const REPLY_ATTACHMENT_METADATA_KEYS = new Set([
   "width",
   "height",
 ]);
+const MEDIA_URL_KEYS = ["media", "path", "url", "mediaUrl", "filePath", "fileUrl"];
 
 function collectStructuredMedia(
   media: Record<string, unknown>,
   options: ToolResultMediaArtifactOptions,
 ): { hadCandidate: boolean; mediaUrls: string[]; attachments?: ReplyMediaAttachment[] } {
-  const mediaUrls: string[] = [];
-  const seen = new Set<string>();
+  const mediaUrls = new Set<string>();
   const attachmentsByUrl = new Map<string, ReplyMediaAttachment>();
   const maxMediaUrls = Math.max(
     0,
@@ -344,24 +268,20 @@ function collectStructuredMedia(
   let inspectedCandidates = 0;
   let hadCandidate = false;
   const pushString = (value: unknown, attachment?: ReplyMediaAttachment) => {
-    if (typeof value !== "string") {
-      return;
-    }
-    const normalized = value.trim();
+    const normalized = normalizeOptionalString(value);
     if (!normalized) {
       return;
     }
     hadCandidate = true;
     if (
-      mediaUrls.length < maxMediaUrls &&
-      !seen.has(normalized) &&
+      mediaUrls.size < maxMediaUrls &&
+      !mediaUrls.has(normalized) &&
       (options.acceptMediaUrl?.(normalized) ?? true)
     ) {
-      seen.add(normalized);
-      mediaUrls.push(normalized);
+      mediaUrls.add(normalized);
     }
     // Attachment metadata is keyed by accepted URL; a rejected URL has no output slot.
-    if (attachment && seen.has(normalized) && !attachmentsByUrl.has(normalized)) {
+    if (attachment && mediaUrls.has(normalized) && !attachmentsByUrl.has(normalized)) {
       attachmentsByUrl.set(normalized, attachment);
     }
   };
@@ -388,66 +308,46 @@ function collectStructuredMedia(
         return typeof entry === "string";
       }),
     );
-    for (const key of ["media", "path", "url", "mediaUrl", "filePath", "fileUrl"]) {
+    for (const key of MEDIA_URL_KEYS) {
       pushString(record[key], attachment);
     }
   };
-  pushString(media.media);
-  pushString(media.path);
-  pushString(media.url);
-  pushString(media.mediaUrl);
-  pushString(media.filePath);
-  pushString(media.fileUrl);
+  for (const key of MEDIA_URL_KEYS) {
+    pushString(media[key]);
+  }
   if (
     inspectedCandidates < maxMediaCandidates &&
-    mediaUrls.length < maxMediaUrls &&
+    mediaUrls.size < maxMediaUrls &&
     Array.isArray(media.mediaUrls)
   ) {
     for (const value of media.mediaUrls) {
       inspectedCandidates += 1;
       pushString(value);
-      if (inspectedCandidates >= maxMediaCandidates || mediaUrls.length >= maxMediaUrls) {
+      if (inspectedCandidates >= maxMediaCandidates || mediaUrls.size >= maxMediaUrls) {
         break;
       }
     }
   }
   if (
     inspectedCandidates < maxMediaCandidates &&
-    mediaUrls.length < maxMediaUrls &&
+    mediaUrls.size < maxMediaUrls &&
     Array.isArray(media.attachments)
   ) {
     for (const attachment of media.attachments) {
       inspectedCandidates += 1;
       pushAttachment(attachment);
-      if (inspectedCandidates >= maxMediaCandidates || mediaUrls.length >= maxMediaUrls) {
+      if (inspectedCandidates >= maxMediaCandidates || mediaUrls.size >= maxMediaUrls) {
         break;
       }
     }
   }
   return {
     hadCandidate,
-    mediaUrls,
+    mediaUrls: [...mediaUrls],
     ...(attachmentsByUrl.size > 0
-      ? { attachments: mediaUrls.map((url) => attachmentsByUrl.get(url) ?? {}) }
+      ? { attachments: [...mediaUrls].map((url) => attachmentsByUrl.get(url) ?? {}) }
       : {}),
   };
-}
-
-function isNonOutboundToolResultMedia(media: Record<string, unknown>): boolean {
-  return media.outbound === false;
-}
-
-function hasImageContentBlock(content: unknown[]): boolean {
-  for (const item of content) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const entry = item as Record<string, unknown>;
-    if (entry.type === "image") {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function extractToolResultMediaArtifact(
@@ -460,7 +360,7 @@ export function extractToolResultMediaArtifact(
   const record = result as Record<string, unknown>;
   const detailsMedia = readToolResultDetailsMedia(record);
   if (detailsMedia) {
-    if (isNonOutboundToolResultMedia(detailsMedia)) {
+    if (detailsMedia.outbound === false) {
       return undefined;
     }
     const { hadCandidate, ...structuredMedia } = collectStructuredMedia(detailsMedia, {
@@ -478,13 +378,10 @@ export function extractToolResultMediaArtifact(
   }
 
   const content = Array.isArray(record.content) ? record.content : null;
-  if (!content) {
-    return undefined;
-  }
 
   // Fall back to legacy details.path when image content exists but no
   // structured media details.
-  if (hasImageContentBlock(content)) {
+  if (content?.some((item) => item && typeof item === "object" && item.type === "image")) {
     const details = record.details as Record<string, unknown> | undefined;
     const p = normalizeOptionalString(details?.path) ?? "";
     // The structured path above filters every candidate through acceptMediaUrl. This
