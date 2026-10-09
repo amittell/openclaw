@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { drainFileLockStateForTest } from "../../../infra/file-lock.js";
 import { resolveSecretSentinel } from "../../../secrets/sentinel.js";
+import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import {
   OAUTH_REFRESH_CALL_TIMEOUT_MS,
@@ -296,7 +297,10 @@ describe("embedded run auth hard deadline", () => {
           profileCandidates: [profileId],
           agentDir,
         });
-        const init = track(controller.initializeAuthProfile());
+        // The scope owns the OAuth settlement the caller stops observing, so the
+        // test can join it instead of polling the row.
+        const work = new AsyncWorkScope();
+        const init = track(work.track(() => controller.initializeAuthProfile()));
         try {
           await providerStarted.promise;
           expect(rowIsPendingFence()).toBe(true);
@@ -313,9 +317,8 @@ describe("embedded run auth hard deadline", () => {
           providerResult.resolve(rotated);
         }
 
-        await vi.waitFor(() =>
-          expect(readRow()).toMatchObject({ access: rotated.access, refresh: rotated.refresh }),
-        );
+        await work.drain();
+        expect(readRow()).toMatchObject({ access: rotated.access, refresh: rotated.refresh });
         expect(setRuntimeApiKey).not.toHaveBeenCalled();
         expect(harness.apiKeyInfo).toBeNull();
 
