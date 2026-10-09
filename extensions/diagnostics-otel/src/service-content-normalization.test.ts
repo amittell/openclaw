@@ -234,7 +234,7 @@ describe("OTEL content redaction at the export cut", () => {
       name: "a tool call output",
       keptChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
       windowChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS + REDACTION_LOOKAHEAD_CHARS,
-      cutOnRedactorChunk: true,
+      cutOnConfiguredPatternChunk: true,
       exportText: (text: string) =>
         String(captureToolCall({ toolOutput: text })["gen_ai.tool.call.result"]),
     },
@@ -242,16 +242,19 @@ describe("OTEL content redaction at the export cut", () => {
       name: "a tool call input of joined strings",
       keptChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
       windowChars: MAX_OTEL_CONTENT_ATTRIBUTE_CHARS + REDACTION_LOOKAHEAD_CHARS,
-      cutOnRedactorChunk: true,
+      cutOnConfiguredPatternChunk: true,
       exportText: (text: string) =>
         String(captureToolCall({ toolInput: [text] })["gen_ai.tool.call.arguments"]),
     },
   ];
-  // The core redactor matches text over 32,768 characters in 16,384-character chunks, and these
-  // cuts fall on a chunk boundary, so a token crossing them goes unmatched in the whole text too.
-  const tokenCutPaths = exportPaths.filter((path) => !("cutOnRedactorChunk" in path));
+  // Configured patterns run in 16,384-character chunks on text over 32,768 characters (built-in
+  // rules scan the whole text), and these cuts fall on a chunk boundary, so a configured match
+  // crossing them goes unmatched in the whole text too.
+  const configuredPatternCutPaths = exportPaths.filter(
+    (path) => !("cutOnConfiguredPatternChunk" in path),
+  );
 
-  it.each(tokenCutPaths)("masks a token that crosses the cut in $name", (path) => {
+  it.each(exportPaths)("masks a token that crosses the cut in $name", (path) => {
     // The token starts 10 characters before the cut; unmasked, the export would end "glpat-A1b2".
     const text = `${"x".repeat(path.keptChars - 11)} ${SECRET_TOKEN} ${"y".repeat(400_000)}`;
 
@@ -354,7 +357,7 @@ describe("OTEL content redaction at the export cut", () => {
     expect(exported).not.toContain(SECRET_BODY);
   });
 
-  it.each(tokenCutPaths)(
+  it.each(configuredPatternCutPaths)(
     "masks a configured pattern's match that runs past the lookahead in $name",
     (path) => {
       // Configured patterns can need any amount of text: this match starts 200 characters before
@@ -449,8 +452,7 @@ describe("OTEL content redaction at the export cut", () => {
   // Registered secrets stay registered until the runner resets the registry after this file, and
   // they widen every later window, so these cases run last.
   it.each(exportPaths)("masks a URL password whose @ lies past the lookahead in $name", (path) => {
-    // The URL rules need the @ after the password, which lies past the window here. On the
-    // tool call paths the whole string misses it too: it crosses a redactor chunk.
+    // The URL rules need the @ after the password, which lies past the window here.
     const urls = [
       (password: string) => `https://deploy:${password}@internal.example.test/path`,
       (password: string) => `postgres://deploy:${password}@db.example.test:5432/app`,
