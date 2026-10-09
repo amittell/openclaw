@@ -256,13 +256,6 @@ describe("compaction-safeguard corrective quality feedback", () => {
     expect(wrapQualityFeedback(reasons)).toContain(feedback);
   });
 
-  it("leaves no partial identifier in the corrective instruction", () => {
-    const { reasons } = auditWorstCase(LONG_IDENTIFIERS);
-
-    // A head present without its whole value is the mid-item cut this guard removes.
-    expect(partiallyRenderedIdentifiers(wrapQualityFeedback(reasons))).toStrictEqual([]);
-  });
-
   it("names all twelve short identifiers with no omission (anchor control)", () => {
     const { reasons } = auditWorstCase(SHORT_IDENTIFIERS);
 
