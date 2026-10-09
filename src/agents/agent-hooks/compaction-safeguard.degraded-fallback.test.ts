@@ -6,7 +6,7 @@
  * Lives beside compaction-safeguard.test.ts, which is grandfathered over the line cap.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { summarizeInStages } from "../compaction.js";
+import type { summarizeCompactionHistory } from "../compaction.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import { timestampedTextAssistant } from "../test-helpers/sparse-transcript.test-support.js";
 import { consumeCompactionSafeguardCancellation } from "./compaction-safeguard-runtime.js";
@@ -45,14 +45,14 @@ vi.mock("../../logging/subsystem.js", async () => {
 });
 
 const { MAX_COMPACTION_SUMMARY_CHARS, CONTEXT_TRUNCATED_MARKER } = testing;
-const mockSummarizeInStages = vi.fn<typeof summarizeInStages>();
+const mockSummarizeCompactionHistory = vi.fn<typeof summarizeCompactionHistory>();
 
 beforeEach(() => {
-  mockSummarizeInStages.mockReset();
-  testing.setSummarizeInStagesForTest(mockSummarizeInStages);
+  mockSummarizeCompactionHistory.mockReset();
+  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
   compactionLogger.warn.mockClear();
 });
-afterEach(() => testing.setSummarizeInStagesForTest());
+afterEach(() => testing.setSummarizeCompactionHistoryForTest());
 
 // qualityGuardMaxRetries: 0 makes the first failed audit final, so the terminal path runs.
 const terminalAttemptSession = (recentTurnsPreserve = 0) =>
@@ -68,7 +68,7 @@ describe("compaction-safeguard degraded fallback", () => {
       const latestAsk = "preserve the pending deployment status";
       const identifier = `https://example.com/${"a".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
       const fittingIdentifier = "/var/log/deploy-status.log";
-      mockSummarizeInStages.mockResolvedValue(
+      mockSummarizeCompactionHistory.mockResolvedValue(
         structuredSummary({ asks: latestAsk, identifiers: identifier }),
       );
 
@@ -102,7 +102,7 @@ describe("compaction-safeguard degraded fallback", () => {
       expect(compactionLogger.warn).toHaveBeenCalledWith(
         expect.stringMatching(/loss=.*identifier-retention/),
       );
-      expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+      expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
       expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
     },
   );
@@ -111,7 +111,7 @@ describe("compaction-safeguard degraded fallback", () => {
     const latestAsk = "confirm the staging rollback finished";
     const identifier = "/tmp/degraded-retention.log";
     // A summary the audit rejects (no required headings), with facts small enough to fit.
-    mockSummarizeInStages.mockResolvedValue("Core summary without headings");
+    mockSummarizeCompactionHistory.mockResolvedValue("Core summary without headings");
 
     const sessionManager = terminalAttemptSession();
     const { result } = await runCompactionScenario(
@@ -145,7 +145,7 @@ describe("compaction-safeguard degraded fallback", () => {
       userMessage(`turn ${turn} ${"u".repeat(700)}`, 2 * turn + 1),
       castAgentMessage(timestampedTextAssistant(`reply ${turn} ${"r".repeat(700)}`, 2 * turn + 2)),
     ]).flat();
-    mockSummarizeInStages.mockImplementation(async (params) =>
+    mockSummarizeCompactionHistory.mockImplementation(async (params) =>
       params.summaryPrompt?.kind === "custom"
         ? "Core summary without headings"
         : `${activeTurn} ${"z".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`,
@@ -170,6 +170,6 @@ describe("compaction-safeguard degraded fallback", () => {
     expect(summary).toContain(CONTEXT_TRUNCATED_MARKER.trim());
     expect(summary).toContain("reply 13 ");
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
-    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
   });
 });
