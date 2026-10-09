@@ -1,9 +1,12 @@
+import type { ConfigSourceObservation } from "../config/source.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 
 export type ConfigReloadObservation = Readonly<{
   generation: number;
   sourceConfig: OpenClawConfig | null;
 }>;
+
+type ObservedSnapshot = Pick<ConfigFileSnapshot, "exists" | "valid" | "sourceConfig">;
 
 // The reloader owns config-source reads. Publish one immutable record so health
 // cannot combine a generation from one transaction with source from another.
@@ -24,36 +27,45 @@ export function getConfigReloadObservation(): ConfigReloadObservation {
 }
 
 /**
- * Holds one reloader transaction's source read until the transaction finishes.
- * Publishing then, and only while its epoch is current, lets health compare the
- * exact accepted or rejected candidate; a newer write revokes it before it escapes.
+ * Couples reloader transactions to the published observation. Each transaction
+ * holds its source read until it finishes, then publishes it only while its
+ * source revision is current, so a newer write or file event revokes it first.
  * A same-source watcher echo that the transaction accepted keeps its read current.
  */
-export function trackReloadObservation(
-  readCurrent: () => Readonly<{ epoch: number; acceptedFromEpoch?: number }>,
-) {
-  let candidate: { epoch: number; sourceConfig: OpenClawConfig | null } | null = null;
+export function trackReloadObservations(current: () => ConfigSourceObservation) {
+  const acceptedEchoOrigins = new WeakMap<ConfigSourceObservation, number>();
   return {
-    observe(epoch: number, sourceConfig: OpenClawConfig | null) {
-      candidate = { epoch, sourceConfig };
+    acceptEcho(observed: ConfigSourceObservation, fromRevision: number) {
+      acceptedEchoOrigins.set(observed, fromRevision);
     },
-    observeSnapshot(
-      epoch: number,
-      snapshot: Pick<ConfigFileSnapshot, "exists" | "valid" | "sourceConfig">,
-    ) {
-      candidate = {
-        epoch,
-        sourceConfig: snapshot.exists && snapshot.valid ? snapshot.sourceConfig : null,
+    track() {
+      let candidate: { revision: number; sourceConfig: OpenClawConfig | null } | null = null;
+      const observeSnapshot = (revision: number, snapshot: ObservedSnapshot) => {
+        candidate = {
+          revision,
+          sourceConfig: snapshot.exists && snapshot.valid ? snapshot.sourceConfig : null,
+        };
       };
-    },
-    publishIfCurrent() {
-      const current = readCurrent();
-      if (
-        candidate &&
-        (candidate.epoch === current.epoch || candidate.epoch === current.acceptedFromEpoch)
-      ) {
-        publishReloadObservation(candidate.sourceConfig);
-      }
+      return {
+        observeSnapshot,
+        /** A failed read publishes as unavailable rather than keeping the prior source. */
+        async read<T extends ObservedSnapshot>(revision: number, read: () => Promise<T>) {
+          candidate = { revision, sourceConfig: null };
+          const snapshot = await read();
+          observeSnapshot(revision, snapshot);
+          return snapshot;
+        },
+        publishIfCurrent() {
+          const observation = current();
+          if (
+            candidate &&
+            (candidate.revision === observation.revision ||
+              candidate.revision === acceptedEchoOrigins.get(observation))
+          ) {
+            publishReloadObservation(candidate.sourceConfig);
+          }
+        },
+      };
     },
   };
 }

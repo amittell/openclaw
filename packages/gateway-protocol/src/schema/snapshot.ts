@@ -17,6 +17,8 @@ import { SessionPersonSchema } from "./session-participant.js";
  */
 /** One gateway-visible presence record for a node/client/runtime. */
 export const PresenceEntrySchema = closedObject({
+  /** Gateway-assigned id for this connection; changes after reconnect. */
+  connectionId: Type.Optional(NonEmptyString),
   host: Type.Optional(NonEmptyString),
   clientId: Type.Optional(NonEmptyString),
   ip: Type.Optional(NonEmptyString),
@@ -35,6 +37,8 @@ export const PresenceEntrySchema = closedObject({
   /** Server timestamps for the person's continuous online interval and last accepted activity. */
   onlineSince: Type.Optional(Type.Integer({ minimum: 0 })),
   lastActivityAt: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** Latest accepted OpenClaw interaction on this connection, independent of person timing. */
+  connectionLastActivityAt: Type.Optional(Type.Integer({ minimum: 0 })),
   deviceId: Type.Optional(NonEmptyString),
   roles: Type.Optional(Type.Array(NonEmptyString)),
   scopes: Type.Optional(Type.Array(NonEmptyString)),
@@ -180,6 +184,14 @@ const HealthSnapshotSchema = closedObject({
       observedDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       driftPaths: Type.Optional(Type.Array(Type.String())),
       message: Type.Optional(Type.String()),
+    }),
+  ),
+  // The running process reports the Node binary it will use for child workers.
+  // A deleted Homebrew Cellar path stays reachable at the Gateway port.
+  childRuntime: Type.Optional(
+    closedObject({
+      execPath: Type.String(),
+      available: Type.Boolean(),
     }),
   ),
   // Channel plugins own their nested account/probe summaries, so this is the

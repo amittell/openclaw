@@ -14,6 +14,7 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
 import { startGatewayTailscaleExposure } from "../../server-tailscale.js";
 import { prepareTailscalePublishedOrigin } from "../../tailscale-published-origin.js";
+import type { GatewayWsClient } from "../ws-types.js";
 
 // Hello update-scope tests cover authenticated role/scope and recovery ownership projection.
 
@@ -133,12 +134,20 @@ function preChangeV4SnapshotSchema() {
   return closedObject({ ...SnapshotSchema.properties, health: closedObject(health) });
 }
 
-function makeContext(role: "operator" | "node", scopes: string[], caps?: string[]) {
+function makeContext(
+  role: "operator" | "node",
+  scopes: string[],
+  options: {
+    caps?: string[];
+    client?: Pick<GatewayWsClient, "internal" | "preparedSessionProfile">;
+  } = {},
+) {
+  const { caps, client } = options;
   return {
     handler: {
       socket: new EventEmitter(),
       isClosed: vi.fn(() => false),
-      getClient: () => null,
+      getClient: () => client ?? null,
       connId: `conn-${role}`,
       bootId: "gateway-boot-a",
       gatewayMethods: [],
@@ -236,7 +245,7 @@ describe("sendGatewayHello update detail scope", () => {
           "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
       },
     });
-    const context = makeContext("operator", ["operator.admin"], RUNTIME_CONFIG_CAPS);
+    const context = makeContext("operator", ["operator.admin"], { caps: RUNTIME_CONFIG_CAPS });
 
     await sendGatewayHello(
       context as never,
@@ -271,7 +280,7 @@ describe("sendGatewayHello update detail scope", () => {
       message:
         "Live gateway runtime config differs from the latest completed reload observation; restart is required.",
     });
-    const context = makeContext("operator", ["operator.read"], RUNTIME_CONFIG_CAPS);
+    const context = makeContext("operator", ["operator.read"], { caps: RUNTIME_CONFIG_CAPS });
 
     await sendGatewayHello(context as never, makeState("operator", ["operator.read"]) as never, {});
 
@@ -317,7 +326,7 @@ describe("sendGatewayHello update detail scope", () => {
       });
     });
     getHealthCacheMock.mockReturnValue(oldHealth);
-    const context = makeContext("operator", ["operator.read"], RUNTIME_CONFIG_CAPS);
+    const context = makeContext("operator", ["operator.read"], { caps: RUNTIME_CONFIG_CAPS });
     const state = {
       ...makeState("operator", ["operator.read"]),
       device: { id: "device-a" },
@@ -378,7 +387,7 @@ describe("sendGatewayHello update detail scope", () => {
       runtimeConfig,
     };
     const hello = async (caps?: string[]) => {
-      const context = makeContext("operator", ["operator.read"], caps);
+      const context = makeContext("operator", ["operator.read"], { caps });
       await sendGatewayHello(
         context as never,
         makeState("operator", ["operator.read"]) as never,
@@ -412,6 +421,51 @@ describe("sendGatewayHello update detail scope", () => {
       expect(Value.Check(preChangeV4, snapshot)).toBe(false);
     }
   });
+
+  it.each(["write", "suggest", "view", "none", undefined] as const)(
+    "projects the current operator session cap %s only when configured",
+    async (sessionCap) => {
+      const context = makeContext("operator", ["operator.write"], {
+        client: {
+          internal: { operatorRoleActor: { kind: "operator", profileId: "profile-riley" } },
+          preparedSessionProfile: {
+            profileId: "profile-riley",
+            aliases: new Set(["profile-riley"]),
+            role: "collaborator",
+          },
+        },
+      });
+      if (sessionCap !== undefined) {
+        context.configSnapshot = {
+          gateway: {
+            roles: {
+              default: "collaborator",
+              definitions: {
+                collaborator: {
+                  sessions: { others: sessionCap },
+                  agents: ["main"],
+                  scopes: ["operator.write"],
+                },
+              },
+            },
+          },
+        } satisfies OpenClawConfig;
+      }
+
+      await sendGatewayHello(
+        context as never,
+        makeState("operator", ["operator.write"]) as never,
+        {},
+      );
+
+      const auth = helloPayload(context)?.auth;
+      if (sessionCap === undefined) {
+        expect(auth).not.toHaveProperty("sessionCap");
+      } else {
+        expect(auth?.sessionCap).toBe(sessionCap);
+      }
+    },
+  );
 
   it.each([
     { mode: "trusted-proxy", tailscale: "off", expected: true },
@@ -697,17 +751,50 @@ describe("sendGatewayHello update detail scope", () => {
     expect(helloPayload(context)?.features.capabilities).toContain("session-scoped-chat-metadata");
     expect(helloPayload(context)?.features.capabilities).toContain("session-scoped-model-catalog");
     expect(helloPayload(context)?.features.capabilities).toContain("profile-binding-v1");
+    expect(helloPayload(context)?.features.capabilities).toContain(
+      "sender-restricted-hidden-helpers-v1",
+    );
   });
 
-  it("reports Gateway build identity separately from configured UI source", async () => {
-    const context = makeContext("operator", ["operator.read"]);
-    context.configSnapshot = { gateway: { controlUi: { root: "/custom/ui" } } };
+  it.each([
+    { label: "default bundled UI", controlUi: undefined, source: "bundled", browserFocus: true },
+    {
+      label: "enabled bundled UI",
+      controlUi: { enabled: true },
+      source: "bundled",
+      browserFocus: true,
+    },
+    {
+      label: "disabled bundled UI",
+      controlUi: { enabled: false },
+      source: "bundled",
+      browserFocus: false,
+    },
+    {
+      label: "configured UI",
+      controlUi: { root: "/custom/ui" },
+      source: "configured",
+      browserFocus: false,
+    },
+  ])(
+    "reports Gateway build identity and browser focus support for $label",
+    async ({ controlUi, source, browserFocus }) => {
+      const context = makeContext("operator", ["operator.read"]);
+      context.configSnapshot = { gateway: { controlUi } };
 
-    await sendGatewayHello(context as never, makeState("operator", ["operator.read"]) as never, {});
+      await sendGatewayHello(
+        context as never,
+        makeState("operator", ["operator.read"]) as never,
+        {},
+      );
 
-    expect(helloPayload(context)?.server.buildId).toBe("build-a");
-    expect(helloPayload(context)?.server.controlUiBuildSource).toBe("configured");
-  });
+      expect(helloPayload(context)?.server.buildId).toBe("build-a");
+      expect(helloPayload(context)?.server.controlUiBuildSource).toBe(source);
+      expect(
+        helloPayload(context)?.features.capabilities?.includes("control-ui-browser-focus"),
+      ).toBe(browserFocus);
+    },
+  );
 
   it.each([
     [

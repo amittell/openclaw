@@ -12,6 +12,7 @@ import {
   createReloaderHarness,
   flushReload,
   makeSnapshot,
+  makeWrite,
   prepareConfigReloadTest,
   waitForReloadState,
 } from "./config-reload.test-support.js";
@@ -220,17 +221,11 @@ describe("config reload observation", () => {
     );
     await harness.reloader.ready;
 
-    harness.emitWrite({
-      configPath: "/tmp/openclaw.json",
-      sourceConfig: nextConfig,
-      runtimeConfig: nextConfig,
-      persistedHash: "hot-model-restart",
-      revision: 1,
-      fingerprint: "runtime-hot-model-restart",
-      sourceFingerprint: "source-hot-model-restart",
-      writtenAtMs: Date.now(),
-      afterWrite: { mode: "restart", reason: "model/provider runtime changed" },
-    });
+    harness.emitWrite(
+      makeWrite(nextConfig, "hot-model-restart", {
+        afterWrite: { mode: "restart", reason: "model/provider runtime changed" },
+      }),
+    );
     await flushReload(harness.reloader);
 
     expect(harness.onRestart).toHaveBeenCalledOnce();
@@ -263,16 +258,7 @@ describe("config reload observation", () => {
     await harness.reloader.ready;
     const observedGeneration = getConfigReloadObservation().generation;
 
-    harness.emitWrite({
-      configPath: "/tmp/openclaw.json",
-      sourceConfig: nextConfig,
-      runtimeConfig: nextConfig,
-      persistedHash: "slow-off",
-      revision: 1,
-      fingerprint: "runtime-slow-off",
-      sourceFingerprint: "source-slow-off",
-      writtenAtMs: Date.now(),
-    });
+    harness.emitWrite(makeWrite(nextConfig, "slow-off"));
     await vi.advanceTimersByTimeAsync(0);
     await pluginReadStarted.promise;
     // The write's own filesystem echo lands while its transaction is still running.
@@ -280,8 +266,8 @@ describe("config reload observation", () => {
     pluginReadGate.resolve();
     await flushReload(harness.reloader);
 
-    // One reread for the write, one for the echo its checkpoint accepted; no follow-up reload.
-    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    // The write carries its snapshot; the only read is the echo its checkpoint accepted.
+    expect(readSnapshot).toHaveBeenCalledOnce();
     expect(getConfigReloadObservation()).toEqual({
       generation: observedGeneration + 1,
       sourceConfig: nextConfig,
@@ -303,20 +289,19 @@ describe("config reload observation", () => {
   });
 
   it.each([
-    { outcome: "a read failure", observed: null },
     { outcome: "a missing file", observed: null },
     { outcome: "an invalid file", observed: null },
     { outcome: "replaced bytes", observed: "openai/gpt-5.6-luna" },
-  ])("publishes a pending write's actual reread result after $outcome", async (fixture) => {
+  ])("publishes a pending write's canonical reread after $outcome", async (fixture) => {
     const model = (primary: string): OpenClawConfig => ({
       gateway: { reload: { mode: "off" } },
       agents: { defaults: { model: primary } },
     });
     const nextConfig = model("openai/gpt-5.6-terra");
-    const reread = async (): Promise<ConfigFileSnapshot> => {
+    // The writer's final reread rides on the notification; the reloader refuses
+    // a missing, invalid or replaced one, but health must still see what it found.
+    const reread = (): ConfigFileSnapshot => {
       switch (fixture.outcome) {
-        case "a read failure":
-          throw new Error("config read failed");
         case "a missing file":
           return makeSnapshot({ exists: false, raw: null, hash: undefined });
         case "an invalid file":
@@ -329,26 +314,17 @@ describe("config reload observation", () => {
           return makeSnapshot({ config: model("openai/gpt-5.6-luna"), hash: "replaced" });
       }
     };
-    const readSnapshot = vi.fn(reread);
+    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "queued" }));
     const harness = createReloaderHarness(readSnapshot, {
       initialConfig: model("openai/gpt-5.6-sol"),
     });
     await harness.reloader.ready;
     const observedGeneration = getConfigReloadObservation().generation;
 
-    harness.emitWrite({
-      configPath: "/tmp/openclaw.json",
-      sourceConfig: nextConfig,
-      runtimeConfig: nextConfig,
-      persistedHash: "queued",
-      revision: 1,
-      fingerprint: "runtime-queued",
-      sourceFingerprint: "source-queued",
-      writtenAtMs: Date.now(),
-    });
+    harness.emitWrite(makeWrite(nextConfig, "queued", { snapshot: reread() }));
     await flushReload(harness.reloader);
 
-    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(readSnapshot).not.toHaveBeenCalled();
     expect(getConfigReloadObservation()).toEqual({
       generation: observedGeneration + 1,
       sourceConfig: fixture.observed === null ? null : model(fixture.observed),

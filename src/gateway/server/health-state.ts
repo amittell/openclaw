@@ -1,4 +1,3 @@
-// Gateway health state builds snapshots, caches health probes, and broadcasts health/presence version changes.
 import type { Snapshot } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import { buildRuntimeConfigHealth } from "../../commands/health-runtime-config.js";
@@ -73,6 +72,7 @@ export function buildGatewaySnapshot(opts: {
   includeSensitive?: boolean;
   includeUpdateDetails?: boolean;
   revisionProjector: GatewayConfigRevisionProjector;
+  sessionRowProjection?: SessionRowProjection;
 }): Snapshot {
   const cfg = getRuntimeConfig();
   const selection = resolveGatewayAgentSelectionState(cfg);
@@ -81,21 +81,22 @@ export function buildGatewaySnapshot(opts: {
   const scope = cfg.session?.scope ?? "per-sender";
   const mainSessionKey =
     scope === "global" ? "global" : resolveAgentMainSessionKey({ cfg, agentId: defaultAgentId });
-  const presence = createPresenceRecipientProjection({ cfg, presence: listSystemPresence() })(
-    opts.client,
-  );
+  const presence = createPresenceRecipientProjection({
+    cfg,
+    presence: listSystemPresence({ includeConnectionId: opts.client?.connId }),
+    projection: opts.sessionRowProjection,
+  })(opts.client);
   const uptimeMs = Math.round(process.uptime() * 1000);
-  const includeUpdateDetails = opts?.includeUpdateDetails === true;
+  const includeUpdateDetails = opts.includeUpdateDetails === true;
   const updateAvailable =
     projectUpdateAvailable(getUpdateAvailable(), includeUpdateDetails) ?? undefined;
   const updateSchedule = includeUpdateDetails ? (getUpdateSchedule() ?? undefined) : undefined;
   const appliedConfigHash = getRuntimeConfigAppliedHash();
-  // Health is async; the caller replaces this with the collected snapshot.
-  const emptyHealth: Snapshot["health"] = {};
   const snapshot: Snapshot = {
     suspension: { phase: getGatewaySuspendAdmissionPhase() },
     presence,
-    health: emptyHealth,
+    // Health is async; the caller replaces this with the collected snapshot.
+    health: {},
     stateVersion: { presence: presenceVersion, health: healthVersion },
     uptimeMs,
     appliedConfigHash: appliedConfigHash
@@ -113,7 +114,7 @@ export function buildGatewaySnapshot(opts: {
     updateAvailable,
     updateSchedule,
   };
-  if (opts?.includeSensitive === true) {
+  if (opts.includeSensitive === true) {
     const auth = resolveGatewayAuth({ authConfig: cfg.gateway?.auth, env: process.env });
     // Surface resolved paths only to admin callers that already have broader gateway access.
     snapshot.configPath = createConfigIO().configPath;
