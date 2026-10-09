@@ -1,30 +1,8 @@
-/** The details a generated compaction boundary persists, and the run-owned request it carries. */
+/** The details a generated compaction boundary persists. */
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import type { AgentMessage } from "../../types.js";
-import { getCompactionContent } from "./utils.js";
 
-const MAX_LATEST_USER_REQUEST_CHARS = 800;
-const LATEST_USER_REQUEST_TRUNCATED_MARKER = "\n[... latest user request truncated ...]\n";
-
-export function extractLatestUserRequest(messages: AgentMessage[]): string | undefined {
-  let source = "";
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === "user") {
-      source = getCompactionContent(message.content).text.trim();
-      if (source) {
-        break;
-      }
-    }
-  }
-  if (!source || source.length <= MAX_LATEST_USER_REQUEST_CHARS) {
-    return source || undefined;
-  }
-  const contentBudget = MAX_LATEST_USER_REQUEST_CHARS - LATEST_USER_REQUEST_TRUNCATED_MARKER.length;
-  const headBudget = Math.floor(contentBudget / 2);
-  return `${truncateUtf16Safe(source, headBudget)}${LATEST_USER_REQUEST_TRUNCATED_MARKER}${sliceUtf16Safe(source, -(contentBudget - headBudget))}`;
-}
+/** Longest run-owned request a boundary carries; longer persisted values are dropped on read. */
+export const MAX_LATEST_USER_REQUEST_CHARS = 800;
 
 /** File-operation details stored on generated compaction entries. */
 export interface CompactionDetails {
