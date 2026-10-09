@@ -34,6 +34,28 @@ type CompactionSafeguardRuntimeValue = {
 
 const registry = createSessionManagerRuntimeRegistry<CompactionSafeguardRuntimeValue>();
 
+const DEFAULT_RECENT_TURNS_PRESERVE = 3;
+const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
+const MAX_RECENT_TURNS_PRESERVE = 12;
+const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
+
+function clampNonNegativeInt(value: unknown, fallback: number, max: number): number {
+  const normalized = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(0, Math.floor(normalized)));
+}
+
+export function resolveRecentTurnsPreserve(value: unknown): number {
+  return clampNonNegativeInt(value, DEFAULT_RECENT_TURNS_PRESERVE, MAX_RECENT_TURNS_PRESERVE);
+}
+
+export function resolveQualityGuardMaxRetries(value: unknown): number {
+  return clampNonNegativeInt(
+    value,
+    DEFAULT_QUALITY_GUARD_MAX_RETRIES,
+    MAX_QUALITY_GUARD_MAX_RETRIES,
+  );
+}
+
 export const setCompactionSafeguardRuntime = registry.set;
 
 export const getCompactionSafeguardRuntime = registry.get;

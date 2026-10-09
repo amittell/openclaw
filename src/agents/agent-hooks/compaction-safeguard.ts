@@ -64,6 +64,8 @@ import {
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
+  resolveQualityGuardMaxRetries,
+  resolveRecentTurnsPreserve,
   setCompactionSafeguardCancellation,
 } from "./compaction-safeguard-runtime.js";
 
@@ -79,10 +81,6 @@ const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to f
 const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2);
 const SPLIT_TURN_TRUNCATED_MARKER = "[Earlier split-turn messages truncated]\n";
 const PRESERVED_TURNS_TRUNCATED_MARKER = "[Earlier preserved messages truncated]\n";
-const DEFAULT_RECENT_TURNS_PRESERVE = 3;
-const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
-const MAX_RECENT_TURNS_PRESERVE = 12;
-const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const MAX_RECENT_TURN_TEXT_CHARS = 600;
 const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
   "Previous compaction summary to re-distill with the current conversation. " +
@@ -321,23 +319,6 @@ function buildCompactionSummaryHeaders(params: {
     }),
     ...params.headers,
   };
-}
-
-function clampNonNegativeInt(value: unknown, fallback: number, max: number): number {
-  const normalized = typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  return Math.min(max, Math.max(0, Math.floor(normalized)));
-}
-
-function resolveRecentTurnsPreserve(value: unknown): number {
-  return clampNonNegativeInt(value, DEFAULT_RECENT_TURNS_PRESERVE, MAX_RECENT_TURNS_PRESERVE);
-}
-
-function resolveQualityGuardMaxRetries(value: unknown): number {
-  return clampNonNegativeInt(
-    value,
-    DEFAULT_QUALITY_GUARD_MAX_RETRIES,
-    MAX_QUALITY_GUARD_MAX_RETRIES,
-  );
 }
 
 function formatToolFailureMeta(details: unknown): string | undefined {
