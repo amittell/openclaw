@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { onTestFinished, vi, type Mock } from "vitest";
+import type { runPostCorePluginConvergence } from "../../commands/doctor/shared/post-core-plugin-convergence.js";
 import type { readConfigFileSnapshot as ReadConfigFileSnapshot } from "../../config/config.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import type {
@@ -34,7 +35,6 @@ export function createChangedPostCoreUpdateOptions(
       npm: { changed: true, outcomes: [] },
       integrityDrifts: [],
     },
-    freshDoctorRequired: true,
     yes: true,
     json: true,
     timeoutMs: 30_000,
@@ -52,6 +52,23 @@ export function createConfigValidationFailure(
     exitCode: 1,
     stdout: JSON.stringify({ valid: false, issues }),
   });
+}
+
+export function createUpdateCliBaseSnapshot(config: OpenClawConfig): ConfigFileSnapshot {
+  return {
+    path: "/tmp/openclaw-config.json",
+    exists: true,
+    raw: "{}",
+    parsed: {},
+    resolved: config,
+    sourceConfig: config,
+    valid: true,
+    config,
+    runtimeConfig: config,
+    issues: [],
+    warnings: [],
+    legacyIssues: [],
+  };
 }
 
 export const pluginSyncResult = (
@@ -87,6 +104,8 @@ export const postCoreConvergenceResult = (
     errored: boolean;
   }> = {},
 ) => ({
+  configChanges: [],
+  installedPluginIdRecovery: new Map(),
   changes: [],
   warnings: [],
   errored: false,
@@ -94,6 +113,18 @@ export const postCoreConvergenceResult = (
   installRecords: {},
   ...overrides,
 });
+
+/** Return each call's config while overriding only the scenario's convergence outcome. */
+export function mockPostCoreConvergenceOnce(
+  spy: Pick<Mock<typeof runPostCorePluginConvergence>, "mockImplementationOnce">,
+  overrides: Partial<Awaited<ReturnType<typeof runPostCorePluginConvergence>>> = {},
+): void {
+  spy.mockImplementationOnce(async ({ cfg }) => ({
+    ...postCoreConvergenceResult(),
+    config: cfg,
+    ...overrides,
+  }));
+}
 
 export const stableConfig = (overrides: Omit<OpenClawConfig, "update"> = {}): OpenClawConfig => ({
   update: { channel: "stable" },

@@ -18,12 +18,8 @@ import {
 } from "./mcp-config-mutation.js";
 import { withMcpLifecycleLease } from "./mcp-lifecycle-lease.js";
 import { operatorMcpOAuthIdentity, requesterMcpOAuthIdentity } from "./mcp-oauth-identity.js";
-import {
-  readMcpOAuthPendingAuthorization,
-  readMcpOAuthStore,
-  updateMcpOAuthStore,
-  writeMcpOAuthPendingAuthorization,
-} from "./mcp-oauth-store.js";
+import { readMcpOAuthPendingAuthorization, readMcpOAuthStore } from "./mcp-oauth-store.js";
+import { seedMcpOAuthStoreForTest } from "./mcp-oauth.test-support.js";
 
 const SERVER_URL = "https://mcp.example.com/rpc";
 const PER_REQUESTER_SERVER = {
@@ -40,11 +36,13 @@ function seedOAuthState(name: string) {
     messageChannel: "telegram",
   });
   for (const identity of [operator, requester]) {
-    updateMcpOAuthStore(identity.storeKey, (store) => ({
-      ...store,
-      tokens: { access_token: identity.principal, token_type: "Bearer" },
-    }));
-    writeMcpOAuthPendingAuthorization(identity.storeKey, `${identity.principal}-state`);
+    seedMcpOAuthStoreForTest(
+      identity.storeKey,
+      {
+        tokens: { access_token: identity.principal, token_type: "Bearer" },
+      },
+      `${identity.principal}-state`,
+    );
   }
   return { operator, requester };
 }
@@ -233,6 +231,8 @@ describe("configured MCP read-only results", () => {
         "mcpServers",
         "ok",
         "path",
+        "runtimeConfig",
+        "sourceConfigBeforeMigrations",
       ]);
       const missing = await unsetConfiguredMcpServer({ name: "missing" });
       expect(missing).toMatchObject({ ok: true, removed: false });

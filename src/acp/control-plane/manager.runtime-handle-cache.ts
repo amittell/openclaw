@@ -1,4 +1,3 @@
-/** Process-local ACP runtime handle cache with lifecycle cleanup and reuse checks. */
 import {
   resolveRuntimeHandleIdentifiersFromIdentity,
   resolveSessionIdentityFromMeta,
@@ -44,7 +43,6 @@ export class ManagerRuntimeHandleCache {
     this.runtimeCache.delete(acpSessionActorKey(target));
   }
 
-  /** Returns cache counters used by ACP manager observability snapshots. */
   getObservabilitySnapshot() {
     return {
       activeSessions: this.runtimeCache.size,
@@ -53,14 +51,18 @@ export class ManagerRuntimeHandleCache {
     };
   }
 
-  /** Closes and removes one cached runtime handle when present. */
   async close(
-    params: AcpSessionTarget & { reason: string; expectedHandle?: AcpRuntimeHandle },
+    params: AcpSessionTarget & {
+      assertActive?: () => void;
+      reason: string;
+      expectedHandle?: AcpRuntimeHandle;
+    },
   ): Promise<void> {
     const cached = this.get(params);
     if (!cached || (params.expectedHandle && cached.handle !== params.expectedHandle)) {
       return;
     }
+    params.assertActive?.();
     try {
       await cached.runtime.close({
         handle: cached.handle,
@@ -123,12 +125,10 @@ export class ManagerRuntimeHandleCache {
     return cached;
   }
 
-  /** Checks whether a cached runtime handle is still healthy enough to reuse. */
   async isReusable(params: {
     sessionKey: string;
     runtime: AcpRuntime;
     handle: AcpRuntimeHandle;
-    isCurrentActor?: () => boolean;
   }): Promise<boolean> {
     if (!params.runtime.getStatus) {
       return true;
@@ -139,7 +139,7 @@ export class ManagerRuntimeHandleCache {
       });
       if (isRuntimeStatusUnavailable(status)) {
         logVerbose(
-          `acp-manager: evicting cached runtime handle for ${params.sessionKey} after unhealthy status probe: ${status.summary ?? "status unavailable"}`,
+          `acp-manager: evicting cached runtime handle for ${params.sessionKey} after unhealthy status check: ${status.summary ?? "status unavailable"}`,
         );
         return false;
       }
@@ -149,7 +149,7 @@ export class ManagerRuntimeHandleCache {
         throw error;
       }
       logVerbose(
-        `acp-manager: evicting cached runtime handle for ${params.sessionKey} after status probe failed: ${String(error)}`,
+        `acp-manager: evicting cached runtime handle for ${params.sessionKey} after status check failed: ${String(error)}`,
       );
       return false;
     }
@@ -166,8 +166,7 @@ export class ManagerRuntimeHandleCache {
     }
 
     const expectedAcpxRecordId = identity?.acpxRecordId ?? "";
-    const actualAcpxRecordId =
-      normalizeText((params.handle as { acpxRecordId?: unknown }).acpxRecordId) ?? "";
+    const actualAcpxRecordId = normalizeText(params.handle.acpxRecordId) ?? "";
     return actualAcpxRecordId === expectedAcpxRecordId;
   }
 

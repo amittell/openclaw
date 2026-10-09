@@ -1,15 +1,31 @@
 import { expect, it, vi } from "vitest";
-import { createChannelParticipantAdmissionEvidence } from "../../test/helpers/channel-admission-evidence.js";
+import {
+  bindTestChannelParticipantAdmissionEvidence,
+  createChannelParticipantAdmissionEvidence,
+} from "../../test/helpers/channel-admission-evidence.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import {
   enqueueExecutionIdentityContextAtAdmission,
   hasExecutionIdentityAdmissionSink,
 } from "../audit/execution-identity-admission.js";
 import { emitTrustedMessageAuditEvent } from "../audit/message-audit-events.js";
-import { consumeChannelAdmissionEvidence } from "../channels/message-access/admission-evidence.js";
+import {
+  consumeChannelAdmissionEvidence,
+  readChannelContextGatewayContextResolver,
+  recordChannelAdmissionDecision,
+} from "../channels/message-access/admission-evidence.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { emitAgentAuditEvent, emitAgentEvent } from "../infra/agent-events.js";
+import {
+  type AgentEventPayload,
+  emitAgentAuditEvent,
+  emitAgentEvent,
+  getAgentEventLifecycleGeneration,
+} from "../infra/agent-events.js";
+import { claimAgentRunContext } from "../infra/agent-run-registry.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
 import {
   createChatRunState,
   createSessionEventSubscriberRegistry,
@@ -37,6 +53,7 @@ export function createSubscriptionTestFixture() {
     createParams: (): Parameters<typeof startGatewayEventSubscriptions>[0] => {
       const chatRunState = createChatRunState();
       return {
+        scheduler: createTestGatewayScheduler(),
         signal: new AbortController().signal,
         log,
         broadcast: vi.fn(),
@@ -50,11 +67,28 @@ export function createSubscriptionTestFixture() {
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
         chatAbortControllers: new Map(),
         restartRecoveryCandidates: new Map(),
-        terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: vi.fn(),
       };
     },
   };
+}
+
+export function registerSubscriptionChatRun(
+  params: Parameters<typeof startGatewayEventSubscriptions>[0],
+  input: Omit<
+    Parameters<typeof registerChatAbortController>[0],
+    "chatAbortControllers" | "timeoutMs"
+  >,
+) {
+  const registration = registerChatAbortController({
+    ...input,
+    chatAbortControllers: params.chatAbortControllers,
+    timeoutMs: 60_000,
+  });
+  if (!registration.entry) {
+    throw new Error("expected registered chat abort controller");
+  }
+  return { ...registration, entry: registration.entry };
 }
 
 export function readLifecycleState(entry: ChatAbortControllerEntry) {
@@ -129,32 +163,104 @@ export function registerAuditSubscriptionTests(params: {
     expect(hasExecutionIdentityAdmissionSink()).toBe(false);
   });
 
-  it("owns channel evidence collection for the configured gateway lifecycle", async () => {
+  it("owns channel evidence collection without retiring host routing on audit changes", async () => {
     const unsubs = start();
     const participant = { channelId: "test", participantId: "person-1" };
-    expect(createChannelParticipantAdmissionEvidence(participant)).toBeUndefined();
+    const context = {};
+    expect(
+      bindTestChannelParticipantAdmissionEvidence({
+        audit: unsubs.channelAdmissionAudit,
+        context,
+        ...participant,
+      }),
+    ).toBeUndefined();
+    const resolveGateway = readChannelContextGatewayContextResolver(context);
+    expect(resolveGateway).toBeTypeOf("function");
+    const gateway = resolveGateway?.();
+    expect(gateway?.channelAdmissionAudit).toBe(unsubs.channelAdmissionAudit);
 
     runtimeConfigState.value = { logging: { audit: { executionIdentity: true } } };
     unsubs.reconcileAuditPolicy(runtimeConfigState.value);
-    const evidence = createChannelParticipantAdmissionEvidence(participant);
+    const evidence = createChannelParticipantAdmissionEvidence({
+      audit: unsubs.channelAdmissionAudit,
+      ...participant,
+    });
     expect(evidence).toBeDefined();
     unsubs.reconcileAuditPolicy(runtimeConfigState.value);
     expect(consumeChannelAdmissionEvidence(evidence)).toMatchObject({ ingressState: "present" });
+    const decision = {
+      contextId: "audit-toggle-context",
+      executionId: "audit-toggle-execution",
+      runId: "audit-toggle-run",
+      occurredAt: 1_000,
+      coverageState: "attribution-only" as const,
+      identifierAuthentication: "not-evaluated" as const,
+    };
+    expect(recordChannelAdmissionDecision(evidence, decision)).toBe(true);
+    expect(auditTestState.decisionRecorded).toBe(1);
 
-    const retired = createChannelParticipantAdmissionEvidence(participant);
+    const retired = createChannelParticipantAdmissionEvidence({
+      audit: unsubs.channelAdmissionAudit,
+      ...participant,
+    });
+    expect(retired).toBeDefined();
     runtimeConfigState.value = { logging: { audit: { enabled: false, executionIdentity: true } } };
     unsubs.reconcileAuditPolicy(runtimeConfigState.value);
-    expect(createChannelParticipantAdmissionEvidence(participant)).toBeUndefined();
+    const disabledContext = {};
+    expect(
+      bindTestChannelParticipantAdmissionEvidence({
+        audit: unsubs.channelAdmissionAudit,
+        context: disabledContext,
+        ...participant,
+      }),
+    ).toBeUndefined();
+    expect(readChannelContextGatewayContextResolver(context)).toBe(resolveGateway);
+    expect(resolveGateway?.()).toBe(gateway);
+    expect(
+      readChannelContextGatewayContextResolver(disabledContext)?.()?.channelAdmissionAudit,
+    ).toBe(unsubs.channelAdmissionAudit);
+
     runtimeConfigState.value = { logging: { audit: { executionIdentity: true } } };
     unsubs.reconcileAuditPolicy(runtimeConfigState.value);
     expect(consumeChannelAdmissionEvidence(retired)).toMatchObject({ ingressState: "unknown" });
+    expect(recordChannelAdmissionDecision(evidence, decision)).toBe(false);
+    expect(auditTestState.decisionRecorded).toBe(1);
+    expect(readChannelContextGatewayContextResolver(context)).toBe(resolveGateway);
+    expect(resolveGateway?.()).toBe(gateway);
 
-    const beforeShutdown = createChannelParticipantAdmissionEvidence(participant);
+    const beforeShutdown = createChannelParticipantAdmissionEvidence({
+      audit: unsubs.channelAdmissionAudit,
+      ...participant,
+    });
+    expect(beforeShutdown).toBeDefined();
     await unsubs.agentUnsub();
+    unsubs.reconcileAuditPolicy({ logging: { audit: { enabled: false } } });
+    unsubs.reconcileAuditPolicy(runtimeConfigState.value);
     expect(consumeChannelAdmissionEvidence(beforeShutdown)).toMatchObject({
       ingressState: "unknown",
     });
-    expect(createChannelParticipantAdmissionEvidence(participant)).toBeUndefined();
+    expect(
+      createChannelParticipantAdmissionEvidence({
+        audit: unsubs.channelAdmissionAudit,
+        ...participant,
+      }),
+    ).toBeUndefined();
+
+    unsubs.heartbeatUnsub();
+    unsubs.transcriptUnsub();
+    unsubs.lifecycleUnsub();
+    const restarted = start();
+    expect(
+      consumeChannelAdmissionEvidence(
+        createChannelParticipantAdmissionEvidence({
+          audit: restarted.channelAdmissionAudit,
+          ...participant,
+        }),
+      ),
+    ).toMatchObject({ ingressState: "present", invoker: { state: "present" } });
+    expect(consumeChannelAdmissionEvidence(beforeShutdown)).toMatchObject({
+      ingressState: "unknown",
+    });
   });
 
   it("applies audit policy changes through the existing event subscriptions", async () => {
@@ -266,4 +372,113 @@ export function registerAuditSubscriptionTests(params: {
     await unsubs.agentUnsub();
     expect(auditTestState.stopped).toBe(1);
   });
+}
+
+export function registerAssistantTailSubscriptionTests({
+  createParams,
+  installHandlerFactory,
+  start,
+}: {
+  createParams: ReturnType<typeof createSubscriptionTestFixture>["createParams"];
+  installHandlerFactory: (
+    factory: typeof import("./server-chat.js").createAgentEventHandler,
+  ) => void;
+  start: (params: Parameters<typeof startGatewayEventSubscriptions>[0]) => void;
+}): void {
+  it.each([
+    { source: "plain", committed: ["Saved paragraph."], initial: "Saved paragraph." },
+    {
+      source: "native raw directive",
+      committed: ["[[reply_to_current]]Saved paragraph."],
+      initial: "[[reply_to_current]]Saved paragraph.",
+    },
+    {
+      source: "native partial before directive",
+      committed: ["Saved[[reply_to_current]] paragraph."],
+      initial: "Saved",
+    },
+    { source: "before first bytes", committed: ["Saved paragraph."], initial: undefined },
+    {
+      source: "identical receipts before first bytes",
+      committed: ["Saved paragraph.", "Saved paragraph."],
+      initial: undefined,
+    },
+  ])(
+    "retires $source by identity before queued continuation without session subscribers",
+    async ({ committed, initial }) => {
+      const actual = await vi.importActual<typeof import("./server-chat.js")>("./server-chat.js");
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const params = createParams();
+      const runId = "run-persisted-tail";
+      const sessionKey = "agent:main:main";
+      const sessionId = "session-persisted-tail";
+      const lifecycleGeneration = getAgentEventLifecycleGeneration();
+      const registration = registerSubscriptionChatRun(params, {
+        runId,
+        sessionId,
+        sessionKey,
+        lifecycleGeneration,
+      });
+      claimAgentRunContext(runId, { lifecycleGeneration, sessionId, sessionKey });
+      const delivered = createDeferred();
+      installHandlerFactory((options) => {
+        const handler = actual.createAgentEventHandler(options);
+        return Object.assign(async (event: AgentEventPayload) => {
+          await handler(event);
+          if (
+            typeof event.data.text === "string" &&
+            event.data.text.endsWith("Unpersisted tail.")
+          ) {
+            delivered.resolve();
+          }
+        }, handler);
+      });
+      try {
+        start(params);
+        emitAgentEvent(
+          initial === undefined
+            ? { runId, stream: "lifecycle", data: { phase: "start", startedAt: Date.now() } }
+            : {
+                runId,
+                stream: "assistant",
+                data: { itemId: "saved-paragraph-0", text: initial, delta: initial },
+              },
+        );
+        for (const [index, text] of committed.entries()) {
+          emitSessionTranscriptUpdate({
+            sessionKey,
+            target: { agentId: "main", sessionId, sessionKey },
+            messageId: `saved-paragraph-${index}`,
+            messageSeq: index * 2 + 2,
+            message: {
+              role: "assistant",
+              idempotencyKey: `saved-paragraph-${index}`,
+              content: [{ type: "text", text }],
+              __openclaw: { runId },
+            },
+          });
+        }
+        for (const [index, text] of committed.entries()) {
+          emitAgentEvent({
+            runId,
+            stream: "assistant",
+            data: { itemId: `saved-paragraph-${index}`, text },
+          });
+        }
+        emitAgentEvent({
+          runId,
+          stream: "assistant",
+          data: { itemId: "new-paragraph", text: "Unpersisted tail." },
+        });
+        await delivered.promise;
+        expect(params.chatRunState.resolveBuffer(runId).text.trim()).toBe("Unpersisted tail.");
+        expect(params.chatRunState.resolveBuffer(runId, { final: true }).text).toBe(
+          `${"Saved paragraph.\n\n".repeat(committed.length)}Unpersisted tail.`,
+        );
+      } finally {
+        params.chatRunState.clear();
+        registration.cleanup();
+      }
+    },
+  );
 }

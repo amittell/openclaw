@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { DatabaseSync } from "node:sqlite";
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
-import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync-cache-state.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import {
   registerSqliteCacheExitClose,
@@ -12,11 +12,13 @@ import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.
 import {
   createOpenClawAgentDatabaseClaim,
   isOpenClawAgentDatabasePathCurrent,
+  findOpenClawAgentDatabaseIdentity,
 } from "./openclaw-agent-db-identity.js";
 import {
   hasOpenClawAgentReadOnlySchema,
   openOpenClawAgentDatabaseReadOnly,
   readOpenClawAgentDatabase,
+  readOpenClawAgentDatabaseSnapshot,
   withFreshOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
@@ -27,6 +29,8 @@ import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-
 
 export type OpenClawAgentDatabaseReadOnlyBehavior = {
   allowExtension?: boolean;
+  /** Consume admission and read kernels in one synchronous deferred transaction. */
+  snapshot?: boolean;
 };
 
 type ReadTarget = OpenClawAgentDatabaseOptions & { agentId: string; path: string };
@@ -55,6 +59,18 @@ export class OpenClawAgentDatabaseReadOnlyScope {
 
   get hasRetainedConnection(): boolean {
     return this.database !== undefined;
+  }
+
+  invalidateProjection(
+    databaseIdentity: string,
+    invalidate: (database: DatabaseSync) => void,
+  ): void {
+    if (
+      this.database &&
+      findOpenClawAgentDatabaseIdentity(this.database)?.identity === databaseIdentity
+    ) {
+      invalidate(this.database.db);
+    }
   }
 
   closeIfIdle(): void {
@@ -133,7 +149,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
     return this.target?.agentId === agentId && this.target.path === pathname;
   }
 
-  private acquire(options: OpenClawAgentDatabaseOptions) {
+  private acquire(options: OpenClawAgentDatabaseOptions, snapshot = false) {
     if (this.database && !isOpenClawAgentDatabasePathCurrent(this.database)) {
       this.discardConnection();
     }
@@ -157,7 +173,6 @@ export class OpenClawAgentDatabaseReadOnlyScope {
           revoke: () => this.close(),
           close: () => this.close(),
         });
-        enableNodeSqliteKyselyStatementCache(this.database.db);
         retainedScopes.active.add(this);
         if (this.cached) {
           retainedScopes.paths.set(this.database.path, this);
@@ -171,7 +186,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
         this.discardConnection();
         throw error;
       }
-    } else if (!hasOpenClawAgentReadOnlySchema(this.database)) {
+    } else if (!snapshot && !hasOpenClawAgentReadOnlySchema(this.database)) {
       this.discardConnection();
       return { found: false, reason: "schema-missing" } as const;
     }
@@ -239,18 +254,25 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   read<T>(
     operation: (database: OpenClawAgentReadOnlyDatabase) => T,
     options: OpenClawAgentDatabaseOptions,
+    behavior: OpenClawAgentDatabaseReadOnlyBehavior = {},
   ): OpenClawAgentDatabaseReadOnlyResult<T> {
     this.assertUsable();
     if (this.database?.db.isOpen && this.database.db.isTransaction) {
-      return withFreshOpenClawAgentDatabaseReadOnly(operation, options);
+      return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
     }
-    const opened = this.acquire(options);
+    const opened = this.acquire(options, behavior.snapshot);
     if (!opened.found) {
       return opened;
     }
     this.borrowers++;
     try {
-      return readOpenClawAgentDatabase(opened.database, operation);
+      const result = behavior.snapshot
+        ? readOpenClawAgentDatabaseSnapshot(opened.database, operation)
+        : readOpenClawAgentDatabase(opened.database, operation);
+      if (!result.found) {
+        this.discardConnection();
+      }
+      return result;
     } catch (error) {
       if (this.cached && this.borrowers === 1) {
         this.discardConnection();
@@ -270,6 +292,16 @@ function cachedScope(options: ReadTarget): OpenClawAgentDatabaseReadOnlyScope {
     retainedScopes.paths.set(options.path, scope);
   }
   return scope;
+}
+
+/** Committed worker receipts invalidate projections on retained readers without running SQL. */
+export function invalidateOpenClawAgentReadOnlyProjections(
+  databaseIdentity: string,
+  invalidate: (database: DatabaseSync) => void,
+): void {
+  for (const scope of retainedScopes.active) {
+    scope.invalidateProjection(databaseIdentity, invalidate);
+  }
 }
 
 /** Writable admission retires an idle reader before opening the same physical file. */
@@ -294,5 +326,6 @@ export function withScopedOpenClawAgentDatabaseReadOnly<T>(
   return (scope?.matches(options.agentId, options.path) ? scope : cachedScope(options)).read(
     operation,
     options,
+    behavior,
   );
 }

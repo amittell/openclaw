@@ -114,7 +114,11 @@ export type PluginRuntimeChannel = {
   session: {
     /** @deprecated Prefer channel turn helpers that record inbound sessions as part of dispatch. */
     resolveStorePath: typeof import("../../config/sessions/paths.js").resolveSessionStorePathCore;
+    /** @deprecated Use readSessionUpdatedAtAsync. Retained until the next Plugin SDK major. */
     readSessionUpdatedAt: ReadSessionUpdatedAt;
+    readSessionUpdatedAtAsync: (
+      ...params: Parameters<ReadSessionUpdatedAt>
+    ) => Promise<ReturnType<ReadSessionUpdatedAt>>;
     recordSessionMetaFromInbound: RecordSessionMetaFromInbound;
     /** @deprecated Prefer channel turn helpers that record inbound sessions as part of dispatch. */
     recordInboundSession: RecordInboundSession;
@@ -151,6 +155,12 @@ export type PluginRuntimeChannel = {
     loadAdapter: LoadChannelOutboundAdapter;
   };
   inbound: {
+    /** Ingress policy and identity handoff bound to this channel's host instance. */
+    ingress: {
+      createResolver: typeof import("../../channels/message-access/runtime.js").createChannelIngressPolicyResolver;
+      resolve: typeof import("../../channels/message-access/runtime.js").resolveChannelIngressPolicy;
+      resolveStable: typeof import("../../channels/message-access/runtime.js").resolveStableChannelIngressPolicy;
+    };
     buildContext: typeof import("../../channels/inbound-event/context.js").buildChannelInboundEventContext;
     run: typeof import("../../channels/turn/run-channel-turn.js").runChannelTurn;
     /** @deprecated Prefer `run` for raw inbound events or `dispatchReply` for assembled contexts. */

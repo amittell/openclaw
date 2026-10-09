@@ -23,3 +23,28 @@ export type McpOAuthStore = {
   redirectUrl?: string;
   pendingAuthorizationChallenge?: McpOAuthAuthorizationChallenge;
 };
+
+export type McpOAuthMutation =
+  | { kind: "clientInformation"; clientInformation: OAuthClientInformationMixed }
+  | { kind: "tokens"; tokens: OAuthTokens; tokenExpiresAt: number | undefined }
+  | {
+      kind: "authorizationRedirect";
+      authorizationUrl: string;
+      redirectUrl?: string;
+      codeVerifier?: string;
+    }
+  | { kind: "discoveryState"; discoveryState: OAuthDiscoveryState }
+  | {
+      kind: "invalidate";
+      scope: "all" | "client" | "tokens" | "verifier" | "discovery";
+      suppressStoredTokens: boolean;
+    }
+  | { kind: "bindTokensIssuer" }
+  | {
+      kind: "authorizationChallenge";
+      resourceMetadataUrl?: string;
+      scope?: string;
+      requiresAuthorization?: true;
+      rejectedAccessToken?: string;
+    }
+  | { kind: "completeAuthorization" };
