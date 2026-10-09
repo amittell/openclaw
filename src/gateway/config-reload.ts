@@ -10,12 +10,7 @@ import {
   readLatestConfigSnapshotAuditRecordAsync,
   upsertConfigSnapshotAuditRecordAsync,
 } from "../config/config-journal-snapshot.js";
-import {
-  appendConfigAuditRecord,
-  capConfigAuditIssues,
-  capConfigAuditPaths,
-  type ConfigExternalChangeAuditRecord,
-} from "../config/io.audit.js";
+import { capConfigAuditIssues, capConfigAuditPaths } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { hashRuntimeConfigValue, resolveConfigWriteFollowUp } from "../config/runtime-snapshot.js";
@@ -54,6 +49,7 @@ import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
+import { createExternalConfigAudit } from "./config-reload-audit.js";
 import { publishReloadObservation, trackReloadObservations } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
@@ -167,21 +163,7 @@ export function startGatewayConfigReloader(
       throw new GatewayConfigReloadSupersededError();
     }
   };
-  const appendExternalAudit = async (
-    record: Omit<ConfigExternalChangeAuditRecord, "ts" | "source" | "event" | "configPath">,
-  ) => {
-    await appendConfigAuditRecord({
-      env: process.env,
-      homedir,
-      record: {
-        ts: new Date().toISOString(),
-        source: "config-io",
-        event: "config.external",
-        configPath: opts.watchPath,
-        ...record,
-      },
-    });
-  };
+  const appendExternalAudit = createExternalConfigAudit(opts.watchPath);
 
   // CAS token is the unfiltered slot: a slot owned by another config path must
   // still be the expected value so this path can take the slot over. Only a
