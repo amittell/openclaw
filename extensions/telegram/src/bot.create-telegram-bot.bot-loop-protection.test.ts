@@ -45,7 +45,7 @@ function channelPost(
   };
 }
 
-function channelPostHandler(channelId: number): ChannelPostHandler {
+async function channelPostHandler(channelId: number): Promise<ChannelPostHandler> {
   getLoadConfigMock().mockReturnValue({
     messages: { inbound: { debounceMs: 0 } },
     channels: {
@@ -58,7 +58,7 @@ function channelPostHandler(channelId: number): ChannelPostHandler {
       },
     },
   });
-  createTelegramBotCore({
+  await createTelegramBotCore({
     token: "tok",
     botInfo: telegramBotInfoForTest,
     telegramDeps: telegramBotDepsForTest,
@@ -74,7 +74,7 @@ describe("createTelegramBot channel_post bot-loop protection", () => {
   it.each(CASES)(
     "never budgets %s, whose only sender is the channel itself",
     async (_label, channelId, withSenderChat) => {
-      const handler = channelPostHandler(channelId);
+      const handler = await channelPostHandler(channelId);
 
       const dispatchCallsAfterEachPost: number[] = [];
       for (const messageId of [1, 2, 3]) {
@@ -88,7 +88,7 @@ describe("createTelegramBot channel_post bot-loop protection", () => {
 
   it("still budgets a channel post whose `from` names another bot", async () => {
     const channelId = -1005550103;
-    const handler = channelPostHandler(channelId);
+    const handler = await channelPostHandler(channelId);
 
     const dispatchCallsAfterEachPost: number[] = [];
     for (const messageId of [1, 2, 3]) {
