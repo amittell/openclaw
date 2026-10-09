@@ -73,12 +73,15 @@ describe("handleMessageEnd", () => {
   it.each([
     { text: "Deployment finished.", delivered: false },
     { text: "Deployment finished. Actually it failed.", delivered: true },
-  ])("block-streams $text after a message-tool send: $delivered", async ({ text, delivered }) => {
+    { text: "Deployment finished. Tests passed.", delivered: false },
+  ])("block-streams $text after message-tool sends: $delivered", async ({ text, delivered }) => {
     const onBlockReply = vi.fn();
     const ctx = createMessageEndContext({
       onBlockReply,
       state: {
-        messagingToolSentTextsNormalized: [normalizeTextForComparison("Deployment finished.")],
+        messagingToolSentTextsNormalized: ["Deployment finished.", "Tests passed."].map(
+          normalizeTextForComparison,
+        ),
       },
     });
 

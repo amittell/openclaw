@@ -77,28 +77,38 @@ describe("reply dedupe uses the plugin's delivery destination", () => {
   );
 
   it.each([
-    { sent: "Deployment finished.", reply: "Deployment finished.", delivered: false },
-    { sent: "Deployment finished", reply: "Deployment finished!!!", delivered: false },
+    { sent: ["Deployment finished."], reply: "Deployment finished.", delivered: false },
+    { sent: ["Deployment finished"], reply: "Deployment finished!!!", delivered: false },
     {
-      sent: "Deployment finished.",
+      sent: ["Deployment finished."],
       reply: "Deployment finished. Actually it failed.",
       delivered: true,
     },
     {
-      sent: "Deployment finished.",
+      sent: ["Deployment finished."],
       reply: "Deployment finished. 2 hosts restarted.",
       delivered: true,
     },
     {
-      sent: "Checking the deploy logs now.",
+      sent: ["Checking the deploy logs now."],
       reply: "Checking the deploy logs now. All good!",
       delivered: true,
     },
+    {
+      sent: ["Deployment finished.", "Tests passed."],
+      reply: "Deployment finished. Tests passed.",
+      delivered: false,
+    },
   ])(
-    "reply $reply after a same-route send of $sent: delivered=$delivered",
+    "reply $reply after same-route sends of $sent: delivered=$delivered",
     async ({ sent, reply, delivered }) => {
       const payloads = [{ text: reply }];
-      const targets = [{ tool: "message", provider: "test-flat", to: "room", text: sent }];
+      const targets = sent.map((text) => ({
+        tool: "message",
+        provider: "test-flat",
+        to: "room",
+        text,
+      }));
       const expected = delivered ? [reply] : [];
       const result = await buildReplyPayloads({
         config: {},
