@@ -7,7 +7,9 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { registerWorktreesCli } from "../../cli/worktrees-cli.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../../config/config.js";
 import { withLocalWorkspaceProjection } from "../../gateway/worker-environments/local-workspace-projection.js";
-import { localWorkspaceStore } from "../../gateway/worker-environments/local-workspace-store.js";
+import { readLocalWorkspaceProjection } from "../../gateway/worker-environments/local-workspace-store.test-support.js";
+import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
+import { createDiagnosticLogRecordCapture } from "../../logging/test-helpers/diagnostic-log-capture.js";
 import { defaultRuntime, ExitError } from "../../runtime.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -15,23 +17,19 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import * as allocation from "./allocation.js";
-import { WorktreeGcProgress } from "./gc-progress.js";
+import type { WorktreeCleanupOwnerPolicy } from "./gc-removal.js";
 import { formatWorktreeGcResult } from "./gc-result.js";
 import { requireGit } from "./git.js";
+import { insertRegistryWorktreeInDatabase } from "./registry-run-end.worker.js";
 import {
-  admitWorktreeRunLeaseRow,
-  getRegistryWorktree,
   deleteRegistryWorktree,
   insertRegistryWorktree,
   updateRegistryWorktree,
 } from "./registry.js";
+import { getRegistryWorktree } from "./registry.test-support.js";
+import { admitWorktreeRunLeaseInDatabase } from "./run-lease-store.kernel.js";
 import { resolveRepository } from "./service-preparation.js";
-import {
-  IDLE_GC_MS,
-  SNAPSHOT_RETENTION_MS,
-  ManagedWorktreeService,
-  managedWorktrees,
-} from "./service.js";
+import { IDLE_GC_MS, SNAPSHOT_RETENTION_MS, ManagedWorktreeService } from "./service.js";
 import {
   materializeManagedWorktreeFixtures,
   useManagedWorktreeTestRepository,
@@ -44,6 +42,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     resetConfigRuntimeState();
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
+    vi.unstubAllEnvs();
     cleanup();
   });
 });
@@ -52,11 +51,107 @@ const initializeRepository = useManagedWorktreeTestRepository();
 async function bindFixtureRepository(env: NodeJS.ProcessEnv, repo: string, ids: string[]) {
   const identity = await resolveRepository(repo);
   for (const id of ids) {
-    updateRegistryWorktree(env, id, {
+    await updateRegistryWorktree(env, id, {
       repositoryIdentity: { repoRoot: identity.repoRoot, repoFingerprint: identity.fingerprint },
     });
   }
 }
+
+it
+  .skipIf(process.platform === "win32" || process.getuid?.() === 0)
+  .each(["checkout-parent", "tracked-parent"])(
+  "retains an unreadable %s across CLI cleanup sweeps",
+  async (blocked) => {
+    const root = tempDirs.make("openclaw-gc-unreadable-");
+    const repo = await initializeRepository(root);
+    await fs.mkdir(path.join(repo, "tracked"));
+    await fs.writeFile(path.join(repo, "tracked", "file.txt"), "preserve unreadable content\n");
+    await requireGit(repo, ["add", "tracked"]);
+    await requireGit(repo, ["commit", "-m", "add tracked directory"]);
+    const stateDir = path.join(root, "state");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const now = 1_700_000_000_000;
+    const [record] = await materializeManagedWorktreeFixtures({
+      env,
+      repoRoot: repo,
+      stateDir,
+      now: now - IDLE_GC_MS - 1,
+      ownerKind: "workboard",
+      names: ["unreadable"],
+    });
+    const service = new ManagedWorktreeService({ env, now: () => now });
+    const gc = service.gc.bind(service);
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    setRuntimeConfigSnapshot({}, {});
+    const gcSpy = vi.spyOn(ManagedWorktreeService.prototype, "gc").mockImplementation(gc);
+    await closeOpenClawStateDatabaseAsync();
+    const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => undefined);
+    const program = new Command().name("openclaw");
+    registerWorktreesCli(program);
+    const locked =
+      blocked === "checkout-parent"
+        ? path.dirname(record!.path)
+        : path.join(record!.path, "tracked");
+    setLoggerOverride({ level: "warn", consoleLevel: "silent" });
+    const logs = createDiagnosticLogRecordCapture();
+    await fs.chmod(locked, 0o000);
+    const passes = [];
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        logs.records.length = 0;
+        let exitCode = 0;
+        try {
+          await program.parseAsync(["worktrees", "gc", "--json"], { from: "user" });
+        } catch (error) {
+          if (!(error instanceof ExitError)) {
+            throw error;
+          }
+          exitCode = error.code;
+        }
+        await logs.flush();
+        passes.push({
+          exitCode,
+          errorLines: logs.records.filter((entry) =>
+            [entry.message, ...Object.values(entry.attributes ?? {})].some(
+              (value) => typeof value === "string" && value.includes("idle cleanup failed"),
+            ),
+          ).length,
+          result: output.mock.lastCall?.[0],
+        });
+      }
+      console.log(JSON.stringify({ blocked, passes }));
+      for (const pass of passes) {
+        expect(pass).toMatchObject({
+          exitCode: 0,
+          errorLines: 0,
+          result: {
+            outcome: "deferred",
+            removed: [],
+            orphansRetired: 0,
+            protectedCount: 1,
+            protectionReasons: { unreadable: 1 },
+            issues: [
+              {
+                id: record!.id,
+                stage: "idle",
+                outcome: "deferred",
+                reason: expect.stringContaining(locked),
+              },
+            ],
+          },
+        });
+      }
+      expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
+    } finally {
+      gcSpy.mockRestore();
+      await fs.chmod(locked, 0o755);
+      logs.cleanup();
+      setLoggerOverride(null);
+      resetLogger();
+    }
+    expect((await service.gc()).removed).toEqual([record!.id]);
+  },
+);
 
 it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed registry records", async () => {
   const root = tempDirs.make("openclaw-gc-classification-");
@@ -83,19 +178,21 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
   await fs.writeFile(path.join(orphan!.path, "local.txt"), "preserve uncertain checkout files\n");
   // The cheap protected rows need no physical checkout: protection must precede Git inspection.
   runOpenClawStateWriteTransaction(
-    () => {
+    ({ db }) => {
       for (let index = 0; index < 594; index++) {
         const id = `a-protected-${String(index).padStart(3, "0")}`;
-        insertRegistryWorktree(env, {
-          ...moved!,
-          id,
-          name: id,
-          path: repo,
-          ownerKind: index >= 590 ? "manual" : "workboard",
-          ownerId: index < 390 ? "active-owner" : id,
+        insertRegistryWorktreeInDatabase(db, {
+          record: {
+            ...moved!,
+            id,
+            name: id,
+            path: repo,
+            ownerKind: index >= 590 ? "manual" : "workboard",
+            ownerId: index < 390 ? "active-owner" : id,
+          },
         });
         if (index >= 390 && index < 590) {
-          admitWorktreeRunLeaseRow(env, {
+          admitWorktreeRunLeaseInDatabase(db, {
             worktreeId: id,
             token: id,
             pid: process.pid,
@@ -104,7 +201,7 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
           });
         }
       }
-      admitWorktreeRunLeaseRow(env, {
+      admitWorktreeRunLeaseInDatabase(db, {
         worktreeId: idle[0]!.id,
         token: "dead-owner",
         pid: 2_147_483_647,
@@ -115,21 +212,25 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
     { env },
   );
   const service = new ManagedWorktreeService({ env, now: () => now });
+  const gc = service.gc.bind(service);
+  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   setRuntimeConfigSnapshot({}, {});
+  const ownerPolicy: WorktreeCleanupOwnerPolicy = {
+    readOwnerState: (_kind, id) => (id === "active-owner" ? "active" : "idle"),
+  };
   let collected: ManagedWorktreeGcResult | undefined;
-  vi.spyOn(managedWorktrees, "gc").mockImplementation(async (params) => {
-    collected = await service.gc({
+  vi.spyOn(ManagedWorktreeService.prototype, "gc").mockImplementation(async (params) => {
+    collected = await gc({
       ...params,
-      shouldProtectOwner: (_kind, id) => id === "active-owner",
-      shouldRemoveOwner: () => false,
+      ...ownerPolicy,
+      prepareOwners: async () => ownerPolicy,
     });
     return collected;
   });
+  await closeOpenClawStateDatabaseAsync();
   const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => undefined);
-  const protections = vi.spyOn(WorktreeGcProgress.prototype, "protect");
   const program = new Command().name("openclaw");
   registerWorktreesCli(program);
-  const started = performance.now();
   let exitCode = 0;
   try {
     await program.parseAsync(["worktrees", "gc", "--json"], { from: "user" });
@@ -139,20 +240,6 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
     }
     exitCode = error.code;
   }
-  const distribution: Record<string, number> = {};
-  for (const call of protections.mock.calls) {
-    const reason = call[2];
-    distribution[reason] = (distribution[reason] ?? 0) + 1;
-  }
-  console.log(
-    JSON.stringify({
-      records: 600,
-      exitCode,
-      elapsedMs: performance.now() - started,
-      rssBytes: process.memoryUsage().rss,
-      distribution,
-    }),
-  );
   expect(exitCode).toBe(0);
   expect(output).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -160,11 +247,13 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
       removed: idle.map((record) => record.id),
       orphansRetired: 1,
       retiredCheckoutPaths: [orphan!.path],
-      protectedCount: 595,
+      eligibleCount: 4,
+      deferredCount: 591,
+      failedCount: 0,
+      protectedCount: 591,
       protectionReasons: {
         "owner is active": 390,
         "run lease is active": 200,
-        "manual worktrees require explicit removal": 4,
         "branch-moved": 1,
       },
     }),
@@ -208,9 +297,7 @@ it("preserves a recent orphan when its owner becomes live during cleanup", async
   await fs.rm(gitdir, { recursive: true });
   const service = new ManagedWorktreeService({ env, now: () => now });
   const result = await service.gc({
-    limits: {},
-    shouldProtectOwner: () => false,
-    shouldRemoveOwner: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
+    readOwnerState: vi.fn().mockReturnValueOnce("retired").mockReturnValue("idle"),
   });
   expect(result).toMatchObject({ removed: [], orphansRetired: 0, outcome: "deferred" });
   expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
@@ -251,7 +338,7 @@ it.each([
         },
       );
     }
-    const result = await new ManagedWorktreeService({ env, now: () => now }).gc({ limits: {} });
+    const result = await new ManagedWorktreeService({ env, now: () => now }).gc();
     expect(result).toMatchObject({ orphansRetired: 0, outcome });
     expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
     expect(await fs.readFile(path.join(record!.path, "README.md"), "utf8")).toBe("base\n");
@@ -275,9 +362,9 @@ it.each(["gitdir", "checkout"])(
       ownerId: "agent:main:projection",
       names: ["projection"],
     });
-    deleteRegistryWorktree(env, record!.id);
+    await deleteRegistryWorktree(env, record!.id);
     record!.id = randomUUID();
-    insertRegistryWorktree(env, record!);
+    await insertRegistryWorktree(env, record!);
     await bindFixtureRepository(env, repo, [record!.id]);
     const projection = await withLocalWorkspaceProjection(
       {
@@ -314,7 +401,9 @@ it.each(["gitdir", "checkout"])(
       });
       expect((await service.list()).some((item) => item.id === record!.id)).toBe(true);
       expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
-      expect(localWorkspaceStore(env).get(record!.id)?.projection_path).toBe(projection);
+      expect((await readLocalWorkspaceProjection(record!.id, env))?.projection_path).toBe(
+        projection,
+      );
       expect(await fs.readFile(uniqueFile, "utf8")).toBe("unique projection bytes\n");
       now += SNAPSHOT_RETENTION_MS + 1;
     }

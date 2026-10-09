@@ -11,8 +11,8 @@ const { loadWebMedia, resolveTelegramTransport } = vi.hoisted(() => ({
   resolveTelegramTransport: vi.fn(),
 }));
 
-vi.mock("./send.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./send.runtime.js")>()),
+vi.mock("openclaw/plugin-sdk/web-media", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/web-media")>()),
   loadWebMedia,
 }));
 
@@ -114,11 +114,9 @@ describe("Telegram media upload deadline", () => {
     { size: "100 MiB", uploadBytes: 100 * MIB, afterMs: 65_000 },
     { size: "1 GiB", uploadBytes: 1024 * MIB, afterMs: 527_000 },
   ])("keeps a $size polling bot upload open until its size guard", async (upload) => {
-    // polling-session.ts passes the 45s getUpdates guard as this minimum.
-    const bot = createTelegramBot({
+    const bot = await createTelegramBot({
       token: cfg.channels.telegram.botToken,
       config: cfg,
-      minimumClientTimeoutSeconds: 45,
     });
     const outcome = bot.api
       .sendVideo(123, taggedUpload("clip.mp4", upload.uploadBytes))

@@ -16,7 +16,9 @@ export const UPDATE_OPTION_SPECS: readonly [
     "--tag <dist-tag|version|spec>",
     "Override the package target for this update (dist-tag, version, or package spec)",
   ],
-  ["--timeout <seconds>", "Timeout for each update step in seconds (default: 1800)"],
+  ["--timeout <seconds>", "Set a per-step deadline in seconds"],
+  ["--drain-timeout <seconds>", "Set the immutable activation drain budget before interruption"],
+  ["--sha <commit>", "Prepare an exact official commit for an adopted immutable installation"],
   ["--yes", "Skip confirmation prompts (non-interactive)", false],
   [
     "--reapply-local-overrides",
