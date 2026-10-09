@@ -1,12 +1,9 @@
-// The Telegram "Current message:" block. Split out of inbound-meta.ts so that
-// file stays under the line cap. It has two projections: the inline one inside
-// the inbound user-context prefix, and the self-contained carrier one.
+// The Telegram "Current message:" block. It has two projections: the inline one
+// inside the inbound user-context prefix, and the self-contained carrier one.
+// It lives beside inbound-meta.ts so prompt-prelude.ts can project the carrier
+// without importing the prefix builder.
 import type { TemplateContext } from "../templating.js";
-import {
-  normalizePromptMetadataString,
-  sanitizeTranscriptBody,
-  sanitizeTranscriptField,
-} from "./inbound-meta.text.js";
+import { normalizePromptMetadataString, sanitizeTranscriptText } from "./inbound-meta.text.js";
 
 function isTelegramInboundContext(ctx: TemplateContext): boolean {
   return [ctx.OriginatingChannel, ctx.Surface, ctx.Provider].some(
@@ -14,15 +11,12 @@ function isTelegramInboundContext(ctx: TemplateContext): boolean {
   );
 }
 
-function resolveInlineReplyQuote(ctx: TemplateContext): string | undefined {
-  return sanitizeTranscriptField(ctx.ReplyToQuoteText) ?? sanitizeTranscriptBody(ctx.ReplyToBody);
-}
-
 function formatCurrentMessageBlock(ctx: TemplateContext, stateBody: boolean): string | undefined {
   if (!isTelegramInboundContext(ctx)) {
     return undefined;
   }
-  const quote = resolveInlineReplyQuote(ctx);
+  const quote =
+    sanitizeTranscriptText(ctx.ReplyToQuoteText) ?? sanitizeTranscriptText(ctx.ReplyToBody, "body");
   if (!quote) {
     return undefined;
   }
@@ -30,9 +24,9 @@ function formatCurrentMessageBlock(ctx: TemplateContext, stateBody: boolean): st
     normalizePromptMetadataString(ctx.MessageSid) ??
     normalizePromptMetadataString(ctx.MessageSidFull);
   const currentBody = stateBody
-    ? (sanitizeTranscriptBody(ctx.agentText) ??
-      sanitizeTranscriptBody(ctx.BodyForAgent) ??
-      sanitizeTranscriptBody(ctx.Body))
+    ? (sanitizeTranscriptText(ctx.agentText, "body") ??
+      sanitizeTranscriptText(ctx.BodyForAgent, "body") ??
+      sanitizeTranscriptText(ctx.Body, "body"))
     : undefined;
   const header = messageId ? `#${messageId}:${currentBody ? ` ${currentBody}` : ""}` : currentBody;
   return ["Current message:", `[Replying to: ${JSON.stringify(quote)}]`, header]
