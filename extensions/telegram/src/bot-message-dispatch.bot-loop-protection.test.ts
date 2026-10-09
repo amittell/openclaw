@@ -84,11 +84,15 @@ function inboundContext(accountId: string, inbound: Inbound): TelegramMessageCon
   });
 }
 
-async function dispatchInbound(accountId: string, messages: readonly Inbound[]) {
+type Runtime = Parameters<typeof dispatchWithContext>[0]["runtime"];
+
+async function dispatchInbound(accountId: string, messages: readonly Inbound[], runtime?: Runtime) {
   const recordCalls: number[] = [];
   for (const inbound of messages) {
     const context = inboundContext(accountId, inbound);
-    await expect(dispatchWithContext({ context, cfg })).resolves.toEqual({ kind: "completed" });
+    await expect(dispatchWithContext({ context, cfg, runtime })).resolves.toEqual({
+      kind: "completed",
+    });
     recordCalls.push(vi.mocked(context.turn.recordInboundSession).mock.calls.length);
   }
   return { recordCalls, dispatchCalls: dispatchReplyWithBufferedBlockDispatcher.mock.calls.length };
@@ -103,6 +107,38 @@ describeTelegramDispatch("dispatchTelegramMessage bot-loop protection", () => {
     ]);
 
     expect(result).toEqual({ recordCalls: [1, 1, 0], dispatchCalls: 2 });
+  });
+
+  it("logs each dropped turn, so the drop does not read as lost delivery", async () => {
+    const log = vi.fn();
+    const runtime = {
+      log,
+      error: vi.fn(),
+      exit: () => {
+        throw new Error("exit");
+      },
+    };
+    const result = await dispatchInbound(
+      "loop-drop-log",
+      [
+        { from: PEER_BOT, messageId: 1 },
+        { from: PEER_BOT, messageId: 2 },
+        { from: PEER_BOT, messageId: 3 },
+      ],
+      runtime,
+    );
+    const dropLines = log.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes("bot-loop protection"));
+
+    expect({ result, dropLines }).toEqual({
+      result: { recordCalls: [1, 1, 0], dispatchCalls: 2 },
+      dropLines: [
+        expect.stringContaining(
+          "dropped message 3 from bot 5151 in chat 5151 (account loop-drop-log)",
+        ),
+      ],
+    });
   });
 
   it("drops the same way when the peer bot writes as itself in a basic group", async () => {
