@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+  isSessionEntryDataSql,
+  observeHostDataSql,
+} from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   resolveFreshSessionTotalTokens,
@@ -316,7 +320,16 @@ describe("updateSessionStoreAfterAgentRun", () => {
       delete concurrent.inheritedToolAllow;
       delete concurrent.pinnedAt;
       await seedSessionStore(storePath, { [sessionKey]: concurrent });
-      await update();
+      const sql = observeHostDataSql();
+      await update({
+        result: createRunResult({
+          sessionId,
+          provider: "openai",
+          model: "gpt-5.5",
+          contextTokens: 32_000,
+        }),
+      }).finally(sql.restore);
+      expect(sql.queries.filter(isSessionEntryDataSql)).toEqual([]);
       expect(sessionStore[sessionKey]).toMatchObject({
         chatType: "group",
         label: "Renamed while running",
@@ -389,7 +402,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         },
       } as never;
 
-      const first = resolveSession({
+      const first = await resolveSession({
         cfg,
         sessionId: "explicit-session-123",
       });
@@ -416,7 +429,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         } as never,
       });
 
-      const second = resolveSession({
+      const second = await resolveSession({
         cfg,
         sessionId: "explicit-session-123",
       });
@@ -451,7 +464,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         },
       });
 
-      const result = resolveSession({
+      const result = await resolveSession({
         cfg: {
           session: {
             store: storePath,
@@ -926,7 +939,11 @@ describe("recordCliCompactionInStore", () => {
           shouldCompact: true,
         }),
       });
-      await compact({ expectedSession: owner, compactionKind: "native-harness" });
+      const sql = observeHostDataSql();
+      await compact({ expectedSession: owner, compactionKind: "native-harness" }).finally(
+        sql.restore,
+      );
+      expect(sql.queries.filter(isSessionEntryDataSql)).toEqual([]);
       for (const entry of [sessionStore[sessionKey], read()]) {
         expect(entry).toMatchObject({
           compactionCount: 1,

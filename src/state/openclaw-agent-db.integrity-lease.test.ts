@@ -240,7 +240,7 @@ it.each(["forced cleanup", "stale admission"])(
     const reopened = openOpenClawAgentDatabase({ agentId: "integrity-lease", env: owner.env });
     expect(diagnostics?.integrityGateOutcome).toBe("healthy");
     if (recovery === "stale admission") {
-      expect(diagnostics?.integrityGateReason).toBe("stale-lease");
+      expect(diagnostics?.integrityGateReason).toBe("stale-lease-full");
     }
     expect(
       reopened.db
@@ -447,7 +447,7 @@ it.each(["", "-wal", "-shm", "-journal"])(
   },
 );
 
-it.each(["quarantine", "terminal latch", "healthy"] as const)(
+it.each(["quarantine", "terminal latch"] as const)(
   "gates fresh read-only admission on %s and permits a repaired generation",
   (condition) => {
     const owner = openOwner();

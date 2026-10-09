@@ -232,6 +232,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       return patch;
     },
     {
+      workerGuard: {},
       ...(preserveUserFacingRunState || params.compactionAccounting
         ? {}
         : { fallbackEntry: entry }),
@@ -311,6 +312,7 @@ export async function recordCliCompactionInStore(params: {
       };
     },
     {
+      workerGuard: {},
       onCommitted: (committed) => {
         // Retain the committed fact without overwriting a later writer's cache on return.
         committedEntry = committed;

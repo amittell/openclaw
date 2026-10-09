@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 import { publishedBackupRollback } from "./backup-rollback-summary.mjs";
 import { publishedNativeAssignments } from "./native-assignment-summary.mjs";
+import { assertPackageRecoveryEvidence } from "./package-activation-recovery.mjs";
 import { publishedPluginPolicy } from "./plugin-policy-summary.mjs";
 
 // Capture and snapshot validation stay plain Node. The host entrypoint owns
@@ -84,9 +85,16 @@ const logNames = [
   "repair.err",
   "recovery-update.json",
   "recovery-update.err",
+  "interrupted-update.json",
+  "interrupted-update.err",
+  "next-update.json",
+  "next-update.err",
+  "stranded-update.json",
+  "stranded-update.err",
   "post-update-validate.json",
   "post-update-validate.err",
   "doctor.log",
+  "volume-doctor-budget.json",
   "baseline-doctor.log",
   "workshop-doctor-recovery.json",
   "update-report-recovery.json",
@@ -1681,6 +1689,36 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
   }
   const pluginPolicy = publishedPluginPolicy(snapshot, { sanitize, boundedList });
   const nativeAssignments = publishedNativeAssignments(snapshot);
+  let packageActivationRecovery;
+  if (
+    ["package-publication-recovery", "package-verification-recovery"].includes(snapshot.scenario)
+  ) {
+    const proof = snapshot.packageActivationRecovery;
+    assertPackageRecoveryEvidence(proof);
+    packageActivationRecovery = {
+      status: proof.status,
+      cut: proof.interruption.cut,
+      phase: proof.interruption.phase,
+      writerVersion: proof.interruption.writerVersion,
+      candidateVersion: proof.candidate.version,
+      candidateSha256: proof.candidate.tarballSha256,
+      nextVersion: proof.nextUpdate.installed.version,
+      helperPreserved: true,
+      retainedBytesPreserved: true,
+      repeatRepairPassed: true,
+      distinctNextUpdatePassed: true,
+    };
+  } else if (snapshot.scenario === "package-stranded-first-hop") {
+    const proof = snapshot.packageActivationRecovery;
+    assertPackageRecoveryEvidence(proof);
+    packageActivationRecovery = {
+      status: proof.status,
+      writerVersion: "2026.9.7",
+      installedVersion: "2026.9.8",
+      firstHop: proof.firstHop,
+      newerCandidateInvoked: false,
+    };
+  }
   for (const value of [
     snapshot.baseline?.spec,
     snapshot.baseline?.version,
@@ -1701,6 +1739,7 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
     "startupSeconds",
     "updateRestartSeconds",
     "idempotenceSeconds",
+    "idempotenceBudgetSeconds",
     "healthzSeconds",
     "readyzSeconds",
     "statusSeconds",
@@ -1774,6 +1813,7 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
     backupRollback: publishedBackupRollback(snapshot, { sanitize, boundedList, textFields }),
     ...(pluginPolicy ? { pluginPolicy } : {}),
     ...(nativeAssignments ? { nativeAssignments } : {}),
+    ...(packageActivationRecovery ? { packageActivationRecovery } : {}),
     timings,
     phases: boundedList(snapshot.phases).map((event) => {
       if (
@@ -1849,6 +1889,57 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
   };
 }
 
+function failedUpdateContext(text, label) {
+  if (label !== "update.json" && label !== "recovery-update.json") {
+    return "";
+  }
+  try {
+    // Match the warning-prefixed updater JSON accepted by assertions.readUpdateJson.
+    const result = JSON.parse(text.slice(text.indexOf("{")));
+    if (result?.status !== "error" || !Array.isArray(result.steps)) {
+      return "";
+    }
+    const index = result.steps.findIndex(
+      (step) =>
+        step &&
+        typeof step.name === "string" &&
+        !step.advisory &&
+        // Serialized UpdateStepResult follows infra/update-run-step.isFailedUpdateStep:
+        // physical process success does not erase a failed inspection.
+        (step.exitCode !== 0 ||
+          Boolean(step.failureFacts?.length || step.killed || step.outputLimitExceeded) ||
+          (step.termination !== undefined && step.termination !== "exit")),
+    );
+    if (index < 0) {
+      return "";
+    }
+    const step = result.steps[index];
+    return [
+      `Reported failing update step ${index + 1} of ${result.steps.length}: ${JSON.stringify(step.name)}`,
+      JSON.stringify(
+        {
+          exitCode: step.exitCode,
+          signal: step.signal,
+          termination: step.termination,
+          killed: step.killed,
+          outputLimitExceeded: step.outputLimitExceeded,
+          durationMs: step.durationMs,
+          failureFacts: step.failureFacts,
+        },
+        null,
+        2,
+      ),
+      typeof step.stderrTail === "string" ? `stderrTail:\n${step.stderrTail}` : "",
+      typeof step.stdoutTail === "string" ? `stdoutTail:\n${step.stdoutTail}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  } catch {
+    // Incomplete or non-JSON output keeps the existing bounded log representation.
+    return "";
+  }
+}
+
 export function publishDiagnostics(
   artifactRoot,
   destination,
@@ -1920,7 +2011,14 @@ export function publishDiagnostics(
     if (typeof text !== "string" || Buffer.byteLength(text) > inputLimit) {
       throw new Error();
     }
-    const redacted = redactSensitiveText(text, { mode: "tools" });
+    let redacted = redactSensitiveText(text, { mode: "tools" });
+    if (outcome === "failed" && Buffer.byteLength(JSON.stringify(redacted)) > outputLimit) {
+      const context = failedUpdateContext(text, label);
+      if (context) {
+        // Keep execution order explicit; this is a diagnostic prelude, not reordered steps.
+        redacted = `${redactSensitiveText(context, { mode: "tools" })}\n\nCaptured update output (original order):\n${redacted}`;
+      }
+    }
     // Keep the latest startup/native events after redacting the whole input.
     const tail =
       label === "missing-load-path/baseline-gateway.log" ||
