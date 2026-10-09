@@ -18,17 +18,13 @@ vi.mock("../api.js", async (importOriginal) => {
 });
 
 import { MAX_OTEL_LOG_BODY_CHARS } from "./service-constants.js";
-import {
-  MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
-  normalizeOtelLogString,
-  resolveContentCapturePolicy,
-} from "./service-content-normalization.js";
+import { normalizeOtelLogString } from "./service-content-normalization.js";
 import {
   assignOtelModelContentAttributes,
   assignOtelToolContentAttributes,
 } from "./service-genai-content.js";
 
-const CAPTURE_ALL = resolveContentCapturePolicy(true);
+const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 const TRUNCATED_SUFFIX = "...(truncated)";
 const REDACTION_LOOKAHEAD_CHARS = 4096;
 // Built at runtime so the fixtures are not literal credentials.
@@ -65,7 +61,7 @@ const SHRINKING_TOKENS = Array.from({ length: 5 }, () => `sk-${SECRET_BODY.repea
 
 function captureModelCall(inputMessages: unknown[]): Record<string, string | number | boolean> {
   const attributes: Record<string, string | number | boolean> = {};
-  assignOtelModelContentAttributes(attributes, { inputMessages }, CAPTURE_ALL);
+  assignOtelModelContentAttributes(attributes, { inputMessages }, true);
   return attributes;
 }
 
@@ -82,7 +78,7 @@ function captureToolCall(content: {
   toolOutput?: unknown;
 }): Record<string, string | number | boolean> {
   const attributes: Record<string, string | number | boolean> = {};
-  assignOtelToolContentAttributes(attributes, content, CAPTURE_ALL);
+  assignOtelToolContentAttributes(attributes, content, true);
   return attributes;
 }
 

@@ -1,4 +1,3 @@
-/** CLI runner for node-host stdin/stdout command dispatch. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
@@ -96,7 +95,6 @@ async function canReuseNodeHostDeviceToken(params: {
   savedGateway?: NodeHostGatewayConfig;
   gatewayCandidates: readonly NodeHostGatewayConfig[];
   deviceId: string;
-  env?: NodeJS.ProcessEnv;
 }): Promise<boolean> {
   const savedGatewayScope = params.savedGateway
     ? gatewayOriginScope(formatGatewayCandidateUrl(params.savedGateway))
@@ -110,7 +108,7 @@ async function canReuseNodeHostDeviceToken(params: {
       await loadDeviceAuthTokenReadOnly({
         deviceId: params.deviceId,
         role: "node",
-        env: params.env ?? process.env,
+        env: process.env,
       })
     )?.token,
   );
@@ -121,17 +119,10 @@ async function resolveNodeHostGatewayCredentials(params: {
   savedGateway?: NodeHostGatewayConfig;
   gatewayCandidates: readonly NodeHostGatewayConfig[];
   deviceId: string;
-  env?: NodeJS.ProcessEnv;
   envOnly?: boolean;
 }): Promise<{ token?: string; password?: string }> {
-  const env = params.env ?? process.env;
-  if (params.envOnly) {
-    return resolveExplicitGatewayAuth({
-      token: env.OPENCLAW_GATEWAY_TOKEN,
-      password: env.OPENCLAW_GATEWAY_PASSWORD,
-    });
-  }
-  if (await canReuseNodeHostDeviceToken(params)) {
+  const env = process.env;
+  if (params.envOnly || (await canReuseNodeHostDeviceToken(params))) {
     // A co-located Gateway's shared password must not displace the paired node
     // credential. GatewayClient rereads the current token when connecting.
     return resolveExplicitGatewayAuth({
@@ -169,7 +160,28 @@ function buildNodeHostLocalAuthConfig(config: OpenClawConfig): OpenClawConfig {
   return nextConfig;
 }
 
+/**
+ * The saved Gateway endpoint when a node credential exists to reconnect without a setup code.
+ * Node tokens are not bound to an endpoint, so callers must present the reconnect as conditional.
+ */
+export async function loadResumableNodeHostGateway(): Promise<NodeHostGatewayConfig | undefined> {
+  // A failed first enrollment saves the endpoint before any device token exists.
+  const gateway = (await loadNodeHostConfig())?.gateway;
+  const identity = gateway ? loadDeviceIdentityIfPresent() : null;
+  return gateway &&
+    identity &&
+    (await canReuseNodeHostDeviceToken({
+      savedGateway: gateway,
+      gatewayCandidates: [gateway],
+      deviceId: identity.deviceId,
+    }))
+    ? gateway
+    : undefined;
+}
+
 export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
+  const { initializeSqliteRuntimeCapabilities } = await import("../infra/bun-sqlite-library.js");
+  await initializeSqliteRuntimeCapabilities();
   ensureNodeHostStateReady();
   const cfg = getRuntimeConfig();
   const savedConfig = await loadNodeHostConfig();
@@ -256,7 +268,6 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     config: cfg,
     env: process.env,
     enableAgentRuns: true,
-    enableWorkerRuns: true,
     forceWorkerRuns: opts.forceWorkerRuns,
     ephemeral: opts.ephemeral,
     installedAppsSharingEnabled: config.installedAppsSharing,
@@ -274,7 +285,6 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
           savedGateway: savedConfig?.gateway,
           gatewayCandidates,
           deviceId: deviceIdentity.deviceId,
-          env: process.env,
         });
 
   let consecutivePermanentGatewayRejections = 0;
@@ -550,9 +560,11 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
   }
 
   const readinessPromise = startGatewayClientWhenEventLoopReady(client);
-  let readiness;
   try {
-    readiness = await readinessPromise;
+    const readiness = await readinessPromise;
+    if (!readiness.ready) {
+      throw new Error("node host gateway event loop readiness timeout");
+    }
   } catch (error) {
     if (stopping) {
       await stopped;
@@ -561,15 +573,6 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     removeSignalHandlers();
     await stopClientAndMcp();
     throw error;
-  }
-  if (!readiness.ready) {
-    if (stopping) {
-      await stopped;
-      return;
-    }
-    removeSignalHandlers();
-    await stopClientAndMcp();
-    throw new Error("node host gateway event loop readiness timeout");
   }
   await stopped;
 }

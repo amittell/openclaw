@@ -5,7 +5,7 @@ import {
   redactSensitiveText,
 } from "../api.js";
 
-export const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
+const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 export const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
 const MAX_OTEL_ERROR_MESSAGE_CHARS = 4 * 1024;
 const PRELOADED_OTEL_SDK_ENV = "OPENCLAW_OTEL_PRELOADED";
@@ -54,26 +54,6 @@ const OPEN_QUOTE_PROBE_ESCAPE_CHARS = 64;
 const OPEN_QUOTE_PROBE_VALUE = "0".repeat(24);
 const OPEN_QUOTE_SEPARATOR_CHAR_RE = /[\s:=]/;
 const NON_WORD_CHAR_RE = /\W/;
-
-export type OtelContentCapturePolicy = {
-  inputMessages: boolean;
-  outputMessages: boolean;
-  toolInputs: boolean;
-  toolOutputs: boolean;
-  systemPrompt: boolean;
-  toolDefinitions: boolean;
-  logBodies: boolean;
-};
-
-const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
-  inputMessages: false,
-  outputMessages: false,
-  toolInputs: false,
-  toolOutputs: false,
-  systemPrompt: false,
-  toolDefinitions: false,
-  logBodies: false,
-};
 
 // Registered secrets only match whole, so the lookahead also covers the longest registered surface
 // form (URL-encoded and JSON-escaped forms included). That length widens every clipped string's
@@ -259,20 +239,6 @@ export function normalizeOtelErrorMessage(value: string | undefined): string | u
   return normalized || undefined;
 }
 
-export function resolveContentCapturePolicy(value: unknown): OtelContentCapturePolicy {
-  return value === true
-    ? {
-        inputMessages: true,
-        outputMessages: true,
-        toolInputs: true,
-        toolOutputs: true,
-        systemPrompt: false,
-        toolDefinitions: true,
-        logBodies: true,
-      }
-    : NO_CONTENT_CAPTURE;
-}
-
 export function hasPreloadedOtelSdk(): boolean {
   return process.env[PRELOADED_OTEL_SDK_ENV] === "1";
 }
@@ -282,21 +248,14 @@ export function normalizeOtelContentValue(value: unknown): string | undefined {
     return normalizeOtelLogString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
   }
   if (Array.isArray(value)) {
-    const items: string[] = [];
-    for (const item of value.slice(0, MAX_OTEL_CONTENT_ARRAY_ITEMS)) {
-      if (typeof item === "string") {
-        items.push(item);
-      }
-    }
+    const items = value
+      .slice(0, MAX_OTEL_CONTENT_ARRAY_ITEMS)
+      .filter((item): item is string => typeof item === "string");
     if (items.length > 0) {
       return normalizeOtelLogString(items.join("\n"), MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
     }
   }
-  const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
-  if (json) {
-    return json;
-  }
-  return undefined;
+  return safeJsonString(value);
 }
 
 const JSON_TRUNCATION_STRING_BUDGETS = [8192, 4096, 2048, 1024, 512, 256, 128, 64, 32] as const;
@@ -312,65 +271,46 @@ const JSON_TRUNCATION_ARRAY_ITEM_BUDGETS = [
 const JSON_TRUNCATION_MAX_OBJECT_FIELDS = 64;
 const JSON_TRUNCATION_MAX_DEPTH = 8;
 
-type JsonTruncationOptions = {
-  maxArrayItems: number;
-  maxDepth: number;
-  maxObjectFields: number;
-  maxStringChars: number;
-  seen: WeakSet<object>;
-  truncateText: (value: string, maxChars: number) => string;
-};
-
-export function safeJsonString(value: unknown, maxChars: number): string | undefined {
+export function safeJsonString(value: unknown): string | undefined {
   if (isOmittedFromJson(value)) {
     return undefined;
   }
-  const unredactedExact = exceedsJsonChars(value, maxChars) ? undefined : stringifyJson(value);
-  if (unredactedExact && unredactedExact.length <= maxChars) {
+  const unredactedExact = exceedsJsonChars(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS)
+    ? undefined
+    : stringifyJson(value);
+  if (unredactedExact && unredactedExact.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
     const exact = stringifyJsonForOtelAttribute(value, { redactStrings: true });
-    if (exact && exact.length <= maxChars) {
+    if (exact && exact.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
       return exact;
     }
   }
   // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
   const lookaheadChars = otelRedactionLookaheadChars();
   const maxRedactionChars = Number.isFinite(lookaheadChars)
-    ? maxChars * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR
+    ? MAX_OTEL_CONTENT_ATTRIBUTE_CHARS * MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR
     : Number.POSITIVE_INFINITY;
   let redactionCapped = false;
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
       let redactionChars = 0;
-      const budget = {
-        maxArrayItems,
-        maxDepth: JSON_TRUNCATION_MAX_DEPTH,
-        maxObjectFields: JSON_TRUNCATION_MAX_OBJECT_FIELDS,
-        maxStringChars,
-      };
       const unredacted = stringifyJson(
-        truncateJsonValueForOtelAttribute(value, {
-          ...budget,
-          seen: new WeakSet<object>(),
-          truncateText: (text, textMaxChars) => {
-            redactionChars += Math.min(text.length, textMaxChars + lookaheadChars);
-            return text.length > textMaxChars ? clipJsonText(text, textMaxChars) : text;
-          },
+        truncateJsonValueForOtelAttribute(value, maxArrayItems, (text) => {
+          redactionChars += Math.min(text.length, maxStringChars + lookaheadChars);
+          return text.length > maxStringChars ? clipJsonText(text, maxStringChars) : text;
         }),
       );
-      if (!unredacted || unredacted.length > maxChars) {
+      if (!unredacted || unredacted.length > MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
         continue;
       }
       if (redactionChars > maxRedactionChars) {
         redactionCapped = true;
         continue;
       }
-      const candidate = truncateJsonValueForOtelAttribute(value, {
-        ...budget,
-        seen: new WeakSet<object>(),
-        truncateText: truncateJsonTextForOtelAttribute,
-      });
+      const candidate = truncateJsonValueForOtelAttribute(value, maxArrayItems, (text) =>
+        truncateJsonTextForOtelAttribute(text, maxStringChars),
+      );
       const json = stringifyJsonForOtelAttribute(candidate);
-      if (json && json.length <= maxChars) {
+      if (json && json.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
         return json;
       }
     }
@@ -380,7 +320,7 @@ export function safeJsonString(value: unknown, maxChars: number): string | undef
     reason: summaryReason(value, redactionCapped),
     type: describeJsonValue(value),
   });
-  return summary && summary.length <= maxChars ? summary : undefined;
+  return summary && summary.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS ? summary : undefined;
 }
 
 // A candidate that fit the attribute but not the redaction cap was dropped for its redaction
@@ -458,73 +398,55 @@ function stringifyJsonForOtelAttribute(
   }
 }
 
+// `truncateText` clips each string to the candidate's string budget; the budget search counts
+// redaction work with one callback and exports with another.
 function truncateJsonValueForOtelAttribute(
-  value: unknown,
-  options: JsonTruncationOptions,
+  input: unknown,
+  maxArrayItems: number,
+  truncateText: (value: string) => string,
 ): unknown {
-  if (typeof value === "string") {
-    return options.truncateText(value, options.maxStringChars);
+  const seen = new WeakSet<object>();
+  function visit(value: unknown, depth: number): unknown {
+    if (typeof value === "string" || typeof value === "bigint") {
+      return truncateText(String(value));
+    }
+    if (typeof value === "number" || typeof value === "boolean" || value === null) {
+      return value;
+    }
+    if (typeof value !== "object") {
+      return undefined;
+    }
+    if (depth <= 0) {
+      return { truncated: true, reason: "max_depth" };
+    }
+    if (seen.has(value)) {
+      const marker = { truncated: true, reason: "circular_reference" };
+      return Array.isArray(value) ? [marker] : marker;
+    }
+    seen.add(value);
+    let result: unknown;
+    if (Array.isArray(value)) {
+      const items = value.slice(0, maxArrayItems).map((item) => visit(item, depth - 1));
+      if (value.length > items.length) {
+        items.push({ truncated: true, omittedItems: value.length - items.length });
+      }
+      result = items;
+    } else {
+      const object: Record<string, unknown> = {};
+      const entries = Object.entries(value).filter(([, field]) => !isOmittedFromJson(field));
+      for (const [key, field] of entries.slice(0, JSON_TRUNCATION_MAX_OBJECT_FIELDS)) {
+        object[key] = visit(field, depth - 1);
+      }
+      if (entries.length > JSON_TRUNCATION_MAX_OBJECT_FIELDS) {
+        object.truncated = true;
+        object.omittedFields = entries.length - JSON_TRUNCATION_MAX_OBJECT_FIELDS;
+      }
+      result = object;
+    }
+    seen.delete(value);
+    return result;
   }
-  if (typeof value === "number" || typeof value === "boolean" || value === null) {
-    return value;
-  }
-  if (typeof value === "bigint") {
-    return options.truncateText(String(value), options.maxStringChars);
-  }
-  if (isOmittedFromJson(value)) {
-    return undefined;
-  }
-  if (options.maxDepth <= 0) {
-    return { truncated: true, reason: "max_depth" };
-  }
-  if (Array.isArray(value)) {
-    return truncateJsonArrayForOtelAttribute(value, options);
-  }
-  if (typeof value === "object") {
-    return truncateJsonObjectForOtelAttribute(value as Record<string, unknown>, options);
-  }
-  return undefined;
-}
-
-function truncateJsonArrayForOtelAttribute(
-  value: readonly unknown[],
-  options: JsonTruncationOptions,
-): unknown[] {
-  if (options.seen.has(value)) {
-    return [{ truncated: true, reason: "circular_reference" }];
-  }
-  options.seen.add(value);
-  const nextOptions = { ...options, maxDepth: options.maxDepth - 1 };
-  const items = value
-    .slice(0, options.maxArrayItems)
-    .map((item) => truncateJsonValueForOtelAttribute(item, nextOptions));
-  if (value.length > items.length) {
-    items.push({ truncated: true, omittedItems: value.length - items.length });
-  }
-  options.seen.delete(value);
-  return items;
-}
-
-function truncateJsonObjectForOtelAttribute(
-  value: Record<string, unknown>,
-  options: JsonTruncationOptions,
-): Record<string, unknown> {
-  if (options.seen.has(value)) {
-    return { truncated: true, reason: "circular_reference" };
-  }
-  options.seen.add(value);
-  const nextOptions = { ...options, maxDepth: options.maxDepth - 1 };
-  const result: Record<string, unknown> = {};
-  const entries = Object.entries(value).filter(([, field]) => !isOmittedFromJson(field));
-  for (const [key, field] of entries.slice(0, options.maxObjectFields)) {
-    result[key] = truncateJsonValueForOtelAttribute(field, nextOptions);
-  }
-  if (entries.length > options.maxObjectFields) {
-    result.truncated = true;
-    result.omittedFields = entries.length - options.maxObjectFields;
-  }
-  options.seen.delete(value);
-  return result;
+  return visit(input, JSON_TRUNCATION_MAX_DEPTH);
 }
 
 function clipJsonText(value: string, maxChars: number): string {
