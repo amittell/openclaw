@@ -67,4 +67,48 @@ describe("health RPC runtime-config capability", () => {
       });
     },
   );
+
+  it("refreshes when the cached snapshot is retired during its diagnostic reads", async () => {
+    await withStateDirEnv("openclaw-health-runtime-config-", async () => {
+      const cached: HealthSummary = {
+        ...healthWithRuntimeConfig(),
+        runtimeConfig: { state: "ok" },
+      };
+      const refreshed = healthWithRuntimeConfig();
+      // The shared owner stops returning a snapshot once a config observation completes.
+      const getHealthCache = vi
+        .fn<() => HealthSummary | null>()
+        .mockReturnValueOnce(cached)
+        .mockReturnValue(null);
+      const refreshHealthSnapshot = vi.fn(async () => refreshed);
+      const respond = vi.fn();
+
+      await healthHandlers.health!({
+        req: {} as never,
+        params: {},
+        respond: respond as never,
+        context: {
+          getHealthCache,
+          refreshHealthSnapshot,
+          getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: {} }),
+          logHealth: { error: vi.fn() },
+        } as never,
+        client: {
+          connect: {
+            role: "operator",
+            scopes: ["operator.read"],
+            caps: [GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH],
+          },
+        } as never,
+        isWebchatConnect: () => false,
+      });
+
+      expect(respond).toHaveBeenCalledOnce();
+      const [ok, payload, , meta] = respond.mock.calls[0] ?? [];
+      expect(ok).toBe(true);
+      expect((payload as HealthSummary).runtimeConfig).toEqual(runtimeConfig);
+      expect(meta).toBeUndefined();
+      expect(refreshHealthSnapshot).toHaveBeenCalledOnce();
+    });
+  });
 });
