@@ -46,12 +46,12 @@ import { createEventBus } from "../sessions/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../sessions/extensions/loader.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { SettingsManager } from "../sessions/settings-manager.js";
-import { createPreparedCodexCompactionPlans } from "./compact.hooks.codex-plans.test-support.js";
 import {
   expectRecordFields,
   findMockCall,
   mockCallArg,
 } from "./compact.hooks.assertions.test-support.js";
+import { createPreparedCodexCompactionPlans } from "./compact.hooks.codex-plans.test-support.js";
 import {
   expectedNativeCompactionOptions,
   useCompactHooksSessionFixture,
