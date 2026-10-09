@@ -422,10 +422,8 @@ describe("invalidateUngroundedMediaPrefixes", () => {
   });
 
   it("folds a drive-letter root", () => {
-    // Not a regression test: this already held. It pins WHY, which is not obvious - URI_PREFIX
-    // matches "C:" as a SCHEME, so a Windows root takes the URI branch and the parser hands
-    // back pathname "/managed/state/media". A reviewer read this as broken; the control proved
-    // it was not. Narrowing URI_PREFIX would silently disable folding on Windows.
+    // "C:" also parses as a URL scheme. The fold must not take that reading: the resolver
+    // opens a drive path with path.win32, so that is the parser a drive root is folded with.
     expect(
       invalidateUngroundedMediaPrefixes(
         String.raw`C:\managed\state\.\media\x.png`,
@@ -709,6 +707,72 @@ describe("invalidateUngroundedMediaPrefixes", () => {
       "~tester/.openclaw/media/x.png",
       "~/.openclaw/media-old/x.png",
       "cd ~ && ls .openclaw/media",
+    ]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
+
+  it.each([
+    ["~/.openclaw/./media/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    [String.raw`~\.openclaw\.\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["see ~/../Bot/.openclaw/media/x.png", `see ${REDACTED}/x.png`],
+  ])("expands a leading ~ onto a Windows drive root: %j", (input, expected) => {
+    // resolveUserPath turns ~ into C:\Users\Bot before path.win32 normalizes, so the fold
+    // has to expand it for a drive root as it does for a POSIX one.
+    const roots = [
+      "C:/Users/Bot/.openclaw/media",
+      String.raw`C:\Users\Bot\.openclaw\media`,
+      "~/.openclaw/media",
+      String.raw`~\.openclaw\media`,
+    ];
+    for (const homeDir of [String.raw`C:\Users\Bot`, "C:/Users/Bot"]) {
+      const g = grounding(roots, [], true, [], homeDir);
+      expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+    }
+  });
+
+  it("leaves ~ spellings whose home is on another Windows drive", () => {
+    // The expansion lands on D:, and what follows the ~ names no path under the C: root.
+    const g = grounding(["C:/Users/Bot/.openclaw/media"], [], true, [], "D:/Users/Bot");
+    for (const benign of ["~/.openclaw/media/x.png", "~/.openclaw/./media/x.png"]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
+
+  it.each([
+    ["C://Users/Bot/.openclaw/media/x.png", `${REDACTED}/x.png`],
+    ["C:/../Users/Bot/.openclaw/media/x.png", `${REDACTED}/x.png`],
+    [String.raw`C:\Users\Bot\.openclaw\x#\..\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["C:/Users/Bot/.openclaw/a?b/../media/x.png", `${REDACTED}/x.png`],
+    ["C:/Users/Bot/.openclaw/100%/../media/x.png", `${REDACTED}/x.png`],
+    ["/Users/Bot/.openclaw/media/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    [String.raw`\Users\Bot\.openclaw\.\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["MEDIA:/Users/Bot/.openclaw/./media/x.png", `MEDIA:${REDACTED}/x.png`],
+    ["/m/x.png", `${REDACTED}/x.png`],
+  ])("folds a win32 spelling the resolver lands on the drive root: %j", (input, expected) => {
+    // path.win32 collapses a doubled slash after the drive, keeps "#", "?" and "%" as path
+    // bytes, and resolves a rooted path with no drive on the current one. The URL parser
+    // reads an authority, a fragment, a query and an escape in the same spellings.
+    const roots = [
+      "C:/Users/Bot/.openclaw/media",
+      String.raw`C:\Users\Bot\.openclaw\media`,
+      "//?/C:/Users/Bot/.openclaw/media",
+      "C:/m",
+    ];
+    const g = grounding(roots, [], true, [], String.raw`C:\Users\Bot`);
+    expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+  });
+
+  it("leaves win32 spellings that land outside the drive root", () => {
+    const g = grounding(["C:/Users/Bot/.openclaw/media"], [], true, [], String.raw`C:\Users\Bot`);
+    for (const benign of [
+      "//Users/Bot/.openclaw/media/x.png",
+      String.raw`\\Users\Bot\.openclaw\media\x.png`,
+      "C://Users/Bot/other/media/x.png",
+      "C:Users/Bot/.openclaw/media/x.png",
+      "C:/Users/Bot/.openclaw/%6dedia/x.png",
+      "/Users/Bot/.openclaw/media-old/x.png",
+      "https://example.com/Users/Bot/.openclaw/media/x.png",
     ]) {
       expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
     }

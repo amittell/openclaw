@@ -30,6 +30,10 @@ const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
 const URL_DELETED_RUNS = /[\t\n\r]+/gu;
 // The `~` spellings resolveUserPath expands; `~name` is left to the filesystem.
 const HOME_PREFIX = /^~(?=$|[\\/])/u;
+// A drive-letter path. The resolver reads these with path.win32, never with the URL parser.
+const DRIVE_ROOTED = /^[a-z]:[/\\]/iu;
+// path.win32 resolves "\x" and "/x" on the current drive; "\\x" and "//x" are UNC.
+const DRIVELESS_ROOTED = /^[\\/](?![\\/])/u;
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -70,6 +74,8 @@ function foldCasePreservingLength(value: string): string {
 type NormalizableRoot = {
   /** Parsed scheme and authority for a URI root; null for a filesystem root. */
   uri: { protocol: string; host: string } | null;
+  /** Lowercase drive ("c:") of a win32 root, whose `path` then starts after it; else null. */
+  drive: string | null;
   /** Length of the raw scheme+authority text, so offsets stay in token coordinates. */
   prefixLength: number;
   path: string;
@@ -91,11 +97,35 @@ function normalizedFilesystemPath(value: string): string {
 }
 
 /**
+ * What follows the drive once path.win32 has normalized `value`, in the shape the fold
+ * compares; undefined when the result is not a path on `drive` (UNC, drive-relative, another
+ * drive). path.win32 is the resolver's parser here: "#", "?" and "%" are path bytes to it and a
+ * doubled slash after the drive collapses, where the URL parser reads a fragment, a query, an
+ * escape and an authority.
+ */
+function win32PathOnDrive(value: string, drive: string): string | undefined {
+  const normalized = path.win32.normalize(value);
+  return DRIVE_ROOTED.test(normalized) && normalized.slice(0, 2).toLowerCase() === drive
+    ? normalizedFilesystemPath(`/${normalized.slice(3)}`)
+    : undefined;
+}
+
+/** A win32 spelling made absolute the way the resolver does before path.win32 reads it. */
+function win32AbsoluteSpelling(candidate: string, drive: string, homeDir: string): string {
+  if (HOME_PREFIX.test(candidate)) {
+    return `${homeDir}${candidate.slice(1)}`;
+  }
+  // The current drive is not knowable here; taking the root's can only redact more.
+  return DRIVELESS_ROOTED.test(candidate) ? `${drive}${candidate}` : candidate;
+}
+
+/**
  * Length of the raw prefix of `token` that the platform folds onto `root`, 0 when no prefix
  * does, or UNDECIDABLE_PREFIX when the spelling cannot be decided here.
  *
  * Equivalence is decided by the parsers the resolver itself uses - WHATWG `URL` for a URI
- * root, `path.posix.normalize` for a filesystem root - rather than by a fold written here.
+ * root, `path.win32.normalize` for a drive root, `path.posix.normalize` for any other
+ * filesystem root - rather than by a fold written here.
  * Four consecutive review rounds each found a spelling a hand-written walk missed (`./root`,
  * `../root`, `//root`, `root2/../root`, `x/../root`, `%2e/root`) and a fix for one round's
  * spelling opened the next round's. Every one of them folds correctly in the parser, so the
@@ -167,6 +197,15 @@ function resolvedManagedPrefix(
         continue;
       }
       resolved = normalizedFilesystemPath(decodedPath);
+    } else if (root.drive) {
+      const onDrive = win32PathOnDrive(
+        win32AbsoluteSpelling(candidate, root.drive, homeDir),
+        root.drive,
+      );
+      if (onDrive === undefined) {
+        continue;
+      }
+      resolved = onDrive;
     } else {
       // The resolver's resolveUserPath expands a leading "~" before it normalizes.
       resolved = normalizedFilesystemPath(
@@ -230,7 +269,9 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
   const normalizableRoots: NormalizableRoot[] = grounding.rootAliases
     .concat(grounding.uriRoots)
     .map((alias) => {
-      const prefix = URI_PREFIX.exec(alias)?.[0] ?? "";
+      // "C:" would parse as a scheme, and the URL parser is not how the resolver reads it.
+      const drive = DRIVE_ROOTED.test(alias) ? alias.slice(0, 2).toLowerCase() : null;
+      const prefix = drive ? "" : (URI_PREFIX.exec(alias)?.[0] ?? "");
       if (prefix) {
         let url: URL;
         try {
@@ -251,6 +292,7 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
           .map((segment) => foldCasePreservingLength(segment));
         return {
           uri: { protocol: url.protocol, host: url.host },
+          drive: null,
           prefixLength: url.protocol.length,
           path: rootPath,
           lastSegment: rootPath.split("/").pop() ?? "",
@@ -264,16 +306,20 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
           lowerPrefix: foldCasePreservingLength(url.protocol),
         };
       }
-      if (!/^[/\\]/u.test(alias) && !/^[a-z]:[/\\]/iu.test(alias)) {
+      if (!drive && !/^[/\\]/u.test(alias)) {
         return null;
       }
-      const rootPath = normalizedFilesystemPath(alias);
+      const rootPath = drive ? win32PathOnDrive(alias, drive) : normalizedFilesystemPath(alias);
+      if (rootPath === undefined) {
+        return null;
+      }
       const lowerSegments = rootPath
         .split("/")
         .filter(Boolean)
         .map((segment) => foldCasePreservingLength(segment));
       return {
         uri: null,
+        drive,
         prefixLength: 0,
         path: rootPath,
         lastSegment: rootPath.split("/").pop() ?? "",
@@ -286,8 +332,8 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
     })
     .filter((entry) => entry !== null)
     // Drops a URI root with no path of its own: "media://inbound" normalizes to ".". A
-    // drive-letter root does NOT need an arm here - URI_PREFIX matches "C:" as a scheme, so
-    // it takes the branch above and its pathname already starts with "/".
+    // drive-letter root does NOT need an arm here - its drive is held apart, so its path
+    // starts with "/" like the others.
     .filter(({ path: rootPath, lastSegment }) => rootPath.startsWith("/") && lastSegment !== "");
   // Conservative gate, and conservative is the whole point: it may admit a token the parser
   // then rejects, but it must never reject one the parser would fold onto a root. Every
