@@ -201,7 +201,102 @@ describe("OTEL content redaction cost", () => {
   });
 });
 
+describe("OTEL complete export after masking", () => {
+  // Each line's token masks to 11 characters, so the dump's JSON shrinks by about half.
+  const credentialsDump = (lines: number) =>
+    Array.from(
+      { length: lines },
+      (_, index) =>
+        `GITHUB_TOKEN_${String(index).padStart(5, "0")}=ghp_${SECRET_BODY}${String(index).padStart(4, "0")}`,
+    ).join("\n");
+  // Twelve characters from the middle of a token: a mask keeps only its first six and last four.
+  const TOKEN_MIDDLE = SECRET_BODY.slice(8, 20);
+  const exportedJson = (inputMessages: unknown[]) =>
+    Object.values(captureModelCall(inputMessages))
+      .map(String)
+      .filter((value) => value.startsWith("["));
+  // Two JSON serializations (`input.value` reuses one), each redacted whole (strings, then
+  // JSON) and then truncated as before.
+  const wholeThenTruncatedMaxWork = 2 * (8 + 9) * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS;
+
+  it("exports a value whose JSON fits the attribute only once it is masked", () => {
+    // Eight tool results of about 24,000 characters: over the attribute together, under it masked.
+    const inputMessages = toolResultTranscript(8, 1, credentialsDump(400));
+    expect(JSON.stringify(inputMessages).length).toBeGreaterThan(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+
+    const exported = exportedJson(inputMessages);
+
+    expect(exported).toHaveLength(3);
+    for (const json of exported) {
+      expect(json.length).toBeLessThanOrEqual(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+      expect(json).not.toContain(TRUNCATED_SUFFIX);
+      expect(json).not.toContain(TOKEN_MIDDLE);
+      expect(json.match(/GITHUB_TOKEN_00399=/g)).toHaveLength(8);
+    }
+  });
+
+  it("masks tokens across 16,384-character offsets in a string exported whole", () => {
+    // One string of about 180,000 characters. Configured patterns run in 16,384-character chunks
+    // on text this long; built-in rules must mask a token wherever it falls. The 30-character
+    // first line puts a token across each of these offsets.
+    const text = `${"x".repeat(29)}\n${credentialsDump(3000)}`;
+    for (const offset of [16_384, 32_768, 65_536]) {
+      const tokenStart = text.lastIndexOf("ghp_", offset);
+      expect(tokenStart).toBeLessThan(offset);
+      expect(tokenStart + 40).toBeGreaterThan(offset);
+    }
+    const inputMessages = toolResultTranscript(1, 1, text);
+    expect(JSON.stringify(inputMessages).length).toBeGreaterThan(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+
+    const exported = exportedJson(inputMessages);
+
+    expect(exported).toHaveLength(3);
+    for (const json of exported) {
+      expect(json).not.toContain(TRUNCATED_SUFFIX);
+      expect(json).not.toContain(TOKEN_MIDDLE);
+      expect(json).toContain("GITHUB_TOKEN_02999=");
+    }
+  });
+
+  it("truncates a value under 4x the attribute that masking does not shrink enough", () => {
+    const inputMessages = toolResultTranscript(8, 1, "o".repeat(20_000));
+    let exported: string[] = [];
+
+    const work = redactionCharsFor(() => {
+      exported = exportedJson(inputMessages);
+    });
+
+    expect(exported).toHaveLength(3);
+    for (const json of exported) {
+      expect(json).toContain(TRUNCATED_SUFFIX);
+      expect(json.length).toBeLessThanOrEqual(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    }
+    expect(work).toBeLessThan(wholeThenTruncatedMaxWork);
+  });
+
+  it("does not redact a value just over 4x the attribute whole", () => {
+    // Four tool results of 150,000 characters are past 4x the attribute, so they are truncated
+    // without a whole-value pass and doubling them does not change the work.
+    const capture = (scale: number) =>
+      exportedJson(toolResultTranscript(4, 1, "o".repeat(scale * 150_000)));
+    expect(JSON.stringify(toolResultTranscript(4, 1, "o".repeat(150_000))).length).toBeGreaterThan(
+      4 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
+    );
+
+    const work = redactionCharsFor(() => capture(1));
+
+    expect(redactionCharsFor(() => capture(2))).toBe(work);
+    expect(work).toBeLessThan(2 * 9 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    for (const json of capture(1)) {
+      expect(json).toContain(TRUNCATED_SUFFIX);
+    }
+  });
+});
+
 describe("OTEL content redaction at the export cut", () => {
+  // The text after each cut puts a value past 4x the attribute, so it gets no whole-value pass
+  // and these cases pay only for their windows.
+  const CUT_TAIL_CHARS = 600_000;
   // The first JSON budget keeps 8,192 characters of a clipped string, suffix included.
   const jsonStringChars = 8192;
   const messagePart = {
@@ -256,7 +351,7 @@ describe("OTEL content redaction at the export cut", () => {
 
   it.each(exportPaths)("masks a token that crosses the cut in $name", (path) => {
     // The token starts 10 characters before the cut; unmasked, the export would end "glpat-A1b2".
-    const text = `${"x".repeat(path.keptChars - 11)} ${SECRET_TOKEN} ${"y".repeat(400_000)}`;
+    const text = `${"x".repeat(path.keptChars - 11)} ${SECRET_TOKEN} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
     const exported = path.exportText(text);
 
@@ -265,9 +360,23 @@ describe("OTEL content redaction at the export cut", () => {
     expect(exported).not.toContain("glpat-A1b2");
   });
 
+  it("masks a token that crosses the cut after a whole-value pass that does not fit", () => {
+    // Under 4x the attribute, so the value is redacted whole first. It stays too large, and the
+    // truncated export still has to mask the token at its cut.
+    const text = `${"x".repeat(messagePart.keptChars - 11)} ${SECRET_TOKEN} ${"y".repeat(300_000)}`;
+    expect(text.length).toBeGreaterThan(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    expect(text.length).toBeLessThan(3 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+
+    const exported = messagePart.exportText(text);
+
+    expect(exported).toContain(TRUNCATED_SUFFIX);
+    expect(exported).toContain("glpat-…");
+    expect(exported).not.toContain("glpat-A1b2");
+  });
+
   it.each(exportPaths)("drops a private key cut off before its end line in $name", (path) => {
     const keyBlock = `-----BEGIN PRIVATE KEY-----\n${PRIVATE_KEY_BODY}\n-----END PRIVATE KEY-----`;
-    const text = `${"x".repeat(path.keptChars - 400)}\n${keyBlock}\n${"y".repeat(400_000)}`;
+    const text = `${"x".repeat(path.keptChars - 400)}\n${keyBlock}\n${"y".repeat(CUT_TAIL_CHARS)}`;
 
     const exported = path.exportText(text);
 
@@ -282,7 +391,7 @@ describe("OTEL content redaction at the export cut", () => {
         // The token starts 200 characters before the cut, so its header and part of its payload
         // would be exported.
         expect(jwt.lastIndexOf(".")).toBeGreaterThan(200 + REDACTION_LOOKAHEAD_CHARS);
-        const text = `${"x".repeat(path.keptChars - 201)} ${jwt} ${"y".repeat(400_000)}`;
+        const text = `${"x".repeat(path.keptChars - 201)} ${jwt} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
         const exported = path.exportText(text);
 
@@ -298,7 +407,7 @@ describe("OTEL content redaction at the export cut", () => {
   it.each(exportPaths)(
     "masks a JSON secret whose closing quote lies past the redaction window in $name",
     (path) => {
-      const text = `${"x".repeat(path.keptChars - 200)} {"password": "${LONG_SECRET}"} ${"y".repeat(400_000)}`;
+      const text = `${"x".repeat(path.keptChars - 200)} {"password": "${LONG_SECRET}"} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
       const exported = path.exportText(text);
 
@@ -349,7 +458,7 @@ describe("OTEL content redaction at the export cut", () => {
   ])("masks an open $name value at the cut", ({ open, value, close }) => {
     // The value starts 200 characters before the cut, however long its key and separator are.
     const pad = "x".repeat(messagePart.keptChars - 201 - open.length);
-    const text = `${pad} ${open}${value}${close} ${"y".repeat(400_000)}`;
+    const text = `${pad} ${open}${value}${close} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
     const exported = messagePart.exportText(text);
 
@@ -363,7 +472,7 @@ describe("OTEL content redaction at the export cut", () => {
       // Configured patterns can need any amount of text: this match starts 200 characters before
       // the cut and ends past the lookahead, so only whole-value redaction masks it.
       const secret = `SECRETSTART${"q".repeat(5000)}END`;
-      const text = `${"x".repeat(path.keptChars - 201)} ${secret} ${"y".repeat(400_000)}`;
+      const text = `${"x".repeat(path.keptChars - 201)} ${secret} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
       const exported = withRedactPatterns(["SECRETSTART[q]{5000}END"], () => path.exportText(text));
 
@@ -374,7 +483,7 @@ describe("OTEL content redaction at the export cut", () => {
 
   it("keeps long base64url JSON with no dot that crosses the window end", () => {
     // It starts like a JWT header, but a JWT header ends at a dot.
-    const text = `${"x".repeat(messagePart.keptChars - 200)} ${LONG_JWT_PAYLOAD} ${"y".repeat(400_000)}`;
+    const text = `${"x".repeat(messagePart.keptChars - 200)} ${LONG_JWT_PAYLOAD} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
     expect(messagePart.exportText(text)).toContain(LONG_JWT_PAYLOAD.slice(0, 150));
   });
@@ -399,7 +508,7 @@ describe("OTEL content redaction at the export cut", () => {
       ).not.toContain("LEAKMARK");
       const messagePad = "x".repeat(messagePart.keptChars - 200 - open.length);
       const attributes = captureModelCall([
-        { role: "user", content: `${messagePad}${open}${value}" ${"z".repeat(400_000)}` },
+        { role: "user", content: `${messagePad}${open}${value}" ${"z".repeat(CUT_TAIL_CHARS)}` },
       ]);
       for (const key of ["gen_ai.input.messages", "openclaw.content.input_messages"]) {
         expect(String(attributes[key]), `${key}, filler ${filler}`).not.toContain("LEAKMARK");
@@ -409,7 +518,7 @@ describe("OTEL content redaction at the export cut", () => {
 
   it("keeps text after a quote that a line break leaves unclosed", () => {
     const prose = "ordinary words ".repeat(400);
-    const text = `${"x".repeat(messagePart.keptChars - 200)} Set password: "\n${prose}" ${"y".repeat(400_000)}`;
+    const text = `${"x".repeat(messagePart.keptChars - 200)} Set password: "\n${prose}" ${"y".repeat(CUT_TAIL_CHARS)}`;
 
     expect(messagePart.exportText(text)).toContain("ordinary words ordinary words");
   });
@@ -421,7 +530,7 @@ describe("OTEL content redaction at the export cut", () => {
       // reaches the window end, where the cut leaves 20 characters of the secret unmatched.
       const head = `${SHRINKING_TOKENS} `;
       const pad = "x".repeat(path.windowChars - head.length - 21);
-      const text = `${head}${pad} ${AWS_STYLE_SECRET} ${"y".repeat(400_000)}`;
+      const text = `${head}${pad} ${AWS_STYLE_SECRET} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
       const exported = path.exportText(text);
 
@@ -460,7 +569,7 @@ describe("OTEL content redaction at the export cut", () => {
     for (const url of urls) {
       for (const length of [5000, 10_000]) {
         const password = `${SECRET_BODY}${"p".repeat(length - SECRET_BODY.length)}`;
-        const text = `${"x".repeat(path.keptChars - 201)} ${url(password)} ${"y".repeat(400_000)}`;
+        const text = `${"x".repeat(path.keptChars - 201)} ${url(password)} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
         const exported = path.exportText(text);
 
@@ -475,7 +584,7 @@ describe("OTEL content redaction at the export cut", () => {
     "keeps the port and path of %s when they cross the cut",
     (url) => {
       // The path's slash ends what could be a password, so the port is not one.
-      const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(400_000)}`;
+      const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
       expect(messagePart.exportText(text)).toContain(`${url}aaaa`);
     },
@@ -488,7 +597,7 @@ describe("OTEL content redaction at the export cut", () => {
       // ends past the default lookahead; unmasked, the export would end with its first 10.
       const secret = generateSecureToken({ bytes: 3456, redact: true });
       expect(secret.length).toBeGreaterThan(REDACTION_LOOKAHEAD_CHARS);
-      const text = `${"x".repeat(path.keptChars - 11)} ${secret} ${"y".repeat(400_000)}`;
+      const text = `${"x".repeat(path.keptChars - 11)} ${secret} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
       const exported = path.exportText(text);
 

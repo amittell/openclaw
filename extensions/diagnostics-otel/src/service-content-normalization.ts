@@ -19,6 +19,13 @@ const MIN_OTEL_REDACTION_LOOKAHEAD_CHARS = 4096;
 // window per clipped string; a candidate over it falls through to the next, smaller budget.
 // Masks and quote probes can make a clipped string cost up to five windows.
 const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
+// A value whose JSON is over the attribute budget can still fit once its secrets are masked: a
+// credentials dump shrinks by about half, a log of bearer JWTs by more. JSON up to 4x the budget is
+// redacted whole first and exported whole if it then fits. That pass sends each string, then the
+// JSON, to the redactor: at most 8x the budget, the cap a truncated candidate has. Built-in rules
+// and registered values match over the whole text, so a secret is masked wherever it falls;
+// configured patterns run in chunks on long text here as in every whole-value pass.
+const MAX_OTEL_WHOLE_JSON_CHARS_PER_EXPORT_CHAR = 4;
 // Some secrets end with a part the window can cut off: a private key's END line, the closing
 // quote of a quoted value (JSON secret keys, quoted assignments, CLI flags), a JWT's signature,
 // or the `@` after a URL password. A secret the window leaves open is masked from where its value
@@ -275,10 +282,10 @@ export function safeJsonString(value: unknown): string | undefined {
   if (isOmittedFromJson(value)) {
     return undefined;
   }
-  const unredactedExact = exceedsJsonChars(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS)
-    ? undefined
-    : stringifyJson(value);
-  if (unredactedExact && unredactedExact.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
+  const maxWholeChars =
+    MAX_OTEL_CONTENT_ATTRIBUTE_CHARS * MAX_OTEL_WHOLE_JSON_CHARS_PER_EXPORT_CHAR;
+  const unredactedExact = exceedsJsonChars(value, maxWholeChars) ? undefined : stringifyJson(value);
+  if (unredactedExact && unredactedExact.length <= maxWholeChars) {
     const exact = stringifyJsonForOtelAttribute(value, { redactStrings: true });
     if (exact && exact.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
       return exact;
