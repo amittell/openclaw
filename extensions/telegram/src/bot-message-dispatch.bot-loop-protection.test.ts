@@ -1,5 +1,4 @@
 // Telegram tests cover bot-pair loop protection on the assembled dispatch turn.
-import { setTimeout as sleep } from "node:timers/promises";
 import { createStatusReactionController } from "openclaw/plugin-sdk/channel-feedback";
 import { expect, it, vi } from "vitest";
 import {
@@ -186,30 +185,38 @@ describeTelegramDispatch("dispatchTelegramMessage bot-loop protection", () => {
   });
 
   it("restores the status reaction on a dropped turn, so no stall warning follows", async () => {
-    const reactions: string[] = [];
-    const statusReactionController = createStatusReactionController({
-      enabled: true,
-      adapter: {
-        setReaction: async (emoji: string) => {
-          reactions.push(emoji);
+    // The stall timers start before the guard runs. A controlled clock keeps a slow dispatch
+    // from reaching them first, and steps past both deadlines without waiting for them.
+    vi.useFakeTimers();
+    try {
+      const reactions: string[] = [];
+      const statusReactionController = createStatusReactionController({
+        enabled: true,
+        adapter: {
+          setReaction: async (emoji: string) => {
+            reactions.push(emoji);
+          },
         },
-      },
-      initialEmoji: "initial",
-      emojis: { thinking: "thinking", stallSoft: "stall-soft", stallHard: "stall-hard" },
-      // The thinking reaction stays debounced for the whole case; the stall timers do not.
-      timing: { debounceMs: 60_000, stallSoftMs: 200, stallHardMs: 300 },
-    });
-    const result = await dispatchInbound("loop-status-reaction", [
-      { from: PEER_BOT, messageId: 1 },
-      { from: PEER_BOT, messageId: 2 },
-      { from: PEER_BOT, messageId: 3, statusReactionController },
-    ]);
-    await sleep(400);
+        initialEmoji: "initial",
+        emojis: { thinking: "thinking", stallSoft: "stall-soft", stallHard: "stall-hard" },
+        // The thinking reaction stays debounced for the whole case; the stall timers do not.
+        timing: { debounceMs: 60_000, stallSoftMs: 200, stallHardMs: 300 },
+      });
+      const result = await dispatchInbound("loop-status-reaction", [
+        { from: PEER_BOT, messageId: 1 },
+        { from: PEER_BOT, messageId: 2 },
+        { from: PEER_BOT, messageId: 3, statusReactionController },
+      ]);
+      await vi.advanceTimersByTimeAsync(400);
 
-    expect({ result, reactions }).toEqual({
-      result: { recordCalls: [1, 1, 0], dispatchCalls: 2 },
-      reactions: ["initial"],
-    });
+      expect({ result, reactions }).toEqual({
+        result: { recordCalls: [1, 1, 0], dispatchCalls: 2 },
+        reactions: ["initial"],
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("bounds each side of a private bot DM in the receiving account's own budget", async () => {
