@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SESSION_TOTAL_TOKENS_VERSION, type SessionEntry } from "../../config/sessions.js";
 
+// mock-isolation: Keep the workspace loader, state database and process-wide bootstrap cache outside this fixture.
 vi.mock("../../agents/bootstrap-cache.js", () => ({
   clearBootstrapSnapshotOnSessionBoundary: vi.fn(),
 }));
