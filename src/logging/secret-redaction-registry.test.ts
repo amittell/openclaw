@@ -4,6 +4,7 @@ import { redactSensitiveText } from "./redact.js";
 import {
   getLongestRegisteredSecretLength,
   registerSecretValueForRedaction,
+  withSecretRedactionRegistrySnapshot,
 } from "./secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "./secret-redaction-registry.test-support.js";
 
@@ -27,5 +28,18 @@ describe("longest registered secret length", () => {
     expect(getLongestRegisteredSecretLength()).toBe(last.length);
     resetSecretRedactionRegistryForTest();
     expect(getLongestRegisteredSecretLength()).toBe(0);
+  });
+
+  it("answers for a borrowed snapshot inside its scope", () => {
+    // The redactor matches the snapshot's values in scope, so the length must follow them too.
+    const processValue = "process-registry-value";
+    const scopedValue = "scoped-snapshot-value-".repeat(4);
+    registerSecretValueForRedaction(processValue);
+
+    withSecretRedactionRegistrySnapshot({ revision: 1, values: [scopedValue] }, () => {
+      expect(redactSensitiveText(scopedValue, { mode: "off" })).not.toContain(scopedValue);
+      expect(getLongestRegisteredSecretLength()).toBe(scopedValue.length);
+    });
+    expect(getLongestRegisteredSecretLength()).toBe(processValue.length);
   });
 });

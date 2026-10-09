@@ -33,6 +33,7 @@ const registrySnapshots = resolveGlobalSingleton(
       snapshot: SecretRedactionRegistrySnapshot;
       values: ReadonlySet<string>;
       redactor?: SecretValueRedactor;
+      longestValueLength?: number;
     }>(),
 );
 
@@ -100,11 +101,22 @@ export function getSecretRedactionRegistryRevision(): number {
  * text redacted without its tail must keep this much past a cut to mask a value that starts before it.
  */
 export function getLongestRegisteredSecretLength(): number {
-  state.longestRegisteredValueLength ??= Math.max(
-    0,
-    ...Array.from(state.registeredValues.keys(), (value) => value.length),
-  );
+  // A borrowed snapshot is the registry the redactor matches against inside its scope.
+  const scoped = registrySnapshots.getStore();
+  if (scoped) {
+    scoped.longestValueLength ??= longestValueLength(scoped.values);
+    return scoped.longestValueLength;
+  }
+  state.longestRegisteredValueLength ??= longestValueLength(state.registeredValues.keys());
   return state.longestRegisteredValueLength;
+}
+
+function longestValueLength(values: Iterable<string>): number {
+  let longest = 0;
+  for (const value of values) {
+    longest = Math.max(longest, value.length);
+  }
+  return longest;
 }
 
 /** Exact surface forms are already expanded; snapshots must not register them again. */
