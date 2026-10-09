@@ -288,6 +288,71 @@ describe("config reload observation", () => {
     await harness.reloader.stop();
   });
 
+  it("publishes a plugin lifecycle read that consumes a pending write and accepts its echo", async () => {
+    const model = (primary: string): OpenClawConfig => ({
+      gateway: { reload: { mode: "off" } },
+      agents: { defaults: { model: primary } },
+    });
+    const initialConfig = model("openai/gpt-5.6-sol");
+    const nextConfig = model("openai/gpt-5.6-terra");
+    const write = makeWrite(nextConfig, "plugin-write");
+    const readSnapshot = vi.fn(async () => write.snapshot);
+    const runtimeStarted = createDeferred();
+    const finishRuntime = createDeferred();
+    const harness = createReloaderHarness(readSnapshot, {
+      initialConfig,
+      onHotReload: async (plan) => {
+        runtimeStarted.resolve();
+        await finishRuntime.promise;
+        return {
+          status: "applied",
+          runtime: {
+            operationId: plan.pluginLifecycle!.operationId!,
+            generation: 2,
+            pluginIds: ["notes"],
+          },
+        };
+      },
+    });
+    await harness.reloader.ready;
+    const observedGeneration = getConfigReloadObservation().generation;
+
+    // A plugin install persists config, then applies it before the write's own reload runs.
+    harness.emitWrite(write);
+    const application = harness.reloader.applyPluginLifecycleChange({
+      config: nextConfig,
+      write: { persistedHash: "plugin-write", persistedSourceConfig: nextConfig },
+      pluginIds: ["notes"],
+      reason: "install",
+    });
+    await runtimeStarted.promise;
+    // The write's filesystem echo lands while the plugin runtime is applying.
+    harness.watcher.emit("change");
+    finishRuntime.resolve();
+    await expect(application).resolves.toMatchObject({ generation: 2 });
+    await flushReload(harness.reloader);
+
+    // The lifecycle read, then the echo its checkpoint accepted; no follow-up reload.
+    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    expect(harness.onHotReload).toHaveBeenCalledOnce();
+    expect(getConfigReloadObservation()).toEqual({
+      generation: observedGeneration + 1,
+      sourceConfig: nextConfig,
+    });
+    expect(
+      buildRuntimeConfigHealth({
+        liveSourceConfig: nextConfig,
+        hasLiveSnapshot: true,
+        observedSourceConfig: getConfigReloadObservation().sourceConfig,
+      }),
+    ).toEqual({
+      state: "ok",
+      liveDefaultModel: "openai/gpt-5.6-terra",
+      observedDefaultModel: "openai/gpt-5.6-terra",
+    });
+    await harness.reloader.stop();
+  });
+
   it.each([
     { outcome: "a missing file", observed: null },
     { outcome: "an invalid file", observed: null },
