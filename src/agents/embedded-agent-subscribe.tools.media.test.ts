@@ -5,9 +5,8 @@ import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { mergeSessionTranscriptContext } from "../channels/inbound-event/session-transcript-context.runtime.js";
 import {
@@ -91,11 +90,12 @@ describe("extractToolResultMediaArtifact candidate bounds", () => {
   });
 });
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+// Session writes retain database workers; the suite root is drained once before removal.
+const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-media-authority-");
 let mediaAuthorityFixtureId = 0;
 
 async function openPersistedSessionManager() {
-  const root = tempDirs.make("openclaw-media-authority-");
+  const root = sessionDirs.make();
   const sessionId = `session-${mediaAuthorityFixtureId++}`;
   const target = {
     agentId: "main",
@@ -106,10 +106,6 @@ async function openPersistedSessionManager() {
   await upsertSessionEntry({ ...target, entry: { sessionId, updatedAt: Date.now() } });
   return { root, sessionManager: SessionManager.open(target, root), target };
 }
-
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-});
 
 describe("persisted local-media replay authority", () => {
   it("bounds and refreshes persisted media authority through channel context", async () => {

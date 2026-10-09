@@ -6,6 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveInboundMediaReference } from "../../media/media-reference.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
+import {
   appendTranscriptEvent,
   loadTranscriptEvents,
   persistSessionTranscriptTurn,
@@ -34,7 +42,13 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 describe("readRecentUserAssistantTextForSession grounding", () => {
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Session writes and replay reads retain database workers; join them before the tracker
+    // removes the case's state directory.
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
     if (previousStateDir === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
