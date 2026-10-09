@@ -1,13 +1,11 @@
 /** Quality contract, fallback, and audit helpers for compaction safeguard summaries. */
 import { localeLowercasePreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { extractKeywords, isQueryStopWordToken } from "../../memory-host-sdk/query.js";
 import type { CompactionSummarizationInstructions } from "../compaction.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 
-// Compaction summary quality helpers. They define the structured summary contract
-// and audit whether summaries preserve pending asks plus exact identifiers.
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
@@ -24,8 +22,6 @@ const PENDING_ASK_SECTION_INDEX = 3;
 const EXACT_IDENTIFIERS_SECTION_INDEX = 4;
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
-const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
-const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
   "For ## Exact identifiers, preserve literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
 const POLICY_OFF_EXACT_IDENTIFIERS_INSTRUCTION =
@@ -70,19 +66,6 @@ function resolveExactIdentifierSectionInstruction(
   return STRICT_EXACT_IDENTIFIERS_INSTRUCTION;
 }
 
-/** Bounds the latest ask to the head and tail the retention plan protects verbatim. */
-export function formatRequiredAskContext(rawAsk: string): string {
-  const source = rawAsk.trim();
-  if (source.length <= MAX_REQUIRED_ASK_CONTEXT_CHARS) {
-    return source;
-  }
-  const contentBudget =
-    MAX_REQUIRED_ASK_CONTEXT_CHARS - REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER.length;
-  const headBudget = Math.floor(contentBudget / 2);
-  const tailBudget = contentBudget - headBudget;
-  return `${truncateUtf16Safe(source, headBudget)}${REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(source, -tailBudget)}`;
-}
-
 /** Build the required structured summary instructions for compaction. */
 export function buildCompactionStructureInstructions(
   customInstructions?: string,
@@ -97,6 +80,7 @@ export function buildCompactionStructureInstructions(
     identifierSectionInstruction,
     "Do not omit unresolved asks from the user.",
     "Record completed requests outside ## Pending user asks; list only unresolved user requests there.",
+    "Use tool results to update task status: a check that ran and returned a failing result is completed, not an open TODO. Record its result under ## Decisions and keep only the remaining remediation in ## Open TODOs (e.g. failing tests -> fix the failures, not run the same tests again).",
     "When prior compaction summaries are present, re-distill them with new messages and remove stale duplicate detail.",
   ].join("\n");
   const latestRequestBlock = latestUnresolvedUserRequest
@@ -120,19 +104,6 @@ function normalizedSummaryLines(summary: string): string[] {
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-}
-
-function hasRequiredSummarySections(summary: string): boolean {
-  const lines = normalizedSummaryLines(summary);
-  let cursor = 0;
-  for (const heading of REQUIRED_SUMMARY_SECTIONS) {
-    const index = lines.findIndex((line, lineIndex) => lineIndex >= cursor && line === heading);
-    if (index < 0) {
-      return false;
-    }
-    cursor = index + 1;
-  }
-  return true;
 }
 
 type SummaryQualityRetentionPlan = {
@@ -256,18 +227,9 @@ export function createSummaryQualityRetentionPlan(
       return content ? `${heading}\n${content}` : heading;
     });
   const joinSectionContent = (index: number, optional: string) => {
-    const tail = protectedTails[index] ?? "";
+    const tail = protectedTails[index];
     if (!tail) {
       return optional;
-    }
-    if (index === PENDING_ASK_SECTION_INDEX) {
-      const leading = normalizedSummaryLines(optional)[0] ?? "";
-      if (leading === tail) {
-        return optional;
-      }
-      if (latestUnresolvedUserRequest) {
-        return [tail, isEmptyPendingAsk(leading) ? "" : optional].filter(Boolean).join("\n");
-      }
     }
     if (index === EXACT_IDENTIFIERS_SECTION_INDEX) {
       const missing = auditedIdentifiers.filter(
@@ -275,11 +237,14 @@ export function createSummaryQualityRetentionPlan(
       );
       return [optional, ...missing].filter(Boolean).join("\n");
     }
-    const retainedOptional =
-      index === PENDING_ASK_SECTION_INDEX && protectedAskContext && isEmptyPendingAsk(optional)
-        ? ""
-        : optional;
-    return [retainedOptional, tail].filter(Boolean).join("\n");
+    // Only pending asks and exact identifiers have protected tails.
+    const leading = normalizedSummaryLines(optional)[0] ?? "";
+    if (leading === tail) {
+      return optional;
+    }
+    return latestUnresolvedUserRequest
+      ? [tail, isEmptyPendingAsk(leading) ? "" : optional].filter(Boolean).join("\n")
+      : [isEmptyPendingAsk(optional) ? "" : optional, tail].filter(Boolean).join("\n");
   };
   // Reserve every heading/content/tail separator up front so trimmed optional
   // text can never push the rendered artifact past `maxChars`.
@@ -371,7 +336,7 @@ export function createSummaryQualityRetentionPlan(
 /** Return a structured fallback summary when model output is missing/invalid. */
 export function buildStructuredFallbackSummary(previousSummary: string | undefined): string {
   const trimmedPreviousSummary = previousSummary?.trim() ?? "";
-  if (trimmedPreviousSummary && hasRequiredSummarySections(trimmedPreviousSummary)) {
+  if (trimmedPreviousSummary && parseRequiredSummarySectionContents(trimmedPreviousSummary)) {
     return trimmedPreviousSummary;
   }
   const values = [
@@ -458,10 +423,7 @@ function resolveAskOverlapRequirement(latestAsk: string | null): {
   if (!latestAsk) {
     return null;
   }
-  const askTokens = uniqueStrings(tokenizeAskOverlapText(latestAsk)).slice(
-    0,
-    MAX_ASK_OVERLAP_TOKENS,
-  );
+  const askTokens = tokenizeAskOverlapText(latestAsk).slice(0, MAX_ASK_OVERLAP_TOKENS);
   if (askTokens.length === 0) {
     return null;
   }
