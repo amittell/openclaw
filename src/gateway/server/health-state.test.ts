@@ -37,11 +37,13 @@ const {
   getUpdateScheduleMock: vi.fn(),
 }));
 
-vi.mock("../../commands/health-runtime-config.js", () => ({
+vi.mock("../../commands/health-runtime-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../commands/health-runtime-config.js")>()),
   buildRuntimeConfigHealth: buildRuntimeConfigHealthMock,
 }));
 
-vi.mock("../config-reload-observed.js", () => ({
+vi.mock("../config-reload-observed.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config-reload-observed.js")>()),
   getConfigReloadObservation: getConfigReloadObservationMock,
 }));
 

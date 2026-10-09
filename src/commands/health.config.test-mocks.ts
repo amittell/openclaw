@@ -4,6 +4,7 @@ import { vi } from "vitest";
 // Match the runtime accessor's null absence contract so these tests omit the
 // diagnostic instead of synthesizing an unknown-source warning.
 export function installHealthConfigMock(getConfig: () => Record<string, unknown>): void {
+  // mock-isolation: Keep the operator's config file and runtime snapshot out of these suites.
   vi.doMock("../config/config.js", () => ({
     getRuntimeConfig: getConfig,
     loadConfig: getConfig,

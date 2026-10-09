@@ -75,11 +75,13 @@ const {
   }),
 }));
 
+// mock-isolation: Bootstrap redemption mutates the device pairing store; keep it out of here.
 vi.mock("../../../infra/device-bootstrap.js", () => ({
   redeemDeviceBootstrapTokenProfile: redeemDeviceBootstrapTokenProfileMock,
   restoreGenericDeviceBootstrapToken: vi.fn(async () => undefined),
 }));
 
+// mock-isolation: Setup handoff consumption mutates the device pairing store; keep it out of here.
 vi.mock("../../device-pair-setup-completion.js", () => ({
   broadcastSetupHandoffDeliveryUncertain: vi.fn(),
   broadcastSetupHandoffCompletion: vi.fn(),
@@ -87,6 +89,7 @@ vi.mock("../../device-pair-setup-completion.js", () => ({
   consumeSetupHandoff: vi.fn(async () => undefined),
 }));
 
+// mock-isolation: The health owner keeps a process-wide cache; hello must read this fixture's.
 vi.mock("../health-state.js", () => ({
   buildGatewaySnapshot: buildGatewaySnapshotMock,
   getHealthCache: getHealthCacheMock,
