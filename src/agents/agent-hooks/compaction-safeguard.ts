@@ -50,8 +50,6 @@ import {
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
-  resolveQualityGuardMaxRetries,
-  resolveRecentTurnsPreserve,
   setCompactionSafeguardCancellation,
 } from "./compaction-safeguard-runtime.js";
 import { readWorkspaceContextForSummary } from "./compaction-workspace-context.js";
@@ -68,6 +66,10 @@ const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to f
 const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2);
 const SPLIT_TURN_TRUNCATED_MARKER = "[Earlier split-turn messages truncated]\n";
 const PRESERVED_TURNS_TRUNCATED_MARKER = "[Earlier preserved messages truncated]\n";
+const DEFAULT_RECENT_TURNS_PRESERVE = 3;
+const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
+const MAX_RECENT_TURNS_PRESERVE = 12;
+const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const MAX_RECENT_TURN_TEXT_CHARS = 600;
 const compactionSafeguardDeps = {
   summarizeCompactionHistory,
@@ -268,6 +270,23 @@ function buildCompactionSummaryHeaders(params: {
   };
 }
 
+function clampNonNegativeInt(value: unknown, fallback: number, max: number): number {
+  const normalized = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(0, Math.floor(normalized)));
+}
+
+function resolveRecentTurnsPreserve(value: unknown): number {
+  return clampNonNegativeInt(value, DEFAULT_RECENT_TURNS_PRESERVE, MAX_RECENT_TURNS_PRESERVE);
+}
+
+function resolveQualityGuardMaxRetries(value: unknown): number {
+  return clampNonNegativeInt(
+    value,
+    DEFAULT_QUALITY_GUARD_MAX_RETRIES,
+    MAX_QUALITY_GUARD_MAX_RETRIES,
+  );
+}
+
 function formatToolFailureMeta(details: unknown): string | undefined {
   if (!details || typeof details !== "object") {
     return undefined;
@@ -401,8 +420,13 @@ function budgetCompactionSummary(
       bodyBudget: maxChars,
       bodyTrimmed: false,
       suffixTrimmed: false,
-      qualityRetentionInfeasible: false,
     };
+  }
+
+  // The fitter must search above the retention minimum, not price an unrelated
+  // head cut whose CJK density can exceed a larger candidate that keeps the facts.
+  if (retentionPlan && retentionPlan.minimumChars > maxChars) {
+    return undefined;
   }
 
   const bodyCapacity = retentionPlan ? maxChars : summaryBody.length;
@@ -423,7 +447,6 @@ function budgetCompactionSummary(
     bodyBudget: bodySlot,
     bodyTrimmed: rendered ? rendered.trimmed : cappedBody.length < summaryBody.length,
     suffixTrimmed: cappedSuffix.length < suffix.text.length,
-    qualityRetentionInfeasible: retentionPlan !== null && retentionPlan.minimumChars > maxChars,
   };
 }
 
@@ -809,17 +832,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         fileOpsSummary,
         workspaceContext: await workspaceContextPromise,
       });
-      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) => {
-        const candidate = budgetCompactionSummary(body, suffix, maxChars, qualityRetention);
-        // Below the owner's cap the fit bisects on maxChars and assumes cost grows with it.
-        // A candidate under the plan's minimum is one the audited path cancels on, usually a
-        // head cut without the required facts. Leading dense CJK prose can price that cut
-        // above retained candidates just over the minimum, so the search settled on a smaller
-        // cut. Report those candidates as too small so the search stays above the minimum.
-        return candidate.qualityRetentionInfeasible && maxChars < MAX_COMPACTION_SUMMARY_CHARS
-          ? undefined
-          : candidate;
-      });
+      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) =>
+        budgetCompactionSummary(body, suffix, maxChars, qualityRetention),
+      );
       if (!fitted.ok) {
         throw fitted.error;
       }
@@ -1057,15 +1072,6 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
 
         if (!qualityGuardEnabled) {
           return compactionResult(finalized.summary);
-        }
-        if (finalized.qualityRetentionInfeasible) {
-          log.warn(
-            "Compaction safeguard: required quality facts exceed finalized artifact budget; " +
-              `requiredChars>${MAX_COMPACTION_SUMMARY_CHARS} identifierCount=${identifiers.length}`,
-          );
-          return cancelCompaction(
-            "Compaction safeguard required facts exceed the finalized summary budget.",
-          );
         }
         const quality = auditSummaryQuality({
           summary: finalized.summary,

@@ -1102,7 +1102,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(result).toEqual({ cancel: true });
     expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
     expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toBe(
-      "Compaction safeguard required facts exceed the finalized summary budget.",
+      "The compaction summary cannot fit beside the foreground prompt and retained history.",
     );
   });
 
