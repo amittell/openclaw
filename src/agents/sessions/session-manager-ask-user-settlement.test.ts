@@ -5,7 +5,6 @@ import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -58,6 +57,17 @@ const user = (key: string) => ({
 const assistantAskUser = {
   role: "assistant" as const,
   content: [{ type: "toolCall" as const, id: "call-ask-user", name: "ask_user", arguments: {} }],
+  api: "settlement-test-api",
+  provider: "settlement-test",
+  model: "settlement-test-model",
+  usage: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  },
   stopReason: "toolUse" as const,
   timestamp: 2,
 };
@@ -93,10 +103,13 @@ it("settles the ask_user no_answer tool result when the run's own commit lands i
               // The run's own transcript commit lands between host preparation and the
               // worker's fenced append. On the 9.9 sync snapshot path this stale fence
               // threw SqliteTranscriptMutationConflictError; the worker re-validates.
+              const appendInput = command.input as
+                | { message?: { messageJson?: string } }
+                | undefined;
               if (
                 !injected &&
                 command.type === "session.metadata.append" &&
-                command.input?.message?.messageJson?.includes("no_answer")
+                appendInput?.message?.messageJson?.includes("no_answer")
               ) {
                 injected = true;
                 expect(
@@ -128,7 +141,11 @@ it("settles the ask_user no_answer tool result when the run's own commit lands i
   // The settlement write must not throw the stale-fence conflict.
   expect(failure).toBeUndefined();
   expect(entryId).toBeDefined();
-  const events = await loadTranscriptEvents(target);
+  const events = (await loadTranscriptEvents(target)) as Array<{
+    id: string;
+    parentId?: string;
+    message?: unknown;
+  }>;
   // Both the in-flight commit and the no_answer result are present and ordered.
   expect(events.map((event) => event.id)).toContain("in-flight-commit");
   expect(events.at(-1)).toMatchObject({
@@ -156,10 +173,13 @@ it("does not swallow a genuine non-rebaseable conflict for the no_answer settlem
           operation({
             execute: async (command, commandOptions) => {
               // A second in-flight commit that the single retry cannot absorb.
+              const appendInput = command.input as
+                | { message?: { messageJson?: string } }
+                | undefined;
               if (
                 !injected &&
                 command.type === "session.metadata.append" &&
-                command.input?.message?.messageJson?.includes("no_answer")
+                appendInput?.message?.messageJson?.includes("no_answer")
               ) {
                 injected = true;
                 expect(
@@ -196,7 +216,11 @@ it("does not swallow a genuine non-rebaseable conflict for the no_answer settlem
   // and its rebased parent so an over-correction that drops or mis-parents the
   // settlement is caught.
   expect(failure).toBeUndefined();
-  const events = await loadTranscriptEvents(target);
+  const events = (await loadTranscriptEvents(target)) as Array<{
+    id: string;
+    parentId?: string;
+    message?: unknown;
+  }>;
   expect(events.map((event) => event.id)).toContain("in-flight-b");
   expect(events.at(-1)).toMatchObject({
     parentId: "in-flight-b",
