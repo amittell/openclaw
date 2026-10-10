@@ -3,6 +3,7 @@ import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { resolveStateDir } from "../../config/paths.js";
 import type {
   InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
   RestartRecoveryRun,
 } from "../../config/sessions.js";
 import {
@@ -46,6 +47,8 @@ async function markRecoveryStore(params: {
   sessionKey?: string;
   assertCommitAllowed?: () => void;
   statuses?: Array<NonNullable<SessionEntry["status"]>>;
+  /** Typed cause persisted into the recovery cycle; only real restarts pass "gateway_restart". */
+  cause?: MainRestartRecoveryCause;
   plan: (
     entry: SessionEntry,
     sessionKey: string,
@@ -114,6 +117,7 @@ async function markRecoveryStore(params: {
           kind: "mark_interrupted",
           cycleId: randomUUID(),
           now: Date.now(),
+          ...(params.cause ? { cause: params.cause } : {}),
           ...plan,
         });
         replacements.push({ sessionKey, entry });
@@ -132,6 +136,13 @@ export async function markRestartAbortedMainSessions(params: {
   activeRuns: Iterable<RestartRecoveryCandidate>;
   isActiveRun?: (run: RestartRecoveryCandidate) => boolean;
   reason?: string;
+  /**
+   * Typed cause of the interruption. Defaults to "gateway_restart": every
+   * production caller of this function is a genuine gateway shutdown/restart
+   * marking path. Callers that abort runs in-process (no lifecycle rotation)
+   * must omit it so the resume notice stays cause-agnostic.
+   */
+  cause?: MainRestartRecoveryCause;
 }): Promise<{ marked: number; skipped: number }> {
   const activeRuns = [...params.activeRuns];
   const currentLifecycleGeneration = getAgentEventLifecycleGeneration();
@@ -199,6 +210,7 @@ export async function markRestartAbortedMainSessions(params: {
         const storeResult = await markRecoveryStore({
           ...target,
           sessionKey: selectedSessionKey,
+          cause: params.cause ?? "gateway_restart",
           assertCommitAllowed: () => {
             if (isCurrent && !isCurrent()) {
               throw new Error("Restart recovery owner changed before commit");
@@ -313,6 +325,9 @@ async function markOrphanedMainSessionStore(
   return await markRecoveryStore({
     ...params.target,
     statuses: params.target.sessionKey ? undefined : ["running"],
+    // Startup orphan marking only runs at Gateway boot, i.e. after a real restart;
+    // attribute its cycles so the resume notice stays restart-specific.
+    cause: "gateway_restart",
     assertCommitAllowed: () => {
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
       params.assertCommitAllowed?.();

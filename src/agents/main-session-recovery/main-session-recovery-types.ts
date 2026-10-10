@@ -1,4 +1,8 @@
-import type { MainRestartRecoveryState, RestartRecoveryRun } from "../../config/sessions.js";
+import type {
+  MainRestartRecoveryCause,
+  MainRestartRecoveryState,
+  RestartRecoveryRun,
+} from "../../config/sessions.js";
 
 type MainSessionRecoveryExecutionIdentity = NonNullable<
   MainRestartRecoveryState["executionIdentity"]
@@ -20,6 +24,8 @@ export type MainSessionRecoveryReservation = {
   lifecycleGeneration: string;
   runId: string;
   attempt: number;
+  /** Cause carried from the interrupted cycle; absent for pre-upgrade state (unknown). */
+  cause?: MainRestartRecoveryCause;
   executionIdentityAdmission?: MainSessionRecoveryExecutionIdentityAdmission;
 };
 
@@ -75,6 +81,8 @@ export type MainSessionRecoveryCommand =
       kind: "mark_interrupted";
       cycleId: string;
       now: number;
+      /** Typed cause of the interruption; only a genuine gateway restart passes "gateway_restart". */
+      cause?: MainRestartRecoveryCause;
       runs?: RestartRecoveryRun[];
       resetRuntime?: boolean;
     }
