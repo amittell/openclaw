@@ -421,6 +421,18 @@ export async function admitReplyTurn(
                 owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
               })
             : undefined;
+          // Restart evidence is durable: a genuine gateway restart (or a pre-upgrade
+          // mark) ran `mark_interrupted`, which always persists a recovery cycle and,
+          // when it captured active runs, a restart fence (`restartRecoveryRuns`). A
+          // same-process abort (e.g. a context-overflow retry) sets `abortedLastRun`
+          // but creates NEITHER the cycle NOR a fence; that stale flag must not
+          // re-dispatch restart recovery and stamp a phantom "interrupted by a gateway
+          // restart" notice. A fence alone (its cycle already cleared) is still a
+          // genuine-restart remnant that admission must retire, so it counts as
+          // evidence here.
+          const hasRestartEvidence =
+            admittedSessionEntry?.mainRestartRecovery !== undefined ||
+            admittedSessionEntry?.restartRecoveryRuns !== undefined;
           const shouldClaimRecoveryOwner =
             mayWaitForRecoveryOwner &&
             admittedSessionEntry &&
@@ -448,6 +460,15 @@ export async function admitReplyTurn(
           if (
             shouldClaimRecoveryOwner &&
             recoveryOwnerRelease === undefined &&
+            // A stale same-process abort (e.g. a context-overflow retry) leaves
+            // `abortedLastRun` with NO recovery cycle and NO restart fence; that
+            // must not re-dispatch restart recovery and stamp a phantom
+            // "interrupted by a gateway restart" notice. Only durable restart
+            // evidence (a cycle from the shutdown/startup mark, or a fence)
+            // authorizes the resume dispatch. The foreground-claim path below is
+            // intentionally left ungated: it coordinates ownership and does not
+            // itself emit the notice.
+            hasRestartEvidence &&
             admittedSessionEntry?.abortedLastRun === true &&
             !admittedSessionEntry.mainRestartRecovery?.tombstone &&
             params.kind !== "heartbeat" &&

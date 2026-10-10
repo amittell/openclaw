@@ -3,7 +3,10 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
+} from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
 import {
   applySessionEntryReplacements,
@@ -67,6 +70,22 @@ const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
     `repeating an action. ${TOOL_FAILURE_INSTRUCTION}`,
 );
 
+/**
+ * Cause-agnostic resume notice. Emitted when the interruption was NOT attributed to a
+ * genuine gateway restart (in-process abort such as a context-overflow retry, or
+ * pre-upgrade state that predates cause persistence). It must never claim a restart
+ * happened when none did (the phantom "interrupted by a gateway restart" notice).
+ */
+const INTERRUPT_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
+  "Your previous turn was interrupted while " +
+    "OpenClaw was waiting on tool/model work. The interruption did not cancel the user's task. " +
+    "Continue from the existing transcript: check the current state, recover interrupted work, " +
+    "and finish the task without asking the user to repeat the request. " +
+    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} Treat a tool result ` +
+    "marked interrupted or missing as having an unknown outcome; verify what happened before " +
+    `repeating an action. ${TOOL_FAILURE_INSTRUCTION}`,
+);
+
 const RESTART_SAFE_TOOLS_NOTICE =
   "For this turn only, the tool surface has been narrowed to replay-safe tools as a " +
   "recovery precaution. Use the tools that are available to report status or continue " +
@@ -92,14 +111,21 @@ function buildResumeMessage(
   pendingFinalDeliveryText?: string | null,
   forceRestartSafeTools?: boolean,
   childRecoveryRoster?: string,
+  cause?: MainRestartRecoveryCause,
 ): string {
   const sanitizedPendingText =
     typeof pendingFinalDeliveryText === "string"
       ? sanitizePendingFinalDeliveryText(pendingFinalDeliveryText)
       : "";
+  // Only a genuine gateway restart may claim to have restarted; unknown/other cause
+  // uses neutral wording so an in-process abort never stamps a phantom restart notice.
+  const resumeMessage =
+    cause === "gateway_restart"
+      ? RESTART_RECOVERY_RESUME_MESSAGE
+      : INTERRUPT_RECOVERY_RESUME_MESSAGE;
   const instructions = forceRestartSafeTools
-    ? `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
-    : RESTART_RECOVERY_RESUME_MESSAGE;
+    ? `${resumeMessage}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
+    : resumeMessage;
   const base = childRecoveryRoster ? `${instructions}\n\n${childRecoveryRoster}` : instructions;
   if (sanitizedPendingText) {
     return `${base}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`;
@@ -429,6 +455,7 @@ async function resumeMainSessionWithinAdmission(
             requesterStorePath,
           }),
         ),
+        params.entry.mainRestartRecovery?.cause,
       ),
       sessionKey: dispatchSessionKey,
       expectedExistingSessionId: params.entry.sessionId,

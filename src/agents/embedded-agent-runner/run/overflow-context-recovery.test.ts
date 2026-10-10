@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
@@ -142,6 +143,17 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
       expect(adoptCompactionTranscript).not.toHaveBeenCalled();
       expect(afterHook).not.toHaveBeenCalled();
       expect(prepareCurrentTranscriptRetry).not.toHaveBeenCalled();
+      // The overflow recovery path is restart-agnostic: it must never write a durable
+      // main-session restart-recovery reservation or the aborted marker, so a same-process
+      // overflow retry can never re-dispatch a recovery turn or stamp a phantom
+      // "interrupted by a gateway restart" notice.
+      const afterOverflow = loadSessionEntry({
+        agentId: "main",
+        sessionKey: target.sessionKey,
+        storePath: target.storePath,
+      });
+      expect(afterOverflow?.abortedLastRun).toBeUndefined();
+      expect(afterOverflow?.mainRestartRecovery).toBeUndefined();
     } finally {
       admission.close();
     }

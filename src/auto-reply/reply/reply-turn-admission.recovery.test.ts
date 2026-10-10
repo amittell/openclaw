@@ -274,6 +274,15 @@ describe("reply turn recovery admission", () => {
       restartRecoveryDeliverySourceRunId: "old-channel-source",
       restartRecoveryDeliveryContext: { channel: "discord", to: "synthetic-channel" },
       restartRecoverySourceIngress: "channel",
+      // A genuine gateway restart runs mark_interrupted, which persists a recovery
+      // cycle; seed it so admission's restart-evidence gate authorizes the resume
+      // dispatch (a stale same-process abort never creates this cycle).
+      mainRestartRecovery: {
+        cycleId: "cycle-1",
+        revision: 1,
+        chargedAttempts: 0,
+        cause: "gateway_restart",
+      },
     };
     const storePath = createSessionStore({ [sessionKey]: entry });
     const context = createRecoveryGatewayContext();
@@ -430,6 +439,15 @@ describe("reply turn recovery admission", () => {
         abortedLastRun: true,
         restartRecoveryDeliveryRunId: "interrupted-claim",
         restartRecoveryDeliverySourceRunId: "interrupted-source",
+        // A genuine gateway restart runs mark_interrupted, which persists a recovery
+        // cycle; seed it so admission's restart-evidence gate authorizes the resume
+        // dispatch (a stale same-process abort never creates this cycle).
+        mainRestartRecovery: {
+          cycleId: "cycle-1",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
       };
       const storePath = createSessionStore({ [sessionKey]: entry });
       const context = createRecoveryGatewayContext();
@@ -508,6 +526,56 @@ describe("reply turn recovery admission", () => {
       }
     },
   );
+
+  it("does not re-dispatch restart recovery for a stale claim with no durable restart evidence", async () => {
+    // The incident: a same-process abort (context-overflow retry) leaves a stale
+    // delivery claim and `abortedLastRun` but creates NO durable restart evidence
+    // (no recovery cycle, no fence). Admission must not re-dispatch restart recovery
+    // for that stale claim, so no phantom "interrupted by a gateway restart" notice
+    // is stamped. A genuine restart always persists a recovery cycle (see the
+    // "settles or defers ... recovery failure" cases), which is what authorizes the
+    // re-dispatch those tests exercise.
+    const sessionKey = "agent:main:stale-claim-redispatch";
+    const sessionId = "stale-claim-session";
+    const storePath = createSessionStore({
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        status: "running",
+        abortedLastRun: true,
+        restartRecoveryDeliveryRunId: "stale-claim",
+        restartRecoveryDeliverySourceRunId: "stale-source",
+        restartRecoverySourceIngress: "channel",
+      },
+    });
+    const context = createRecoveryGatewayContext();
+    const retry = vi
+      .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
+      .mockResolvedValue({ started: 0, settled: 0, failed: 0, skipped: 1 });
+    try {
+      const admission = await admitTestReplyTurn({
+        sessionKey,
+        sessionId,
+        storePath,
+        expectedSessionId: sessionId,
+        resolveGatewayContext: () => context,
+      });
+      expect(admission.status).toBe("owned");
+      // A stale claim alone must not re-dispatch restart recovery.
+      expect(retry).not.toHaveBeenCalled();
+      if (admission.status === "owned") {
+        admission.operation.complete();
+        // Settle the async after-clear work (recovery-owner release + worker DB
+        // claim) before returning, so it cannot leak into the next test's store.
+        await vi.waitFor(() => {
+          const entry = loadSessionEntry({ storePath, sessionKey });
+          expect(entry?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
+        });
+      }
+    } finally {
+      retry.mockRestore();
+    }
+  });
 
   it.each(["started", "cancelled", "replaced"] as const)(
     "waits for reserved startup recovery before admitting visible input: %s",

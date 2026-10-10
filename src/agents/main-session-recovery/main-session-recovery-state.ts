@@ -365,14 +365,24 @@ export function transitionMainSessionRecovery(
     case "mark_interrupted": {
       const state = entry.mainRestartRecovery;
       if (!state) {
-        entry.mainRestartRecovery = createCycle(command.cycleId);
-      } else if (state.foregroundClaims || state.reservation) {
-        // Restart owns continuation now. Process-bound foreground and reservation
-        // leases cannot authorize the old lifecycle after this durable handoff.
-        updateRecoveryState(entry, state, {
-          foregroundClaims: undefined,
-          reservation: undefined,
-        });
+        entry.mainRestartRecovery = {
+          ...createCycle(command.cycleId),
+          ...(command.cause ? { cause: command.cause } : {}),
+        };
+      } else {
+        const patch: Parameters<typeof updateRecoveryState>[2] = {};
+        if (state.foregroundClaims || state.reservation) {
+          // Restart owns continuation now. Process-bound foreground and reservation
+          // leases cannot authorize the old lifecycle after this durable handoff.
+          patch.foregroundClaims = undefined;
+          patch.reservation = undefined;
+        }
+        if (command.cause) {
+          patch.cause = command.cause;
+        }
+        if (Object.keys(patch).length > 0) {
+          updateRecoveryState(entry, state, patch);
+        }
       }
       entry.status = "running";
       entry.activeWriterRunId = undefined;
@@ -482,6 +492,7 @@ export function transitionMainSessionRecovery(
           runId: command.runId,
           attempt: command.attempt,
           lifecycleGeneration: command.lifecycleGeneration,
+          ...(state.cause ? { cause: state.cause } : {}),
         },
       });
       entry.updatedAt = command.now;
@@ -493,6 +504,7 @@ export function transitionMainSessionRecovery(
           lifecycleGeneration: command.lifecycleGeneration,
           runId: command.runId,
           attempt: command.attempt,
+          ...(state.cause ? { cause: state.cause } : {}),
           ...(executionIdentityAdmission ? { executionIdentityAdmission } : {}),
         },
       };

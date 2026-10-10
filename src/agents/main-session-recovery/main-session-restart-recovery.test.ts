@@ -505,6 +505,34 @@ describe("main-session-restart-recovery", () => {
     }
   });
 
+  it("persists the typed restart cause on the recovery cycle for shutdown marking", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const storePath = path.join(sessionsDir, "sessions.json");
+    const sessionKey = "agent:main:marked";
+    await writeStore(sessionsDir, {
+      [sessionKey]: runningSessionEntry("marked-session"),
+    });
+    const run = {
+      runId: "marked-run",
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      sessionKey,
+      sessionId: "marked-session",
+    };
+    registerAgentRunContext(run.runId, run);
+    const result = await markRestartAbortedMainSessions({
+      resolveGatewayContext,
+      stateDir: tmpDir,
+      activeRuns: [run],
+      isActiveRun: () => true,
+    });
+    expect(result).toEqual({ marked: 1, skipped: 0 });
+    const store = readStore(storePath);
+    // A genuine gateway restart attributes its cycle so the resume notice keeps the
+    // restart-specific wording; the cause is persisted on the reservation.
+    expect(store[sessionKey]?.abortedLastRun).toBe(true);
+    expect(store[sessionKey]?.mainRestartRecovery?.cause).toBe("gateway_restart");
+  });
+
   it("marks only recoverable sessions owned by active runs", async () => {
     // Only top-level running main sessions are restart-recoverable. Completed,
     // child, cron, and non-active sessions must not be marked.
@@ -1365,7 +1393,17 @@ describe("main-session-restart-recovery", () => {
 
   it("resumes marked sessions with a tool-result transcript tail", async () => {
     tmpDir = transcriptFixture.prepareRoot();
-    const { sessionsDir } = await makeMainSessionFixture();
+    // A genuine gateway restart runs mark_interrupted, which persists a recovery
+    // cycle with cause "gateway_restart"; seed it so the resume notice keeps the
+    // restart-specific wording (the in-process overflow abort never creates this).
+    const { sessionsDir } = await makeMainSessionFixture({
+      mainRestartRecovery: {
+        cycleId: "marked-cycle",
+        revision: 1,
+        chargedAttempts: 0,
+        cause: "gateway_restart",
+      },
+    });
     await writeCompletedToolTranscript(sessionsDir);
 
     await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
@@ -1379,6 +1417,22 @@ describe("main-session-restart-recovery", () => {
     expect(resumeParams.message).toContain("verify what happened before repeating an action");
     const store = readStore(path.join(sessionsDir, "sessions.json"));
     expect(store["agent:main:main"]?.abortedLastRun).toBe(false);
+  });
+
+  it("uses neutral wording for a pre-upgrade reservation without a persisted cause", async () => {
+    tmpDir = transcriptFixture.prepareRoot();
+    // Pre-upgrade state predates cause persistence: the cycle exists but has no cause,
+    // so the resume notice must stay neutral and never claim a gateway restart.
+    const { sessionsDir } = await makeMainSessionFixture({
+      mainRestartRecovery: { cycleId: "pre-upgrade-cycle", revision: 1, chargedAttempts: 0 },
+    });
+    await writeCompletedToolTranscript(sessionsDir);
+    await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledOnce();
+    const message = String((gatewayParams() as Record<string, unknown>).message);
+    expect(message).toContain("The interruption did not cancel the user's task");
+    expect(message).not.toContain("interrupted by a gateway restart");
+    expect(message).not.toContain("The restart did not cancel the user's task");
   });
 
   it("resumes when durable commentary is mirrored after the restart recovery mark", async () => {
