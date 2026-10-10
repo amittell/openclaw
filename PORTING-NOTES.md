@@ -3021,3 +3021,80 @@ shards, 39 min, at `5aa2a53c34f`: 291 files / 9,910 tests, 2 failures, both in
 and fails 1 with the production change reverted.
 
 Not run: the full suite, and live proof.
+
+# Carried after the 9.9 deploy (2026-10-10)
+
+Three upstream changes on top of `543080ee633`, the deployed 9.9 carry. None is in a tag or a
+beta yet.
+
+| commit        | what                                                                                      |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `cfcde44de1a` | upstream #167878 at `e05ca71024a4` (merged to main): the 16-token useful-output floor on  |
+|               | every context-driven clamp, non-thinking requests included; exhausted room, even for an   |
+|               | explicit cap, is a context overflow and goes to compaction                                |
+| `5c00d338ccb` | upstream #168326 at `c18324d13963` (merged to main): the builder's own refusal classifies |
+|               | as context overflow everywhere, so the /reset, /new guidance reaches chat, Details,       |
+|               | history and channel replies                                                               |
+| `4afb0da7fec` | upstream #158145 at `4e5f4e1055cd` (still open), replacing the carried `452a23f4716`      |
+
+#167878 replaces the carried #158161 budget change: `openai-completions-params.{ts,test.ts}`
+and `openai-completions-params.reasoning.test.ts` are back on 9.9's versions with #167878 on
+top, which drops #158161's unmargined estimate, its exhausted explicit one-token exception and
+its `estimate=unmargined` warn log. Upstream #158161 is now only the Hugging Face TGI overflow
+wordings, which stay carried in `overflow.ts` and the failover tests. #168326 depends on
+#167878's refusal wording; #158161's would not have matched it.
+
+9.9 adaptations are in each commit message. The ones that change behavior: #168326's shared
+overflow copy also replaces 9.9's recorded-failure copy ("this conversation is too large for
+the model ... tighter output limit"), as it did on main; #158145's
+`getLongestRegisteredSecretLength()` reads only the process registry, since 9.9 has no
+borrowed registry snapshots.
+
+## 9.9's redactor and the new #158145
+
+9.9's `redactSensitiveText` scans built-in rules in 16,384-character chunks; main scans them
+whole since #161480 (`39b4bdbb642`, not in 9.9). The new #158145 redacts strings and JSON up
+to 4x/8x the 128 KiB attribute whole and exports them whole when they fit, where the old
+revision truncated first. Measured on the M4 with the PR's own fixtures, old and new on 9.9:
+
+| case                                                  | `543080ee633` (old #158145)     | this carry                                             |
+| ----------------------------------------------------- | ------------------------------- | ------------------------------------------------------ |
+| `postgres://` password holding `/`, `@` past the cut  | 32-char password exported       | masked                                                 |
+| registered value reading as an open quoted secret     | prefix exported                 | masked whole                                           |
+| 180K-char credentials dump, tokens across 16,384 cuts | truncated to 8.5K, no fragments | exported whole, 3 tokens' middle 12 chars unmasked     |
+| message with a 600K-char JWT past 4x the attribute    | 54-80 chars exported            | header and ~8K chars of payload exported, no signature |
+| `glpat-` token across the 128 KiB tool-call cut       | `glpat-A1b2` exported           | same                                                   |
+
+5 of the PR's 82 tests in `service-content-normalization.test.ts` fail on 9.9 for that reason
+(16,384 offsets, both 4x JWT rows, the two tool-call `glpat-` rows); they pass on main.
+Carrying #161480 would close the difference; it is 1,384 lines across the redactor.
+
+## Guards (2026-10-10, on the M4 Pro, node 26, pnpm 12.5.1)
+
+- `tsgo:core`, `tsgo:extensions`, `tsgo:extensions:test`, `tsgo:test:src`, `tsgo:test:packages`,
+  `tsgo:test:root`: rc=0.
+- `--changed-paths-json` core test shards stop at the boundary check: `agents-other` has 722
+  test roots against an advisory 720, the same at `543080ee633`.
+- `--base 543080ee633`: `check:max-lines-ratchet`, `check:line-cap-ratchet`,
+  `check:assertion-safety` (after a shrink-only baseline prune), `plugins:inventory:check`,
+  `plugin-sdk:surface:check` (4593 exports, 2697 functions), `plugin-sdk:check-exports`: rc=0.
+- `config:docs:check`: rc=1, core 2474 > 2473, channel 3796 > 3786, plugin 4432 > 4431, the
+  same at `543080ee633` (fork config surface; not from these commits).
+- oxfmt and oxlint on the 24 changed files: clean. `pnpm build`: rc=0.
+
+## Tests (2026-10-10, on the M4 Pro)
+
+`packages/ai` params, reasoning and overflow 63/63 (3 files), `src/agents/failover` and
+`embedded-agent-helpers` 1,138/1,138 (23 files), `overflow-context-recovery` 1/1, gateway
+240/240 (3 files), `src/logging` 801/801 (45 files), the registered-secret root test 2/2,
+diagnostics-otel 226/231 (13 files; the 5 above).
+
+Control, the same new tests against `543080ee633`: params 3 fail, `overflow.test.ts` 1, the
+native-provider-error case 1, chat history 1 and 5 display rows, the registered-secret root
+test 2, diagnostics-otel 14. Of #158145's three P1 regressions, the slash-password cases (6)
+and the registered-value cases (2) fail there and pass here; the 4x JWT rows fail on both.
+
+Dist markers (files containing the string, `grep -rlF`), this carry / `543080ee633`:
+`Math.max(0, effectiveContextTokens - estimatedInputTokens - 1)` 1/0,
+`estimated input \d+ leaves only \d+ output tokens within the \d+-token context` 3/0,
+`(?:https?|wss?|ftp):\/\/[^/\s:@]*:` 1/0, `estimate=unmargined` 0/3 (drop it from the verifier).
