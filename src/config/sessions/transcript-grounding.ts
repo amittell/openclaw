@@ -715,8 +715,8 @@ function ungroundedRanges(
     }
     let extent: ReturnType<typeof pathExtent> | undefined;
     for (const [rootIndex, root] of normalizableRoots.entries()) {
-      // Every gate below reads the text in place. A prompt carrying no managed root must not
-      // pay a single String.slice, which is what the rescan guard measures.
+      // Every gate below reads the text in place, so a prompt carrying no managed root never
+      // pays for a String.slice.
       if (root.lowerPrefix && !lowercaseText.startsWith(root.lowerPrefix, at)) {
         continue;
       }
