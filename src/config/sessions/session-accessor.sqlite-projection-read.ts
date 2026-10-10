@@ -67,10 +67,6 @@ export type SessionTranscriptMessageEventPage = {
   totalMessages: number;
 };
 
-export type SessionTranscriptConversationSnapshotRow = SessionTranscriptMessageEvent & {
-  precedingSameTurn: SessionTranscriptMessageEvent[];
-};
-
 export type SessionTranscriptMessageAnchorPage = SessionTranscriptMessageEventPage & {
   found: boolean;
   hasOverreadContext: boolean;

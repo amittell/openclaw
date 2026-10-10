@@ -36,6 +36,26 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+// Lets a test land writes between pages of the replay read.
+const tailPages = vi.hoisted(() => {
+  const state: { calls: number; afterPage?: (call: number) => Promise<void> } = { calls: 0 };
+  return state;
+});
+vi.mock("../../gateway/session-transcript-readers.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../gateway/session-transcript-readers.js")>();
+  return {
+    ...actual,
+    readSessionTranscriptBoundedMessageTailPageAsync: async (
+      ...args: Parameters<typeof actual.readSessionTranscriptBoundedMessageTailPageAsync>
+    ) => {
+      const page = await actual.readSessionTranscriptBoundedMessageTailPageAsync(...args);
+      await tailPages.afterPage?.(++tailPages.calls);
+      return page;
+    },
+  };
+});
+
 const REDACTED = "[unverified media reference removed]";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -427,6 +447,112 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
 
     expect(replay.map((entry) => entry.text)).toEqual([
       `kept ${real}; omitted ${REDACTED}/generated/missing-99998.jpg`,
+    ]);
+  });
+
+  // `older` rows, then a user turn whose reply names a path that only a later tool result in the
+  // same turn supplies, then exec results up to `total` rows. That result is not the reply's
+  // provenance; a page read across a concurrent write could lend it anyway.
+  async function createPagedSession(name: string, older: number, total: number) {
+    const stateDir = tempDirs.make(`grounding-${name}-`);
+    const later = path.join(stateDir, "media", "inbound", "later.png");
+    fs.mkdirSync(path.dirname(later), { recursive: true });
+    fs.writeFileSync(later, "image");
+    const filler = (count: number, from: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        message: {
+          role: "toolResult" as const,
+          toolCallId: `filler-${from + index}`,
+          toolName: "exec",
+          isError: false,
+          timestamp: 1 + from + index,
+          content: [{ type: "text" as const, text: "ok" }],
+        },
+      }));
+    const { sessionId, sessionKey, storePath } = await createSession(
+      name,
+      [
+        ...(older > 0
+          ? [
+              { message: { role: "user" as const, timestamp: 0, content: "older" } },
+              ...filler(older - 1, 0),
+            ]
+          : []),
+        { message: { role: "user", timestamp: 1, content: "start" } },
+        { message: { role: "assistant", timestamp: 2, content: `fabricated ${later}` } },
+        {
+          message: {
+            role: "toolResult",
+            toolCallId: "image-1",
+            toolName: "view_image",
+            isError: false,
+            timestamp: 3,
+            content: [{ type: "text", text: "Loaded image." }],
+            details: { media: { mediaUrls: [later] } },
+          },
+        },
+        ...filler(total - older - 3, older),
+      ],
+      stateDir,
+    );
+    // Each write appends two rows, which shifts the next page back by two.
+    const appendTurn = () =>
+      persistSessionTranscriptTurn(
+        { agentId: "main", sessionId, sessionKey, storePath },
+        {
+          updateMode: "none",
+          messages: [
+            { message: { role: "user", timestamp: 1_000, content: "later" } },
+            { message: { role: "assistant", timestamp: 1_001, content: "later reply" } },
+          ],
+        },
+      ).then(() => undefined);
+    const replay = async (afterPage: (call: number) => boolean) => {
+      tailPages.calls = 0;
+      tailPages.afterPage = (call) => (afterPage(call) ? appendTurn() : Promise.resolve());
+      try {
+        const rows = await readRecentUserAssistantTextForSession({
+          agentId: "main",
+          sessionKey,
+          storePath,
+          limit: 10,
+        });
+        return rows.map(({ text }) => text);
+      } finally {
+        delete tailPages.afterPage;
+      }
+    };
+    return { replay, fabricated: `fabricated ${REDACTED}/inbound/later.png` };
+  }
+
+  it("takes same-turn provenance from one transcript state when a write lands between pages", async () => {
+    // At 251 rows the reply is the oldest row of the newest 250-message page.
+    const { replay, fabricated } = await createPagedSession("page-snapshot", 0, 251);
+
+    expect(await replay((call) => call === 1)).toEqual([
+      "start",
+      fabricated,
+      "later",
+      "later reply",
+    ]);
+  });
+
+  it("reads the whole window without provenance when every read sees a write", async () => {
+    // A write after the first page of each of three reads. At 264 rows, when the last read
+    // starts, the reply is the oldest row of its first page, so the shifted second page hands
+    // the reply its later tool result: only dropping provenance keeps the path out. The last
+    // read still reaches the oldest row, re-reading the reply on the way.
+    const { replay, fabricated } = await createPagedSession("page-churn", 13, 260);
+
+    expect(await replay((call) => call % 2 === 1 && call <= 5)).toEqual([
+      "older",
+      "start",
+      fabricated,
+      fabricated,
+      "later",
+      "later reply",
+      "later",
+      "later reply",
     ]);
   });
 
