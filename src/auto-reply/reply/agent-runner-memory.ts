@@ -4,7 +4,6 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { parseCompactionDetails } from "../../../packages/agent-core/src/harness/compaction/compaction-details.js";
 import { resolveEffectiveCompactionReserveTokens } from "../../agents/agent-compaction-constants.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
 import { MemoryFlushToolsUnavailableError } from "../../agents/agent-tools.memory-flush.js";
@@ -55,7 +54,6 @@ import { isIncognitoSessionKey, isUnscopedSessionKeySentinel } from "../../routi
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { formatTokenCount } from "../../utils/token-format.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
@@ -68,7 +66,10 @@ import {
   buildEmbeddedRunExecutionParams,
   resolveRunThinkingLevelForFallbackCandidate,
 } from "./agent-runner-utils.js";
-import { createCompactionNoticePayload, type CompactionNoticePhase } from "./compaction-notice.js";
+import {
+  resolveCompactionCompletionNotice,
+  type CompactionNoticePhase,
+} from "./compaction-notice.js";
 import {
   buildVisibleMemoryFlushFailure,
   resolveVisibleMemoryFlushErrorPayloads,
@@ -662,23 +663,11 @@ export async function runSessionCompactionIfNeeded(params: {
       followupRun: params.followupRun,
     });
     assertActive();
-    const serverNotice =
-      result.compactionKind === "server-endpoint" &&
-      typeof result.result?.tokensBefore === "number" &&
-      typeof result.result.tokensAfter === "number"
-        ? `🧹 Server-side compaction complete (${formatTokenCount(result.result.tokensBefore)} → ${formatTokenCount(result.result.tokensAfter)})`
-        : undefined;
-    const qualityDegraded = parseCompactionDetails(result.result?.details)?.qualityDegraded;
-    await notifyCompaction(
-      qualityDegraded ? "degraded" : transcriptByteCompactionLatch ? "context_bounded" : "end",
-      qualityDegraded && transcriptByteCompactionLatch
-        ? (["degraded", "context_bounded"] as const)
-            .map((phase) => createCompactionNoticePayload({ phase }).text)
-            .join("\n\n")
-        : qualityDegraded || transcriptByteCompactionLatch
-          ? undefined
-          : serverNotice,
+    const notice = resolveCompactionCompletionNotice(
+      result,
+      Boolean(transcriptByteCompactionLatch),
     );
+    await notifyCompaction(notice.phase, notice.text);
     assertActive();
     entry = compactionStore[compactionSessionKey] ?? entry;
     const previousSessionId = params.followupRun.run.sessionId;

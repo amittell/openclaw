@@ -958,15 +958,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       let correctiveInstructions = "";
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
       let bestSummary: { summary: string; reasonCount: number } | undefined;
-      const degrade = (diagnostic: string) => {
-        if (!bestSummary) {
-          throw new Error("Compaction has no summary to recover.");
-        }
+      const degrade = (summary: string, diagnostic: string) => {
         log.warn(
           `Compaction safeguard: ${diagnostic}; using degraded summary; ` +
             "reasonCode=quality_guard_degraded_fallback",
         );
-        return compactionResult(bestSummary.summary, { qualityDegraded: true });
+        return compactionResult(summary, { qualityDegraded: true });
       };
 
       for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
@@ -1011,7 +1008,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             signal.throwIfAborted();
           }
           if (bestSummary) {
-            return degrade(`corrective generation failed; attempt=${attempt + 1}`);
+            return degrade(
+              bestSummary.summary,
+              `corrective generation failed; attempt=${attempt + 1}`,
+            );
           }
           throw attemptError;
         }
@@ -1085,13 +1085,17 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           bestSummary = { summary: recovered.summary, reasonCount };
         }
         if (finalized.qualityRetentionInfeasible) {
-          return degrade("required quality facts exceed finalized artifact budget");
+          return degrade(
+            bestSummary.summary,
+            "required quality facts exceed finalized artifact budget",
+          );
         }
         if (reconciliationMessages.length === 0 || attempt >= totalAttempts - 1) {
           const reasonCodes = [
             ...new Set(quality.reasons.map((reason) => reason.split(":", 1)[0])),
           ];
           return degrade(
+            bestSummary.summary,
             "final quality attempt failed; " +
               `reasonCodes=${reasonCodes.join(",")} reasonCount=${quality.reasons.length}`,
           );

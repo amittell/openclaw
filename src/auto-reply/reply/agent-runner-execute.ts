@@ -112,6 +112,7 @@ type ExecutePreparedReplyAgentRunInput = Omit<
     getActiveSessionEntry: () => SessionEntry | undefined;
     isRestartRecoveryArmed: () => Promise<boolean>;
     sendDirectCompactionNotice: ((phase: CompactionNoticePhase) => Promise<void>) | undefined;
+    onCompactionNoticePayload?: (payload: ReplyPayload) => void;
     setRunFollowupTurn: (runner: FinalizeReplyAgentRunInput["runFollowupTurn"]) => void;
     setActiveSessionEntry: (entry: SessionEntry | undefined) => void;
     shouldEmitToolOutput: () => boolean;

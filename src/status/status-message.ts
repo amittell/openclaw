@@ -25,6 +25,7 @@ import { buildModelAliasIndex, resolveModelRefFromString } from "../agents/model
 import { resolveOpenAITextVerbosity } from "../agents/openai-text-verbosity.js";
 import { resolveSandboxRuntimeStatus } from "../agents/sandbox.js";
 import type { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
+import { formatCompactionStatus } from "../auto-reply/reply/compaction-notice.js";
 import type {
   ElevatedLevel,
   ReasoningLevel,
@@ -924,12 +925,7 @@ export function buildStatusMessageParts(args: StatusArgs) {
   const costLine = costLabel ? `💵 Cost: ${costLabel}` : null;
   // Show queue details only for a nonempty queue or explicit overrides.
   const queueHasSignal = (args.queue?.depth ?? 0) > 0 || args.queue?.showDetails === true;
-  const compactionCount = entry?.compactionCount ?? 0;
-  const compactionValue = entry?.compactionQualityDegraded
-    ? `${compactionCount} · degraded history (details may be lost)`
-    : compactionCount > 0
-      ? compactionCount
-      : null;
+  const compactionValue = formatCompactionStatus(entry);
   const contextPct =
     typeof totalTokens === "number" && totalTokens > 0 && contextTokens > 0
       ? Math.min(999, Math.round((totalTokens / contextTokens) * 100))
@@ -954,7 +950,7 @@ export function buildStatusMessageParts(args: StatusArgs) {
       costLine,
       cacheLine,
       `📚 Context: ${contextUsageLabel}`,
-      compactionValue !== null ? `🧹 Compactions: ${compactionValue}` : null,
+      compactionValue ? `🧹 Compactions: ${compactionValue}` : null,
       mediaLine,
       args.usageLine,
     ],

@@ -626,6 +626,38 @@ describe("runReplyAgent auto-compaction token update", () => {
     expect(onBlockReply).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "returns degraded warnings with direct replies without a dispatcher (failed=%s)",
+    async (failed) => {
+      const result = await runEmptyDirectReply(
+        failed
+          ? {
+              meta: {
+                agentMeta: {},
+                error: { kind: "tool_result_mismatch", message: "terminal failure" },
+              },
+            }
+          : { payloads: [{ text: "continued answer" }], meta: { agentMeta: {} } },
+        {
+          agentEvents: [
+            { stream: "compaction", data: { phase: "start" } },
+            {
+              stream: "compaction",
+              data: { phase: "end", completed: true, qualityDegraded: true },
+            },
+          ],
+        },
+      );
+      expect(result).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining("/new or a larger model"),
+          isCompactionNotice: true,
+        }),
+        expect.objectContaining(failed ? { isError: true } : { text: "continued answer" }),
+      ]);
+    },
+  );
+
   it("surfaces terminal direct failures after runtime compaction progress", async () => {
     const onBlockReply = vi.fn();
     const result = await runEmptyDirectReply(

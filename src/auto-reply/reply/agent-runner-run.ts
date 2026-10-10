@@ -62,6 +62,7 @@ import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
+import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import {
@@ -478,10 +479,12 @@ export async function runReplyAgent(
     buildReplyMediaContextParams(followupRun, sessionKey, cfg),
   );
   const compactionNoticeMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
+  const pendingCompactionNotices: ReplyPayload[] = [];
   const sendDirectCompactionNotice = async (phase: CompactionNoticePhase, text?: string) => {
     if (
-      !opts?.onBlockReply ||
-      (phase !== "context_bounded" && phase !== "degraded" && !shouldNotifyUserAboutCompaction(cfg))
+      phase !== "context_bounded" &&
+      phase !== "degraded" &&
+      !shouldNotifyUserAboutCompaction(cfg)
     ) {
       return;
     }
@@ -492,7 +495,11 @@ export async function runReplyAgent(
       applyReplyToMode,
     });
     try {
-      await opts.onBlockReply(noticePayload);
+      if (opts?.onBlockReply) {
+        await opts.onBlockReply(noticePayload);
+      } else {
+        pendingCompactionNotices.push(noticePayload);
+      }
     } catch (err) {
       logVerbose(`context maintenance notice delivery failed: ${String(err)}`);
     }
@@ -598,6 +605,15 @@ export async function runReplyAgent(
     shouldDrainQueuedFollowupsAfterClear = true;
     return value;
   };
+  const prependCompactionNotices = (result: ReplyPayload | ReplyPayload[] | undefined) => {
+    if (pendingCompactionNotices.length === 0 || resolveReplyOperationAbortReason(replyOperation)) {
+      return result;
+    }
+    return [
+      ...pendingCompactionNotices,
+      ...(Array.isArray(result) ? result : result ? [result] : []),
+    ];
+  };
   if (replyOperationRunState && !isHeartbeat && replyExpectation === "required") {
     // Dispatch owns the stall notice; this owner holds the queue facts needed to answer
     // instead. The same sender's next queued request inherits the guidance; otherwise one
@@ -644,7 +660,7 @@ export async function runReplyAgent(
         captureReplyOperationSessionReader(replyOperation),
       ),
     );
-    return await executePreparedReplyAgentRun({
+    const result = await executePreparedReplyAgentRun({
       ...params,
       activeSessionStore,
       admitUserTurn,
@@ -668,6 +684,9 @@ export async function runReplyAgent(
       returnWithQueuedFollowupDrain,
       runFollowupTurn,
       sendDirectCompactionNotice,
+      onCompactionNoticePayload: (payload) => {
+        pendingCompactionNotices.push(payload);
+      },
       setActiveSessionEntry: (entry) => {
         activeSessionEntry = entry;
       },
@@ -680,12 +699,13 @@ export async function runReplyAgent(
       turnAdoptionLifecycle,
       typingSignals,
     });
+    return prependCompactionNotices(result);
   } catch (error) {
     replyRunState.recordReplyOperationAgentTurn(
       followupRun.replyOperationRunStates,
       replyOperation,
     );
-    return await handleReplyAgentRunError(error, {
+    const result = await handleReplyAgentRunError(error, {
       resolveVisibleReplyDelivery,
       isHeartbeat,
       replyExpectation,
@@ -695,6 +715,7 @@ export async function runReplyAgent(
       returnWithQueuedFollowupDrain,
       sessionCtx,
     });
+    return prependCompactionNotices(result);
   } finally {
     await cleanupReplyAgentRun({
       blockReplyPipeline,

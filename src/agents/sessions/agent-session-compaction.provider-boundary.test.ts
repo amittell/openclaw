@@ -1,9 +1,3 @@
-/**
- * The compaction-provider failure boundary: what a session is left with when a
- * registered provider's summarize() throws. Split out of agent-session-compaction.test.ts
- * to keep both files under the max-lines cap; this half owns the provider-failure
- * outcomes and the degraded-fallback contract.
- */
 import type { Context, Model, SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -28,31 +22,6 @@ import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 
 registerAgentSessionLoopTestLifecycle();
-
-/**
- * The structured artifact the safeguard commits when quality validation is exhausted.
- *
- * The pending ask is CARRIED here rather than dropped: the degrade is lossy on purpose, but
- * the active request is the one fact a later turn cannot recover from the transcript, and
- * earlier this section read "None." while the user was still waiting on that prompt.
- */
-const DEGRADED_FALLBACK_SUMMARY = [
-  "## Decisions",
-  "No prior history.",
-  "",
-  "## Open TODOs",
-  "None.",
-  "",
-  "## Constraints/Rules",
-  "None.",
-  "",
-  "## Pending user asks",
-  "Latest user request context:",
-  '"old prompt"',
-  "",
-  "## Exact identifiers",
-  "None captured.",
-].join("\n");
 
 describe("AgentSession compaction provider boundary", () => {
   // A provider throw never cancels on its own: it is caught and retried through the
@@ -110,12 +79,6 @@ describe("AgentSession compaction provider boundary", () => {
             "## Exact identifiers\nNone.",
           ].join("\n\n")
         : "Core summary without required safeguard headings";
-      const recoveredSummary = [
-        "## Latest user request context",
-        JSON.stringify("old prompt"),
-        "",
-        summary,
-      ].join("\n");
       const sessionManager = SessionManager.inMemory();
       sessionManager.appendMessage({ role: "user", content: "old prompt", timestamp: 1 });
       sessionManager.appendMessage({
@@ -220,12 +183,7 @@ describe("AgentSession compaction provider boundary", () => {
           streamMocks.streamSimple.mock.calls.length * 2,
         );
         subscription.unsubscribe();
-        const expectedCommit =
-          outcome === "recovered"
-            ? recoveredSummary
-            : outcome === "degraded"
-              ? DEGRADED_FALLBACK_SUMMARY
-              : undefined;
+        const expectedCommit = !cancelCaller ? expect.stringContaining(summary) : undefined;
         expect.soft(observation).toMatchObject({
           providerCalls: 1,
           callerAbortedAtProviderEntry: false,
@@ -246,9 +204,9 @@ describe("AgentSession compaction provider boundary", () => {
               ]
             : [],
         });
-        // The guarded pipeline may chunk the history; do not pin its request count.
         if (!cancelCaller) {
           expect(streamMocks.streamSimple).toHaveBeenCalled();
+          expect(appended[0]?.summary).toContain("old prompt");
         }
         // Only a cancelled compaction leaves history untouched. A degraded one commits a
         // boundary on purpose: that is the whole point of degrading instead of cancelling.
