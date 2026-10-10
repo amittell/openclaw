@@ -1204,7 +1204,7 @@ describe("gateway server chat", () => {
   });
 
   const contextOverflowCopy =
-    "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.";
+    "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.";
 
   test.each([
     {

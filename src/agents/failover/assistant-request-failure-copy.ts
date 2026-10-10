@@ -1,6 +1,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayStorageFailure } from "../../infra/sqlite-error-diagnostics.js";
 import {
+  CONTEXT_OVERFLOW_ERROR_MESSAGE,
   extractErrorHttpStatus,
   formatTransportErrorCopy,
   parseApiErrorInfo,
@@ -202,7 +203,7 @@ export function renderRecordedAssistantFailureCopy(message: {
           isContextOverflowErrorFromTables(value)),
     )
   ) {
-    return "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.";
+    return CONTEXT_OVERFLOW_ERROR_MESSAGE;
   }
   const classifiedCopy = renderAssistantRequestFailureCopy({
     code,

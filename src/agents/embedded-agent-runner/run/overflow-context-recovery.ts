@@ -3,6 +3,7 @@ import { isProviderRefusalAssistantError } from "@openclaw/llm-core/diagnostics"
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import type { AssistantMessage } from "../../../llm/types.js";
+import { CONTEXT_OVERFLOW_ERROR_MESSAGE } from "../../../shared/assistant-error-format.js";
 import { MAX_OVERFLOW_COMPACTION_ATTEMPTS } from "../../agent-compaction-constants.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import {
@@ -44,16 +45,6 @@ function renderRecoverySideEffectCaution(
   return replayMetadata.hadPotentialSideEffects
     ? " Completed tool actions were not replayed; verify their effects before retrying."
     : "";
-}
-
-function renderOverflowResetGuidance(
-  attempt: EmbeddedRunCompactionRecoveryInput["attempt"],
-): string {
-  return (
-    "Context overflow: prompt too large for the model. " +
-    "Try /reset (or /new) to start a fresh session, or use a larger-context model." +
-    renderRecoverySideEffectCaution(attempt)
-  );
 }
 
 type EmbeddedRunOverflowRecoveryOutcome =
@@ -226,7 +217,7 @@ export async function recoverEmbeddedRunOverflow(
       action: "surface",
       kind: isCompactionFailure ? "compaction_failure" : "context_overflow",
       errorText,
-      userText: renderOverflowResetGuidance(input.attempt),
+      userText: CONTEXT_OVERFLOW_ERROR_MESSAGE + renderRecoverySideEffectCaution(input.attempt),
     };
   }
 
@@ -442,7 +433,7 @@ export async function recoverEmbeddedRunOverflow(
   const userText = preflightCompactionFailed
     ? `${classifyCompactionReason(failedCompactionReason) === "timeout" ? "Auto-compaction timed out" : "Auto-compaction failed"} before the next model request. Try again or run /compact.` +
       renderRecoverySideEffectCaution(input.attempt)
-    : renderOverflowResetGuidance(input.attempt);
+    : CONTEXT_OVERFLOW_ERROR_MESSAGE + renderRecoverySideEffectCaution(input.attempt);
   log.warn(
     `[context-overflow-recovery] exhausted ${isPreflightRecovery ? "context budget" : "provider overflow"} recovery for ${input.modelSelection.provider}/${input.modelSelection.model}; ` +
       `livenessState=blocked suggestedAction=${preflightCompactionFailed ? "retry_or_compact" : "reset_or_new"} kind=${kind}`,

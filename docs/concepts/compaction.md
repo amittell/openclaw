@@ -57,6 +57,8 @@ If the provider rejects a request after tool calls have completed, the built-in 
 
 Overflow recovery trims tool results within the current model-context window. Older messages and reset boundaries remain in retained history without being copied into new transcript entries.
 
+If overflow recovery cannot make the prompt fit, the failed reply suggests `/reset`, `/new`, or a larger-context model. The Control UI shows this guidance in Details and keeps it in saved chat history. For a single oversized prompt, shorten the prompt before resending it in a new session.
+
 Stopping or timing out a run also stops its overflow or timeout recovery. The built-in OpenClaw runtime does not start further recovery hooks, maintenance, transcript truncation, or retries after cancellation. Cancellation is not rollback: a compaction that already completed remains in the transcript and is still counted, without sending a late reply. The context estimate follows the latest model or compaction observation; billing totals remain separate.
 
 The built-in OpenClaw runtime performs required checkpointing and compaction before inference. In persistent Gateway sessions, optional memory flushing and compaction wait until reply delivery has settled and its foreground owner has closed. That work uses a separate session owner and the turn's remaining time. A new message cancels and settles optional work before reading the session for its own inference.

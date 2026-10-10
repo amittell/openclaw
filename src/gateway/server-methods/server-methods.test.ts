@@ -1402,7 +1402,7 @@ describe("projectChatDisplayMessages", () => {
           content: [
             {
               type: "text",
-              text: "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.",
+              text: "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
             },
           ],
           stopReason: "error",
