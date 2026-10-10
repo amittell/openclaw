@@ -223,7 +223,6 @@ extensions/deepseek/provider-policy-api.ts	2
 extensions/device-pair/index.ts	6
 extensions/device-pair/notify-state.ts	3
 extensions/device-pair/notify.ts	1
-extensions/diagnostics-otel/src/service-content-normalization.ts	1
 extensions/diagnostics-otel/src/service-exporter.ts	2
 extensions/diagnostics-otel/src/service-logs.ts	10
 extensions/diagnostics-otel/src/service-propagation.ts	2

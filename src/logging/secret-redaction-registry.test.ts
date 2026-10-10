@@ -1,4 +1,4 @@
-// Registry tests cover bounded eviction of registered exact secret values.
+// Registry tests cover the longest registered length across registration, eviction and reset.
 import { afterEach, describe, expect, it } from "vitest";
 import { redactSensitiveText } from "./redact.js";
 import {
@@ -11,8 +11,8 @@ afterEach(() => {
   resetSecretRedactionRegistryForTest();
 });
 
-describe("registered exact secret value eviction", () => {
-  it("evicts the oldest value after 512 registrations", () => {
+describe("longest registered secret length", () => {
+  it("follows registration, eviction of the oldest value at 512, and reset", () => {
     // The oldest value is also the longest, so eviction must shorten the longest length.
     const first = "exact-registry-value-000-longest";
     registerSecretValueForRedaction(first);
