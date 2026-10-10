@@ -14,6 +14,7 @@ import {
   testing,
 } from "./compaction-safeguard.test-support.js";
 
+const { MAX_COMPACTION_SUMMARY_CHARS } = testing;
 const CJK_PROSE = "迁移记录需要保留已确认的部署决策与运行状态。";
 const REQUIRED_ASK = `confirm the rollout status for ${Array.from(
   { length: 160 },
@@ -67,5 +68,27 @@ describe("compaction-safeguard mixed-script summary budget", () => {
     expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toContain(
       "cannot fit beside the foreground prompt",
     );
+  });
+
+  it("fails closed when audit-required tail sections cannot fit the artifact cap", async () => {
+    const latestAsk = "preserve the pending deployment status";
+    const identifier = `https://example.com/${"a".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
+    const oversizedRequiredTail = structuredSummary({ asks: latestAsk, identifiers: identifier });
+    mockSummarizeCompactionHistory.mockResolvedValue(oversizedRequiredTail);
+
+    const sessionManager = createQualityGuardSessionManager({ qualityGuardMaxRetries: 0 });
+    const event = createCompactionEvent({
+      messageText: `${latestAsk} ${identifier}`,
+    });
+
+    const { result } = await runCompactionScenario(sessionManager, event);
+
+    expect(result).toEqual({ cancel: true });
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
+    expect(consumeCompactionSafeguardCancellation(sessionManager)?.error).toMatchObject({
+      code: "summarization_failed",
+      message:
+        "The compaction summary cannot fit beside the foreground prompt and retained history.",
+    });
   });
 });
