@@ -6,6 +6,7 @@ import type { ReplyPayload } from "../types.js";
 export type CompactionNoticePhase =
   | "start"
   | "end"
+  | "degraded"
   | "incomplete"
   | "skipped"
   | "context_bounded"
@@ -14,6 +15,8 @@ export type CompactionNoticePhase =
 const COMPACTION_NOTICE_TEXT: Record<CompactionNoticePhase, string> = {
   start: "🧹 Compacting context...",
   end: "🧹 Compaction complete",
+  degraded:
+    "⚠️ Compaction completed with a degraded summary. Older details, exact identifiers, or pending requests may be missing. Resend important context; /new or a larger model can help.",
   incomplete: "🧹 Compaction incomplete",
   skipped: "🧹 Compaction not needed",
   memory_flush_degraded: "⚠️ Memory maintenance temporarily failed; continuing your reply.",

@@ -1,10 +1,3 @@
-/**
- * Pins the safeguard's terminal quality path: when the final audit fails, or the required facts
- * cannot fit the finalized budget, the safeguard commits a bounded fallback marked
- * `qualityDegraded` instead of cancelling, so the session can still shrink.
- *
- * Lives beside compaction-safeguard.test.ts, which is grandfathered over the line cap.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { summarizeCompactionHistory } from "../compaction.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
@@ -94,7 +87,7 @@ describe("compaction-safeguard degraded fallback", () => {
       // Identifiers are best-effort on this path and the request context is bounded, so an
       // identifier that cannot fit must not take the request down with it.
       const summary = expectCompactionResult(result).summary;
-      expect(summary).toContain("## Pending user asks\nLatest user request context:");
+      expect(summary).toContain("Latest user request context:");
       expect(summary).toContain(latestAsk);
       expect(summary).toContain(fittingIdentifier);
       expect(summary).not.toContain(identifier);
@@ -124,6 +117,7 @@ describe("compaction-safeguard degraded fallback", () => {
     // dropped both and stored only the empty fallback template.
     expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
     const summary = expectCompactionResult(result).summary;
+    expect(summary).toContain("Core summary without headings");
     expect(summary).toContain(latestAsk);
     expect(summary).toContain(identifier);
     // Operators and dashboards branch on this marker; pin it so a refactor of the helper's
@@ -132,6 +126,27 @@ describe("compaction-safeguard degraded fallback", () => {
       expect.stringContaining("reasonCode=quality_guard_degraded_fallback"),
     );
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
+  it("keeps the stronger generated summary when a corrective retry loses more context", async () => {
+    const better = structuredSummary({ decisions: "Keep the blue deployment." }).replace(
+      "## Exact identifiers",
+      "Identifiers",
+    );
+    mockSummarizeCompactionHistory
+      .mockResolvedValueOnce(better)
+      .mockResolvedValueOnce("Unrelated retry without sections.");
+    const { result } = await runCompactionScenario(
+      createQualityGuardSessionManager({ recentTurnsPreserve: 0, qualityGuardMaxRetries: 1 }),
+      createCompactionEvent({ messageText: "confirm deployment status" }),
+    );
+    expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
+    const summary = expectCompactionResult(result).summary;
+    expect(summary).toContain("Keep the blue deployment.");
+    expect(summary).not.toContain("Unrelated retry");
+    expect(summary.match(/^## Pending user asks$/gm)).toHaveLength(1);
+    expect(summary).toContain("confirm deployment status");
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the generated split-turn context when a terminal audit failure trims the degraded suffix", async () => {
@@ -163,8 +178,7 @@ describe("compaction-safeguard degraded fallback", () => {
 
     expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
     const summary = expectCompactionResult(result).summary;
-    // The split-turn summary is the only generated context left on this path. Capping the
-    // suffix by its tail dropped it first and kept older verbatim turns instead.
+    // Capping the suffix by its tail used to drop the active split turn first.
     expect(summary).toContain(`**Turn Context (split turn):**\n\n${activeTurn}`);
     expect(summary).toContain(latestAsk);
     expect(summary).toContain(CONTEXT_TRUNCATED_MARKER.trim());

@@ -12,12 +12,7 @@ export interface CompactionDetails {
   modifiedFiles: string[];
   /** Run-owned request that remains active across another compaction generation. */
   latestUnresolvedUserRequest?: string;
-  /**
-   * Set when the summary is the safeguard's structured fallback rather than a
-   * generated summary, because quality validation was exhausted. Recorded here so
-   * "was this boundary degraded?" is answered by the boundary, not inferred from
-   * the fallback template's prose.
-   */
+  /** The best available summary was committed without passing the safeguard audit. */
   qualityDegraded?: true;
 }
 

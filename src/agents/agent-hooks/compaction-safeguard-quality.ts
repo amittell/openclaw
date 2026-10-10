@@ -343,7 +343,7 @@ export function buildStructuredFallbackSummary(previousSummary: string | undefin
     return trimmedPreviousSummary;
   }
   const values = [
-    trimmedPreviousSummary || "No prior history.",
+    nestRequiredSummaryHeadings(trimmedPreviousSummary) || "No prior history.",
     "None.",
     "None.",
     "None.",

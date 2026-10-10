@@ -110,6 +110,11 @@ export function createSessionHistoryWorkerReaders(
     },
     readCleanup: reader("session-cleanup", "a cleanup snapshot", (value) => value),
     readRawDelta: reader("transcript-raw-delta", "raw transcript delta", (value) => value.result),
+    readLatestAssistant: reader(
+      "transcript-latest-assistant",
+      "latest assistant text",
+      (value) => value.result,
+    ),
     readVisibleDelta: reader(
       "transcript-visible-delta",
       "visible transcript delta",
@@ -475,6 +480,7 @@ export function createSessionHistoryWorkerReaders(
         ? err(decodeSessionTranscriptWorkerReadError(value.readError))
         : ok(value.entry)),
       source: value.source,
+      facts: value.facts,
     })),
     readEntryCurrent: reader(
       "session-entry-current",

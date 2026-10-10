@@ -922,21 +922,21 @@ export function buildStatusMessageParts(args: StatusArgs) {
   const cacheValue = formatCacheHitValue(inputTokens, cacheRead, cacheWrite);
   const cacheLine = cacheValue ? `🗄️ Cache: ${cacheValue}` : null;
   const costLine = costLabel ? `💵 Cost: ${costLabel}` : null;
-  // Depth 0 is the boring default; the queue row keeps details only when the
-  // queue is non-empty or the session carries queue overrides.
+  // Show queue details only for a nonempty queue or explicit overrides.
   const queueHasSignal = (args.queue?.depth ?? 0) > 0 || args.queue?.showDetails === true;
   const compactionCount = entry?.compactionCount ?? 0;
+  const compactionValue = entry?.compactionQualityDegraded
+    ? `${compactionCount} · degraded history (details may be lost)`
+    : compactionCount > 0
+      ? compactionCount
+      : null;
   const contextPct =
     typeof totalTokens === "number" && totalTokens > 0 && contextTokens > 0
       ? Math.min(999, Math.round((totalTokens / contextTokens) * 100))
       : null;
+  const filled = Math.min(10, Math.max(0, Math.round((contextPct ?? 0) / 10)));
   const contextMeter =
-    contextPct !== null
-      ? (() => {
-          const filled = Math.min(10, Math.max(0, Math.round(contextPct / 10)));
-          return `${"▰".repeat(filled)}${"▱".repeat(10 - filled)} `;
-        })()
-      : "";
+    contextPct === null ? "" : `${"▰".repeat(filled)}${"▱".repeat(10 - filled)} `;
   const mediaLine = formatMediaUnderstandingLine(args.mediaDecisions);
   const voiceLine = formatVoiceModeLine(args.config, args.sessionEntry, args.agentId);
 
@@ -954,7 +954,7 @@ export function buildStatusMessageParts(args: StatusArgs) {
       costLine,
       cacheLine,
       `📚 Context: ${contextUsageLabel}`,
-      compactionCount > 0 ? `🧹 Compactions: ${compactionCount}` : null,
+      compactionValue !== null ? `🧹 Compactions: ${compactionValue}` : null,
       mediaLine,
       args.usageLine,
     ],
@@ -993,7 +993,7 @@ export function buildStatusMessageParts(args: StatusArgs) {
   pushStatusRow("💵 Cost", costLabel);
   pushStatusRow("🗄️ Cache", cacheValue);
   pushStatusRow("📚 Context", `${contextMeter}${contextUsageLabel}`);
-  pushStatusRow("🧹 Compactions", compactionCount > 0 ? compactionCount : null);
+  pushStatusRow("🧹 Compactions", compactionValue);
   pushStatusRow("🧵 Session", sessionValue);
   pushStatusRow("⚙️ Execution", execution);
   pushStatusRow("Runtime", agentRuntimeLabel);

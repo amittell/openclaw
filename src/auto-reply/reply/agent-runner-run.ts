@@ -481,7 +481,7 @@ export async function runReplyAgent(
   const sendDirectCompactionNotice = async (phase: CompactionNoticePhase, text?: string) => {
     if (
       !opts?.onBlockReply ||
-      (phase !== "context_bounded" && !shouldNotifyUserAboutCompaction(cfg))
+      (phase !== "context_bounded" && phase !== "degraded" && !shouldNotifyUserAboutCompaction(cfg))
     ) {
       return;
     }
