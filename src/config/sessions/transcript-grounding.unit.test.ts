@@ -677,14 +677,25 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     [`file://${root}/inbound/ok.png\t/../../generated/secret.png`],
     [`file://${root}/inbound/ok.png\n/../../generated/secret.png`],
     [`${root}/inbound/ok.png /../../generated/secret.png`],
+    // With the line break or tab deleted or kept, one ".." pops ok.png itself.
+    [`file://${root}/inbound/ok.png\n/../ok.png.fake`],
+    [`${root}/inbound/ok.png\t/../ok.png.fake`],
   ])("does not let an authorized path run on past a boundary a later .. discards: %j", (input) => {
-    // The resolver reads each input as one path: ok.png and inbound are popped, and it opens
-    // generated/secret.png under the root, which no tool result verified.
+    // The resolver reads each input as one path: the ".." segments pop ok.png and, where there
+    // are two, inbound, and it opens a file under the root that no tool result verified.
     const granted = [`file://${root}/inbound/ok.png`, `${root}/inbound/ok.png`];
     const g = grounding([root, `file://${root}`], granted, false, []);
     const out = invalidateUngroundedMediaPrefixes(input, g);
     expect(out.startsWith(REDACTED)).toBe(true);
     expect(out).toBe(`${REDACTED}${input.slice(input.indexOf("/inbound/"))}`);
+  });
+
+  it("does not let an authorized media URI run on past a line break a later .. discards", () => {
+    // parseInboundMediaUri hands the URI to the URL parser, which deletes the line break and
+    // folds the "..", so the resolver opens inbound/ok.png.fake.
+    const input = "media://inbound/ok.png\n/../ok.png.fake";
+    const g = grounding([root], ["media://inbound/ok.png"]);
+    expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(`${REDACTED}/ok.png\n/../ok.png.fake`);
   });
 
   it.each([
@@ -778,17 +789,40 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     }
   });
 
-  it("keeps prose boundaries around file URLs when no deleted character is inside one", () => {
+  it("keeps prose boundaries around file URLs and reports the names a resolver could join", () => {
     const granted = `file://${root}/inbound/ok.png`;
     const g = grounding([root, `file://${root}`], [granted], false, []);
-    for (const benign of [
-      `${granted}\nnext line`,
-      `${granted}\t.fake`,
-      "/managed/state/me\tdia/x.png",
-      "file:///tmp/x.png\nmedia/x.png is elsewhere",
-      "file:///managed/state/other\n/media/x.png",
-    ]) {
-      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    // Whether a joined name opens another file is the store's answer; the scan only reports it.
+    for (const [benign, joined] of [
+      [`${granted}\nnext line`, [`${granted}\nnext`]],
+      [`${granted}\t.fake.`, [`${granted}\t.fake.`, `${granted}\t.fake`]],
+      [`${granted}.\n\nNext`, [`${granted}.\n\nNext`]],
+      ["/managed/state/me\tdia/x.png", []],
+      ["file:///tmp/x.png\nmedia/x.png is elsewhere", []],
+      ["file:///managed/state/other\n/media/x.png", []],
+    ] as const) {
+      const joins = { found: new Set<string>() };
+      expect(invalidateUngroundedMediaPrefixes(benign, g, joins)).toBe(benign);
+      expect([...joins.found]).toEqual(joined);
+    }
+    // A list of paths, one per line: each next line starts beneath the authorized file.
+    const plain = `${root}/inbound/ok.png`;
+    const list = `${plain}\n${root}/inbound/b.png\n${plain}`;
+    const listJoins = { found: new Set<string>() };
+    expect(
+      invalidateUngroundedMediaPrefixes(
+        list,
+        grounding([root], [plain, `${root}/inbound/b.png`], false, []),
+        listJoins,
+      ),
+    ).toBe(list);
+    expect(listJoins.found.size).toBe(0);
+    // A joined name too long to read through, or with too many places to stop, is refused like
+    // every other exhausted budget.
+    for (const suffix of [`\n${"x".repeat(4096)}`, "\ta".repeat(9)]) {
+      expect(invalidateUngroundedMediaPrefixes(`${granted}${suffix}`, g)).toBe(
+        `${REDACTED}/inbound/ok.png${suffix}`,
+      );
     }
   });
 });

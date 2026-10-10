@@ -28,12 +28,98 @@ const URI_PREFIX = /^[a-z][a-z0-9+.-]*:(?:\/\/[^/]*)?/iu;
 const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
 // What the WHATWG URL parser deletes from its input before parsing; see urlParserReading.
 const URL_DELETED_RUNS = /[\t\n\r]+/gu;
+// The same characters one at a time: a token boundary here is the resolver's to decide, since its
+// URL parser deletes them and a filesystem path keeps them in the name.
+const JOINING = /[\t\n\r]/u;
+// Prose that runs a reference on across those characters yields one or two spellings. Past this
+// many the text is tabular or adversarial, and refusing the alias keeps the scan linear: every
+// spelling is a string the probe set hashes in full.
+const MAX_JOINED_SPELLINGS = 8;
+// DOT_DOT_SEGMENT for one test, without the global flag's lastIndex.
+const CLIMBS_OUT = new RegExp(DOT_DOT_SEGMENT.source, "u");
 // The `~` spellings resolveUserPath expands; `~name` is left to the filesystem.
 const HOME_PREFIX = /^~(?=$|[\\/])/u;
 // A drive-letter path. The resolver reads these with path.win32, never with the URL parser.
 const DRIVE_ROOTED = /^[a-z]:[/\\]/iu;
 // path.win32 resolves "\x" and "/x" on the current drive; "\\x" and "//x" are UNC.
 const DRIVELESS_ROOTED = /^[\\/](?![\\/])/u;
+
+/**
+ * Spellings that run an authorized reference on across tab, LF or CR. Whether
+ * `ok.png<TAB>.fake` opens another file depends on the store, so the media owner decides it: a
+ * scan records each spelling in `found`, and a rescan refuses an alias whose spelling is in
+ * `unverified`.
+ */
+export type JoinedMediaSpellings = { found: Set<string>; unverified?: ReadonlySet<string> };
+
+/**
+ * Raw slices from `at` that carry the alias ending at `aliasEnd` across tab, LF or CR into more
+ * of its token, ending wherever a reader could stop: at a later run, at the boundary, or before
+ * trailing punctuation. Undefined past the token or spelling budget, which the caller refuses.
+ * Nothing crosses a boundary those characters do not form, so "ok.png<LF>next line" yields one
+ * spelling, and prose keeps it unless the store holds that joined name.
+ */
+function joinedSpellings(text: string, at: number, aliasEnd: number): string[] | undefined {
+  let scan = aliasEnd;
+  while (PUNCTUATION.test(text.charAt(scan))) {
+    scan += 1;
+  }
+  if (!JOINING.test(text.charAt(scan))) {
+    return [];
+  }
+  // A list of paths, one per line. With the run deleted, a separator right after it names a path
+  // beneath the authorized file, which is a regular file, unless a ".." in that reading climbs
+  // back out ("/.<LF>./x" reads "/../x"); kept, it names a directory called the file's name plus
+  // that tab or line break.
+  let next = scan;
+  while (JOINING.test(text.charAt(next))) {
+    next += 1;
+  }
+  if (scan === aliasEnd && /[/\\]/u.test(text.charAt(next))) {
+    let end = next;
+    while (
+      end < text.length &&
+      end - at <= MAX_GROUNDING_TOKEN_CHARS &&
+      (JOINING.test(text.charAt(end)) || !TOKEN_BOUNDARY.test(text.charAt(end)))
+    ) {
+      end += 1;
+    }
+    const read = text.slice(next, end).replace(URL_DELETED_RUNS, "").toLowerCase();
+    if (end - at <= MAX_GROUNDING_TOKEN_CHARS && !CLIMBS_OUT.test(read)) {
+      return [];
+    }
+  }
+  const spellings = new Set<string>();
+  let joined = false;
+  for (; scan <= text.length; scan += 1) {
+    if (scan - at > MAX_GROUNDING_TOKEN_CHARS) {
+      return undefined;
+    }
+    const char = text.charAt(scan);
+    if (char && !JOINING.test(char) && !TOKEN_BOUNDARY.test(char)) {
+      joined = true;
+      continue;
+    }
+    if (joined) {
+      let end = scan;
+      spellings.add(text.slice(at, end));
+      while (PUNCTUATION.test(text.charAt(end - 1))) {
+        end -= 1;
+      }
+      if (!JOINING.test(text.charAt(end - 1))) {
+        spellings.add(text.slice(at, end));
+      }
+      if (spellings.size > MAX_JOINED_SPELLINGS) {
+        return undefined;
+      }
+    }
+    if (!JOINING.test(char)) {
+      break;
+    }
+    joined = false;
+  }
+  return [...spellings];
+}
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -232,7 +318,11 @@ function resolvedManagedPrefix(
 }
 
 /** Ranges of `text` naming a managed root that no authorized alias covers, in text order. */
-function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [number, number][] {
+function ungroundedRanges(
+  text: string,
+  grounding: ManagedMediaGrounding,
+  joins?: JoinedMediaSpellings,
+): [number, number][] {
   const ranges: [number, number][] = [];
   if (!text || (grounding.rootAliases.length === 0 && grounding.uriRoots.length === 0)) {
     return ranges;
@@ -750,14 +840,19 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
       (candidate) =>
         matchesAt(candidate, cursor) && endsReference(text, cursor + candidate.alias.length),
     )?.alias;
-    if (allowed && !pathRunsPast(cursor, cursor + allowed.length)) {
+    const joined =
+      allowed && !pathRunsPast(cursor, cursor + allowed.length)
+        ? joinedSpellings(text, cursor, cursor + allowed.length)
+        : undefined;
+    if (allowed && joined && joined.every((spelling) => !joins?.unverified?.has(spelling))) {
+      joined.forEach((spelling) => joins?.found.add(spelling));
       cursor += allowed.length;
     } else {
       // A dot-segment spelling of an AUTHORIZED reference is redacted too: authorized
       // aliases are the exact spellings the resolver verified, and re-deriving
       // equivalence for them would decide authorization from prompt text. Failing closed
       // costs a visible placeholder on an exotic spelling; failing open replays an
-      // unverified path.
+      // unverified path. So is an alias the media owner found joined onto another file.
       ranges.push([cursor, cursor + rootLength]);
       cursor += rootLength;
     }
@@ -806,8 +901,9 @@ function urlParserReading(text: string): { text: string; offsets: Uint32Array } 
 export function invalidateUngroundedMediaPrefixes(
   text: string,
   grounding: ManagedMediaGrounding,
+  joins?: JoinedMediaSpellings,
 ): string {
-  const ranges = ungroundedRanges(text, grounding);
+  const ranges = ungroundedRanges(text, grounding, joins);
   const fileRoots = grounding.rootAliases.filter((alias) => /^file:/iu.test(alias));
   const reading = fileRoots.length > 0 ? urlParserReading(text) : undefined;
   if (reading) {

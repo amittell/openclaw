@@ -335,6 +335,46 @@ export async function prepareManagedMediaGroundingRoot(): Promise<ManagedMediaGr
   };
 }
 
+/** The real path of the managed file `source` opens, read as every media consumer reads it. */
+async function verifiedManagedPath(
+  root: ManagedMediaGroundingRoot,
+  source: string,
+): Promise<string | undefined> {
+  const inbound = await resolveInboundMediaReference(source).catch(() => null);
+  if (inbound) {
+    return inbound.physicalPath;
+  }
+  const localPath = maybeLocalPathFromSource(source);
+  return localPath ? await resolveManagedMediaPath(localPath, root.mediaDir) : undefined;
+}
+
+/**
+ * The `spellings` that open a managed file none of `grounding`'s verified paths names. The
+ * transcript scan cannot tell `ok.png<TAB>.fake` from prose without the store. Spellings past
+ * the probe budget are reported unread.
+ */
+export async function findUnverifiedJoinedMediaSpellings(
+  root: ManagedMediaGroundingRoot,
+  grounding: ManagedMediaGrounding,
+  spellings: Iterable<string>,
+): Promise<Set<string>> {
+  const authorized = new Set(grounding.authorizedAliases);
+  const unverified = new Set<string>();
+  let probes = 0;
+  for (const spelling of spellings) {
+    if (probes >= MAX_GROUNDING_PATHS) {
+      unverified.add(spelling);
+      continue;
+    }
+    probes += 1;
+    const verified = await verifiedManagedPath(root, normalizeMediaReferenceSource(spelling));
+    if (verified && !authorized.has(verified)) {
+      unverified.add(spelling);
+    }
+  }
+  return unverified;
+}
+
 /** Resolves one entry's bounded references against prepared media-root identity. */
 export async function prepareManagedMediaGrounding(
   root: ManagedMediaGroundingRoot,
@@ -350,11 +390,7 @@ export async function prepareManagedMediaGrounding(
     ) {
       continue;
     }
-    const inbound = await resolveInboundMediaReference(source).catch(() => null);
-    const localPath = inbound?.physicalPath ?? maybeLocalPathFromSource(source);
-    const verified =
-      inbound?.physicalPath ??
-      (localPath ? await resolveManagedMediaPath(localPath, root.mediaDir) : undefined);
+    const verified = await verifiedManagedPath(root, source);
     if (!verified) {
       continue;
     }

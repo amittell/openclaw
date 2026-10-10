@@ -177,6 +177,73 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
     expect(replay.at(-1)?.text).toBe(spellings.map(() => `(${REDACTED}/inbound/x.png)`).join(" "));
   });
 
+  it("refuses an authorized reference the resolver joins onto another stored file", async () => {
+    const stateDir = tempDirs.make("grounding-joined-");
+    const inbound = path.join(stateDir, "media", "inbound");
+    fs.mkdirSync(inbound, { recursive: true });
+    fs.writeFileSync(path.join(inbound, "ok.png"), "granted");
+    fs.writeFileSync(path.join(inbound, "ok.png.fake"), "never granted");
+    const granted = pathToFileURL(path.join(inbound, "ok.png")).href;
+    const fileJoins = [
+      ...["\t", "\n", "\r"].map((deleted) => `${granted}${deleted}.fake`),
+      // The line break inside ".." is deleted too, so this climbs out of ok.png onto ok.png.fake.
+      `${granted}\n/.\n./ok.png.fake`,
+    ];
+    const mediaJoin = "media://inbound/ok.png\t.fake";
+    // The joined name of this one is not in the store, so its line break stays prose.
+    const prose = `${granted}\nnext line`;
+    const { sessionKey, storePath } = await createSession(
+      "joined",
+      [
+        { message: { role: "user", timestamp: 1, content: "send it" } },
+        {
+          message: {
+            role: "toolResult",
+            toolCallId: "image-1",
+            toolName: "view_image",
+            isError: false,
+            timestamp: 2,
+            content: [{ type: "text", text: "Loaded image." }],
+            details: { media: { mediaUrls: [granted, "media://inbound/ok.png"] } },
+          },
+        },
+        {
+          message: {
+            role: "assistant",
+            timestamp: 3,
+            content: [
+              { type: "text", text: [...fileJoins, mediaJoin, prose, granted].join(" | ") },
+            ],
+          },
+        },
+      ],
+      stateDir,
+    );
+    const other = await resolveInboundMediaReference(path.join(inbound, "ok.png.fake"));
+    for (const spelling of [...fileJoins, mediaJoin]) {
+      // The replayed text is only unsafe because the resolver really opens the other file.
+      expect((await resolveInboundMediaReference(spelling))?.physicalPath).toBe(
+        other?.physicalPath,
+      );
+    }
+
+    const replay = await readRecentUserAssistantTextForSession({
+      agentId: "main",
+      sessionKey,
+      storePath,
+      limit: 10,
+    });
+
+    expect(replay.at(-1)?.text).toBe(
+      [
+        ...fileJoins.map((joined) => `${REDACTED}${joined.slice(joined.indexOf("/inbound/"))}`),
+        `${REDACTED}/ok.png\t.fake`,
+        prose,
+        granted,
+      ].join(" | "),
+    );
+  });
+
   it("grounds home-relative paths the media resolver expands", async () => {
     const previousHome = process.env.OPENCLAW_HOME;
     const home = tempDirs.make("grounding-home-");
