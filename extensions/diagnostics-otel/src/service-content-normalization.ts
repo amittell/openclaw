@@ -26,6 +26,11 @@ const MAX_OTEL_JSON_REDACTION_CHARS_PER_EXPORT_CHAR = 8;
 // and registered values match over the whole text, so a secret is masked wherever it falls;
 // configured patterns run in chunks on long text here as in every whole-value pass.
 const MAX_OTEL_WHOLE_JSON_CHARS_PER_EXPORT_CHAR = 4;
+// A window that ends inside a secret cannot tell how the redactor masks it: the redactor may mask
+// it whole and keep the text after it. Such a string is redacted whole instead, while its export
+// has budget left: 8x the export's size, the cap its windows have. Past the budget the secret is
+// masked from where it starts, which drops what follows it.
+const MAX_OTEL_WHOLE_STRING_CHARS_PER_EXPORT_CHAR = 8;
 // Some secrets end with a part the window can cut off: a private key's END line, the closing
 // quote of a quoted value (JSON secret keys, quoted assignments, CLI flags), a JWT's signature,
 // or the `@` after a URL password. A secret the window leaves open is masked from where its value
@@ -40,16 +45,18 @@ const PRIVATE_KEY_END_RE = /-----END [A-Z ]*PRIVATE KEY-----/gi;
 // or the signature.
 const JWT_HEADER_PREFIX = "eyJ";
 const JWT_MIN_HEADER_CHARS = 13;
-// The redactor's URL password rules end at the `@` after the userinfo. A password that runs to the
-// window end, with no character in between that ends one, is masked from its start. The prefix
-// takes the rules' schemes and userinfo; a scheme starts at most 16 characters before the userinfo.
-// A raw `/` ends the password even for database URLs, whose rule allows one: userinfo cannot hold
-// a raw `/` (RFC 3986), and a credential-free URL's port and path would otherwise read as an open
-// password. A port followed by a run without `/`, whitespace or `@` that reaches the window end
-// still does, and is dropped from the port.
-const OPEN_URL_PASSWORD_PREFIX_RE =
-  /\b(?:https?|wss?|ftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^/\s:@]*:/gi;
-const URL_PASSWORD_END_CHAR_RE = /[/\s@]/;
+// The redactor's two URL password rules end at the `@` after the userinfo. A password that runs to
+// the window end, with no character in between that ends one, is open. Each entry takes its rule's
+// schemes, userinfo and password characters: a database URL's password may hold a `/`, a web URL's
+// may not. A scheme starts at most 16 characters before the userinfo. A port followed by a run of
+// password characters that reaches the window end reads as an open password too.
+const OPEN_URL_PASSWORD_RULES = [
+  { prefix: /\b(?:https?|wss?|ftp):\/\/[^/\s:@]*:/gi, end: /[/\s@]/ },
+  {
+    prefix: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^:\s/@]*:/gi,
+    end: /[@\s]/,
+  },
+] as const;
 const OPEN_URL_SCHEME_MAX_CHARS = 16;
 // Whether a quote opens a secret is asked of the redactor: it gets the key before the quote, the
 // separator and quote, then a stand-in value and the closing quote. Each probe stays under
@@ -76,16 +83,34 @@ function otelRedactionLookaheadChars(): number {
   return Math.max(MIN_OTEL_REDACTION_LOOKAHEAD_CHARS, getLongestRegisteredSecretLength());
 }
 
+/** Strings redacted whole for one export, and the characters of them it can still afford. */
+type WholeStringRedactions = { budgetChars: number; texts: Map<string, string> };
+
+function wholeStringRedactions(exportChars: number): WholeStringRedactions {
+  return {
+    budgetChars: exportChars * MAX_OTEL_WHOLE_STRING_CHARS_PER_EXPORT_CHAR,
+    texts: new Map(),
+  };
+}
+
 /** Redacts the part of `value` an export of `keepChars` can show; `clipped` means text was dropped. */
-function redactExportPrefix(value: string, keepChars: number): { text: string; clipped: boolean } {
+function redactExportPrefix(
+  value: string,
+  keepChars: number,
+  whole: WholeStringRedactions,
+): { text: string; clipped: boolean } {
+  const wholeText = whole.texts.get(value);
+  if (wholeText !== undefined) {
+    return { text: wholeText, clipped: false };
+  }
   const lookaheadChars = otelRedactionLookaheadChars();
   const neededChars = keepChars + lookaheadChars;
-  let redacted = redactWindow(value, neededChars);
+  let redacted = redactWindow(value, neededChars, whole);
   // Masks shorten text, so the export cut can move into the lookahead, where a secret the window
   // cuts off may start. Twice the shortfall restores the lookahead when masks shortened at most
   // half the text. With the first window, redaction work stays within four windows plus probes.
   if (!redacted.settled && redacted.text.length < neededChars) {
-    redacted = redactWindow(value, neededChars + 2 * (neededChars - redacted.text.length));
+    redacted = redactWindow(value, neededChars + 2 * (neededChars - redacted.text.length), whole);
   }
   if (redacted.settled || redacted.text.length >= neededChars) {
     return redacted;
@@ -100,12 +125,28 @@ function redactExportPrefix(value: string, keepChars: number): { text: string; c
 function redactWindow(
   value: string,
   windowChars: number,
+  whole: WholeStringRedactions,
 ): { text: string; clipped: boolean; settled: boolean } {
   if (value.length <= windowChars) {
     return { text: redactSensitiveText(value), clipped: false, settled: true };
   }
-  const clippedText = truncateUtf16Safe(value, windowChars);
-  const openSecret = findOpenSecret(clippedText);
+  let clippedText = truncateUtf16Safe(value, windowChars);
+  let openSecret = findOpenSecret(clippedText);
+  if (openSecret && value.length <= whole.budgetChars) {
+    whole.budgetChars -= value.length;
+    const text = redactSensitiveText(value);
+    whole.texts.set(value, text);
+    return { text, clipped: false, settled: true };
+  }
+  if (openSecret && getLongestRegisteredSecretLength() > 0) {
+    // Registered values follow no grammar and can hold what reads as an open secret. The
+    // redactor masks them before any rule runs, so they are masked whole before the cut is chosen.
+    const registeredMasked = redactSensitiveText(clippedText, { mode: "off" });
+    if (registeredMasked !== clippedText) {
+      clippedText = registeredMasked;
+      openSecret = findOpenSecret(clippedText);
+    }
+  }
   if (!openSecret) {
     return { text: redactSensitiveText(clippedText), clipped: true, settled: false };
   }
@@ -200,23 +241,23 @@ function findOpenJwt(text: string): number | undefined {
 
 /** Where a URL password starts when the `@` that ends it lies past the end of `text`. */
 function findOpenUrlPassword(text: string): number | undefined {
-  let runStart = text.length;
-  while (runStart > 0 && !URL_PASSWORD_END_CHAR_RE.test(text[runStart - 1] ?? "")) {
-    runStart--;
-  }
-  // The scheme and `//` end before the run that ends `text`; the userinfo and password are in it.
-  OPEN_URL_PASSWORD_PREFIX_RE.lastIndex = Math.max(0, runStart - OPEN_URL_SCHEME_MAX_CHARS);
-  for (
-    let match = OPEN_URL_PASSWORD_PREFIX_RE.exec(text);
-    match && match.index < runStart;
-    match = OPEN_URL_PASSWORD_PREFIX_RE.exec(text)
-  ) {
-    const passwordStart = match.index + match[0].length;
-    if (passwordStart > runStart && passwordStart < text.length) {
-      return passwordStart;
+  let open: number | undefined;
+  for (const rule of OPEN_URL_PASSWORD_RULES) {
+    let runStart = text.length;
+    while (runStart > 0 && !rule.end.test(text[runStart - 1] ?? "")) {
+      runStart--;
+    }
+    // A password in the run that ends `text` has nothing before the cut that ends it.
+    rule.prefix.lastIndex = Math.max(0, runStart - OPEN_URL_SCHEME_MAX_CHARS);
+    for (let match = rule.prefix.exec(text); match; match = rule.prefix.exec(text)) {
+      const passwordStart = match.index + match[0].length;
+      if (passwordStart > runStart && passwordStart < text.length) {
+        open = Math.min(open ?? passwordStart, passwordStart);
+        break;
+      }
     }
   }
-  return undefined;
+  return open;
 }
 
 /** Base64url characters and the dots between JWT segments. */
@@ -232,7 +273,7 @@ function isJwtChar(code: number): boolean {
 }
 
 export function normalizeOtelLogString(value: string, maxChars: number): string {
-  const { text, clipped } = redactExportPrefix(value, maxChars);
+  const { text, clipped } = redactExportPrefix(value, maxChars, wholeStringRedactions(maxChars));
   return clipped || text.length > maxChars
     ? `${truncateUtf16Safe(text, maxChars)}${TRUNCATED_TEXT_SUFFIX}`
     : text;
@@ -276,21 +317,81 @@ const JSON_TRUNCATION_ARRAY_ITEM_BUDGETS = [
   1,
 ] as const;
 const JSON_TRUNCATION_MAX_OBJECT_FIELDS = 64;
+// Each clipped string costs at least the redaction lookahead, so a value with hundreds of strings
+// can fit the attribute only at budgets its windows cannot afford. Fewer object fields keep fewer
+// strings, each with more of its text.
+const JSON_TRUNCATION_CAPPED_OBJECT_FIELD_BUDGETS = [16, 4, 1] as const;
 const JSON_TRUNCATION_MAX_DEPTH = 8;
 
 export function safeJsonString(value: unknown): string | undefined {
   if (isOmittedFromJson(value)) {
     return undefined;
   }
-  const maxWholeChars =
-    MAX_OTEL_CONTENT_ATTRIBUTE_CHARS * MAX_OTEL_WHOLE_JSON_CHARS_PER_EXPORT_CHAR;
-  const unredactedExact = exceedsJsonChars(value, maxWholeChars) ? undefined : stringifyJson(value);
-  if (unredactedExact && unredactedExact.length <= maxWholeChars) {
-    const exact = stringifyJsonForOtelAttribute(value, { redactStrings: true });
-    if (exact && exact.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
-      return exact;
+  const exact = redactWholeJson(value, new Map());
+  if (exact.json !== undefined) {
+    return exact.json;
+  }
+  const whole = wholeStringRedactions(MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  let found = searchJsonCandidates(value, JSON_TRUNCATION_MAX_OBJECT_FIELDS, whole);
+  let redactionCapped = found.redactionCapped;
+  // Every candidate that fit the attribute was over the redaction cap: keep fewer object fields,
+  // so fewer strings are clipped and each keeps more of its text.
+  for (const maxObjectFields of JSON_TRUNCATION_CAPPED_OBJECT_FIELD_BUDGETS) {
+    if (found.json !== undefined || !found.redactionCapped) {
+      break;
+    }
+    found = searchJsonCandidates(value, maxObjectFields, whole);
+    redactionCapped ||= found.redactionCapped;
+  }
+  // Strings masked whole while truncating can make the value fit once they are masked. A value
+  // under the whole-value bound already had that pass.
+  if (whole.texts.size > 0 && !exact.withinBound) {
+    const substituted = redactWholeJson(value, whole.texts);
+    if (substituted.json !== undefined) {
+      return substituted.json;
     }
   }
+  if (found.json !== undefined) {
+    return found.json;
+  }
+  const summary = stringifyJsonForOtelAttribute({
+    truncated: true,
+    reason: summaryReason(value, redactionCapped),
+    type: describeJsonValue(value),
+  });
+  return summary && summary.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS ? summary : undefined;
+}
+
+/**
+ * The whole value redacted, if its JSON with `wholeTexts` substituted is within the whole-value
+ * bound and the result fits the attribute.
+ */
+function redactWholeJson(
+  value: unknown,
+  wholeTexts: ReadonlyMap<string, string>,
+): { json?: string; withinBound: boolean } {
+  const maxWholeChars =
+    MAX_OTEL_CONTENT_ATTRIBUTE_CHARS * MAX_OTEL_WHOLE_JSON_CHARS_PER_EXPORT_CHAR;
+  const unredacted = exceedsJsonChars(value, maxWholeChars, wholeTexts)
+    ? undefined
+    : stringifyJson(value, (_key, field) =>
+        typeof field === "string" ? (wholeTexts.get(field) ?? field) : field,
+      );
+  if (!unredacted || unredacted.length > maxWholeChars) {
+    return { withinBound: false };
+  }
+  const json = stringifyJsonForOtelAttribute(value, wholeTexts);
+  return json && json.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS
+    ? { json, withinBound: true }
+    : { withinBound: true };
+}
+
+/** The first truncation candidate that fits the attribute and the redaction cap. */
+function searchJsonCandidates(
+  value: unknown,
+  maxObjectFields: number,
+  whole: WholeStringRedactions,
+): { json?: string; redactionCapped: boolean } {
   // Pick the budget from unredacted sizes, then redact only the candidate that is exported.
   const lookaheadChars = otelRedactionLookaheadChars();
   const maxRedactionChars = Number.isFinite(lookaheadChars)
@@ -300,8 +401,9 @@ export function safeJsonString(value: unknown): string | undefined {
   for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
     for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
       let redactionChars = 0;
+      const budget = { maxArrayItems, maxObjectFields };
       const unredacted = stringifyJson(
-        truncateJsonValueForOtelAttribute(value, maxArrayItems, (text) => {
+        truncateJsonValueForOtelAttribute(value, budget, (text) => {
           redactionChars += Math.min(text.length, maxStringChars + lookaheadChars);
           return text.length > maxStringChars ? clipJsonText(text, maxStringChars) : text;
         }),
@@ -313,21 +415,16 @@ export function safeJsonString(value: unknown): string | undefined {
         redactionCapped = true;
         continue;
       }
-      const candidate = truncateJsonValueForOtelAttribute(value, maxArrayItems, (text) =>
-        truncateJsonTextForOtelAttribute(text, maxStringChars),
+      const candidate = truncateJsonValueForOtelAttribute(value, budget, (text) =>
+        truncateJsonTextForOtelAttribute(text, maxStringChars, whole),
       );
       const json = stringifyJsonForOtelAttribute(candidate);
       if (json && json.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS) {
-        return json;
+        return { json, redactionCapped };
       }
     }
   }
-  const summary = stringifyJsonForOtelAttribute({
-    truncated: true,
-    reason: summaryReason(value, redactionCapped),
-    type: describeJsonValue(value),
-  });
-  return summary && summary.length <= MAX_OTEL_CONTENT_ATTRIBUTE_CHARS ? summary : undefined;
+  return { redactionCapped };
 }
 
 // A candidate that fit the attribute but not the redaction cap was dropped for its redaction
@@ -343,15 +440,20 @@ function isOmittedFromJson(value: unknown): boolean {
   return value === undefined || typeof value === "function" || typeof value === "symbol";
 }
 
-// Lower bound on JSON.stringify(value).length, walked only until it passes maxChars: every
-// emitted value takes a character and every emitted string or key appears at least once.
-function exceedsJsonChars(value: unknown, maxChars: number): boolean {
+// Lower bound on JSON.stringify(value).length, with `wholeTexts` substituted for the strings they
+// hold, walked only until it passes maxChars: every emitted value takes a character and every
+// emitted string or key appears at least once.
+function exceedsJsonChars(
+  value: unknown,
+  maxChars: number,
+  wholeTexts: ReadonlyMap<string, string>,
+): boolean {
   const pending: unknown[] = [value];
   const seen = new WeakSet<object>();
   let chars = 0;
   while (pending.length > 0 && chars <= maxChars) {
     const item = pending.pop();
-    chars += typeof item === "string" ? item.length + 2 : 1;
+    chars += typeof item === "string" ? (wholeTexts.get(item) ?? item).length + 2 : 1;
     if (typeof item !== "object" || item === null || seen.has(item)) {
       continue;
     }
@@ -376,26 +478,34 @@ function exceedsJsonChars(value: unknown, maxChars: number): boolean {
   return chars > maxChars;
 }
 
-function stringifyJson(value: unknown): string | undefined {
+function stringifyJson(
+  value: unknown,
+  replacer?: (key: string, field: unknown) => unknown,
+): string | undefined {
   try {
-    return JSON.stringify(value) || undefined;
+    return JSON.stringify(value, replacer) || undefined;
   } catch {
     return undefined;
   }
 }
 
-function redactJsonStringField(_key: string, field: unknown): unknown {
-  return typeof field === "string" ? redactSensitiveText(field) : field;
-}
-
-// Strings are redacted on their own as well as inside the serialized JSON: escaping rewrites
-// line breaks and quotes, which hides assignments that start a line from the text rules.
+// With `wholeTexts`, strings are redacted on their own as well as inside the serialized JSON:
+// escaping rewrites line breaks and quotes, which hides assignments that start a line from the
+// text rules. A string already redacted whole is not redacted again.
 function stringifyJsonForOtelAttribute(
   value: unknown,
-  options?: { redactStrings: boolean },
+  wholeTexts?: ReadonlyMap<string, string>,
 ): string | undefined {
   try {
-    const json = JSON.stringify(value, options?.redactStrings ? redactJsonStringField : undefined);
+    const json = JSON.stringify(
+      value,
+      wholeTexts
+        ? (_key, field: unknown) =>
+            typeof field === "string"
+              ? (wholeTexts.get(field) ?? redactSensitiveText(field))
+              : field
+        : undefined,
+    );
     if (!json) {
       return undefined;
     }
@@ -409,9 +519,10 @@ function stringifyJsonForOtelAttribute(
 // redaction work with one callback and exports with another.
 function truncateJsonValueForOtelAttribute(
   input: unknown,
-  maxArrayItems: number,
+  budget: { maxArrayItems: number; maxObjectFields: number },
   truncateText: (value: string) => string,
 ): unknown {
+  const { maxArrayItems, maxObjectFields } = budget;
   const seen = new WeakSet<object>();
   function visit(value: unknown, depth: number): unknown {
     if (typeof value === "string" || typeof value === "bigint") {
@@ -441,12 +552,12 @@ function truncateJsonValueForOtelAttribute(
     } else {
       const object: Record<string, unknown> = {};
       const entries = Object.entries(value).filter(([, field]) => !isOmittedFromJson(field));
-      for (const [key, field] of entries.slice(0, JSON_TRUNCATION_MAX_OBJECT_FIELDS)) {
+      for (const [key, field] of entries.slice(0, maxObjectFields)) {
         object[key] = visit(field, depth - 1);
       }
-      if (entries.length > JSON_TRUNCATION_MAX_OBJECT_FIELDS) {
+      if (entries.length > maxObjectFields) {
         object.truncated = true;
-        object.omittedFields = entries.length - JSON_TRUNCATION_MAX_OBJECT_FIELDS;
+        object.omittedFields = entries.length - maxObjectFields;
       }
       result = object;
     }
@@ -464,8 +575,12 @@ function clipJsonText(value: string, maxChars: number): string {
   )}`;
 }
 
-function truncateJsonTextForOtelAttribute(value: string, maxChars: number): string {
-  const { text, clipped } = redactExportPrefix(value, maxChars);
+function truncateJsonTextForOtelAttribute(
+  value: string,
+  maxChars: number,
+  whole: WholeStringRedactions,
+): string {
+  const { text, clipped } = redactExportPrefix(value, maxChars, whole);
   return clipped || text.length > maxChars ? clipJsonText(text, maxChars) : text;
 }
 

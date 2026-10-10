@@ -181,23 +181,34 @@ describe("OTEL content redaction cost", () => {
     expect(work).toBeLessThan(maxWork);
   });
 
-  it("names the redaction cap when it drops a JSON value that would fit the attribute", () => {
+  it("keeps fewer object fields when every candidate that fits is over the redaction cap", () => {
     // 512 long strings outside any array: the smallest budget clips each one, and its JSON would
-    // fit the attribute, but their redaction windows pass the 8x cap.
+    // fit the attribute, but their redaction windows pass the 8x cap. 16 fields of 8 strings fit
+    // both at 512 characters a string.
     const fields = Object.fromEntries(
-      Array.from({ length: 8 }, (_, index) => [`f${index}`, "o".repeat(5000)]),
+      Array.from({ length: 8 }, (_, index) => [`f${index}`, `${SECRET_TOKEN} ${"o".repeat(4960)}`]),
     );
     const toolInput = Object.fromEntries(
       Array.from({ length: 64 }, (_, index) => [`k${index}`, { ...fields }]),
     );
+    let exported = "";
 
-    const exported = captureToolCall({ toolInput })["gen_ai.tool.call.arguments"];
-
-    expect(JSON.parse(String(exported))).toEqual({
-      truncated: true,
-      reason: "max_redaction_work",
-      type: "object",
+    const work = redactionCharsFor(() => {
+      exported = String(captureToolCall({ toolInput })["gen_ai.tool.call.arguments"]);
     });
+
+    const parsed = JSON.parse(exported) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ truncated: true, omittedFields: 48 });
+    expect(Object.keys(parsed).filter((key) => key.startsWith("k"))).toHaveLength(16);
+    const kept = Object.values(parsed.k15 as Record<string, string>);
+    expect(kept).toHaveLength(8);
+    for (const text of kept) {
+      expect(text).toHaveLength(512);
+      expect(text.startsWith("glpat-…")).toBe(true);
+      expect(text.endsWith(TRUNCATED_SUFFIX)).toBe(true);
+    }
+    expect(exported).not.toContain(SECRET_BODY);
+    expect(work).toBeLessThan(2 * 8 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
   });
 });
 
@@ -258,6 +269,34 @@ describe("OTEL complete export after masking", () => {
     }
   });
 
+  it.each([
+    { name: "short trailing text", trailing: "Trailing words after the token. ".repeat(10) },
+    {
+      name: "trailing text longer than a clipped string",
+      trailing: "Trailing words. ".repeat(1400),
+    },
+  ])(
+    "exports a message past 4x the attribute whole once its JWT is masked, with $name",
+    ({ trailing }) => {
+      // The JWT's payload alone puts the message past 4x the attribute; masked, it fits.
+      const payload = Buffer.from(
+        JSON.stringify({ sub: "synthetic", note: "n".repeat(450_000) }),
+      ).toString("base64url");
+      const jwt = `${LONG_JWT_HEADER}.${payload}.${SECRET_BODY}`;
+      const content = `Token: ${jwt}\n${trailing}`;
+      expect(content.length).toBeGreaterThan(4 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+
+      const attributes = captureModelCall([{ role: "user", content }]);
+
+      for (const key of ["gen_ai.input.messages", "openclaw.content.input_messages"]) {
+        const json = String(attributes[key]);
+        expect(json).not.toContain(TRUNCATED_SUFFIX);
+        expect(json).not.toContain(payload.slice(100, 140));
+        expect(json).toContain(trailing.slice(-64));
+      }
+    },
+  );
+
   it("truncates a value under 4x the attribute that masking does not shrink enough", () => {
     const inputMessages = toolResultTranscript(8, 1, "o".repeat(20_000));
     let exported: string[] = [];
@@ -294,9 +333,12 @@ describe("OTEL complete export after masking", () => {
 });
 
 describe("OTEL content redaction at the export cut", () => {
-  // The text after each cut puts a value past 4x the attribute, so it gets no whole-value pass
-  // and these cases pay only for their windows.
-  const CUT_TAIL_CHARS = 600_000;
+  // The text after each cut puts a string past 8x the attribute, so neither the whole-value pass
+  // nor a whole-string pass runs and these cases exercise the windows.
+  const CUT_TAIL_CHARS = 1_100_000;
+  // Past 4x the attribute and within 8x: a string whose window ends inside a secret is redacted
+  // whole.
+  const WHOLE_STRING_TAIL_CHARS = 600_000;
   // The first JSON budget keeps 8,192 characters of a clipped string, suffix included.
   const jsonStringChars = 8192;
   const messagePart = {
@@ -580,15 +622,54 @@ describe("OTEL content redaction at the export cut", () => {
     }
   });
 
-  it.each(["https://internal.example.test:8443/", "postgres://db.example.test:5432/app/"])(
-    "keeps the port and path of %s when they cross the cut",
-    (url) => {
-      // The path's slash ends what could be a password, so the port is not one.
-      const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(CUT_TAIL_CHARS)}`;
+  it.each(exportPaths)(
+    "masks a database URL password holding a slash whose @ lies past the lookahead in $name",
+    (path) => {
+      // The connection-string rule lets a password hold a `/` and ends it only at `@`.
+      const password = `${SECRET_BODY}/${"p".repeat(5000)}`;
+      const url = `postgres://deploy:${password}@db.example.test:5432/app`;
+      const text = `${"x".repeat(path.keptChars - 201)} ${url} ${"y".repeat(CUT_TAIL_CHARS)}`;
 
-      expect(messagePart.exportText(text)).toContain(`${url}aaaa`);
+      const exported = path.exportText(text);
+
+      expect(exported).not.toContain(SECRET_BODY);
+      expect(exported).toContain("deploy:***");
+      expect(exported).toContain(TRUNCATED_SUFFIX);
     },
   );
+
+  it("masks a database URL password holding a slash in a string redacted whole", () => {
+    const password = `${SECRET_BODY}/${"p".repeat(5000)}`;
+    const url = `postgres://deploy:${password}@db.example.test:5432/app`;
+    const text = `${"x".repeat(messagePart.keptChars - 201)} ${url} ${"y".repeat(WHOLE_STRING_TAIL_CHARS)}`;
+
+    const exported = messagePart.exportText(text);
+
+    expect(exported).not.toContain(SECRET_BODY);
+    expect(exported).toContain(TRUNCATED_SUFFIX);
+  });
+
+  it.each([
+    // A web URL's password ends at `/`, so the port is not one.
+    { url: "https://internal.example.test:8443/", tail: CUT_TAIL_CHARS },
+    // A database URL's password may hold a `/`, so a port and path that run to the window end
+    // read as an open password; a string within the whole-string budget is redacted whole.
+    { url: "postgres://db.example.test:5432/app/", tail: WHOLE_STRING_TAIL_CHARS },
+  ])("keeps the port and path of $url when they cross the cut", ({ url, tail }) => {
+    const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(tail)}`;
+
+    expect(messagePart.exportText(text)).toContain(`${url}aaaa`);
+  });
+
+  it("drops a database URL from its port when its path runs past the window and the budget", () => {
+    const url = "postgres://db.example.test:5432/app/";
+    const text = `${"x".repeat(messagePart.keptChars - 200)} ${url}${"a".repeat(20_000)} ${"y".repeat(CUT_TAIL_CHARS)}`;
+
+    const exported = messagePart.exportText(text);
+
+    expect(exported).toContain("postgres://db.example.test:***");
+    expect(exported).not.toContain("5432/app");
+  });
 
   it.each(exportPaths)(
     "masks a registered secret longer than the lookahead that crosses the cut in $name",
@@ -618,5 +699,22 @@ describe("OTEL content redaction at the export cut", () => {
     );
 
     expect(work).toBeLessThan(2 * 9 * MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  });
+
+  it("names the redaction cap when no candidate's windows fit it", () => {
+    // A registered secret of 1,048,576 characters makes every clipped string's window pass the cap
+    // on its own, so even one field of one string cannot be exported.
+    const secret = generateSecureToken({ bytes: 786_432, redact: true });
+    expect(secret).toHaveLength(1_048_576);
+
+    const exported = captureToolCall({ toolInput: { note: "o".repeat(2_000_000) } })[
+      "gen_ai.tool.call.arguments"
+    ];
+
+    expect(JSON.parse(String(exported))).toEqual({
+      truncated: true,
+      reason: "max_redaction_work",
+      type: "object",
+    });
   });
 });
