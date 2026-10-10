@@ -1101,9 +1101,11 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     expect(result).toEqual({ cancel: true });
     expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
-    expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toBe(
-      "The compaction summary cannot fit beside the foreground prompt and retained history.",
-    );
+    expect(consumeCompactionSafeguardCancellation(sessionManager)?.error).toMatchObject({
+      code: "summarization_failed",
+      message:
+        "The compaction summary cannot fit beside the foreground prompt and retained history.",
+    });
   });
 
   it("restores source ask evidence omitted by the split-turn summary", async () => {
