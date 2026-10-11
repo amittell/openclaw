@@ -267,9 +267,11 @@ describe("Completed child results on a real parent-agent turn", () => {
           // refuses to advance the row, so the entry can never be delivered and must
           // stop rendering on later parent turns. Reset the registry first so the
           // outstanding row above cannot satisfy or mask this assertion:
-          // `resetSubagentRegistryForTests()` clears memory, the read cache, and the
-          // persisted snapshot together.
-          resetSubagentRegistryForTests();
+          // `resetSubagentRegistryForTests()` clears memory and the read cache, but
+          // deletes only rows resident in memory, and the fixture-seeded row above
+          // never was. Retire it through the same fixture owner before seeding.
+          await resetSubagentRegistryForTests();
+          persistRegistryFixture(new Map(), [retained.runId]);
           const settledResult = `Settled-result-${randomUUID()}`;
           const settledEndedAt = Date.now() - 7_200_000;
           const settled: SubagentRunRecord = {
@@ -296,17 +298,26 @@ describe("Completed child results on a real parent-agent turn", () => {
             cleanupHandled: true,
             cleanupCompletedAt: settledEndedAt + 60_000,
           };
-          // Publish the settled custody through the production owner without
-          // registering an active child, so the parent turn reads the real store.
-          persistSubagentRunsToDiskOrThrow(new Map([[settled.runId, settled]]), [settled.runId]);
-          const settledBefore = loadSubagentRunsByRunIdsFromSqlite([settled.runId]);
+          // Publish the settled custody the same way as the outstanding row above,
+          // without registering an active child, so the parent turn reads the real
+          // store. Pin that the row landed, or the negative checks below are vacuous.
+          persistRegistryFixture(new Map([[settled.runId, settled]]), [settled.runId]);
+          const settledStore = loadSubagentRegistryFromSqlite();
+          expect([...settledStore.keys()]).toEqual([settled.runId]);
+          const settledBefore = settledStore.get(settled.runId);
+          expect(settledBefore).toMatchObject({
+            runId: settled.runId,
+            completion: { required: true, resultText: settledResult },
+            delivery: { status: "failed" },
+            cleanupCompletedAt: settled.cleanupCompletedAt,
+          });
           const settledCursor = requests.length;
           await runParentAgentTurn(gateway.client, "Continue using any outstanding child result.");
           const settledRequest = requests.slice(settledCursor).join("\n");
           expect(settledRequest).not.toContain("## Child results awaiting delivery");
           expect(settledRequest).not.toContain(settledResult);
           expect(settledRequest).not.toContain(settled.runId);
-          expect(loadSubagentRunsByRunIdsFromSqlite([settled.runId])).toEqual(settledBefore);
+          expect(loadSubagentRegistryFromSqlite().get(settled.runId)).toEqual(settledBefore);
           console.log(
             `OPENCLAW_ISOLATED_GATEWAY_SETTLED_VERDICT ${JSON.stringify({
               surface: "isolated-gateway",

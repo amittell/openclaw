@@ -3177,12 +3177,7 @@ describe("duplicate send guard", () => {
         {
           pluginId: "imessage",
           source: "test",
-          plugin: createChannelPlugin({
-            id: "imessage",
-            label: "iMessage",
-            docsPath: "/channels/imessage",
-            blurb: "iMessage test plugin",
-          }),
+          plugin: createChannelPlugin({ id: "imessage" }),
         },
       ]),
     );

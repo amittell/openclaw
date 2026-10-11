@@ -23,7 +23,7 @@ describe("runDescendantWake", () => {
     const dispatchGatewayMethodInProcessMock = vi.fn(async () => ({ runId: "wake-run" }));
     const dispatchGatewayMethodInProcess =
       dispatchGatewayMethodInProcessMock as unknown as typeof import("./subagent-announce.runtime.js").dispatchGatewayMethodInProcess;
-    const replaceSubagentRunAfterSteer = vi.fn(() => true);
+    const replaceSubagentRunAfterSteer = vi.fn(async () => true);
 
     await expect(
       runDescendantWake({
@@ -32,6 +32,7 @@ describe("runDescendantWake", () => {
         taskLabel: "parent task",
         findings: "child findings",
         announceId: "announce-parent",
+        prepareCurrent: async () => true,
         isChildSessionEffectsAllowed: () => true,
         hasUsableSessionEntry: (entry): entry is Record<string, unknown> => Boolean(entry),
         deps: {

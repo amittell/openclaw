@@ -9,8 +9,8 @@ import {
   isProfileInCooldown,
   resolveProfilesUnavailableReason,
 } from "../../auth-profiles.js";
-import type { FailoverReason } from "../../embedded-agent-helpers.js";
 import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
+import type { FailoverReason } from "../../failover/signal.js";
 
 /** Decides whether one automatic profile may bypass its current cooldown. */
 export function resolveEmbeddedAuthCooldownProbePolicy(params: {

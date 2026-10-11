@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 // Gateway connection and run registries.

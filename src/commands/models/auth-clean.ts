@@ -1,4 +1,5 @@
 import path from "node:path";
+import { listAgentEntries } from "../../agents/agent-roster.js";
 import { resolveAgentDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import {
   ensureAuthProfileStore,
@@ -48,7 +49,7 @@ function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>
   // Always scan per-agent tool overrides, even when cfg.tools.media is absent.
   // Agent-level overrides may reference profiles not present at the top level;
   // skipping them would cause those profiles to be treated as stale and wrongly pruned.
-  for (const agent of cfg.agents?.list ?? []) {
+  for (const agent of listAgentEntries(cfg)) {
     // SAFETY: optional probe of per-agent tool overrides; ?. yields undefined when the entry has none.
     const agentMedia = (agent as { tools?: { media?: MediaToolsConfig } }).tools?.media;
     if (!agentMedia) {

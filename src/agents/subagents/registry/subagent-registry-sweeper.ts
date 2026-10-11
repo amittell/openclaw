@@ -51,7 +51,6 @@ import type {
 import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded, isStaleUnendedSubagentRun } from "./subagent-run-liveness.js";
 import {
-  loadSubagentSessionEntry,
   resolveSubagentRecoveryCompletion,
   resolveSubagentRunOrphanReason,
 } from "./subagent-session-reconciliation.js";

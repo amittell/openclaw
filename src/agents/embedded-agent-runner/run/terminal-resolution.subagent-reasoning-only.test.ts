@@ -45,7 +45,7 @@ describe("terminal resolution, subagent reasoning-only retry", () => {
         allowEmptyAssistantReplyAsSilent: true,
         terminalReplyExpectation: "optional",
       },
-      activateInternalPrompt,
+      sessionPromptState: { activateInternalPrompt },
     });
 
     await expect(resolveEmbeddedRunTerminal(retryInput)).resolves.toEqual({ action: "retry" });
@@ -114,7 +114,7 @@ describe("terminal resolution, subagent reasoning-only retry", () => {
         allowEmptyAssistantReplyAsSilent: true,
         terminalReplyExpectation: "optional",
       },
-      activateInternalPrompt,
+      sessionPromptState: { activateInternalPrompt },
     });
 
     const resolved = await resolveEmbeddedRunTerminal(input);

@@ -190,12 +190,10 @@ describe("renderAssistantRequestFailureCopy", () => {
     // and an untyped 5xx is already classified server_error upstream, so this
     // layer must not second-guess either from the status.
     expect(renderAssistantRequestFailureCopy({ ...target, reason: "timeout", status: 504 })).toBe(
-      "⚠️ openai/test-model request failed (request timed out, HTTP 504). This is usually temporary — try again shortly.",
+      "⚠️ The request took too long. Check the conversation for any completed work before trying again.",
     );
     expect(
       renderAssistantRequestFailureCopy({ ...target, reason: "server_error", status: 502 }),
-    ).toBe(
-      "⚠️ openai/test-model request failed (provider internal error, HTTP 502). This is usually temporary — try again shortly.",
-    );
+    ).toBe("⚠️ The AI service is having trouble. Please try again in a moment.");
   });
 });

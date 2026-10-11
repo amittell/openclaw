@@ -28,11 +28,6 @@ export async function deliverChannelTurnDispatchFallback(
   await delivery.deliver(payload, toCoreManagedDeliveryInfo({ kind: "final" }));
 }
 
-/** True when a delivery result explicitly reports that nothing was shown to the user. */
-export function isExplicitlyNonVisibleChannelDelivery(result: unknown): boolean {
-  return isRecord(result) && result.visibleReplySent === false;
-}
-
 // A failure whose own error carries the durable partial-send / visible-send
 // marker (markDurableInboundReplyDeliveryErrorVisible,
 // markChannelDeliveryErrorVisible) already put something in front of the user;

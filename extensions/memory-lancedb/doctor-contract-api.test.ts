@@ -297,16 +297,7 @@ describe("memory-lancedb doctor migration", () => {
     );
     table.close();
     connection.close();
-    const params = {
-      config: {
-        agents: { list: [{ id: "main", default: true }] },
-        plugins: { entries: { "memory-lancedb": { config: { dbPath: getDbPath() } } } },
-      },
-      env: { ...process.env, HOME: getTmpDir() },
-      stateDir: getTmpDir(),
-      oauthDir: path.join(getTmpDir(), "oauth"),
-      context: unusedDoctorContext,
-    };
+    const params = migrationParams();
     const migration = expectDefined(
       stateMigrations.find(({ id }) => id === "memory-lancedb-system-turn-rows"),
       "memory-lancedb system-turn state migration",

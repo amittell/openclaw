@@ -59,7 +59,7 @@ const RELAY_TEXT = "Status needs attention.";
 function makeIsolatedConfig(tmpDir: string, storePath: string): OpenClawConfig {
   return {
     agents: {
-      list: [{ id: "main", default: true }],
+      entries: { main: {} },
       defaults: {
         workspace: tmpDir,
         heartbeat: {

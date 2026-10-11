@@ -126,7 +126,7 @@ async function resolveTerminalAfterFinalization(
   if (terminal.action !== "complete") {
     throw new Error("expected the terminal to complete without another retry");
   }
-  expect(terminalInput.activateInternalPrompt).not.toHaveBeenCalled();
+  expect(terminalInput.sessionPromptState.activateInternalPrompt).not.toHaveBeenCalled();
   return terminal.result;
 }
 

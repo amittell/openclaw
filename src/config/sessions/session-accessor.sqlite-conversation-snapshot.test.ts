@@ -10,10 +10,8 @@ import {
   persistSessionTranscriptTurn,
   waitForSessionTranscriptProjection,
 } from "./session-accessor.js";
-import {
-  readSessionTranscriptActiveStats,
-  readSessionTranscriptConversationSnapshot,
-} from "./session-accessor.sqlite-active-events.js";
+import { readSessionTranscriptConversationSnapshot } from "./session-accessor.sqlite-active-events.js";
+import { readActiveTranscriptStats } from "./session-accessor.sqlite-history.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -51,7 +49,7 @@ describe("SQLite conversation snapshot", () => {
       touchSessionEntry: false,
     });
     await waitForSessionTranscriptProjection(scope);
-    expect(readSessionTranscriptActiveStats(scope).eventCount).toBe(1);
+    expect(readActiveTranscriptStats(scope).eventCount).toBe(1);
 
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
     const state = database.db

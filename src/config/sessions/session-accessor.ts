@@ -290,9 +290,9 @@ export {
   SessionTranscriptProjectionUnavailableError,
   waitForSessionTranscriptProjection,
 } from "./session-accessor.sqlite-active-events.js";
+export type { SessionTranscriptConversationSnapshotRow } from "./session-accessor.sqlite-active-events.js";
 export type {
   SessionTranscriptBoundedMessageTailPage,
-  SessionTranscriptConversationSnapshotRow,
   SessionTranscriptMessageAnchorPage,
   SessionTranscriptMessageEvent,
   SessionTranscriptMessageEventPage,

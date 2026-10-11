@@ -30,7 +30,6 @@ import {
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
-import type { ChannelPlugin } from "../plugins/types.js";
 import { withDurableDeliveryRuntime } from "./durable-delivery-runtime.js";
 
 // Incident shape (mac-mini, 2026-10-07): a bot edited one group's systemPrompt in openclaw.json.
@@ -62,7 +61,8 @@ function bindStartupLoadContext(
 }
 
 const { telegramSetupPlugin } = await loadBundledPluginFacade<{
-  telegramSetupPlugin: ChannelPlugin;
+  // createTestRegistry takes the setup plugin as `unknown`; 10.1 no longer exports ChannelPlugin.
+  telegramSetupPlugin: unknown;
 }>({ artifactBasename: "setup-plugin-api", pluginId: "telegram" });
 
 describe("channel-only hot reload of channels.telegram (gateway layer)", () => {
