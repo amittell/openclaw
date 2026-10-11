@@ -595,11 +595,11 @@ it("retires the cached root while preserving a caller-owned registry handle", as
       },
     },
   };
-  const root = loadAndActivateRootPluginRegistry(options);
+  const root = await loadAndActivateRootPluginRegistry(options);
   const scopedOptions = { ...options, onlyPluginIds: [plugin.id] };
   const snapshot = loadPluginRegistryHandle(scopedOptions);
   expect(snapshot).not.toBe(root);
-  expect(loadAndActivateRootPluginRegistry(options)).toBe(root);
+  expect(await loadAndActivateRootPluginRegistry(options)).toBe(root);
   expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
 
   await clearActivePluginRegistry();
@@ -608,7 +608,7 @@ it("retires the cached root while preserving a caller-owned registry handle", as
   // A scoped handle has its own caller-owned lifetime; retiring the process
   // root must neither revive that root nor dispose an unrelated handle.
   expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
-  expect(loadAndActivateRootPluginRegistry(options)).not.toBe(root);
+  expect(await loadAndActivateRootPluginRegistry(options)).not.toBe(root);
 });
 function requireMemoryEmbeddingProvider(providerId: string) {
   const provider = getRegisteredEmbeddingProvider(providerId)?.adapter;

@@ -2202,7 +2202,9 @@ describe("state migrations", () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
-    const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
+    // The pre-agent <state>/sessions layout is retired (#163160): legacy keys are found in the
+    // owner's own store, so only the resolved owner reads this one.
+    const legacyStorePath = path.join(stateDir, "agents", "ops", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
     await fs.writeFile(
       legacyStorePath,
@@ -2227,6 +2229,7 @@ describe("state migrations", () => {
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
     expect(detected.targetAgentId).toBe("ops");
     expect(detected.sessions.hasLegacy).toBe(true);
+    expect(detected.sessions.legacyKeys).toEqual(["agent:main:main"]);
 
     // Deliberately asserts targetAgentId and hasLegacy only. The store
     // round-trip depends on resolveSessionStoreOwnership running rather than
