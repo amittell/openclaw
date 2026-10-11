@@ -36,6 +36,7 @@ import {
   continueStalledReplyTurn,
   createReplyAgentRestartRecoveryController,
   executePreparedReplyAgentRun,
+  prependCompactionNotices,
 } from "./agent-runner-execute.js";
 import {
   createShouldEmitToolOutput,
@@ -62,7 +63,6 @@ import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
-import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import {
@@ -605,15 +605,6 @@ export async function runReplyAgent(
     shouldDrainQueuedFollowupsAfterClear = true;
     return value;
   };
-  const prependCompactionNotices = (result: ReplyPayload | ReplyPayload[] | undefined) => {
-    if (pendingCompactionNotices.length === 0 || resolveReplyOperationAbortReason(replyOperation)) {
-      return result;
-    }
-    return [
-      ...pendingCompactionNotices,
-      ...(Array.isArray(result) ? result : result ? [result] : []),
-    ];
-  };
   if (replyOperationRunState && !isHeartbeat && replyExpectation === "required") {
     // Dispatch owns the stall notice; this owner holds the queue facts needed to answer
     // instead. The same sender's next queued request inherits the guidance; otherwise one
@@ -699,7 +690,7 @@ export async function runReplyAgent(
       turnAdoptionLifecycle,
       typingSignals,
     });
-    return prependCompactionNotices(result);
+    return prependCompactionNotices(result, pendingCompactionNotices, replyOperation);
   } catch (error) {
     replyRunState.recordReplyOperationAgentTurn(
       followupRun.replyOperationRunStates,
@@ -715,7 +706,7 @@ export async function runReplyAgent(
       returnWithQueuedFollowupDrain,
       sessionCtx,
     });
-    return prependCompactionNotices(result);
+    return prependCompactionNotices(result, pendingCompactionNotices, replyOperation);
   } finally {
     await cleanupReplyAgentRun({
       blockReplyPipeline,

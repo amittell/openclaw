@@ -44,6 +44,7 @@ import {
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
   nestRequiredSummaryHeadings,
+  resolveSummaryReserveTokens,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
 import {
@@ -390,22 +391,6 @@ function budgetCompactionSummary(
     bodyTrimmed: rendered ? rendered.trimmed : cappedBody.length < summaryBody.length,
     suffixTrimmed: cappedSuffix.length < suffix.text.length,
   };
-}
-
-function resolveSummaryReserveTokens(
-  requestedReserveTokens: number,
-  model: NonNullable<Parameters<typeof summarizeCompactionHistory>[0]["model"]>,
-): number {
-  const requested = Math.max(1, Math.floor(requestedReserveTokens));
-  const modelMaxTokens = model.maxTokens;
-  if (
-    typeof modelMaxTokens !== "number" ||
-    !Number.isFinite(modelMaxTokens) ||
-    modelMaxTokens <= 0
-  ) {
-    return requested;
-  }
-  return Math.max(1, Math.min(requested, Math.floor(modelMaxTokens)));
 }
 
 function extractMessageText(message: AgentMessage): string {
