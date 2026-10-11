@@ -38,8 +38,7 @@ export function createContextTotalTokensWriter(
     attempt.sessionPersistence === "detached" ||
     !target?.storePath ||
     !target.sessionKey ||
-    // Incognito rows are excluded from session listings; keep their writes at
-    // turn completion, as upstream does for stores without a worker path.
+    // Incognito stores have no worker path; keep their writes at turn completion.
     isIncognitoSessionKey(target.sessionKey) ||
     // Turn-completion accounting leaves these runs' context total untouched too.
     shouldPreserveUserFacingSessionStateForInputProvenance(attempt.inputProvenance)

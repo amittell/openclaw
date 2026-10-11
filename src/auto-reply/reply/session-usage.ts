@@ -239,8 +239,6 @@ export async function persistSessionContextTotalTokens(params: {
 }): Promise<void> {
   const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
   try {
-    // Same guarded entry patch as turn-completion accounting; this base has no
-    // worker-routed variant, and the caller keeps at most one write in flight.
     await patchSessionEntryCore(
       { agentId, storePath, sessionKey },
       (entry) => {
@@ -268,7 +266,7 @@ export async function persistSessionContextTotalTokens(params: {
         }
         return patch;
       },
-      { skipMaintenance: true },
+      { skipMaintenance: true, workerGuard: {} },
     );
   } catch (err) {
     logVerbose(`failed to persist per-call context total: ${String(err)}`);
