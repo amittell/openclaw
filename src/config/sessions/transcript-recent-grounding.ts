@@ -7,6 +7,7 @@ import {
 } from "../../agents/embedded-agent-tool-media.js";
 import { MAX_GROUNDING_PATHS } from "../../media/media-grounding-limits.js";
 import {
+  findUnverifiedJoinedMediaSpellings,
   prepareManagedMediaGrounding,
   prepareManagedMediaGroundingRoot,
   type ManagedMediaGroundingRoot,
@@ -18,7 +19,10 @@ import {
   type TranscriptEvent,
 } from "./session-accessor.js";
 import { DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES } from "./session-accessor.sqlite-visible-cursor.js";
-import { invalidateUngroundedMediaPrefixes } from "./transcript-grounding.js";
+import {
+  invalidateUngroundedMediaPrefixes,
+  type JoinedMediaSpellings,
+} from "./transcript-grounding.js";
 
 const MAX_RECENT_TRANSCRIPT_ENTRY_BYTES = 32 * 1024,
   MAX_RECENT_TRANSCRIPT_WINDOW_BYTES = 128 * 1024;
@@ -123,7 +127,15 @@ export async function groundRecentConversationRows<T extends ConversationEntry>(
     if (entry.role === "assistant") {
       groundingRoot ??= await prepareManagedMediaGroundingRoot();
       const grounding = await prepareManagedMediaGrounding(groundingRoot, references);
-      entry.text = invalidateUngroundedMediaPrefixes(entry.text, grounding);
+      const joins: JoinedMediaSpellings = { found: new Set() };
+      const grounded = invalidateUngroundedMediaPrefixes(entry.text, grounding, joins);
+      // Only a recorded joined spelling needs the store, and only one it finds needs a rescan.
+      const unverified = joins.found.size
+        ? await findUnverifiedJoinedMediaSpellings(groundingRoot, grounding, joins.found)
+        : undefined;
+      entry.text = unverified?.size
+        ? invalidateUngroundedMediaPrefixes(entry.text, grounding, { found: new Set(), unverified })
+        : grounded;
     }
     let text = entry.text;
     if (options.boundReplayBytes) {

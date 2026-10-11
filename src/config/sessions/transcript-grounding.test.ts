@@ -5,7 +5,14 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveInboundMediaReference } from "../../media/media-reference.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import {
   appendTranscriptEvent,
   loadTranscriptEvents,
@@ -31,16 +38,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const REDACTED = "[unverified media reference removed]";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-// Registered after the temp-dir tracker so it runs first: close the agent databases
-// before their state directory is removed.
-afterEach(async () => {
-  await closeOpenClawAgentDatabasesAsync();
-});
 
 describe("readRecentUserAssistantTextForSession grounding", () => {
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Session writes and replay reads retain database workers; join them before the tracker
+    // removes the case's state directory.
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
     if (previousStateDir === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
@@ -167,6 +175,73 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
     });
 
     expect(replay.at(-1)?.text).toBe(spellings.map(() => `(${REDACTED}/inbound/x.png)`).join(" "));
+  });
+
+  it("refuses an authorized reference the resolver joins onto another stored file", async () => {
+    const stateDir = tempDirs.make("grounding-joined-");
+    const inbound = path.join(stateDir, "media", "inbound");
+    fs.mkdirSync(inbound, { recursive: true });
+    fs.writeFileSync(path.join(inbound, "ok.png"), "granted");
+    fs.writeFileSync(path.join(inbound, "ok.png.fake"), "never granted");
+    const granted = pathToFileURL(path.join(inbound, "ok.png")).href;
+    const fileJoins = [
+      ...["\t", "\n", "\r"].map((deleted) => `${granted}${deleted}.fake`),
+      // The line break inside ".." is deleted too, so this climbs out of ok.png onto ok.png.fake.
+      `${granted}\n/.\n./ok.png.fake`,
+    ];
+    const mediaJoin = "media://inbound/ok.png\t.fake";
+    // The joined name of this one is not in the store, so its line break stays prose.
+    const prose = `${granted}\nnext line`;
+    const { sessionKey, storePath } = await createSession(
+      "joined",
+      [
+        { message: { role: "user", timestamp: 1, content: "send it" } },
+        {
+          message: {
+            role: "toolResult",
+            toolCallId: "image-1",
+            toolName: "view_image",
+            isError: false,
+            timestamp: 2,
+            content: [{ type: "text", text: "Loaded image." }],
+            details: { media: { mediaUrls: [granted, "media://inbound/ok.png"] } },
+          },
+        },
+        {
+          message: {
+            role: "assistant",
+            timestamp: 3,
+            content: [
+              { type: "text", text: [...fileJoins, mediaJoin, prose, granted].join(" | ") },
+            ],
+          },
+        },
+      ],
+      stateDir,
+    );
+    const other = await resolveInboundMediaReference(path.join(inbound, "ok.png.fake"));
+    for (const spelling of [...fileJoins, mediaJoin]) {
+      // The replayed text is only unsafe because the resolver really opens the other file.
+      expect((await resolveInboundMediaReference(spelling))?.physicalPath).toBe(
+        other?.physicalPath,
+      );
+    }
+
+    const replay = await readRecentUserAssistantTextForSession({
+      agentId: "main",
+      sessionKey,
+      storePath,
+      limit: 10,
+    });
+
+    expect(replay.at(-1)?.text).toBe(
+      [
+        ...fileJoins.map((joined) => `${REDACTED}${joined.slice(joined.indexOf("/inbound/"))}`),
+        `${REDACTED}/ok.png\t.fake`,
+        prose,
+        granted,
+      ].join(" | "),
+    );
   });
 
   it("grounds home-relative paths the media resolver expands", async () => {

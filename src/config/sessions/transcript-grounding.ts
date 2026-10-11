@@ -28,8 +28,98 @@ const URI_PREFIX = /^[a-z][a-z0-9+.-]*:(?:\/\/[^/]*)?/iu;
 const DOT_DOT_SEGMENT = /(?:[/\\]|%2f|%5c)(?:\.|%2e){2}(?=[/\\]|%2f|%5c)/gu;
 // What the WHATWG URL parser deletes from its input before parsing; see urlParserReading.
 const URL_DELETED_RUNS = /[\t\n\r]+/gu;
+// The same characters one at a time: a token boundary here is the resolver's to decide, since its
+// URL parser deletes them and a filesystem path keeps them in the name.
+const JOINING = /[\t\n\r]/u;
+// Prose that runs a reference on across those characters yields one or two spellings. Past this
+// many the text is tabular or adversarial, and refusing the alias keeps the scan linear: every
+// spelling is a string the probe set hashes in full.
+const MAX_JOINED_SPELLINGS = 8;
+// DOT_DOT_SEGMENT for one test, without the global flag's lastIndex.
+const CLIMBS_OUT = new RegExp(DOT_DOT_SEGMENT.source, "u");
 // The `~` spellings resolveUserPath expands; `~name` is left to the filesystem.
 const HOME_PREFIX = /^~(?=$|[\\/])/u;
+// A drive-letter path. The resolver reads these with path.win32, never with the URL parser.
+const DRIVE_ROOTED = /^[a-z]:[/\\]/iu;
+// path.win32 resolves "\x" and "/x" on the current drive; "\\x" and "//x" are UNC.
+const DRIVELESS_ROOTED = /^[\\/](?![\\/])/u;
+
+/**
+ * Spellings that run an authorized reference on across tab, LF or CR. Whether
+ * `ok.png<TAB>.fake` opens another file depends on the store, so the media owner decides it: a
+ * scan records each spelling in `found`, and a rescan refuses an alias whose spelling is in
+ * `unverified`.
+ */
+export type JoinedMediaSpellings = { found: Set<string>; unverified?: ReadonlySet<string> };
+
+/**
+ * Raw slices from `at` that carry the alias ending at `aliasEnd` across tab, LF or CR into more
+ * of its token, ending wherever a reader could stop: at a later run, at the boundary, or before
+ * trailing punctuation. Undefined past the token or spelling budget, which the caller refuses.
+ * Nothing crosses a boundary those characters do not form, so "ok.png<LF>next line" yields one
+ * spelling, and prose keeps it unless the store holds that joined name.
+ */
+function joinedSpellings(text: string, at: number, aliasEnd: number): string[] | undefined {
+  let scan = aliasEnd;
+  while (PUNCTUATION.test(text.charAt(scan))) {
+    scan += 1;
+  }
+  if (!JOINING.test(text.charAt(scan))) {
+    return [];
+  }
+  // A list of paths, one per line. With the run deleted, a separator right after it names a path
+  // beneath the authorized file, which is a regular file, unless a ".." in that reading climbs
+  // back out ("/.<LF>./x" reads "/../x"); kept, it names a directory called the file's name plus
+  // that tab or line break.
+  let next = scan;
+  while (JOINING.test(text.charAt(next))) {
+    next += 1;
+  }
+  if (scan === aliasEnd && /[/\\]/u.test(text.charAt(next))) {
+    let end = next;
+    while (
+      end < text.length &&
+      end - at <= MAX_GROUNDING_TOKEN_CHARS &&
+      (JOINING.test(text.charAt(end)) || !TOKEN_BOUNDARY.test(text.charAt(end)))
+    ) {
+      end += 1;
+    }
+    const read = text.slice(next, end).replace(URL_DELETED_RUNS, "").toLowerCase();
+    if (end - at <= MAX_GROUNDING_TOKEN_CHARS && !CLIMBS_OUT.test(read)) {
+      return [];
+    }
+  }
+  const spellings = new Set<string>();
+  let joined = false;
+  for (; scan <= text.length; scan += 1) {
+    if (scan - at > MAX_GROUNDING_TOKEN_CHARS) {
+      return undefined;
+    }
+    const char = text.charAt(scan);
+    if (char && !JOINING.test(char) && !TOKEN_BOUNDARY.test(char)) {
+      joined = true;
+      continue;
+    }
+    if (joined) {
+      let end = scan;
+      spellings.add(text.slice(at, end));
+      while (PUNCTUATION.test(text.charAt(end - 1))) {
+        end -= 1;
+      }
+      if (!JOINING.test(text.charAt(end - 1))) {
+        spellings.add(text.slice(at, end));
+      }
+      if (spellings.size > MAX_JOINED_SPELLINGS) {
+        return undefined;
+      }
+    }
+    if (!JOINING.test(char)) {
+      break;
+    }
+    joined = false;
+  }
+  return [...spellings];
+}
 
 function endsReference(text: string, end: number): boolean {
   let cursor = end;
@@ -70,6 +160,8 @@ function foldCasePreservingLength(value: string): string {
 type NormalizableRoot = {
   /** Parsed scheme and authority for a URI root; null for a filesystem root. */
   uri: { protocol: string; host: string } | null;
+  /** Lowercase drive ("c:") of a win32 root, whose `path` then starts after it; else null. */
+  drive: string | null;
   /** Length of the raw scheme+authority text, so offsets stay in token coordinates. */
   prefixLength: number;
   path: string;
@@ -91,11 +183,35 @@ function normalizedFilesystemPath(value: string): string {
 }
 
 /**
+ * What follows the drive once path.win32 has normalized `value`, in the shape the fold
+ * compares; undefined when the result is not a path on `drive` (UNC, drive-relative, another
+ * drive). path.win32 is the resolver's parser here: "#", "?" and "%" are path bytes to it and a
+ * doubled slash after the drive collapses, where the URL parser reads a fragment, a query, an
+ * escape and an authority.
+ */
+function win32PathOnDrive(value: string, drive: string): string | undefined {
+  const normalized = path.win32.normalize(value);
+  return DRIVE_ROOTED.test(normalized) && normalized.slice(0, 2).toLowerCase() === drive
+    ? normalizedFilesystemPath(`/${normalized.slice(3)}`)
+    : undefined;
+}
+
+/** A win32 spelling made absolute the way the resolver does before path.win32 reads it. */
+function win32AbsoluteSpelling(candidate: string, drive: string, homeDir: string): string {
+  if (HOME_PREFIX.test(candidate)) {
+    return `${homeDir}${candidate.slice(1)}`;
+  }
+  // The current drive is not knowable here; taking the root's can only redact more.
+  return DRIVELESS_ROOTED.test(candidate) ? `${drive}${candidate}` : candidate;
+}
+
+/**
  * Length of the raw prefix of `token` that the platform folds onto `root`, 0 when no prefix
  * does, or UNDECIDABLE_PREFIX when the spelling cannot be decided here.
  *
  * Equivalence is decided by the parsers the resolver itself uses - WHATWG `URL` for a URI
- * root, `path.posix.normalize` for a filesystem root - rather than by a fold written here.
+ * root, `path.win32.normalize` for a drive root, `path.posix.normalize` for any other
+ * filesystem root - rather than by a fold written here.
  * Four consecutive review rounds each found a spelling a hand-written walk missed (`./root`,
  * `../root`, `//root`, `root2/../root`, `x/../root`, `%2e/root`) and a fix for one round's
  * spelling opened the next round's. Every one of them folds correctly in the parser, so the
@@ -167,6 +283,15 @@ function resolvedManagedPrefix(
         continue;
       }
       resolved = normalizedFilesystemPath(decodedPath);
+    } else if (root.drive) {
+      const onDrive = win32PathOnDrive(
+        win32AbsoluteSpelling(candidate, root.drive, homeDir),
+        root.drive,
+      );
+      if (onDrive === undefined) {
+        continue;
+      }
+      resolved = onDrive;
     } else {
       // The resolver's resolveUserPath expands a leading "~" before it normalizes.
       resolved = normalizedFilesystemPath(
@@ -193,7 +318,11 @@ function resolvedManagedPrefix(
 }
 
 /** Ranges of `text` naming a managed root that no authorized alias covers, in text order. */
-function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [number, number][] {
+function ungroundedRanges(
+  text: string,
+  grounding: ManagedMediaGrounding,
+  joins?: JoinedMediaSpellings,
+): [number, number][] {
   const ranges: [number, number][] = [];
   if (!text || (grounding.rootAliases.length === 0 && grounding.uriRoots.length === 0)) {
     return ranges;
@@ -230,7 +359,9 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
   const normalizableRoots: NormalizableRoot[] = grounding.rootAliases
     .concat(grounding.uriRoots)
     .map((alias) => {
-      const prefix = URI_PREFIX.exec(alias)?.[0] ?? "";
+      // "C:" would parse as a scheme, and the URL parser is not how the resolver reads it.
+      const drive = DRIVE_ROOTED.test(alias) ? alias.slice(0, 2).toLowerCase() : null;
+      const prefix = drive ? "" : (URI_PREFIX.exec(alias)?.[0] ?? "");
       if (prefix) {
         let url: URL;
         try {
@@ -251,6 +382,7 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
           .map((segment) => foldCasePreservingLength(segment));
         return {
           uri: { protocol: url.protocol, host: url.host },
+          drive: null,
           prefixLength: url.protocol.length,
           path: rootPath,
           lastSegment: rootPath.split("/").pop() ?? "",
@@ -264,16 +396,20 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
           lowerPrefix: foldCasePreservingLength(url.protocol),
         };
       }
-      if (!/^[/\\]/u.test(alias) && !/^[a-z]:[/\\]/iu.test(alias)) {
+      if (!drive && !/^[/\\]/u.test(alias)) {
         return null;
       }
-      const rootPath = normalizedFilesystemPath(alias);
+      const rootPath = drive ? win32PathOnDrive(alias, drive) : normalizedFilesystemPath(alias);
+      if (rootPath === undefined) {
+        return null;
+      }
       const lowerSegments = rootPath
         .split("/")
         .filter(Boolean)
         .map((segment) => foldCasePreservingLength(segment));
       return {
         uri: null,
+        drive,
         prefixLength: 0,
         path: rootPath,
         lastSegment: rootPath.split("/").pop() ?? "",
@@ -286,8 +422,8 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
     })
     .filter((entry) => entry !== null)
     // Drops a URI root with no path of its own: "media://inbound" normalizes to ".". A
-    // drive-letter root does NOT need an arm here - URI_PREFIX matches "C:" as a scheme, so
-    // it takes the branch above and its pathname already starts with "/".
+    // drive-letter root does NOT need an arm here - its drive is held apart, so its path
+    // starts with "/" like the others.
     .filter(({ path: rootPath, lastSegment }) => rootPath.startsWith("/") && lastSegment !== "");
   // Conservative gate, and conservative is the whole point: it may admit a token the parser
   // then rejects, but it must never reject one the parser would fold onto a root. Every
@@ -579,8 +715,8 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
     }
     let extent: ReturnType<typeof pathExtent> | undefined;
     for (const [rootIndex, root] of normalizableRoots.entries()) {
-      // Every gate below reads the text in place. A prompt carrying no managed root must not
-      // pay a single String.slice, which is what the rescan guard measures.
+      // Every gate below reads the text in place, so a prompt carrying no managed root never
+      // pays for a String.slice.
       if (root.lowerPrefix && !lowercaseText.startsWith(root.lowerPrefix, at)) {
         continue;
       }
@@ -704,14 +840,19 @@ function ungroundedRanges(text: string, grounding: ManagedMediaGrounding): [numb
       (candidate) =>
         matchesAt(candidate, cursor) && endsReference(text, cursor + candidate.alias.length),
     )?.alias;
-    if (allowed && !pathRunsPast(cursor, cursor + allowed.length)) {
+    const joined =
+      allowed && !pathRunsPast(cursor, cursor + allowed.length)
+        ? joinedSpellings(text, cursor, cursor + allowed.length)
+        : undefined;
+    if (allowed && joined && joined.every((spelling) => !joins?.unverified?.has(spelling))) {
+      joined.forEach((spelling) => joins?.found.add(spelling));
       cursor += allowed.length;
     } else {
       // A dot-segment spelling of an AUTHORIZED reference is redacted too: authorized
       // aliases are the exact spellings the resolver verified, and re-deriving
       // equivalence for them would decide authorization from prompt text. Failing closed
       // costs a visible placeholder on an exotic spelling; failing open replays an
-      // unverified path.
+      // unverified path. So is an alias the media owner found joined onto another file.
       ranges.push([cursor, cursor + rootLength]);
       cursor += rootLength;
     }
@@ -760,8 +901,9 @@ function urlParserReading(text: string): { text: string; offsets: Uint32Array } 
 export function invalidateUngroundedMediaPrefixes(
   text: string,
   grounding: ManagedMediaGrounding,
+  joins?: JoinedMediaSpellings,
 ): string {
-  const ranges = ungroundedRanges(text, grounding);
+  const ranges = ungroundedRanges(text, grounding, joins);
   const fileRoots = grounding.rootAliases.filter((alias) => /^file:/iu.test(alias));
   const reading = fileRoots.length > 0 ? urlParserReading(text) : undefined;
   if (reading) {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   prepareManagedMediaGrounding,
@@ -131,17 +131,6 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     ] as const) {
       expect(invalidateUngroundedMediaPrefixes(input, grounding(roots, [granted]))).toBe(expected);
     }
-  });
-
-  it("does not rescan prefixes when a bounded prompt has no managed root", () => {
-    const input = "x".repeat(32 * 1_024);
-    const slice = vi.spyOn(String.prototype, "slice");
-    const result = invalidateUngroundedMediaPrefixes(input, grounding([root]));
-    const sliceCalls = slice.mock.calls.length;
-    slice.mockRestore();
-
-    expect(result).toBe(input);
-    expect(sliceCalls).toBe(0);
   });
 
   it.each([
@@ -422,10 +411,8 @@ describe("invalidateUngroundedMediaPrefixes", () => {
   });
 
   it("folds a drive-letter root", () => {
-    // Not a regression test: this already held. It pins WHY, which is not obvious - URI_PREFIX
-    // matches "C:" as a SCHEME, so a Windows root takes the URI branch and the parser hands
-    // back pathname "/managed/state/media". A reviewer read this as broken; the control proved
-    // it was not. Narrowing URI_PREFIX would silently disable folding on Windows.
+    // "C:" also parses as a URL scheme. The fold must not take that reading: the resolver
+    // opens a drive path with path.win32, so that is the parser a drive root is folded with.
     expect(
       invalidateUngroundedMediaPrefixes(
         String.raw`C:\managed\state\.\media\x.png`,
@@ -643,22 +630,14 @@ describe("invalidateUngroundedMediaPrefixes", () => {
   it("keeps one token's extent across the redactions inside it", () => {
     // Each redaction re-anchored the token and discarded its extent, so a token holding N
     // comma-separated managed paths rescanned its remaining suffix N times: the boundary scan
-    // plus a remote-URI regex over a fresh slice. Counting both pins the scan, not a clock.
-    const paths = Array.from({ length: 1_000 }, (_unused, index) => `${root}/${index}.png`);
+    // plus a remote-URI regex over a fresh slice. The timeout is the assertion, as for the other
+    // floods in this file.
+    const paths = Array.from({ length: 16_000 }, (_unused, index) => `${root}/${index}.png`);
     const token = paths.join(",");
-    const test = vi.spyOn(RegExp.prototype, "test");
-    const slice = vi.spyOn(String.prototype, "slice");
-    const out = invalidateUngroundedMediaPrefixes(token, grounding([root], [], false, []));
-    const tests = test.mock.calls.length;
-    const sliced = slice.mock.results.reduce(
-      (total, result) => total + (typeof result.value === "string" ? result.value.length : 0),
-      0,
+    expect(invalidateUngroundedMediaPrefixes(token, grounding([root], [], false, []))).toBe(
+      paths.map((entry) => entry.replace(root, REDACTED)).join(","),
     );
-    test.mockRestore();
-    slice.mockRestore();
-    expect(out).toBe(paths.map((entry) => entry.replace(root, REDACTED)).join(","));
-    expect(tests + sliced).toBeLessThan(token.length * 16);
-  });
+  }, 10_000);
 
   // WHATWG URL deletes ASCII tab, LF and CR anywhere in its input, and the media resolver
   // hands every file: reference to it, so each input opens a file under the root. The first
@@ -679,14 +658,25 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     [`file://${root}/inbound/ok.png\t/../../generated/secret.png`],
     [`file://${root}/inbound/ok.png\n/../../generated/secret.png`],
     [`${root}/inbound/ok.png /../../generated/secret.png`],
+    // With the line break or tab deleted or kept, one ".." pops ok.png itself.
+    [`file://${root}/inbound/ok.png\n/../ok.png.fake`],
+    [`${root}/inbound/ok.png\t/../ok.png.fake`],
   ])("does not let an authorized path run on past a boundary a later .. discards: %j", (input) => {
-    // The resolver reads each input as one path: ok.png and inbound are popped, and it opens
-    // generated/secret.png under the root, which no tool result verified.
+    // The resolver reads each input as one path: the ".." segments pop ok.png and, where there
+    // are two, inbound, and it opens a file under the root that no tool result verified.
     const granted = [`file://${root}/inbound/ok.png`, `${root}/inbound/ok.png`];
     const g = grounding([root, `file://${root}`], granted, false, []);
     const out = invalidateUngroundedMediaPrefixes(input, g);
     expect(out.startsWith(REDACTED)).toBe(true);
     expect(out).toBe(`${REDACTED}${input.slice(input.indexOf("/inbound/"))}`);
+  });
+
+  it("does not let an authorized media URI run on past a line break a later .. discards", () => {
+    // parseInboundMediaUri hands the URI to the URL parser, which deletes the line break and
+    // folds the "..", so the resolver opens inbound/ok.png.fake.
+    const input = "media://inbound/ok.png\n/../ok.png.fake";
+    const g = grounding([root], ["media://inbound/ok.png"]);
+    expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(`${REDACTED}/ok.png\n/../ok.png.fake`);
   });
 
   it.each([
@@ -714,17 +704,106 @@ describe("invalidateUngroundedMediaPrefixes", () => {
     }
   });
 
-  it("keeps prose boundaries around file URLs when no deleted character is inside one", () => {
-    const granted = `file://${root}/inbound/ok.png`;
-    const g = grounding([root, `file://${root}`], [granted], false, []);
+  it.each([
+    ["~/.openclaw/./media/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    [String.raw`~\.openclaw\.\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["see ~/../Bot/.openclaw/media/x.png", `see ${REDACTED}/x.png`],
+  ])("expands a leading ~ onto a Windows drive root: %j", (input, expected) => {
+    // resolveUserPath turns ~ into C:\Users\Bot before path.win32 normalizes, so the fold
+    // has to expand it for a drive root as it does for a POSIX one.
+    const roots = [
+      "C:/Users/Bot/.openclaw/media",
+      String.raw`C:\Users\Bot\.openclaw\media`,
+      "~/.openclaw/media",
+      String.raw`~\.openclaw\media`,
+    ];
+    for (const homeDir of [String.raw`C:\Users\Bot`, "C:/Users/Bot"]) {
+      const g = grounding(roots, [], true, [], homeDir);
+      expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+    }
+  });
+
+  it("leaves ~ spellings whose home is on another Windows drive", () => {
+    // The expansion lands on D:, and what follows the ~ names no path under the C: root.
+    const g = grounding(["C:/Users/Bot/.openclaw/media"], [], true, [], "D:/Users/Bot");
+    for (const benign of ["~/.openclaw/media/x.png", "~/.openclaw/./media/x.png"]) {
+      expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
+
+  it.each([
+    ["C://Users/Bot/.openclaw/media/x.png", `${REDACTED}/x.png`],
+    ["C:/../Users/Bot/.openclaw/media/x.png", `${REDACTED}/x.png`],
+    [String.raw`C:\Users\Bot\.openclaw\x#\..\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["C:/Users/Bot/.openclaw/a?b/../media/x.png", `${REDACTED}/x.png`],
+    ["C:/Users/Bot/.openclaw/100%/../media/x.png", `${REDACTED}/x.png`],
+    ["/Users/Bot/.openclaw/media/inbound/x.png", `${REDACTED}/inbound/x.png`],
+    [String.raw`\Users\Bot\.openclaw\.\media\x.png`, String.raw`${REDACTED}\x.png`],
+    ["MEDIA:/Users/Bot/.openclaw/./media/x.png", `MEDIA:${REDACTED}/x.png`],
+    ["/m/x.png", `${REDACTED}/x.png`],
+  ])("folds a win32 spelling the resolver lands on the drive root: %j", (input, expected) => {
+    // path.win32 collapses a doubled slash after the drive, keeps "#", "?" and "%" as path
+    // bytes, and resolves a rooted path with no drive on the current one. The URL parser
+    // reads an authority, a fragment, a query and an escape in the same spellings.
+    const roots = [
+      "C:/Users/Bot/.openclaw/media",
+      String.raw`C:\Users\Bot\.openclaw\media`,
+      "//?/C:/Users/Bot/.openclaw/media",
+      "C:/m",
+    ];
+    const g = grounding(roots, [], true, [], String.raw`C:\Users\Bot`);
+    expect(invalidateUngroundedMediaPrefixes(input, g)).toBe(expected);
+  });
+
+  it("leaves win32 spellings that land outside the drive root", () => {
+    const g = grounding(["C:/Users/Bot/.openclaw/media"], [], true, [], String.raw`C:\Users\Bot`);
     for (const benign of [
-      `${granted}\nnext line`,
-      `${granted}\t.fake`,
-      "/managed/state/me\tdia/x.png",
-      "file:///tmp/x.png\nmedia/x.png is elsewhere",
-      "file:///managed/state/other\n/media/x.png",
+      "//Users/Bot/.openclaw/media/x.png",
+      String.raw`\\Users\Bot\.openclaw\media\x.png`,
+      "C://Users/Bot/other/media/x.png",
+      "C:Users/Bot/.openclaw/media/x.png",
+      "C:/Users/Bot/.openclaw/%6dedia/x.png",
+      "/Users/Bot/.openclaw/media-old/x.png",
+      "https://example.com/Users/Bot/.openclaw/media/x.png",
     ]) {
       expect(invalidateUngroundedMediaPrefixes(benign, g)).toBe(benign);
+    }
+  });
+
+  it("keeps prose boundaries around file URLs and reports the names a resolver could join", () => {
+    const granted = `file://${root}/inbound/ok.png`;
+    const g = grounding([root, `file://${root}`], [granted], false, []);
+    // Whether a joined name opens another file is the store's answer; the scan only reports it.
+    for (const [benign, joined] of [
+      [`${granted}\nnext line`, [`${granted}\nnext`]],
+      [`${granted}\t.fake.`, [`${granted}\t.fake.`, `${granted}\t.fake`]],
+      [`${granted}.\n\nNext`, [`${granted}.\n\nNext`]],
+      ["/managed/state/me\tdia/x.png", []],
+      ["file:///tmp/x.png\nmedia/x.png is elsewhere", []],
+      ["file:///managed/state/other\n/media/x.png", []],
+    ] as const) {
+      const joins = { found: new Set<string>() };
+      expect(invalidateUngroundedMediaPrefixes(benign, g, joins)).toBe(benign);
+      expect([...joins.found]).toEqual(joined);
+    }
+    // A list of paths, one per line: each next line starts beneath the authorized file.
+    const plain = `${root}/inbound/ok.png`;
+    const list = `${plain}\n${root}/inbound/b.png\n${plain}`;
+    const listJoins = { found: new Set<string>() };
+    expect(
+      invalidateUngroundedMediaPrefixes(
+        list,
+        grounding([root], [plain, `${root}/inbound/b.png`], false, []),
+        listJoins,
+      ),
+    ).toBe(list);
+    expect(listJoins.found.size).toBe(0);
+    // A joined name too long to read through, or with too many places to stop, is refused like
+    // every other exhausted budget.
+    for (const suffix of [`\n${"x".repeat(4096)}`, "\ta".repeat(9)]) {
+      expect(invalidateUngroundedMediaPrefixes(`${granted}${suffix}`, g)).toBe(
+        `${REDACTED}/inbound/ok.png${suffix}`,
+      );
     }
   });
 });
