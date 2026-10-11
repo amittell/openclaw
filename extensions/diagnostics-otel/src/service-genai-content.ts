@@ -14,7 +14,6 @@ import type {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   MAX_OTEL_CONTENT_ARRAY_ITEMS,
-  MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
   normalizeOtelContentValue,
   safeJsonString,
 } from "./service-content-normalization.js";
@@ -84,7 +83,7 @@ function contentParts(value: unknown): Record<string, unknown>[] {
     if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
       return [textPart(String(value))];
     }
-    const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    const json = safeJsonString(value);
     return json ? [textPart(json)] : [];
   }
   const parts: Record<string, unknown>[] = [];
@@ -271,12 +270,15 @@ function normalizeGenAiToolDefinitions(value: unknown) {
 
 function assignJsonAttribute(
   attributes: Record<string, string | number | boolean>,
-  key: string,
+  keys: readonly string[],
   value: unknown,
 ): void {
-  const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  // Mirrored keys carry the same value; serialize and redact it once for all of them.
+  const json = safeJsonString(value);
   if (json) {
-    attributes[key] = json;
+    for (const key of keys) {
+      attributes[key] = json;
+    }
   }
 }
 
@@ -320,18 +322,16 @@ export function assignOtelModelContentAttributes(
   const redactedOutput = redactInternalReasoningFromMessages(content?.outputMessages);
   const inputMessages = normalizeGenAiMessages(redactedInput, "user");
   if (inputMessages.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_INPUT_MESSAGES, inputMessages);
-    assignJsonAttribute(attributes, "input.value", inputMessages);
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_INPUT_MESSAGES, "input.value"], inputMessages);
     attributes["input.mime_type"] = "application/json";
   }
   const toolDefinitions = normalizeGenAiToolDefinitions(content?.toolDefinitions);
   if (toolDefinitions.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_TOOL_DEFINITIONS, toolDefinitions);
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_TOOL_DEFINITIONS], toolDefinitions);
   }
   const outputMessages = normalizeGenAiMessages(redactedOutput, "assistant");
   if (outputMessages.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_OUTPUT_MESSAGES, outputMessages);
-    assignJsonAttribute(attributes, "output.value", outputMessages);
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_OUTPUT_MESSAGES, "output.value"], outputMessages);
     attributes["output.mime_type"] = "application/json";
   }
   assignOtelContentAttribute(attributes, "openclaw.content.input_messages", redactedInput);
