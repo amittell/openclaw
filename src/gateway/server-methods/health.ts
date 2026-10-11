@@ -105,6 +105,22 @@ export const healthHandlers: GatewayRequestHandlers = {
     const scopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];
     const includeSensitive = scopes.includes(ADMIN_SCOPE);
     const now = Date.now();
+    const respondFresh = () =>
+      respondUnavailableOnThrow(respond, async () => {
+        const snap = await refreshHealthSnapshot({ probe: wantsProbe, includeSensitive });
+        respond(
+          true,
+          omitRuntimeConfigHealthForClient(
+            {
+              ...snap,
+              modelRuntime: getPreparedModelRuntimeStartupStatus(),
+              childRuntime: readChildRuntimeViability(),
+            },
+            client?.connect?.caps,
+          ),
+          undefined,
+        );
+      });
     const cached = getHealthCache();
     let cachedDiffersFromRuntime = false;
     if (!wantsProbe && cached) {
@@ -124,15 +140,22 @@ export const healthHandlers: GatewayRequestHandlers = {
       !isFutureDateTimestampMs(cached.ts, { nowMs: now }) &&
       now - cached.ts < HEALTH_REFRESH_INTERVAL_MS
     ) {
+      const cachedState = await mergeCachedHealthRuntimeState({
+        cached,
+        getEventLoopHealth: context.getEventLoopHealth,
+        configReloadHotReloadStatus: context.getConfigReloaderHotReloadStatus?.(),
+      });
+      if (getHealthCache() !== cached) {
+        // A config observation or runtime publication retired this snapshot during the
+        // reads above. Its runtimeConfig is stale with it, so answer from a refresh.
+        await respondFresh();
+        return;
+      }
       respond(
         true,
         omitRuntimeConfigHealthForClient(
           {
-            ...(await mergeCachedHealthRuntimeState({
-              cached,
-              getEventLoopHealth: context.getEventLoopHealth,
-              configReloadHotReloadStatus: context.getConfigReloaderHotReloadStatus?.(),
-            })),
+            ...cachedState,
             // Live check. The cache must not keep a path that disappeared after it was stored.
             childRuntime: readChildRuntimeViability(),
           },
@@ -148,21 +171,7 @@ export const healthHandlers: GatewayRequestHandlers = {
       }
       return;
     }
-    await respondUnavailableOnThrow(respond, async () => {
-      const snap = await refreshHealthSnapshot({ probe: wantsProbe, includeSensitive });
-      respond(
-        true,
-        omitRuntimeConfigHealthForClient(
-          {
-            ...snap,
-            modelRuntime: getPreparedModelRuntimeStartupStatus(),
-            childRuntime: readChildRuntimeViability(),
-          },
-          client?.connect?.caps,
-        ),
-        undefined,
-      );
-    });
+    await respondFresh();
   },
   status: async ({ respond, client, params, context }) => {
     const scopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];

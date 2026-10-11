@@ -1167,6 +1167,11 @@ export function startGatewayConfigReloader(
       clearReloadTimer();
       let candidate = pendingInProcessConfig ?? retryWriteCandidate;
       let committed = false;
+      // Same per-transaction tracker as runReload: publish this read while it is current.
+      const observation = trackReloadObservation(() => ({
+        epoch: source.observation.revision,
+        acceptedFromEpoch: observationAcceptedFromRevision.get(source.observation),
+      }));
       try {
         const expectedSourceConfig = params.write
           ? params.write.persistedSourceConfig
@@ -1174,7 +1179,11 @@ export function startGatewayConfigReloader(
         // Refresh identity and bytes without inventing independent passive reload work.
         source.observe(undefined, false);
         const epoch = source.observation.revision;
+        // This read can consume a pending write and its echo; no follow-up reload publishes it.
+        // A failed read publishes as unavailable rather than keeping the prior source.
+        observation.observe(epoch, null);
         const snapshot = await source.readSnapshot();
+        observation.observeSnapshot(epoch, snapshot);
         params.assertInvokerOwned?.();
         if (!snapshot.valid || !snapshot.exists) {
           throw new Error("Plugin runtime application requires a valid persisted config.");
@@ -1252,6 +1261,7 @@ export function startGatewayConfigReloader(
           { cause: error },
         );
       } finally {
+        observation.publishIfCurrent();
         if (activeInProcessConfig === candidate) {
           activeInProcessConfig = null;
         }
