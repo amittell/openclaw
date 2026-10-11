@@ -254,7 +254,12 @@ describe("buildSessionContext", () => {
           compactionEntry("compacted", "entry-2", firstKeptEntry.id, "Earlier conversation", 1_000),
         ]);
         expect(replay.messages).toMatchObject([
-          { role: "compactionSummary", summary: "Earlier conversation" },
+          {
+            role: "compactionSummary",
+            summary: expect.stringMatching(
+              /^Earlier conversation\n\[compaction checkpoint compacted: shadows \d+ earlier entries\]$/,
+            ),
+          },
           ...[
             { role: "user", content: "original request" },
             {

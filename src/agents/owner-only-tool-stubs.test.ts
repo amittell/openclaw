@@ -59,6 +59,9 @@ import { captureFinalEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool
 import type { CronCreatorToolAllowlistEntry } from "./tools/cron-tool.types.js";
 
 const OWNER_ONLY = [...GATEWAY_OWNER_ONLY_CORE_TOOLS];
+// Since #154239 (v2026.10.1) `sessions` gates its own actions on a non-owner turn
+// (assign_owner only) instead of being denied, so it stays the real tool there.
+const STUBBED_OWNER_ONLY = OWNER_ONLY.filter((name) => name !== "sessions");
 const sessionKey = "agent:main:telegram:direct:owner";
 
 function createRealToolSpies(name: string) {
@@ -219,10 +222,11 @@ describe("owner-only tool stubs", () => {
 
     expect(other.map((tool) => tool.name)).toEqual(owner.map((tool) => tool.name));
     expect(listOwnerOnlyToolStubNames(other).toSorted()).toEqual(
-      [...OWNER_ONLY, "intent"].toSorted(),
+      [...STUBBED_OWNER_ONLY, "intent"].toSorted(),
     );
     expect(isOwnerOnlyToolStub(requireTool(other, "message"))).toBe(false);
-    for (const name of OWNER_ONLY) {
+    expect(isOwnerOnlyToolStub(requireTool(other, "sessions"))).toBe(false);
+    for (const name of STUBBED_OWNER_ONLY) {
       const stub = requireTool(other, name);
       const ownerTool = requireTool(owner, name);
       expect(isOwnerOnlyToolStub(stub), name).toBe(true);
@@ -261,9 +265,9 @@ describe("owner-only tool stubs", () => {
     // The run's catalog executor prefers an execution preparer over execute, so the
     // cataloged objects themselves must carry neither the real preparer nor hooks.
     const cataloged = (catalogRef.current?.entries ?? []).filter((entry) =>
-      OWNER_ONLY.includes(entry.name as (typeof OWNER_ONLY)[number]),
+      STUBBED_OWNER_ONLY.includes(entry.name as (typeof STUBBED_OWNER_ONLY)[number]),
     );
-    expect(cataloged.map((entry) => entry.name).toSorted()).toEqual(OWNER_ONLY.toSorted());
+    expect(cataloged.map((entry) => entry.name).toSorted()).toEqual(STUBBED_OWNER_ONLY.toSorted());
     for (const entry of cataloged) {
       expect(isOwnerOnlyToolStub(entry.tool), entry.name).toBe(true);
       await expectPreExecutionRefusal(entry.tool, entry.name);
@@ -365,7 +369,7 @@ describe("owner-only tool stubs", () => {
     finalizeAgentToolAvailability([probe, ...buildTurnTools(false)]);
 
     expect(callable).toContain("message");
-    for (const name of [...OWNER_ONLY, "intent"]) {
+    for (const name of [...STUBBED_OWNER_ONLY, "intent"]) {
       expect(callable).not.toContain(name);
     }
   });
@@ -381,7 +385,7 @@ describe("owner-only tool stubs", () => {
     expect(cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name))).toContain(
       "message",
     );
-    for (const name of [...OWNER_ONLY, "intent"]) {
+    for (const name of [...STUBBED_OWNER_ONLY, "intent"]) {
       expect(inherited).not.toContain(name);
       expect(
         cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name)),

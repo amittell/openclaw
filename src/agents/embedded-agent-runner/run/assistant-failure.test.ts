@@ -1024,12 +1024,13 @@ describe("handleEmbeddedAssistantFailure", () => {
     // model-fallback path, which throws a FailoverError so the outer run loop can
     // switch to the fallback model. The hard-stop only applies to single-profile
     // models (fallbackConfigured === false).
-    // 9.2 wraps the provider string in its own run-failure copy rather than
-    // surfacing the raw text, so assert on the failed model reference, which is
-    // the part that identifies WHICH model the failover is rotating away from.
-    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toThrow(
-      /anthropic\/mock-1/,
-    );
+    // Assert on the failed model reference, which identifies WHICH model the failover
+    // is rotating away from. 10.1 (#163381) dropped it from the user copy ("OpenClaw
+    // couldn't finish this reply") and keeps it in the FailoverError's typed fields.
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toMatchObject({
+      provider: "anthropic",
+      model: "mock-1",
+    });
     // Pin the FailoverError class + reason (not just the message string) so a future
     // refactor cannot silently convert this into a plain Error or a different reason.
     await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toBeInstanceOf(

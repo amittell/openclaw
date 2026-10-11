@@ -232,6 +232,17 @@ describe("buildExternalRunFailureReply", () => {
     expect(reply.text).not.toContain(message);
   });
 
+  // 10.1 (#163381) rewrote the copy these three pin: every transport phrase now renders
+  // one "Couldn't connect" sentence, and a classified timeout no longer names the model
+  // or a status. The fork pins the ROUTING (transport is not a timeout; a genuine timeout
+  // still is), so the expected strings take 10.1's copy.
+  const TRANSPORT_FAILURE_REPLY =
+    "⚠️ gpufarm/qwen3.8-27b request failed: Couldn't connect to the AI service. " +
+    "Check your connection, then try again. For details, open Settings → Logs in the " +
+    "Control UI or run `openclaw logs --follow`.";
+  const TIMEOUT_FAILURE_REPLY =
+    "⚠️ The request took too long. Check the conversation for any completed work before trying again.";
+
   it("names a transport failure instead of claiming a timeout with a synthetic HTTP 408", () => {
     // A macOS Local Network denial fails the connect in milliseconds. The classifier keeps
     // it as `timeout` for retry, but the reply must not say the provider timed out.
@@ -251,10 +262,11 @@ describe("buildExternalRunFailureReply", () => {
     );
 
     expect(reply).toEqual({
-      text: "⚠️ gpufarm/qwen3.8-27b request failed: the provider endpoint is unreachable from this host.",
+      text: TRANSPORT_FAILURE_REPLY,
       isGenericRunnerFailure: false,
     });
     expect(reply.text).not.toContain("timed out");
+    expect(reply.text).not.toContain("took too long");
     expect(reply.text).not.toContain("HTTP 408");
     expect(reply.text).not.toContain("usually temporary");
     expect(reply.text).not.toContain("192.168.210.123");
@@ -276,7 +288,8 @@ describe("buildExternalRunFailureReply", () => {
       { includeDetails: false },
     );
 
-    expect(reply.text).toBe("⚠️ gpufarm/qwen3.8-27b request failed: network connection error.");
+    expect(reply.text).toBe(TRANSPORT_FAILURE_REPLY);
+    expect(reply.text).not.toContain("took too long");
   });
 
   it("still reports a genuine provider timeout as a timeout", () => {
@@ -295,10 +308,7 @@ describe("buildExternalRunFailureReply", () => {
       { includeDetails: false },
     );
 
-    expect(reply.text).toBe(
-      "⚠️ gpufarm/qwen3.8-27b request failed (request timed out, HTTP 408). " +
-        "This is usually temporary — try again shortly.",
-    );
+    expect(reply.text).toBe(TIMEOUT_FAILURE_REPLY);
   });
 
   it.each([

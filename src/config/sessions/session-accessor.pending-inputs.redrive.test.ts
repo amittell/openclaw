@@ -61,7 +61,7 @@ describe("committed source-turn re-drive", () => {
           asOptionalRecord(asOptionalRecord(event)?.message)?.idempotencyKey === sourceTurnId,
       ),
     ).toBe(true);
-    expect(listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
+    expect(await listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
     original.finishPendingInput?.("interrupted");
 
     // The owning run then died without a done signal; a later RE-DRIVE of the SAME
@@ -88,7 +88,7 @@ describe("committed source-turn re-drive", () => {
     const replayResult = await reDriven.withPendingInput?.(() => reDriven.persistApproved());
     expect(replayResult?.appended).toBe(false);
     expect(await loadTranscriptEvents(scope())).toEqual(committedTranscript);
-    expect(listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
+    expect(await listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
     reDriven.finishPendingInput?.("interrupted");
   });
 });

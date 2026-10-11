@@ -33,9 +33,15 @@ describe("embedded attempt owner-only stubs", () => {
     await cleanupTempPaths(tempPaths);
   });
 
-  it.each([false, true])(
-    "names the refusing stubs for the per-turn prompt with codeMode=%s",
-    async (codeModeOverride) => {
+  // Since #164296 (v2026.10.1) the shared tool surface adds the Tool Search controls
+  // itself, so Tool Search (on by default) catalogs these tools unless disabled.
+  it.each([
+    { codeModeOverride: false, disableToolSearch: true as const, visible: true },
+    { codeModeOverride: false, disableToolSearch: undefined, visible: false },
+    { codeModeOverride: true, disableToolSearch: undefined, visible: false },
+  ])(
+    "names the refusing stubs for the per-turn prompt with codeMode=$codeModeOverride, disableToolSearch=$disableToolSearch",
+    async ({ codeModeOverride, disableToolSearch, visible }) => {
       resetEmbeddedAttemptHarness();
       const hoisted = getHoisted();
       hoisted.createOpenClawCodingToolsMock.mockReturnValue([
@@ -50,6 +56,7 @@ describe("embedded attempt owner-only stubs", () => {
         tempPaths,
         attemptOverrides: {
           codeModeOverride,
+          disableToolSearch,
           disableTools: false,
           senderIsOwner: false,
           trigger: "user",
@@ -63,10 +70,8 @@ describe("embedded attempt owner-only stubs", () => {
         extraSystemPrompt?: string;
         tools: Array<{ name: string }>;
       };
-      // With Code Mode the stubs sit behind the catalog, not in the visible tool list.
-      expect(promptInput.tools.map((entry) => entry.name).includes("gateway")).toBe(
-        !codeModeOverride,
-      );
+      // With Code Mode or Tool Search the stubs sit behind the catalog, not in the visible list.
+      expect(promptInput.tools.map((entry) => entry.name).includes("gateway")).toBe(visible);
       expect(promptInput.extraSystemPrompt).toContain(
         "Owner-only tools unavailable on this turn; calls to them are refused: `gateway`, `nodes`.",
       );
@@ -97,6 +102,9 @@ describe("embedded attempt owner-only stubs", () => {
             },
           },
         ],
+        // With Tool Search on, this case re-renders the system prompt, and the re-render
+        // cannot update this harness's undefined system prompt report.
+        disableToolSearch: true,
         disableTools: false,
         senderIsOwner: false,
         trigger: "user",
