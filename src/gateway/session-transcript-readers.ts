@@ -5,6 +5,7 @@ import {
 } from "../config/sessions/session-accessor.sqlite-active-events.js";
 import { withCurrentProjectionSnapshot } from "../config/sessions/session-accessor.sqlite-active-projection.js";
 import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.sqlite-contract.js";
+import { readSessionTranscriptCompactionShadowPage } from "../config/sessions/session-accessor.sqlite-history-events.js";
 import type { SessionTranscriptBoundedMessageTailOptions } from "../config/sessions/session-accessor.sqlite-projection-read.js";
 import {
   prepareSqliteTranscriptReadScope,
@@ -23,7 +24,11 @@ import type {
   SessionArtifactReadQuery,
   SessionArtifactReadResult,
 } from "./session-artifact-read.js";
-import { createSessionTranscriptReader } from "./session-transcript-read-kernel.js";
+import {
+  createSessionTranscriptReader,
+  projectSqliteHistoryEvents,
+  type ReadRecentSessionMessagesResult,
+} from "./session-transcript-read-kernel.js";
 import {
   resolveTranscriptReadTarget,
   toTranscriptReadScope,
@@ -286,4 +291,22 @@ export async function readSessionConversationBindingAsync(
     kind: "conversation-binding",
     params: { target, conversationRef },
   });
+}
+
+/** Reads one page of the rows a compaction summary shadows; undefined when the id is not a compaction. */
+export async function readSessionMessagesShadowedByCompactionAsync(
+  scope: SessionTranscriptReadScope,
+  opts: { compactionId: string; maxMessages: number; offset: number },
+): Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined> {
+  const target = await resolveTranscriptReadTarget(scope);
+  const page = readSessionTranscriptCompactionShadowPage(toTranscriptReadScope(target), opts);
+  return page
+    ? {
+        messages: projectSqliteHistoryEvents(page.events),
+        offset: page.offset,
+        // The span is the window, so its size is what this summary replaced.
+        totalMessages: page.shadowedCount,
+        transcriptPath: target.sessionFile,
+      }
+    : undefined;
 }

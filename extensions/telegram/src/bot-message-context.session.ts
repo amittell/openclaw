@@ -202,7 +202,10 @@ function formatReplyChainEntry(entry: TelegramReplyChainEntry, index: number): s
           entry.mediaKind
             ? { kind: entry.mediaKind }
             : isTelegramMediaKind(entry.mediaType ?? "")
-              ? { kind: entry.mediaType as TelegramMediaKind }
+              ? {
+                  // SAFETY: the isTelegramMediaKind guard on this branch already proved membership.
+                  kind: entry.mediaType as TelegramMediaKind,
+                }
               : { contentType: entry.mediaType },
         ])
       : undefined,
@@ -221,6 +224,7 @@ const TELEGRAM_MEDIA_KINDS = new Set<TelegramMediaKind>([
 ]);
 
 function isTelegramMediaKind(value: string): value is TelegramMediaKind {
+  // SAFETY: Set.has only reads; a non-member string returns false, which is exactly this predicate's contract.
   return TELEGRAM_MEDIA_KINDS.has(value as TelegramMediaKind);
 }
 

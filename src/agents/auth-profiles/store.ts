@@ -246,6 +246,7 @@ const testing = {
   },
 };
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.authProfileStoreTestApi")] =
     testing;
 }
@@ -925,6 +926,7 @@ export function createAuthProfileStoreRuntime(
     profileId?: string;
     sharedStoreWrite?: boolean;
     stateDir?: string;
+    agentLocalOnly?: boolean;
     saveOptions?: SaveAuthProfileStoreOptions;
     updater: (store: AuthProfileStore, owner?: PreparedAuthProfileStoreOwner) => boolean;
   }): Promise<AuthProfileStore | null> {
@@ -941,15 +943,23 @@ export function createAuthProfileStoreRuntime(
       return await runAuthProfileWriteTransactionAsync(
         agentDir,
         (database, owner) => {
-          const loadedStore = loadAuthProfileStoreForAgent(
-            agentDir,
-            {
-              database,
-              readOnly: true,
-              syncExternalCli: false,
-            },
-            owner.env,
-          );
+          // Locked writers must reload from disk, not from any runtime snapshot.
+          // Otherwise a live gateway can overwrite fresher CLI/config-auth writes
+          // with stale in-memory auth state during usage/cooldown updates.
+          //
+          // Subagent writes must reload only the agent-local store; otherwise a
+          // merged runtime view can leak main-agent credentials into subagent
+          // scope. Test raw params.agentDir: the resolved default is never
+          // undefined, but only an explicit caller dir means subagent scope.
+          const useLocalOnly = params.agentLocalOnly || params.agentDir !== undefined;
+          const loadOptions = {
+            database,
+            readOnly: true,
+            syncExternalCli: false,
+          };
+          const loadedStore = useLocalOnly
+            ? loadAgentLocalAuthProfileStore(agentDir, loadOptions, owner.env)
+            : loadAuthProfileStoreForAgent(agentDir, loadOptions, owner.env);
           const shouldSave = params.updater(loadedStore, owner);
           if (shouldSave) {
             const publication = saveAuthProfileStoreInTransaction(
@@ -1099,6 +1109,21 @@ export function createAuthProfileStoreRuntime(
       options: effectiveOptions,
     });
     return applyScopedAuthReadThrough(markRuntimePersistedProfiles(synced));
+  }
+
+  /**
+   * Load auth-profile store for a specific agent directory without inheriting
+   * from the main agent. Used by `models auth clean` to inspect per-agent
+   * credentials independently. Inheritance lives in
+   * loadAuthProfileStoreForRuntime, so the agent loader is already local; the
+   * skipInheritance flag documents that intent at the call site.
+   */
+  function loadAgentLocalAuthProfileStore(
+    agentDir?: string,
+    options?: LoadAuthProfileStoreOptions,
+    env?: NodeJS.ProcessEnv,
+  ): AuthProfileStore {
+    return loadAuthProfileStoreForAgent(agentDir, { ...options, skipInheritance: true }, env);
   }
 
   const captureScope: Parameters<
@@ -1633,6 +1658,7 @@ export function createAuthProfileStoreRuntime(
     createAuthProfileStoreReadScope,
     updateAuthProfileStoreWithLock,
     loadAuthProfileStore,
+    loadAgentLocalAuthProfileStore,
     loadAuthProfileStoreForRuntime,
     loadAuthProfileStoreForRuntimeAsync,
     loadAuthProfileStoreForSecretsRuntime,

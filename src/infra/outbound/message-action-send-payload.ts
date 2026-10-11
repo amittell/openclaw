@@ -1,9 +1,11 @@
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import { readToolStringParam } from "../../agents/tools/common.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type {
   MessageActionNormalization,
   MessageActionResult,
 } from "./message-action-contracts.js";
+import { hasExplicitSendMediaSource } from "./message-action-params.js";
 
 export type SendPayloadParts = {
   message: string;
@@ -76,4 +78,24 @@ export function withSendNormalization(
   normalization?: MessageActionNormalization,
 ): MessageActionResult {
   return normalization && result.kind === "send" ? { ...result, normalization } : result;
+}
+
+/**
+ * Reports whether send args carry anything the send path delivers as media: an
+ * explicit source, `mediaUrls`, a structured attachment, a base64 `buffer`, or a
+ * synthesized `voiceText` note.
+ *
+ * The SOURCE KEYS cannot drift from the send path: both sides read them through
+ * `buildActionMediaSourceParamKeys`. `buffer` and `voiceText` are NOT in that list
+ * and are named here by hand, so a future non-key media source added to the send
+ * path would again be invisible to the duplicate_send guard - which is exactly how
+ * that defect arose. The rows in message-tool.test.ts pin today's set; they cannot
+ * catch tomorrow's.
+ */
+export function hasSendMediaPayload(args: Record<string, unknown>): boolean {
+  return (
+    Boolean(readToolStringParam(args, "buffer", { trim: false })) ||
+    Boolean(readToolStringParam(args, "voiceText")) ||
+    hasExplicitSendMediaSource(args)
+  );
 }

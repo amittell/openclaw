@@ -46,9 +46,14 @@ export function resolveLegacyStateMigrationOwner(params: {
         }
       : installedTarget;
   const migrationAgentId = migrationTarget?.owner;
+  // An explicit fixed-store owner resolves through the compatibility owner even when the
+  // store path is per-agent; checked on the same config the resolver reads.
+  const hasExplicitSessionStoreOwner = Boolean(
+    locatorConfig.agents?.defaults?.sessionStore?.agentId?.trim(),
+  );
   const sessionMigrationAgentId =
     migrationAgentId ??
-    (!isPerAgentSessionStoreConfig(locatorConfig.session?.store)
+    (hasExplicitSessionStoreOwner || !isPerAgentSessionStoreConfig(locatorConfig.session?.store)
       ? resolveSessionStoreCompatibilityAgentId(locatorConfig)
       : undefined);
   return { installAgentDir, migrationTarget, migrationAgentId, sessionMigrationAgentId };

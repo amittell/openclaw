@@ -11,8 +11,14 @@ import {
   buildConversationToolPolicyPipelineSteps,
   resolveConversationToolPolicies,
 } from "./conversation-tool-policy-pipeline.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import type { ScheduledToolPolicyContext } from "./scheduled-tool-policy.js";
-import { applyToolPolicyPipeline, type ToolPolicyFilterEvent } from "./tool-policy-pipeline.js";
+import { createToolPolicyMatcher } from "./tool-policy-match.js";
+import {
+  applyToolPolicyPipeline,
+  type ToolPolicyFilterEvent,
+  type ToolPolicyPipelineStep,
+} from "./tool-policy-pipeline.js";
 import type { DeclaredToolAllowlistContext, ToolPolicyLike } from "./tool-policy.js";
 
 /** Admit each new invocation against published policy without changing an accepted invocation. */
@@ -59,9 +65,16 @@ export function createEmbeddedMessageInvocationPolicy(params: {
     additionalProfileAllow: params.runtimeProfileAlsoAllow,
     additionalPolicyAllow: params.toolSearchControlAllowlist,
   });
+  const ownerOnlyStep = (unavailableCoreToolReason?: string): ToolPolicyPipelineStep => ({
+    policy: params.ownerOnlyCoreToolPolicy,
+    source: { kind: "session" },
+    label: "gateway sender owner-only tools",
+    unavailableCoreToolReason,
+  });
   const filter = (
     currentProfile = params.capabilityProfile,
     onFilter?: (event: ToolPolicyFilterEvent) => void,
+    options: { ownerOnlyStep?: boolean } = {},
   ): AnyAgentTool[] => {
     const currentPolicies =
       currentProfile === params.capabilityProfile
@@ -88,14 +101,8 @@ export function createEmbeddedMessageInvocationPolicy(params: {
           runtimeToolPolicy: policies.runtimeToolPolicy,
           inheritedToolPolicy: policies.inheritedToolPolicy,
         },
-        additionalStepsAfterSandbox: [
-          {
-            policy: params.ownerOnlyCoreToolPolicy,
-            source: { kind: "session" },
-            label: "gateway sender owner-only tools",
-            unavailableCoreToolReason,
-          },
-        ],
+        additionalStepsAfterSandbox:
+          options.ownerOnlyStep === false ? [] : [ownerOnlyStep(unavailableCoreToolReason)],
         includeRuntimeToolPolicy: true,
         unavailableCoreToolReason,
       }),
@@ -103,8 +110,45 @@ export function createEmbeddedMessageInvocationPolicy(params: {
       onFilter,
     });
   };
+  /**
+   * The turn's authorized tools, plus the owner turn's shape when they differ: the
+   * same pass without the owner-only step, which then runs last over that shape (every
+   * step is a per-name predicate, so step order does not change which tools survive).
+   * Owner-only stubs (such as a plugin's `ownerOnly` tool on a non-owner turn) belong
+   * to the shape only, so nothing granted from `authorized` can carry one.
+   */
+  const filterTurn = (
+    onFilter?: (event: ToolPolicyFilterEvent) => void,
+  ): {
+    authorized: AnyAgentTool[];
+    ownerShape?: { tools: AnyAgentTool[]; isOwnerOnly: (toolName: string) => boolean };
+  } => {
+    const ownerOnlyPolicy = params.ownerOnlyCoreToolPolicy;
+    const ownerShaped = filter(params.capabilityProfile, onFilter, { ownerOnlyStep: false });
+    const { declaredToolAllowlist, unavailableCoreToolReason } = params.catalog();
+    const authorized = (
+      ownerOnlyPolicy
+        ? applyToolPolicyPipeline({
+            tools: ownerShaped,
+            toolMeta: (tool) => getPluginToolMeta(tool),
+            warn: logWarn,
+            steps: [ownerOnlyStep(unavailableCoreToolReason)],
+            declaredToolAllowlist,
+            onFilter,
+          })
+        : ownerShaped
+    ).filter((tool) => !isOwnerOnlyToolStub(tool));
+    if (authorized.length === ownerShaped.length) {
+      return { authorized };
+    }
+    const allowedForSender = createToolPolicyMatcher(ownerOnlyPolicy);
+    return {
+      authorized,
+      ownerShape: { tools: ownerShaped, isOwnerOnly: (toolName) => !allowedForSender(toolName) },
+    };
+  };
   return {
-    filter,
+    filterTurn,
     admit: createScheduledMessageInvocationAdmission({
       config: params.config,
       isAllowed: (config) => {

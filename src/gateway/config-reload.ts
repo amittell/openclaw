@@ -54,6 +54,7 @@ import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
+import { publishReloadObservation, trackReloadObservation } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   isNoopGatewayReloadPlan,
@@ -146,6 +147,8 @@ export function startGatewayConfigReloader(
     ConfigSourceObservation,
     Promise<[ConfigFileSnapshot, PluginInstallRecords]>
   >();
+  // The transaction begun at this revision proved the observation reads its own source.
+  const observationAcceptedFromRevision = new WeakMap<ConfigSourceObservation, number>();
   let pendingInProcessConfig: InProcessConfigCandidate | null = null;
   let activeInProcessConfig: InProcessConfigCandidate | null = null;
   let retryWriteCandidate: InProcessConfigCandidate | null = null;
@@ -375,6 +378,7 @@ export function startGatewayConfigReloader(
         }
         assertOwned();
         transactionEpoch = observed.revision;
+        observationAcceptedFromRevision.set(observed, initialEpoch);
       }
       assertOwned();
       assertReloadPublicationCurrent(isCurrent(), false);
@@ -733,6 +737,18 @@ export function startGatewayConfigReloader(
       );
     }
     if (plan.restartGateway) {
+      // Read nextSettings, not the stale `settings` binding: the incoming
+      // config owns this decision (same source as the mode==="off" check
+      // above), otherwise a config that switches modes logs nothing.
+      // "hybrid" is the hot-capable mode (legacy "hot" resolves to it), so a
+      // restart-required plan here is the case operators need explained.
+      if (nextSettings.mode === "hybrid") {
+        opts.log.warn(
+          `config reload requires gateway restart; hybrid mode scheduling restart (${plan.restartReasons.join(
+            ", ",
+          )})`,
+        );
+      }
       await opts.onConfigChange?.(plan, nextConfig);
       await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
@@ -876,17 +892,23 @@ export function startGatewayConfigReloader(
     pending = false;
     clearReloadTimer();
     let attemptedCandidate: InProcessConfigCandidate | null = null;
+    const observation = trackReloadObservation(() => ({
+      epoch: source.observation.revision,
+      acceptedFromEpoch: observationAcceptedFromRevision.get(source.observation),
+    }));
     try {
       assertLeaseOwned();
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
         attemptedCandidate = pendingWrite;
+        observation.observe(pendingWrite.epoch, null);
         pendingInProcessConfig = null;
         activeInProcessConfig = pendingWrite;
         missingConfigRetries = 0;
         try {
           await runAcceptedTransaction(async () => {
             const snapshot = pendingWrite.snapshot;
+            observation.observeSnapshot(pendingWrite.epoch, snapshot);
             assertLeaseOwned();
             assertConfigReloadWriteSnapshot(snapshot);
             if (
@@ -924,9 +946,11 @@ export function startGatewayConfigReloader(
         return;
       }
       const transactionEpoch = source.observation.revision;
+      observation.observe(transactionEpoch, null);
       const intentCandidate = retryWriteCandidate;
       attemptedCandidate = intentCandidate;
       const snapshot = await source.readSnapshot();
+      observation.observeSnapshot(transactionEpoch, snapshot);
       assertLeaseOwned();
       if (source.observation.revision !== transactionEpoch) {
         throw new GatewayConfigReloadSupersededError();
@@ -1054,6 +1078,7 @@ export function startGatewayConfigReloader(
         opts.log.info("config reload deferred: retry the failed plugin reload with --wait");
       }
     } finally {
+      observation.publishIfCurrent();
       running = false;
     }
   };
@@ -1396,6 +1421,8 @@ export function startGatewayConfigReloader(
       }
       if (opts.initialSnapshotRawHash !== null && opts.initialSnapshotValid) {
         await updateAcceptedSnapshot(opts.initialSnapshotRawHash, opts.initialAuthoredConfig);
+        // A write or watcher event during preparation publishes through its own transaction.
+        publishReloadObservation(initialSourceConfig);
       }
     }
     currentPluginInstallRecords = initialPluginInstallRecords;

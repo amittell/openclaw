@@ -301,3 +301,43 @@ describe("local TLS probe cancellation", () => {
     },
   );
 });
+
+// The strict marker is what lets supervised-lock recovery tell a draining gateway
+// (503) from a zombie still holding the port (200). An earlier port applied it to a
+// helper production did not call, which left the production probe inert while every
+// test still passed. This pins the configured probe production wires, with and
+// without the marker (the legacy marker-free contract).
+test("carries the strict marker on the configured probe and omits it by default", async () => {
+  const paths: string[] = [];
+  const server = createHttpServer((request, response) => {
+    paths.push(request.url ?? "");
+    response.statusCode = 200;
+    response.end(JSON.stringify({ ok: true }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address() as AddressInfo;
+
+  try {
+    const probe = createConfiguredGatewayLocalProbe({});
+    await probe.requestHttp({
+      host: "127.0.0.1",
+      pathname: "/healthz",
+      port,
+      timeoutMs: 1_000,
+      strictLiveProbe: true,
+    });
+    await probe.requestHttp({
+      host: "127.0.0.1",
+      pathname: "/healthz",
+      port,
+      timeoutMs: 1_000,
+    });
+
+    expect(paths).toEqual(["/healthz?strict=1", "/healthz"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});

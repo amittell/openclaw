@@ -35,7 +35,6 @@ vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => runtime.cfg }));
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => runtime.cfg }));
 vi.mock("./auth.js", () => ({ authorizeHttpGatewayConnect: runtime.authorize }));
 vi.mock("../agents/openclaw-tools.js", () => ({ createOpenClawTools: runtime.createTools }));
-vi.mock("../agents/agent-tools.js", () => ({ resolveToolLoopDetectionConfig: () => ({}) }));
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: runtime.beforeHook,
 }));

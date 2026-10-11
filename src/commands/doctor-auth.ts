@@ -221,10 +221,11 @@ function listAuthProfileHealthTargets(cfg: OpenClawConfig): AuthProfileHealthTar
 function formatOAuthRefreshFailureReason(reason: OAuthRefreshFailureReason | null): string {
   switch (reason) {
     case "refresh_token_reused":
-    case "expired":
     case "invalid_grant":
     case "revoked":
       return reason;
+    case "refresh_token_expired":
+      return "refresh token expired";
     case "sign_in_again":
       return "sign in again";
     case "invalid_refresh_token":

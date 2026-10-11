@@ -23,6 +23,7 @@ export type StartAgentRunExecutionParams = {
   resolvedSessionKey?: string;
   requestedSessionKey?: string;
   resolvedSessionId?: string;
+  storePath?: string;
   agentId?: string;
   activeSessionAgentId: string;
   delivery: AgentDeliveryPhaseResult;

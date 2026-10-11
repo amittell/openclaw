@@ -56,6 +56,7 @@ describe("provider overflow messages", () => {
   });
 
   it.each([
+    "Context window exceeded: estimated input 35137 leaves only 0 output tokens within the 32768-token context.",
     "Error: 400 Input length (265330) exceeds model's maximum context length (262144).",
     "Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131,040 tokens.",
     "Input length 131393 exceeds maximum allowed input length of 131040 token",
@@ -64,6 +65,8 @@ describe("provider overflow messages", () => {
     "code 1210: tokens in request more than max tokens allowed",
     "code 1261: Prompt exceeds max length",
     "500 Context size has been exceeded.",
+    "422 Input validation error: `inputs` tokens + `max_new_tokens` must be <= 32768. Given: 28897 `inputs` tokens and 3872 `max_new_tokens`",
+    "422 Input validation error: `inputs` must have less than 32768 tokens. Given: 40000",
   ])("detects %s", (text) => {
     expect(isContextOverflow(errorMessage(text), 262_144)).toBe(true);
   });

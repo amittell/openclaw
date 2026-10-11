@@ -13,8 +13,11 @@ import {
   projectForwardedMessages,
 } from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
+import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
+
+export { shouldReadAnchoredWindow } from "./chat-history-page-kernel.js";
 
 export async function readChatHistoryPage(
   input: ChatHistoryPageParams,
@@ -67,6 +70,55 @@ export async function readChatHistoryPage(
     },
     signal,
   );
+}
+
+/**
+ * Reads one page of the span a compaction summary shadowed; undefined when the id is not a
+ * compaction in this session. Always local: the span reader is host-side, not one of the
+ * worker's admitted readers, so this never takes readChatHistoryPage's worker path. It
+ * never reaches the CLI-import readers either, so an import binding cannot answer a span
+ * request with the live tail.
+ */
+export async function readChatHistoryCompactionSpanPage(
+  params: ChatHistoryPageParams & { compactionId: string },
+  signal?: AbortSignal,
+): Promise<ChatHistoryPage | undefined> {
+  signal?.throwIfAborted();
+  if (!params.sessionId || !params.storePath) {
+    const page = await readChatHistoryPageKernel(params, {
+      readers: sessionTranscriptReaders,
+      resolveCurrentUserProfileDisplay,
+      resolveCronJobName: () => undefined,
+    });
+    return { ...page, messages: await refreshForwardedLabels(page.messages) };
+  }
+  const subagentCoordination =
+    !params.entry?.incognito && !isIncognitoSessionKey(params.canonicalKey)
+      ? createSessionHistorySubagentProjection({
+          agentId: params.sessionAgentId,
+          sessionId: params.sessionId,
+          sessionKey: params.canonicalKey,
+          storePath: params.storePath,
+          sessionEntry: params.entry,
+        })
+      : undefined;
+  let found = false;
+  const page = await readChatHistoryPageKernel(params, {
+    readers: { ...sessionTranscriptReaders, subagentCoordination },
+    resolveCurrentUserProfileDisplay,
+    resolveCronJobName: () => undefined,
+    readCompactionShadowPage: async (readScope, opts) => {
+      const span = await sessionTranscriptReaders.readSessionMessagesShadowedByCompactionAsync(
+        readScope,
+        opts,
+      );
+      found = span !== undefined;
+      return span;
+    },
+  });
+  subagentCoordination?.assertCurrent?.();
+  signal?.throwIfAborted();
+  return found ? { ...page, messages: await refreshForwardedLabels(page.messages) } : undefined;
 }
 
 async function refreshForwardedLabels(messages: unknown[]): Promise<unknown[]> {

@@ -17,6 +17,7 @@ import {
 import { resolveOpenClawReferencePaths } from "../../docs-path.js";
 import { prepareAgentMemoryPrompt } from "../../memory-prompt-prepare.js";
 import { buildModelToolsUnavailablePrompt } from "../../model-tool-support.js";
+import { buildOwnerOnlyToolsUnavailablePrompt } from "../../owner-only-tool-stubs.js";
 import {
   buildProjectMemoryWriteInstruction,
   prepareProjectMemoryBootstrap,
@@ -45,6 +46,8 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   setup: EmbeddedAttemptSetup;
   bootstrap: PreparedBootstrap;
   capabilityToolNames: Set<string>;
+  /** Owner-only tools this turn declares as refusing stubs. */
+  ownerOnlyUnavailableToolNames?: readonly string[];
   requireExplicitMessageTarget?: boolean;
   effectiveTools: PromptTools;
   isRawModelRun: boolean;
@@ -256,6 +259,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     attempt.extraSystemPrompt,
     projectMemoryWriteInstruction,
     buildModelToolsUnavailablePrompt(params.modelToolsEnabled),
+    buildOwnerOnlyToolsUnavailablePrompt(params.ownerOnlyUnavailableToolNames),
   ]);
 
   const promptInputs: Parameters<typeof buildAttemptSystemPrompt>[0] = {
