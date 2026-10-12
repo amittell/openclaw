@@ -341,6 +341,11 @@ export async function handlePreviewFinalizedResult(
   if (result.kind !== "preview-finalized" && result.kind !== "preview-finalized-partial") {
     return;
   }
+  // Both kinds carry a preview Telegram already shows. It never passes through
+  // deliverReplies, so this is the info-level counterpart of its delivery line.
+  turn.runtime.log?.(
+    `telegram preview delivery ok chat=${turn.context.chatId} message=${result.delivery.messageId}`,
+  );
   if (!turn.isSuperseded()) {
     // A finalized preview is the durable Telegram message. Emit the composite
     // terminal here so plugin and internal observers see that one provider result.

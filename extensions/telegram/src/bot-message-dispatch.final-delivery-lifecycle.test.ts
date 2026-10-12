@@ -109,6 +109,21 @@ const progressConfig = {
   streaming: { mode: "progress", progress: { toolProgress: true } },
 } as const;
 
+function createLoggedRuntime() {
+  const log = vi.fn<(...args: unknown[]) => void>();
+  return {
+    runtime: {
+      log,
+      error: vi.fn(),
+      exit: () => {
+        throw new Error("exit");
+      },
+    },
+    deliveryLines: () =>
+      log.mock.calls.map((args) => args.join(" ")).filter((line) => line.includes("delivery ok")),
+  };
+}
+
 describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -248,8 +263,44 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
     },
   );
 
+  it("logs a streamed answer finalized in place once at info level", async () => {
+    const { bot, messages, sendMessage, editMessageText } = await setupObservedProgressTransport();
+    const { runtime, deliveryLines } = createLoggedRuntime();
+    const preview = "Answer in progress while the model keeps writing";
+    const final = "Complete answer edited into the preview";
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async (params) => {
+      await params.replyOptions?.onAssistantMessageStart?.();
+      await params.replyOptions?.onPartialReply?.({ text: preview });
+      await createTelegramDraftStream.mock.results[0]?.value?.flush();
+      expect([...messages.values()]).toEqual([preview]);
+      return dispatchThroughSharedOwner({
+        ...params,
+        replyResolver: async () => ({ text: final }),
+      });
+    });
+
+    const result = await dispatchWithContext({
+      bot,
+      context: progressContext(),
+      streamMode: "partial",
+      telegramCfg: { streaming: { mode: "partial" } },
+      runtime,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(runtime.error).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: "completed" });
+    expect([...messages.values()]).toEqual([final]);
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(editMessageText).toHaveBeenCalled();
+    expect(deliveryLines()).toEqual([
+      `telegram preview delivery ok chat=123 message=${[...messages.keys()][0]}`,
+    ]);
+  });
+
   it("keeps a confirmed streamed answer when prompt-context recording fails", async () => {
     const { bot, messages, sendMessage } = await setupObservedProgressTransport();
+    const { runtime, deliveryLines } = createLoggedRuntime();
     const status = createStatusReactionController();
     const preview = "Answer in progress while checking the completed result";
     const final = "Complete answer already accepted by Telegram";
@@ -280,6 +331,7 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       },
       retryDispatchErrors: true,
       suppressFailureFallback: true,
+      runtime,
     });
     await vi.advanceTimersByTimeAsync(5_000);
 
@@ -289,10 +341,14 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
     expect(recordContext).toHaveBeenCalledWith(
       expect.objectContaining({ text: final, messageId: [...messages.keys()][0] }),
     );
+    expect(deliveryLines()).toEqual([
+      `telegram preview delivery ok chat=123 message=${[...messages.keys()][0]}`,
+    ]);
   });
 
   it("retires a repositioned preview after a rejected replacement once the final lands", async () => {
     const { bot, messages, sendMessage } = await setupObservedProgressTransport();
+    const { runtime, deliveryLines } = createLoggedRuntime();
     const preTool = "Let me check the workspace first";
     const final = "The workspace has three projects";
     dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async (params) => {
@@ -315,6 +371,7 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       context: progressContext(),
       streamMode: "partial",
       telegramCfg: { streaming: { mode: "partial" } },
+      runtime,
     });
     await vi.advanceTimersByTimeAsync(10_000);
 
@@ -325,6 +382,11 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
     ]);
     expect(result).toEqual({ kind: "completed" });
     expect([...messages.values()]).toEqual([final]);
+    // With no durable outbound handler in this harness, the final reaches the reply
+    // deliverer as a new message and logs its own line, not the preview line.
+    expect(deliveryLines()).toEqual([
+      `telegram text delivery ok chat=123 message=${[...messages.keys()][0]}`,
+    ]);
   });
 
   it("does not retry or erase an accepted final after late cancellation", async () => {
@@ -377,6 +439,7 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
 
   it("uses the second assistant preview as the current final when delivery is rejected", async () => {
     const { bot, messages, sendMessage, editMessageText } = await setupObservedProgressTransport();
+    const { runtime, deliveryLines } = createLoggedRuntime();
     const status = createStatusReactionController();
     const first = "First accepted answer";
     const partial = "Second answer in progress while inspecting the result";
@@ -402,11 +465,16 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       telegramCfg: { streaming: { mode: "partial" } },
       retryDispatchErrors: true,
       suppressFailureFallback: true,
+      runtime,
     });
     await vi.advanceTimersByTimeAsync(5_000);
 
     const visible = [...messages.entries()];
     expect(visible[0]?.[1]).toBe(first);
+    // Only the accepted first answer is logged; the rejected second final is not.
+    expect(deliveryLines()).toEqual([
+      `telegram preview delivery ok chat=123 message=${visible[0]?.[0]}`,
+    ]);
     expect(sendMessage.mock.calls.filter(([, text]) => text === first)).toHaveLength(1);
     expect(visible.some(([, text]) => text === second)).toBe(false);
     expect(
