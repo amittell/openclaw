@@ -383,6 +383,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/telegram/src/bot-native-command-dispatch.delivery.test.ts",
   "extensions/telegram/src/bot-native-command-dispatch.miniapp.test.ts",
   "extensions/telegram/src/bot-native-command-dispatch.routing.test.ts",
+  "extensions/telegram/src/bot.create-telegram-bot.bot-pair-loop.test.ts",
   "extensions/telegram/src/bot.create-telegram-bot.native-pipeline.test.ts",
   "extensions/telegram/src/bot.create-telegram-bot.channel-post-media.test.ts",
   "extensions/telegram/src/bot.create-telegram-bot.disabled-bindings.test.ts",

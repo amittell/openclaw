@@ -1,10 +1,24 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
+import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { loadTranscriptEvents, upsertSessionEntryCore } from "./session-accessor.js";
-import { listSessionPendingInputs } from "./session-accessor.pending-inputs.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import {
+  appendTranscriptMessageSync,
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "./session-accessor.js";
+import {
+  listSessionPendingInputs,
+  stageSessionPendingInput,
+  type SessionPendingInputReceipt,
+} from "./session-accessor.pending-inputs.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
 // Split out of session-accessor.pending-inputs.test.ts rather than appended to it:
@@ -90,5 +104,81 @@ describe("committed source-turn re-drive", () => {
     expect(await loadTranscriptEvents(scope())).toEqual(committedTranscript);
     expect(await listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
     reDriven.finishPendingInput?.("interrupted");
+  });
+});
+
+// The channel-bound terminal arm above must not swallow a private-completion retry:
+// stageSessionPendingInput checks `trackCompletion` before the key space, because that
+// retry's completion is owned by the input-completion receipt, not by this seam. The
+// fixture puts a trackCompletion stage under a channel-user key to isolate that order.
+describe("trackCompletion retry of a committed channel-bound input", () => {
+  const fixture = useTempSessionsFixture("openclaw-pending-inputs-redrive-private-");
+  const scope = () => ({
+    agentId: "main",
+    sessionKey: "agent:main:pending-inputs-redrive-private",
+    sessionId: "pending-session-redrive-private",
+    storePath: fixture.storePath(),
+  });
+  const runId = "channel-user:v1:private";
+  const privateMessage: PersistedUserTurnMessage = {
+    role: "user",
+    content: "private child result",
+    timestamp: 1,
+    idempotencyKey: `${runId}:user`,
+    display: false,
+    provenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+  };
+  const receipts: SessionPendingInputReceipt[] = [];
+  const stage = async (trackCompletion: boolean, stageRunId = runId) => {
+    const receipt = expectDefined(
+      await stageSessionPendingInput(scope(), {
+        runId: stageRunId,
+        trackCompletion,
+        assertCurrent: () => {},
+        message: privateMessage,
+      }),
+      "Expected staged input",
+    );
+    receipts.push(receipt);
+    return receipt;
+  };
+  /** The owning run commits the input to the transcript, then its process restarts. */
+  const commit = async (receipt: SessionPendingInputReceipt) => {
+    expect(
+      receipt.run(() => appendTranscriptMessageSync(scope(), { message: receipt.message })),
+    ).toMatchObject({ ok: true, value: { appended: true } });
+    receipt.finish("interrupted");
+    rotateAgentEventLifecycleGeneration();
+    await receipt.settled?.();
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+  };
+
+  beforeEach(async () => {
+    await upsertSessionEntryCore(scope(), { sessionId: scope().sessionId, updatedAt: 1 });
+  });
+  afterEach(async () => {
+    const retained = receipts.splice(0);
+    for (const receipt of retained) {
+      receipt.finish("interrupted");
+    }
+    await Promise.allSettled(retained.map(async (receipt) => receipt.settled?.()));
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+  });
+
+  it("admits the retry as queued instead of consuming it under the channel-bound key", async () => {
+    await commit(await stage(true));
+    const retry = await stage(true);
+    expect(retry.state).toBe("queued");
+    expect(retry.completion).toBeUndefined();
+    expect(retry.run(() => "resumed")).toBe("resumed");
+    await retry.completeAsync!(buildAgentRunTerminalOutcome({ status: "ok" }));
+  });
+
+  it("consumes the same committed channel-bound input when it is not a trackCompletion retry", async () => {
+    await commit(await stage(false));
+    const reDriven = await stage(false, "re-driven-run");
+    expect(reDriven.state).toBe("consumed");
   });
 });

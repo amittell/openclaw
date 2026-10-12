@@ -1,12 +1,17 @@
-// Tests the /temperature (alias /temp) session directive: parsing and handler behavior.
+// Tests the /temperature (alias /temp) session directive: parsing, directive-only
+// detection, clearing, and handler behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isDirectiveOnly } from "./directive-handling.directive-only.js";
 import { handleDirectiveOnly } from "./directive-handling.impl.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
-import { parseInlineSessionDirectives } from "./directive-handling.parse.js";
+import { hasSessionDirectives, parseInlineSessionDirectives } from "./directive-handling.parse.js";
 import { extractTemperatureDirective } from "./directives.js";
+import { resolveReplyDirectiveRouting } from "./get-reply-directives-routing.js";
+import { clearInlineDirectives } from "./get-reply-directives-utils.js";
+import { buildTestCtx } from "./test-ctx.js";
 
 vi.mock("../../agents/sticky-model-selection.js", () => ({
   persistStickyModelSelectionBestEffort: vi.fn(),
@@ -65,6 +70,26 @@ function runHandleCommand(command: string, overrides: Partial<HandleDirectiveOnl
   return handleDirectiveOnly(
     createHandleParams({ ...overrides, directives: parseInlineSessionDirectives(command) }),
   );
+}
+
+const NATIVE_TEMPERATURE = { command: { kind: "native", name: "temperature" } } as const;
+
+function isTemperatureDirectiveOnly(directives: ReturnType<typeof parseInlineSessionDirectives>) {
+  return isDirectiveOnly({
+    directives,
+    cleanedBody: directives.cleaned,
+    ctx: buildTestCtx(),
+    cfg: baseConfig(),
+    isGroup: false,
+  });
+}
+
+function expectNoTemperatureState(directives: ReturnType<typeof parseInlineSessionDirectives>) {
+  expect(directives.hasTemperatureDirective).toBe(false);
+  expect(directives.temperature).toBeUndefined();
+  expect(directives.rawTemperature).toBeUndefined();
+  expect(directives.clearTemperature).toBe(false);
+  expect(hasSessionDirectives(directives)).toBe(false);
 }
 
 afterEach(() => {
@@ -169,5 +194,98 @@ describe("handleDirectiveOnly temperature behavior", () => {
 
     expect(result?.text).toContain("Temperature reset to default.");
     expect(sessionEntry.temperature).toBeUndefined();
+  });
+});
+
+describe("/temperature directive-only detection", () => {
+  it.each(["/temperature 0.3", "/temp 1.1", "/temperature", "/temperature default"])(
+    "answers a message that is only %s without running the model",
+    (body) => {
+      const directives = parseInlineSessionDirectives(body);
+      expect(directives.hasTemperatureDirective).toBe(true);
+      expect(hasSessionDirectives(directives)).toBe(true);
+      expect(isTemperatureDirectiveOnly(directives)).toBe(true);
+    },
+  );
+
+  it("keeps the request after /temperature as the agent body", () => {
+    const directives = parseInlineSessionDirectives("/temperature 0.3 write a haiku");
+    expect(directives.temperature).toBe(0.3);
+    expect(directives.cleaned).toBe("write a haiku");
+    expect(isTemperatureDirectiveOnly(directives)).toBe(false);
+  });
+});
+
+describe("native /temperature command parsing", () => {
+  it("rejects a non-numeric native argument instead of passing it to the model", async () => {
+    const directives = parseInlineSessionDirectives("/temperature warm please", NATIVE_TEMPERATURE);
+    expect(directives.hasTemperatureDirective).toBe(true);
+    expect(directives.rawTemperature).toBe("warm");
+    expect(directives.temperature).toBeUndefined();
+    expect(directives.command?.name).toBe("temperature");
+    expect(isTemperatureDirectiveOnly(directives)).toBe(true);
+
+    const sessionEntry = createSessionEntry({ temperature: 0.9 });
+    const result = await handleDirectiveOnly(
+      createHandleParams({
+        sessionEntry,
+        directives: parseInlineSessionDirectives("/temperature warm", NATIVE_TEMPERATURE),
+      }),
+    );
+    expect(result?.text).toContain('Unrecognized temperature "warm".');
+    expect(sessionEntry.temperature).toBe(0.9);
+  });
+
+  it("leaves a non-numeric text-form argument in the message as prose", () => {
+    const directives = parseInlineSessionDirectives("/temperature warm please");
+    expect(directives.hasTemperatureDirective).toBe(true);
+    expect(directives.rawTemperature).toBeUndefined();
+    expect(directives.cleaned).toBe("warm please");
+    expect(directives.command).toBeUndefined();
+  });
+
+  it("applies a numeric native /temperature to the session", async () => {
+    const sessionEntry = createSessionEntry();
+    const result = await handleDirectiveOnly(
+      createHandleParams({
+        sessionEntry,
+        directives: parseInlineSessionDirectives("/temperature 0.4", NATIVE_TEMPERATURE),
+      }),
+    );
+    expect(result?.text).toContain("Temperature set to 0.4.");
+    expect(sessionEntry.temperature).toBe(0.4);
+  });
+});
+
+describe("cleared directives carry no /temperature state", () => {
+  it("drops /temperature for a sender who cannot use text directives", () => {
+    const ctx = buildTestCtx({
+      CommandBody: "/temperature default",
+      RawBody: "/temperature default",
+    });
+    expect(ctx.commandText).toBe("/temperature default");
+    const result = resolveReplyDirectiveRouting({
+      commandText: ctx.commandText,
+      agentText: ctx.agentText,
+      modelAliases: [],
+      canInterpretTextDirectives: false,
+      isAuthorizedSender: false,
+      isGroup: false,
+      wasMentioned: false,
+      ctx,
+      cfg: baseConfig(),
+      agentId: "main",
+      resetTriggered: false,
+    });
+    expectNoTemperatureState(result.directives);
+  });
+
+  it("returns a fresh cleared object after a temperature parse", () => {
+    parseInlineSessionDirectives("/temperature 1.9");
+    const first = clearInlineDirectives("a");
+    (first as { temperature?: number }).temperature = 1.7;
+    const second = clearInlineDirectives("b");
+    expect(second.cleaned).toBe("b");
+    expectNoTemperatureState(second);
   });
 });
