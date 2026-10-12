@@ -1,9 +1,15 @@
+import type { Message } from "grammy/types";
 import {
   createAcceptedChannelDeliveryResult,
   createChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { dispatchReplyWithBufferedBlockDispatcher as dispatchThroughSharedOwner } from "openclaw/plugin-sdk/reply-dispatch-runtime";
+import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { defaultTelegramBotDeps } from "./bot-deps.js";
+import { createTelegramMessagePipeline } from "./bot-handlers.message-pipeline.js";
+import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import {
   createBot,
   createContext,
@@ -20,7 +26,12 @@ import {
   telegramDepsForTest,
 } from "./bot-message-dispatch.test-harness.js";
 import type { DispatchReplyWithBufferedBlockDispatcherArgs } from "./bot-message-dispatch.test-harness.js";
+import {
+  runWithTelegramUpdateProcessingFrame,
+  type TelegramMessageProcessingResult,
+} from "./bot-processing-outcome.js";
 import type * as DeliveryRepliesModule from "./bot/delivery.replies.js";
+import type { TelegramContext } from "./bot/types.js";
 import type * as DraftStreamModule from "./draft-stream.js";
 import type * as SendEditModule from "./send-edit.js";
 
@@ -526,6 +537,121 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
         expect(status.setError).toHaveBeenCalledOnce();
         expect(status.setDone).not.toHaveBeenCalled();
       }
+    },
+  );
+});
+
+function replayedMessage(messageId: number): Message {
+  return {
+    message_id: messageId,
+    date: 1736380800,
+    chat: { id: 4242, type: "private" },
+    from: { id: 77, is_bot: false, first_name: "Operator" },
+    text: "does this answer twice?",
+  } as Message;
+}
+
+/**
+ * Runs one spooled attempt through the real message pipeline and its dispatch
+ * dedupe guard. The attempt delivers a real final through dispatch, then the
+ * reply queue abandons it before adoption, and the spool redelivers the update.
+ */
+async function abandonAfterVisibleFinal(streamMode: "partial" | "off", messageId: number) {
+  const message = replayedMessage(messageId);
+  const { bot, messages } = await setupObservedProgressTransport();
+  const dispatchRuntime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+  const final = "The answer this attempt already showed";
+  const processMessage = vi.fn(async (args: { turnContext?: Record<string, unknown> }) => {
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async (params) => {
+      if (streamMode === "partial") {
+        await params.replyOptions?.onAssistantMessageStart?.();
+        await params.replyOptions?.onPartialReply?.({
+          text: "The answer this attempt is streaming now",
+        });
+        await createTelegramDraftStream.mock.results[0]?.value?.flush();
+      }
+      return dispatchThroughSharedOwner({
+        ...params,
+        replyResolver: async () => ({ text: final }),
+      });
+    });
+    await dispatchWithContext({
+      bot,
+      context: progressContext(),
+      streamMode,
+      telegramCfg: { streaming: { mode: streamMode } },
+      runtime: dispatchRuntime,
+    });
+    const settle = args.turnContext?.finalizeSpooledReplayResult as (
+      result: TelegramMessageProcessingResult,
+    ) => Promise<TelegramMessageProcessingResult>;
+    return await settle({ kind: "failed-retryable", error: new Error("turn-abandoned") });
+  });
+  const cfg = { channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } } } as OpenClawConfig;
+  const pipeline = createTelegramMessagePipeline({
+    accountId: "default",
+    ownerAgentId: "main",
+    bot: { api: {} },
+    cfg,
+    mediaMaxBytes: 1,
+    opts: { token: "tok" },
+    telegramCfg: {},
+    logger: getChildLogger({ module: "telegram/replay-guard-delivery-test" }),
+    runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    shouldSkipUpdate: () => false,
+    resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+    resolveGroupActivation: () => undefined,
+    resolveGroupRequireMention: () => false,
+    resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+    processMessage,
+    telegramDeps: {
+      ...defaultTelegramBotDeps,
+      getRuntimeConfig: () => cfg,
+      wasSentByBot: () => false,
+      readChannelAllowFromStore: async () => [],
+    },
+  } as unknown as RegisterTelegramHandlerParams);
+  const claimed = await pipeline.claimMessageDispatchDedupe(message, 99);
+  const attempt = await runWithTelegramUpdateProcessingFrame(
+    async () =>
+      await pipeline.processMessageWithReplyChain({
+        ctx: {
+          message,
+          update: { update_id: 991 },
+        } as unknown as TelegramContext,
+        msg: message,
+        allMedia: [],
+        storeAllowFrom: [],
+        options: { spooledReplay: true },
+        dispatchDedupeClaims: claimed.process ? claimed.claims : [],
+      }),
+  );
+  const redelivered = await pipeline.claimMessageDispatchDedupe(message, 99);
+  return {
+    dispatchErrors: dispatchRuntime.error.mock.calls.map((args) => args.join(" ")),
+    visible: [...messages.values()],
+    final,
+    firstProcess: claimed.process,
+    attemptKind: attempt.value.kind,
+    redeliveredProcess: redelivered.process,
+  };
+}
+
+describeTelegramDispatch("Telegram replay guard after a visible final", () => {
+  it.each([
+    { path: "preview finalized in place", streamMode: "partial", messageId: 12949 },
+    { path: "sent by the reply deliverer", streamMode: "off", messageId: 12950 },
+  ] as const)(
+    "refuses to replay an abandoned attempt whose final was $path",
+    async ({ streamMode, messageId }) => {
+      const run = await abandonAfterVisibleFinal(streamMode, messageId);
+
+      expect(run.dispatchErrors).toEqual([]);
+      expect(run.visible).toEqual([run.final]);
+      expect(run.firstProcess).toBe(true);
+      expect(run.attemptKind).toBe("failed-retryable");
+      // A redelivery that processes again re-runs the turn: the answer shows twice.
+      expect(run.redeliveredProcess).toBe(false);
     },
   );
 });

@@ -67,11 +67,11 @@ type TelegramOutboundSuccessLogParams = {
 };
 
 export function logTelegramOutboundSendOk(params: TelegramOutboundSuccessLogParams): void {
-  // The durable funnel's confirmation point, so it is where the "this attempt
-  // already spoke to the user" fact is recorded. The ingress settlement reads it
-  // to decide whether a retryable failure may replay. Note the streaming funnel
-  // (`bot/delivery.replies.ts` over `send-prepared.ts`) and preview finalization
-  // (`lane-delivery-text-deliverer.ts`) confirm sends without recording it.
+  // The durable funnel's confirmation point records the "this attempt already
+  // spoke to the user" fact, which the ingress settlement reads to decide whether
+  // a retryable failure may replay. The streaming funnel records it through the
+  // acceptance ledger in `send-prepared.ts`, and finalized answer previews in
+  // `lane-delivery-text-deliverer.ts`.
   markTelegramVisibleReplyDelivered();
   const parts = [
     "telegram outbound send ok",
