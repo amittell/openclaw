@@ -499,13 +499,17 @@ async function stagePreparedPendingInput(
       const channelBoundKey = idempotencyKey.startsWith(CHANNEL_USER_KEY_PREFIX);
       // v2026.10.1 builds the stage snapshot in the pending-input kernel (worker or native)
       // and reports only whether the session row is current; the restart-recovery claim and
-      // the answered-turn marker live on that row, so the terminal test reads it here.
-      // trackCompletion retries are always admitted below and never need it. A row that no
-      // longer names this session is no evidence: both predicates then read as absent.
-      const loadedEntry = options.trackCompletion
+      // the answered-turn marker live on that row, so the terminal test reads it here, AFTER
+      // the snapshot. trackCompletion retries are always admitted below and never need it.
+      const sessionEntry = options.trackCompletion
         ? undefined
         : loadSessionEntryReadOnly({ ...scope, readConsistency: "latest" });
-      const sessionEntry = loadedEntry?.sessionId === scope.sessionId ? loadedEntry : undefined;
+      // A row that no longer names this session rotated after the snapshot, by a writer outside
+      // this admission (another process). Deciding on its absent evidence re-ran answered
+      // turns and consumed owed re-drives; like 9.9's single read, it is no longer current.
+      if (!options.trackCompletion && sessionEntry?.sessionId !== scope.sessionId) {
+        return undefined;
+      }
       // Recovery is an override on both arms: restart recovery re-drives a source turn
       // under a NEW recovery run id, so its key belongs to the ORIGINAL run and never to
       // this one. Consuming it there drops the legitimate re-delivery (#9's P1, and the
