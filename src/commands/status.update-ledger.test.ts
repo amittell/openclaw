@@ -322,6 +322,86 @@ describe("status update ledger evidence", () => {
     },
   );
 
+  // The shape a chat-triggered dev update leaves when every preflight candidate fails validation:
+  // no target version, nothing recorded after, and the Gateway still serving the starting build.
+  const preflightStart = {
+    version: "2026.9.4",
+    sha: "37ea9f110bad",
+    buildId: "2026.9.4-37ea9f110bad",
+  };
+  it.each<{
+    name: string;
+    healthy?: boolean;
+    before?: UpdateRunRecord["before"];
+    server: { version: string; buildId: string };
+    history?: string;
+    detail?: string;
+  }>([
+    {
+      name: "a healthy Gateway on a newer version",
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      history:
+        "Last update run failed (preflight-no-good-commit) — Gateway is now serving 2026.10.1, not 2026.9.4 that the run started from.",
+    },
+    {
+      name: "a healthy Gateway rebuilt at the same version",
+      server: { version: "2026.9.4", buildId: "2026.9.4-rebuilt" },
+      history:
+        "Last update run failed (preflight-no-good-commit) — Gateway is now serving 2026.9.4 (build 2026.9.4-rebuilt), not build 2026.9.4-37ea9f110bad that the run started from.",
+    },
+    {
+      name: "the Gateway still serving the starting build",
+      server: { version: "2026.9.4", buildId: "2026.9.4-37ea9f110bad" },
+      detail: "Gateway is serving 2026.9.4; the update target is unknown — run `openclaw update`.",
+    },
+    {
+      name: "an unhealthy Gateway on a newer version",
+      healthy: false,
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+    },
+    {
+      name: "an unknown starting build",
+      before: {},
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+    },
+  ])(
+    "reports a targetless preflight failure with $name",
+    async ({ healthy = true, before = preflightStart, server, history, detail }) => {
+      const run = recordRun({
+        status: "failed",
+        reason: "preflight-no-good-commit",
+        target: { kind: "git", channel: "dev" },
+        before,
+        verification: { runningVersion: "2026.9.4", serviceRunning: true },
+        steps: [
+          { step: "requested", status: "failed" },
+          {
+            step: "preflight config validate (fcdb9321)",
+            status: "failed",
+            detail: "exit; ELIFECYCLE Command failed with exit code 1.",
+          },
+          { step: "preflight cleanup", status: "completed" },
+        ],
+      });
+      const saved = getUpdateRun(run.runId);
+      const rows = await buildStatusUpdateRows(null, {
+        localGatewayHealthy: healthy,
+        gatewayServer: server,
+      });
+      expect(rows).toHaveLength(1);
+      if (history) {
+        expect(rows[0]?.Value).toBe(history);
+      } else {
+        expect(rows[0]?.Value).toContain("⚠️ OpenClaw update failed: preflight-no-good-commit.");
+        if (detail) {
+          expect(rows[0]?.Value).toContain(detail);
+        }
+      }
+      expect(getUpdateRun(run.runId)).toEqual(saved);
+    },
+  );
+
   it("does not replace an active update with a historical failure's current-health note", async () => {
     recordRun({ status: "failed", reason: "post-update-failed" });
     const active = createUpdateRun({ trigger: "cli", target: { kind: "git" } });
