@@ -79,6 +79,8 @@ function renderStatusReport(
   // A targetless run that failed before recording any outcome (a preflight refusal) leaves only
   // the build it started from. A healthy Gateway serving another build moved past it by some other
   // path, such as a manual tag checkout; prescribing an update would move that installation.
+  // Git admission records a selected SHA before it reads that target's version, so a SHA or tag
+  // without a version is still an explicit target and keeps its warning.
   const beforeBuild = normalizeOptionalString(run.before.buildId);
   const versionMovedOn = Boolean(
     servingVersion && beforeVersion && servingVersion !== beforeVersion,
@@ -86,6 +88,8 @@ function renderStatusReport(
   const supersededTargetless = Boolean(
     observedFailure &&
     !targetVersion &&
+    !normalizeOptionalString(run.target?.sha) &&
+    !normalizeOptionalString(run.target?.tag) &&
     !rollbackAttempted &&
     !afterVersion &&
     !normalizeOptionalString(run.after.buildId) &&

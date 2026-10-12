@@ -332,6 +332,7 @@ describe("status update ledger evidence", () => {
   it.each<{
     name: string;
     healthy?: boolean;
+    runTarget?: UpdateRunRecord["target"];
     before?: UpdateRunRecord["before"];
     server: { version: string; buildId: string };
     history?: string;
@@ -365,13 +366,33 @@ describe("status update ledger evidence", () => {
       server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
       detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
     },
+    {
+      // Git admission records the selected SHA before refusing its unreadable metadata.
+      name: "an explicit SHA whose version was never read",
+      runTarget: { kind: "git", channel: "dev", sha: "fcdb9321abcd" },
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+    },
+    {
+      name: "an explicit tag",
+      runTarget: { kind: "git", tag: "v2026.9.7" },
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+    },
   ])(
-    "reports a targetless preflight failure with $name",
-    async ({ healthy = true, before = preflightStart, server, history, detail }) => {
+    "reports a preflight failure with $name",
+    async ({
+      healthy = true,
+      runTarget = { kind: "git", channel: "dev" },
+      before = preflightStart,
+      server,
+      history,
+      detail,
+    }) => {
       const run = recordRun({
         status: "failed",
         reason: "preflight-no-good-commit",
-        target: { kind: "git", channel: "dev" },
+        target: runTarget,
         before,
         verification: { runningVersion: "2026.9.4", serviceRunning: true },
         steps: [

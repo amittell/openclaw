@@ -59,7 +59,13 @@ build, or unknown identity keeps the warning and its recorded failure details,
 with the serving and target versions when known. Rollback and recovery observations
 cannot by themselves establish the intended candidate identity. A
 same-version rollback stays warned when the intended candidate build cannot be
-verified. Status does not rewrite the failed run or claim the update succeeded.
+verified. A failed run that never selected a target, such as a preflight refusal
+that recorded no target version, SHA, tag, or post-update identity, is also
+labeled as historical once the Gateway serves a different version, or a different
+build of the same version, than the run started from: `Last update run failed
+(preflight-no-good-commit) — Gateway is now serving 2026.10.1, not 2026.9.4 that
+the run started from.` A run with an explicit target keeps the rules above.
+Status does not rewrite the failed run or claim the update succeeded.
 Starting, unreachable, degraded, and
 remote Gateways do not qualify for this note. Use
 `openclaw update status` to inspect the saved verification failure.
