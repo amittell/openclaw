@@ -87,6 +87,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/link-understanding.product.test.ts",
   "src/gateway/local-request-context.session-notify.test.ts",
   "src/gateway/local-request-context.session-tools-steering.test.ts",
+  "src/gateway/local-request-context.session-tools.non-owner-assign.test.ts",
   "src/gateway/local-request-context.session-tools.test.ts",
   "src/gateway/local-request-context.test.ts",
   "src/gateway/managed-image-attachments.authority.test.ts",
