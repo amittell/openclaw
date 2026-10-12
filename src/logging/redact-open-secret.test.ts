@@ -15,6 +15,9 @@ describe("findTruncatedSecret", () => {
     { name: "web URL password before its @", lead: "https://deploy:", secret: BODY },
     { name: "database URL path before its @", lead: "postgres://db.test:", secret: `5432/${BODY}` },
     { name: "form value before its next pair", lead: "body code=", secret: BODY },
+    // The text ends inside the `&key=` the form rule needs after the value.
+    { name: "form value before its next pair's &", lead: "body code=", secret: `${BODY}&` },
+    { name: "form value before a clipped next key", lead: "body code=", secret: `${BODY}&st` },
     {
       name: "private key before its END line",
       lead: "key\n",
@@ -39,6 +42,10 @@ describe("findTruncatedSecret", () => {
     { name: "a token prefix inside a word", text: `xATATT${BODY}` },
     { name: "a token prefix in a data URL", text: `data:image/png;base64,${BODY}/ATATT${BODY}` },
     { name: "a form value of a key no rule masks", text: `body page=${BODY}` },
+    // Closed: the redactor masks it in this text alone.
+    { name: "a form value before its whole next pair", text: `body code=${BODY}&state=x` },
+    // Digits do not start a form key, so no `&key=` can follow.
+    { name: "a form value before a digit", text: `body code=${BODY}&1` },
     {
       name: "a closed private key",
       text: `-----BEGIN PRIVATE KEY-----\n${BODY}\n-----END PRIVATE KEY-----\ntext`,

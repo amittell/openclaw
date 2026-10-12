@@ -478,6 +478,26 @@ describe("OTEL content redaction at the export cut", () => {
     },
   );
 
+  it.each(exportPaths.flatMap((path) => ["&", "&st"].map((clip) => ({ path, clip }))))(
+    "masks a form value whose redaction window ends at $clip of its next pair in $path.name",
+    ({ path, clip }) => {
+      // The window ends inside the `&state=` that lets the core form rule mask the value.
+      const lead = `${"x".repeat(path.keptChars - 201)} code=`;
+      const valueChars = path.windowChars - lead.length - clip.length;
+      const value = SECRET_BODY.repeat(Math.ceil(valueChars / SECRET_BODY.length)).slice(
+        0,
+        valueChars,
+      );
+      const text = `${lead}${value}&state=x ${"y".repeat(CUT_TAIL_CHARS)}`;
+
+      const exported = path.exportText(text);
+
+      expect(exported).toContain(TRUNCATED_SUFFIX);
+      expect(exported).toContain("code=***");
+      expect(exported).not.toContain(SECRET_BODY.slice(0, 8));
+    },
+  );
+
   it.each(exportPaths)(
     "masks a JSON secret whose closing quote lies past the redaction window in $name",
     (path) => {

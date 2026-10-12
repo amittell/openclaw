@@ -103,24 +103,34 @@ export function findTruncatedSecret(text: string): { start: number; closing: str
 
 /**
  * Where the secret starts in a match of `pattern` over `text` from `from` that needs `closing`
- * appended after it: one that runs into the closing, or one that ends where `text` does and only
- * matches with the closing after it (a rule that checks what follows its match).
+ * appended after it: one that runs into the closing, or one that only matches with the closing
+ * after it (a rule that checks what follows its match, which `text` can end inside).
  */
 function findClosedMatchStart(
   text: string,
   pattern: RedactMatcher,
-  closing: string,
+  closing: string | ((text: string) => string),
   from: number,
 ): number | undefined {
   const tail = text.slice(from);
-  const input = `${tail}${closing}`;
+  const input = `${tail}${typeof closing === "string" ? closing : closing(tail)}`;
+  // The tail's own matches, read once: a match that ends inside the tail is closed when the tail
+  // alone holds it. Within the tail a match's offset and length fix its text.
+  let held: Map<number, number> | undefined;
+  const holdsMatch = (match: RedactMatch): boolean => {
+    held ??= new Map(Array.from(pattern.exec(tail), (own) => [own.offset, own.match.length]));
+    return held.get(match.offset) === match.match.length;
+  };
   for (const match of pattern.exec(input)) {
     const end = match.offset + match.match.length;
-    if (match.offset >= tail.length || end < tail.length) {
+    if (match.offset >= tail.length) {
       continue;
     }
-    if (end === tail.length && holdsMatch(pattern, tail, match)) {
-      return undefined;
+    if (end <= tail.length && holdsMatch(match)) {
+      if (end === tail.length) {
+        return undefined;
+      }
+      continue;
     }
     const selected = selectSecretCapture(match.match, match.groups);
     return (
@@ -130,13 +140,4 @@ function findClosedMatchStart(
     );
   }
   return undefined;
-}
-
-function holdsMatch(pattern: RedactMatcher, text: string, match: RedactMatch): boolean {
-  for (const own of pattern.exec(text)) {
-    if (own.offset >= match.offset) {
-      return own.offset === match.offset && own.match === match.match;
-    }
-  }
-  return false;
 }
