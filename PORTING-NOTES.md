@@ -3098,3 +3098,165 @@ Dist markers (files containing the string, `grep -rlF`), this carry / `543080ee6
 `Math.max(0, effectiveContextTokens - estimatedInputTokens - 1)` 1/0,
 `estimated input \d+ leaves only \d+ output tokens within the \d+-token context` 3/0,
 `(?:https?|wss?|ftp):\/\/[^/\s:@]*:` 1/0, `estimate=unmargined` 0/3 (drop it from the verifier).
+
+# Carrying onto v2026.10.1 (9.9 -> 10.1), 2026-10-11
+
+Measured on the M4 Pro (`Mac16,7`, user alex) by claude-m4-6da8934d, with claude-air-b862e2 (Air) on the
+per-PR table, the #161480/#158145 ports and the pull-forwards, 2026-10-11/12. Branch `upgrade-v2026.10.1`.
+
+## Refs
+
+| what                                                                                                   | sha                                                            |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| v2026.10.1^{commit}                                                                                    | `e178c39e9aae`                                                 |
+| v2026.9.9^{commit}                                                                                     | `bcfc88812a35`                                                 |
+| fork 9.9 tip (`upgrade-v2026.9.9`)                                                                     | `9eea409c6eb4`                                                 |
+| reduced fork (9.9 line minus ports 10.1 contains)                                                      | `95c21cab423c` (`refs/carry101/reduced`)                       |
+| squash onto 9.9                                                                                        | `8df47b1387ee` (`refs/carry101/squash`, parent `bcfc88812a35`) |
+| commit 1, the carry                                                                                    | `029439e4e570`                                                 |
+| commit 2, adapt to 10.1 + regenerate                                                                   | `84549a3c3119`                                                 |
+| commit 3, #168155 regression guard                                                                     | `2d2723c3751`                                                  |
+| lane seat (claude-air-b862e2), stacked fast-forward, pushed as `a25baa129c96`                          |                                                                |
+| 4. #161480 cherry-pick -x (Alex's ruling)                                                              | `a067b8cdb6c`                                                  |
+| 5. #158145 port at `70e38024d0bd` (surface budgets 3647/2112)                                          | `b3eee5dc9d6`                                                  |
+| 6. #151921 pull forward to `b713781767d`                                                               | `dcc2909d7a0`                                                  |
+| 7. #101866 pull forward to `c3e783e8e15`                                                               | `95e5a8db404`                                                  |
+| 8. #89526 pull forward to `8606a2df718` (fixes `82be5c6edc6`, `3ee3413ef5e` adapted to the fork's API) | `7958ebe1b91`                                                  |
+| 9. #164551 variant -> head: `persistSessionContextTotalTokens` passes `workerGuard: {}`                | `a25baa129c9`                                                  |
+
+## Method
+
+Same as the 9.9 carry: revert pass (ports 10.1 contains, by PR number and `git patch-id --stable`),
+squash the reduced fork onto 9.9, `cherry-pick -n` onto the 10.1 tag, three-blob triage, six resolver
+lanes (L1-L6). 105 conflicted paths; 0 markers in all 486 changed paths.
+
+## Rulings (Alex, 2026-10-11)
+
+- Test host: the M4.
+- #158145: the lane's improved head `70e38024d0bd`, on top of #161480 `39b4bdbb6427` (lane seat commits).
+- Deploy as soon as verified: idle-gated, rh-bot first, mac-mini after rh-bot verifies, DB backups first.
+- Heartbeat #156537 vs upstream #164171: the narrowed fork rule. `killed` became
+  `metadataOnlySignalKill` (signal exit, no output, no producer notes). The fork's strip of the
+  timeout retry-guidance suffix is gone; 10.1's #164171 cases are restored, so a timeout kill
+  (which carries the guidance as notes) still wakes and relays.
+
+## Divergences kept, and why
+
+- **`renderAssistantRequestFailureCopy` does not re-derive `timeout` + HTTP >= 500 into
+  `server_error`.** 9.9 carry `ab86a49d625` removed upstream's `normalizedReason` deliberately and
+  pinned it ("the classifier owns the reason"). 10.1 kept the re-derivation and shortened the copy
+  (#163381). Carried: the pin now expects 10.1's copy. Control: 10.1's renderer fails the 504
+  assertion ("The AI service is having trouble" where the fork says "The request took too long").
+- **`context_overflow` copy map entry = `CONTEXT_OVERFLOW_ERROR_MESSAGE`.** The #168326 hunk the 9.9
+  port could not carry (9.9 had no copy map); now matches upstream main.
+
+## Not carried (measured)
+
+- **#165490** (`6ddf5a6106c`, "avoid model fallback on local transcript conflicts", in
+  v2026.10.5-beta.1). 8 files conflict against pure 10.1 as well as the carry; it sits on 574 upstream
+  commits after the cut (the session-worker refactor series, #164588..#165196). On 10.1 a
+  `SqliteTranscriptMutationConflictError` crosses the metadata worker as a plain Error that carries
+  only its name. The #168155 guard therefore matches by name; restore `expect.any(...)` with #165490.
+  Arrives with the next tag.
+- Lane seat, git only (room #56): **#138415** (fork sizes the reserve 800 of 8,000 for its own
+  wrapper, nothing to bring), **#130393 `d4dc94b3745`** (fixes notice phases the fork's 09-24
+  #130393 does not have; needs the landed squash, 22 of 44 files conflict; compaction lane's or
+  Alex's call), **#138416 `ff9d132f944`** (removes `qualityRetentionInfeasible`, which the fork's
+  degraded identifier-shedding loop reads).
+- L6: the qa-lab tool-call-in-content feature was dropped.
+
+## Generated files
+
+- `config/assertion-safety-baseline.txt`: `--prune` against `v2026.10.1^{commit}` removed 18 entries
+  the fork's SAFETY comments retired (3008 -> 2990 files, 7452 -> 7398 assertions).
+  `src/plugins/doctor-contract-registry.ts` 1 -> 2: the file is byte-identical to 10.1 and has two
+  uncommented assertions (lines 161, 363); 10.1's own entry (shrunk by `27f002b2633`) is stale. Derived
+  from identical blob + identical guard script, not from a separate run at the tag.
+- `config/env-var-count-budget.txt`: 474 -> 475, the fork's
+  `OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS` (exactly one carry-only name, zero tag-only).
+- Three Codex prompt snapshots: `prompt:snapshots:gen`; the diff is the fork's message-tool delivery
+  guidance and its size counters only.
+
+## Guards
+
+| guard                                                                                         | result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tsgo: core, extensions, scripts, extensions:test, test:src, test:packages, test:root, test:ui | 8 of 8 rc=0, 0 errors at `2d2723c3751b`; core, test:src, test:packages rc=0 again at `3745fd3c29a4`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `check:assertion-safety --base v2026.10.1^{commit}`                                           | OK, 2990 files, 7398 grandfathered                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `check:env-var-count`                                                                         | OK, 475/475                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `prompt:snapshots:check`                                                                      | OK                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `check:line-cap-ratchet --base v2026.10.1^{commit}`                                           | rc=1, 33 over-cap files grown. PRE-EXISTING class: the deployed line (`9eea409c6eb4` against `v2026.9.9^{commit}`, carry's guard script) fails the same check with 34. New in the carry (5, each where 10.1 grew a file to exactly its cap): `compaction-safeguard.test.ts` 2265->2281, `channels/message/ingress-drain.ts` 700->716, `session-accessor.sqlite-history-events.test.ts` 1000->1034, `gateway/agent-turn/agent-run-execution-phase.ts` 700->714, `media/store.ts` 700->727 (also flagged at the 9.6 carry). Not split here (issue #9 precedent). |
+
+## Fork tests that failed on 10.1 (Run A, 2026-10-11 17:31Z, at `a25baa129c96`)
+
+| test                                                              | class                       | cause on 10.1                                                                                                                                                               | fix                                                                                                                              | control                                                                                      |
+| ----------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `state-migrations` explicit fixed-store owner                     | TEST-DRIFT                  | #163160 retired `<state>/sessions`                                                                                                                                          | fixture under `agents/ops/sessions` (lane `940f1c236962`)                                                                        | disjunct removed -> `'main'` vs `'ops'`                                                      |
+| `loader.runtime-registry` caller-owned handle                     | TEST-DRIFT                  | #161952 made root load async                                                                                                                                                | await root loads (`940f1c236962`)                                                                                                | clear no longer clearing -> toBeNull fails                                                   |
+| `attempt-prompt-context` Telegram carrier v3/v4                   | TEST-DRIFT                  | #163471 replaced the BEGIN/END wrapper with "OpenClaw runtime context:" at model send                                                                                       | expected strings without the wrapper                                                                                             | `carrierText` removed -> v3 fails on bare `#19452:`                                          |
+| `session-context` carriers at compaction (3)                      | TEST-DRIFT (upstream test)  | #161281 pins the summary exactly; the fork's checkpoint line collides                                                                                                       | regex allowing the checkpoint line                                                                                               | checkpoint removed -> 14/21; cut between carrier and user -> 19/21                           |
+| `pending-inputs.redrive`                                          | TEST-DRIFT                  | #163582 made `listSessionPendingInputs` async                                                                                                                               | two `await`s                                                                                                                     | fork terminal block removed -> `expected true to be false`                                   |
+| `agent-runner-failure-reply` transport vs timeout (3)             | TEST-DRIFT (copy precedent) | #163381 renders every transport phrase as "Couldn't connect to the AI service..." and the timeout as "The request took too long..."                                         | 10.1 strings, plus `not.toContain("took too long")` on the transport cases (the old negatives passed with the fork code removed) | 10.1's `agent-runner-failure-reply.ts` -> 35/37, transport cases receive the timeout copy    |
+| `assistant-failure` "keeps rotating profiles"                     | TEST-DRIFT (copy precedent) | 10.1's generic "OpenClaw couldn't finish this reply" text; no rotation on this path at 9.9 either (probe at `9eea409c6eb4`: `advanceAuthProfile` 0 calls, `fallback_model`) | `rejects.toMatchObject({ provider: "anthropic", model: "mock-1" })`                                                              | drop `!input.fallbackConfigured` -> rejects-expected fails; wrong model -> field check fails |
+| `owner-only-tool-stubs` (4) + `attempt.owner-only-tool-stubs` (2) | TEST-DRIFT + ruling         | #154239: non-owner turns get the real `sessions` tool limited to `assign_owner` (not denied); #164296: the tool-surface bridge adds Tool Search controls                    | expect all owner-only tools but `sessions` stubbed; attempt test across Tool Search off/on/Code Mode (`e05fcb377771`)            | stub shaping off -> 5/8; refusal line removed -> 0/4                                         |
+
+**Ruling (Alex, 2026-10-11, question tool on the M4 ~17:49Z and on the Air 19:10Z): take upstream 10.1's `sessions`
+rule.** Non-owner turns can assign session responsibility (no access change); every other sessions action refuses
+them. Upstream's own limit tests pass on the branch (`sessions-tool.owner.test.ts` 9/9,
+`agent-tools.session-owner.test.ts` 3/3). Unmeasured: which sessions count as "visible" on a group member's turn.
+
+User-visible on the bots from the copy precedent: replies no longer distinguish unreachable host / DNS / refused
+connection, and a timeout reply no longer names the model or HTTP status (10.1's #163381 decision). The fork's
+`.replace(/^LLM request failed:\s*/, "")` in `renderTransportFailureReplyCopy` is now dead code (left as is).
+
+## Open
+
+- L4: the pending-input terminal rule is not atomic (design concern). Measured 2026-10-11: on 10.1 the session
+  entry is read by `loadSessionEntryReadOnly` (l.507) outside the write transaction; the channel-bound terminal arm
+  does not depend on it (the redrive test passes with the entry forced undefined), but the recovery override and the
+  answered-turn marker do, and no test exercises that window under concurrency. UNMEASURED.
+- L3: `/temperature` now counts in `hasAnyDirective`.
+- Dead export removed: `isExplicitlyNonVisibleChannelDelivery` (10.1 inlines it at both lifecycle
+  sites; the emit condition `finalized?.visibleReplySent !== false` is equivalent).
+
+## Post-verification commits
+
+| commit         | what                                                                                                                               |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `940f1c236962` | lane: two fork tests adapted (state-migrations layout, async root loader)                                                          |
+| `e05fcb377771` | 16 fork-test adaptations (Run A) + `owner-only-tool-stub-marker.ts` in `scripts/pr-lib/wrapper-components.txt`                     |
+| `3745fd3c29a4` | upstream #167309 (`2b51bb8fc61`) cherry-picked: runtime-context messages go as `developer`/`user`, never a mid-transcript `system` |
+
+## Deploy (2026-10-11/12)
+
+- **rh-bot attempt 1 (`e05fcb377771`, 22:13Z):** doctor rc=1 -- 10.1 asserts no retired OAuth sidecar exists
+  (`assertNoRetiredStateFiles("OAuth credential sidecars")`), 9.x doctor deliberately keeps UNREFERENCED ones; rh-bot
+  had one (`openai-codex:default`, May 19, unreferenced in 4 doctor runs). Full rollback. Alex: delete it (done).
+- **The rollback was incomplete (kit defect):** `rollback_full` restored root `dist/` only, leaving 10.1
+  `packages/*/dist` under a 9.9 root -- caught by the lane seat from real turns, not by healthz.
+- **rh-bot attempt 2 (`e05fcb377771`, 23:38Z):** deployed; verify + fresh-session `pong` passed, but EVERY real
+  Telegram turn got gpufarm `400 System message must be at the beginning` (Alex reported it). A "0 since restart"
+  reading was vacuous: the awk slice started at a pattern no line matched. Cause: upstream #163471 (in 10.1) projects
+  runtime-context carriers as inline `role: "system"` when `model.reasoning && compat.supportsDeveloperRole` is false
+  for `developer`; gpufarm's vLLM Qwen template rejects a non-leading system message (probe: mid-system -> 400,
+  same content as `user` -> 200). Fix: #167309.
+- **rh-bot attempt 3 (`3745fd3c29a4`, 00:32Z):** deployed with the fixed kit (package-dist tar snapshot/restore,
+  fail-closed 0d2 sidecar preflight, real-turn verifier gate).
+- **Not needed (verified):** #168056 -- explicit `supportsReasoningEffort` + `reasoningEffortMap` already send the
+  mapped effort on 10.1 (off -> `none`). Post-cut transport fixes triaged: 48; carried 1.
+- **rh-bot real turns on `3745fd3c29a4`:** Alex's DMs at 21:22-21:35 local answered (one turn ran 34 gpufarm
+  requests); since the 00:32Z restart: template 400 0, provider 4xx 0, surface_error 0, errored turns 0.
+- **mac-mini (`3745fd3c29a4`, 02:06Z):** idle-gated behind Alex's RatBot DM; build 454 s, doctor 247 s, 3/3
+  providers, state v20, 8 agent DBs v24, local-only PASS, toolSearch False, 36/36 markers. Kebablebot replied
+  (22:13:38 local), RatBot's tool loop ran with no failures, AILYbot had no traffic at the time of writing.
+- **Lessons:** a fresh-session probe cannot see channel-turn request shapes. 10.1 logs `[model-fetch] response`
+  and `embedded run agent end` only for FAILED calls/turns, so "count the 200s" reads 0 on a healthy build. The
+  verifier now FAILs on any provider 4xx, template 400, `surface_error` or errored turn since the restart,
+  reports PENDING with no inbound turn, and passes otherwise.
+
+## Process trap measured today
+
+The shared pre-commit hook (`~/git/openclaw/git-hooks/pre-commit`, via `core.hooksPath`) runs
+`oxfmt --write` on the WORKING TREE and then `git add`s the working-tree version of every staged file.
+A partially staged commit therefore sweeps in the unstaged edits. Commit 1 was rebuilt from a saved
+`write-tree` with `commit-tree`; commit only whole files through the hook.
