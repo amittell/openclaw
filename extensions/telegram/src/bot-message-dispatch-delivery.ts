@@ -341,11 +341,6 @@ export async function handlePreviewFinalizedResult(
   if (result.kind !== "preview-finalized" && result.kind !== "preview-finalized-partial") {
     return;
   }
-  // Both kinds carry a preview Telegram already shows. It never passes through
-  // deliverReplies, so this is the info-level counterpart of its delivery line.
-  turn.runtime.log?.(
-    `telegram preview delivery ok chat=${turn.context.chatId} message=${result.delivery.messageId}`,
-  );
   if (!turn.isSuperseded()) {
     // A finalized preview is the durable Telegram message. Emit the composite
     // terminal here so plugin and internal observers see that one provider result.
@@ -453,6 +448,23 @@ export async function observeFinalDelivery(
   }
 }
 
+// A final finalized into the preview never reaches deliverReplies, which logs
+// new messages, so each final answer records how it settled here.
+function logFinalDeliveryOutcome(turn: Turn, result: LaneDeliveryResult): void {
+  const { receipt, messageIds, suppression } = result.deliveryResult;
+  const ids = receipt?.platformMessageIds ?? messageIds ?? [];
+  turn.runtime.log?.(
+    [
+      `telegram final delivery outcome=${result.kind}`,
+      `chat=${turn.context.chatId}`,
+      ids.length > 0 && `message=${ids.join(",")}`,
+      suppression && `reason=${suppression.reason}`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 export async function deliverFinalAnswerText(
   turn: Turn,
   answerPayload: ReplyPayload,
@@ -478,6 +490,7 @@ export async function deliverFinalAnswerText(
       visibleReplySent: false,
       suppression: { reason: "channel_transform" },
     };
+    logFinalDeliveryOutcome(turn, { kind: "skipped", deliveryResult });
     await observeFinalDelivery(turn, deliveryResult);
     return { kind: "skipped", deliveryResult };
   }
@@ -531,6 +544,7 @@ export async function deliverFinalAnswerText(
       bindPendingFinalDelivery,
     });
   }
+  logFinalDeliveryOutcome(turn, result);
   if (result.kind === "preview-finalized-partial" && !result.confirmedFinalContent) {
     turn.previewLifecycle.observeFailure(result.deliveryResult);
   } else {
