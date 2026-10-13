@@ -322,8 +322,6 @@ describe("status update ledger evidence", () => {
     },
   );
 
-  // The shape a chat-triggered dev update leaves when every preflight candidate fails validation:
-  // no target version, nothing recorded after, and the Gateway still serving the starting build.
   const preflightStart = {
     version: "2026.9.4",
     sha: "37ea9f110bad",
@@ -334,6 +332,8 @@ describe("status update ledger evidence", () => {
     healthy?: boolean;
     runTarget?: UpdateRunRecord["target"];
     before?: UpdateRunRecord["before"];
+    after?: UpdateRunRecord["after"];
+    verification?: UpdateRunRecord["verification"];
     server: { version: string; buildId: string };
     history?: string;
     detail?: string;
@@ -379,12 +379,33 @@ describe("status update ledger evidence", () => {
       server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
       detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
     },
+    {
+      name: "a recorded post-update SHA without a target version",
+      after: { sha: "fcdb9321abcd" },
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+    },
+    {
+      name: "a recorded post-update build without a target version",
+      after: { buildId: "candidate" },
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+    },
+    {
+      name: "a targetless rollback with no post-update identity",
+      verification: { rollbackOutcome: failedRollback },
+      server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
+      detail:
+        "Gateway is serving 2026.10.1 (build 2026.10.1-3745fd3c29a4); the update target is unknown — run `openclaw update`.",
+    },
   ])(
     "reports a preflight failure with $name",
     async ({
       healthy = true,
       runTarget = { kind: "git", channel: "dev" },
       before = preflightStart,
+      after,
+      verification,
       server,
       history,
       detail,
@@ -394,16 +415,8 @@ describe("status update ledger evidence", () => {
         reason: "preflight-no-good-commit",
         target: runTarget,
         before,
-        verification: { runningVersion: "2026.9.4", serviceRunning: true },
-        steps: [
-          { step: "requested", status: "failed" },
-          {
-            step: "preflight config validate (fcdb9321)",
-            status: "failed",
-            detail: "exit; ELIFECYCLE Command failed with exit code 1.",
-          },
-          { step: "preflight cleanup", status: "completed" },
-        ],
+        after,
+        verification: { runningVersion: "2026.9.4", serviceRunning: true, ...verification },
       });
       const saved = getUpdateRun(run.runId);
       const rows = await buildStatusUpdateRows(null, {

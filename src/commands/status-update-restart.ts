@@ -76,11 +76,8 @@ function renderStatusReport(
     !buildMismatch &&
     !targetIdentityUnavailable,
   );
-  // A targetless run that failed before recording any outcome (a preflight refusal) leaves only
-  // the build it started from. A healthy Gateway serving another build moved past it by some other
-  // path, such as a manual tag checkout; prescribing an update would move that installation.
-  // Git admission records a selected SHA before it reads that target's version, so a SHA or tag
-  // without a version is still an explicit target and keeps its warning.
+  // A manual upgrade can supersede a preflight failure without changing its saved outcome.
+  // Git admission records a target SHA before reading its version; keep that failure warned.
   const beforeBuild = normalizeOptionalString(run.before.buildId);
   const versionMovedOn = Boolean(
     servingVersion && beforeVersion && servingVersion !== beforeVersion,
@@ -104,26 +101,27 @@ function renderStatusReport(
           .find((fact) => fact.message)?.message
       : undefined;
   let headline = message ? `${report.headline} ${message}` : report.headline;
-  const servingLabel = sanitizeTerminalText(servingVersion ?? "an unknown version").slice(0, 240);
-  const targetLabel = sanitizeTerminalText(targetVersion ?? "an unknown target").slice(0, 240);
-  const reasonLabel = sanitizeTerminalText(run.reason?.trim() || "unknown reason").slice(0, 240);
+  const label = (value: string) => sanitizeTerminalText(value).slice(0, 240);
+  const servingLabel = label(servingVersion ?? "an unknown version");
+  const targetLabel = label(targetVersion ?? "an unknown target");
+  const reasonLabel = label(run.reason?.trim() || "unknown reason");
   if (historicalFailure) {
     headline = `Last update run failed (${reasonLabel}) — Gateway is serving ${servingLabel}; run \`openclaw update\` to clear the record.`;
   } else if (supersededTargetless) {
-    const safe = (value: string | undefined) => sanitizeTerminalText(value ?? "").slice(0, 240);
     const [serving, startedFrom] = versionMovedOn
-      ? [servingLabel, safe(beforeVersion)]
-      : [`${servingLabel} (build ${safe(servingBuild)})`, `build ${safe(beforeBuild)}`];
+      ? [servingLabel, label(beforeVersion ?? "")]
+      : [
+          `${servingLabel} (build ${label(servingBuild ?? "")})`,
+          `build ${label(beforeBuild ?? "")}`,
+        ];
     headline = `Last update run failed (${reasonLabel}) — Gateway is now serving ${serving}, not ${startedFrom} that the run started from.`;
   } else if (observedFailure) {
     const current =
       (buildMismatch || targetIdentityUnavailable) && servingBuild
-        ? `${servingLabel} (build ${sanitizeTerminalText(servingBuild).slice(0, 240)})`
+        ? `${servingLabel} (build ${label(servingBuild)})`
         : servingLabel;
     const target =
-      buildMismatch && targetBuild
-        ? `${targetLabel} (build ${sanitizeTerminalText(targetBuild).slice(0, 240)})`
-        : targetLabel;
+      buildMismatch && targetBuild ? `${targetLabel} (build ${label(targetBuild)})` : targetLabel;
     const detail = !targetVersion
       ? `Gateway is serving ${current}; the update target is unknown`
       : !servingVersion
