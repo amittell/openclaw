@@ -389,7 +389,8 @@ describe("status update ledger evidence", () => {
       name: "a recorded post-update build without a target version",
       after: { buildId: "candidate" },
       server: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
-      detail: "Gateway is serving 2026.10.1; the update target is unknown — run `openclaw update`.",
+      detail:
+        "Gateway is serving 2026.10.1 (build 2026.10.1-3745fd3c29a4); the update target is unknown — run `openclaw update`.",
     },
     {
       name: "a targetless rollback with no post-update identity",
