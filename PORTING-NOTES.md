@@ -3250,9 +3250,57 @@ connection, and a timeout reply no longer names the model or HTTP status (10.1's
   providers, state v20, 8 agent DBs v24, local-only PASS, toolSearch False, 36/36 markers. Kebablebot replied
   (22:13:38 local), RatBot's tool loop ran with no failures, AILYbot had no traffic at the time of writing.
 - **Lessons:** a fresh-session probe cannot see channel-turn request shapes. 10.1 logs `[model-fetch] response`
-  and `embedded run agent end` only for FAILED calls/turns, so "count the 200s" reads 0 on a healthy build. The
+  and `embedded run agent end` only for FAILED calls/turns (corrected 2026-10-12: also slow calls, >= 1000 ms), so "count the 200s" reads 0 on a healthy build. The
   verifier now FAILs on any provider 4xx, template 400, `surface_error` or errored turn since the restart,
   reports PENDING with no inbound turn, and passes otherwise.
+
+## Follow-up batch (2026-10-12): `675749231a47..e492129aa736`
+
+Five commits on the deployed carry. Each is a cherry-pick whose `git patch-id --stable` equals its source.
+
+| commit        | source         | what                                                                                                                           |
+| ------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ce132faf189` | `a6355649e696` | tests: `/temperature` seams, trackCompletion precedence, Telegram bot-pair wiring                                              |
+| `6c7106f3999` | `56da229195a3` | pending inputs: a session rotated by another process after the stage snapshot is not current                                   |
+| `160e3332e9d` | `bf8380a23058` | Telegram: an info line for how each final answer reached Telegram (`telegram final delivery outcome=<kind>`), upstream #170110 |
+| `ccd4194b2a9` | `819b45f717d3` | Telegram: streamed and preview-finalized replies are recorded for the replay guard (`markTelegramVisibleReplyDelivered`)       |
+| `e492129aa73` | `86af9b9b3b9d` | sessions: a non-owner `assign_owner` reaches only the current session and sessions it spawned (Alex: option B)                 |
+
+- **Why the Telegram pair:** RatBot's overnight "0 sends" (2026-10-12) was a logging blind spot. All 8 replies were
+  delivered (`plugin_state_entries` `telegram.sent-messages`), but the preview-finalized lane logs only at verbose.
+  The same lane never called `markTelegramVisibleReplyDelivered`, so `finalizeSpooledReplayResult` could replay a
+  reply that had already been delivered. That was reproduced, then fixed.
+- **Sessions:** reported privately upstream as GHSA-3jgq-rcvq-wgj4 (2026-10-12 22:31Z, state triage). Neither bot
+  sets `tools.sessions` or `tools.agentToAgent`, so both ran with visibility `all` before this commit.
+- **Checks at `e492129aa736` (M4 Pro, 2026-10-12):**
+  - tsgo: core, ui, extensions, scripts, test:src, test:packages, test:root, test:ui and extensions:test all rc=0.
+  - oxlint rc=0 (a control file with three errors gives rc=1); oxfmt clean.
+  - Changed tests 6 files, 56/56. Sessions tests 9 files, 75/75. Guards (eager-import-closure, pr-wrappers,
+    test-projects routing, vitest pattern-file) 603/603.
+  - Line-cap ratchet: the same 35 pre-existing entries, none in a batch file. No conflict markers.
+  - Telegram suite 2517/2518. The one failure, `bot-native-command-dispatch.miniapp.test.ts` (`/dashboard`, `expected []
+to have a length of 1`), fails identically at `675749231a47`.
+  - Controls: tsgo:core rc=2 with an injected type error (rc=0 restored); oxlint rc=1 on a three-error file.
+- **Pushed:** github `upgrade-v2026.10.1` `675749231a47` -> `e492129aa736` (fast-forward, ls-remote verified).
+- **rh-bot (2026-10-12/13):**
+  - Idle at 23:16:59Z, deploy rc=0 at 23:29:26Z, pid 87678. Backup `/Volumes/SSD512/oc101-dbbackup-20261012T232025Z`.
+  - verify: HEAD and build-info `e492129aa736`, readyz 200/200, 1/1 provider, state v20, 6 agent DBs v24,
+    local-only PASS, config and plist unchanged.
+  - Real turn: Alex's DM at 19:59:42 local, then 7 sends, 1 `final delivery outcome=sent`, 0 provider 4xx,
+    0 template 400, 0 surface_error.
+  - One `isError=true` at 20:08:17 was a context overflow (a 35,746-char exec result in a 272-message session).
+    The transcript shows a compaction at 20:09:07, then replies at 20:18:53-20:24:22. Two `tool_call` errors were
+    upstream's `sessions_spawn` max-children cap (5/5).
+- **mac-mini (2026-10-13):**
+  - Idle at 00:41:46Z, build 395 s, doctor 217 s, deploy rc=0 at 00:53:08Z, pid 97380. Backup
+    `/Volumes/Storage/oc101-dbbackup-20261013T004209Z`.
+  - verify: 3/3 providers, state v20, 8 agent DBs v24, local-only PASS, toolSearch False, config and plist
+    unchanged, 36/36 markers.
+  - Real turn: PENDING when this was written.
+- **Corrected 2026-10-12** (see Deploy 2026-10-11/12 above): `[model-fetch] response` is info-level when the call
+  failed OR took >= 1000 ms (`SLOW_MODEL_FETCH_MS`, `src/agents/provider-transport-fetch.ts`), debug otherwise.
+  verify-101 now splits `Context overflow` agent-end lines out as `overflow-attempts` (CHECK: read the transcript)
+  and counts `final delivery outcome=` lines.
 
 ## Process trap measured today
 
