@@ -363,14 +363,16 @@ describe("status update ledger evidence", () => {
       before: { version: "2026.10.1", buildId: "2026.10.1-3745fd3c29a4" },
       verification: { versionMatch: false },
       server: { version: "2026.9.4", buildId: "2026.9.4-37ea9f110bad" },
-      detail: "Gateway is serving 2026.9.4; the update target is unknown — run `openclaw update`.",
+      detail:
+        "Gateway is serving 2026.9.4 (build 2026.9.4-37ea9f110bad); the update target is unknown — run `openclaw update`.",
     },
     {
       name: "a Gateway already behind the installed build of the same version",
       before: { version: "2026.9.4", buildId: "2026.9.4-rebuilt" },
       verification: { versionMatch: false },
       server: { version: "2026.9.4", buildId: "2026.9.4-37ea9f110bad" },
-      detail: "Gateway is serving 2026.9.4; the update target is unknown — run `openclaw update`.",
+      detail:
+        "Gateway is serving 2026.9.4 (build 2026.9.4-37ea9f110bad); the update target is unknown — run `openclaw update`.",
     },
     {
       name: "the Gateway still serving the starting build",
