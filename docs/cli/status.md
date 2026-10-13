@@ -66,7 +66,8 @@ the running Gateway observation saved with that failure: `Last update run failed
 (preflight-no-good-commit) — Gateway is now serving 2026.10.1; recorded serving
 identity was 2026.9.4.` The installed package identity alone cannot establish this
 change: it may already have been ahead of the running Gateway when the update
-failed. Without a saved serving identity, the warning remains. A run with an
+failed. A recovery check matching the old installed package does not establish
+an update target. Without a saved serving identity, the warning remains. A run with an
 explicit target keeps the rules above.
 Status does not rewrite the failed run or claim the update succeeded.
 Starting, unreachable, degraded, and

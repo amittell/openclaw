@@ -32,8 +32,6 @@ function renderStatusReport(
     run.verification.rollbackOutcome?.status === "failed";
   // Rollback can rewrite `after` and verify the previous package. Those facts
   // cannot establish the candidate build, even when both versions are equal.
-  // A failed verification can record the old serving process; only a matching
-  // verification is evidence of the intended target when candidate identity is absent.
   const recordedServingVersion = normalizeOptionalString(run.verification.runningVersion);
   const recordedServingBuild = normalizeOptionalString(run.verification.runningBuildId);
   const verifiedVersion =
@@ -54,15 +52,14 @@ function renderStatusReport(
   const afterIdentityAvailable =
     (!rollbackAttempted || afterIsDistinctTarget) &&
     resolveUpdateRunIdentity(run.verification, run.after).kind !== "unavailable";
+  // Recovery can verify the starting package without selecting an update target.
   const targetVersion =
-    explicitTargetVersion ?? (afterIdentityAvailable ? afterVersion : undefined) ?? verifiedVersion;
+    explicitTargetVersion ?? (afterIdentityAvailable ? afterVersion : undefined);
   const targetBuild =
     (afterIdentityAvailable && (!afterVersion || afterVersion === targetVersion)
       ? normalizeOptionalString(run.after.buildId)
       : undefined) ??
-    (verifiedVersion === targetVersion && verifiedVersion
-      ? normalizeOptionalString(run.verification.runningBuildId)
-      : undefined);
+    (verifiedVersion === targetVersion && verifiedVersion ? recordedServingBuild : undefined);
   const servingVersion = normalizeOptionalString(opts.gatewayServer?.version);
   const servingBuild = normalizeOptionalString(opts.gatewayServer?.buildId);
   const buildMismatch = Boolean(targetBuild && servingBuild && targetBuild !== servingBuild);
