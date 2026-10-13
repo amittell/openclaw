@@ -3296,7 +3296,9 @@ to have a length of 1`), fails identically at `675749231a47`.
     `/Volumes/Storage/oc101-dbbackup-20261013T004209Z`.
   - verify: 3/3 providers, state v20, 8 agent DBs v24, local-only PASS, toolSearch False, config and plist
     unchanged, 36/36 markers.
-  - Real turn: PENDING when this was written.
+  - Real turn (re-run 02:00Z): AILYbot twice in its group, RatBot DM, Kebablebot DM. Gate reads ok: inbound 5,
+    send-ok 5, final-outcome lines 4, 0 provider 4xx, 0 template 400, 0 surface_error, 0 errored turns,
+    0 overflow attempts. channel_ingress 58 completed, none re-injected.
 - **Corrected 2026-10-12** (see Deploy 2026-10-11/12 above): `[model-fetch] response` is info-level when the call
   failed OR took >= 1000 ms (`SLOW_MODEL_FETCH_MS`, `src/agents/provider-transport-fetch.ts`), debug otherwise.
   verify-101 now splits `Context overflow` agent-end lines out as `overflow-attempts` (CHECK: read the transcript)
