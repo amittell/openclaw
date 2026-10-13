@@ -34,9 +34,11 @@ function renderStatusReport(
   // cannot establish the candidate build, even when both versions are equal.
   // A failed verification can record the old serving process; only a matching
   // verification is evidence of the intended target when candidate identity is absent.
+  const recordedServingVersion = normalizeOptionalString(run.verification.runningVersion);
+  const recordedServingBuild = normalizeOptionalString(run.verification.runningBuildId);
   const verifiedVersion =
     !rollbackAttempted && run.verification.versionMatch === true
-      ? normalizeOptionalString(run.verification.runningVersion)
+      ? recordedServingVersion
       : undefined;
   const beforeVersion = normalizeOptionalString(run.before.version);
   const afterVersion = normalizeOptionalString(run.after.version);
@@ -76,14 +78,14 @@ function renderStatusReport(
     !buildMismatch &&
     !targetIdentityUnavailable,
   );
-  // A manual upgrade can supersede a preflight failure without changing its saved outcome.
-  // Git admission records a target SHA before reading its version; keep that failure warned.
-  const beforeBuild = normalizeOptionalString(run.before.buildId);
+  // The installed package can already differ from a still-running Gateway.
+  // Only a saved serving observation establishes a change after a targetless failure.
   const versionMovedOn = Boolean(
-    servingVersion && beforeVersion && servingVersion !== beforeVersion,
+    servingVersion && recordedServingVersion && servingVersion !== recordedServingVersion,
   );
   const supersededTargetless = Boolean(
     observedFailure &&
+    run.verification.serviceRunning === true &&
     !targetVersion &&
     !normalizeOptionalString(run.target?.sha) &&
     !normalizeOptionalString(run.target?.tag) &&
@@ -91,7 +93,8 @@ function renderStatusReport(
     !afterVersion &&
     !normalizeOptionalString(run.after.buildId) &&
     !normalizeOptionalString(run.after.sha) &&
-    (versionMovedOn || (servingBuild && beforeBuild && servingBuild !== beforeBuild)),
+    (versionMovedOn ||
+      (servingBuild && recordedServingBuild && servingBuild !== recordedServingBuild)),
   );
   const message =
     run.status === "failed" && !reconciled
@@ -108,13 +111,13 @@ function renderStatusReport(
   if (historicalFailure) {
     headline = `Last update run failed (${reasonLabel}) — Gateway is serving ${servingLabel}; run \`openclaw update\` to clear the record.`;
   } else if (supersededTargetless) {
-    const [serving, startedFrom] = versionMovedOn
-      ? [servingLabel, label(beforeVersion ?? "")]
+    const [serving, recorded] = versionMovedOn
+      ? [servingLabel, label(recordedServingVersion ?? "")]
       : [
           `${servingLabel} (build ${label(servingBuild ?? "")})`,
-          `build ${label(beforeBuild ?? "")}`,
+          `build ${label(recordedServingBuild ?? "")}`,
         ];
-    headline = `Last update run failed (${reasonLabel}) — Gateway is now serving ${serving}, not ${startedFrom} that the run started from.`;
+    headline = `Last update run failed (${reasonLabel}) — Gateway is now serving ${serving}; recorded serving identity was ${recorded}.`;
   } else if (observedFailure) {
     const current =
       (buildMismatch || targetIdentityUnavailable) && servingBuild

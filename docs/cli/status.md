@@ -61,10 +61,13 @@ cannot by themselves establish the intended candidate identity. A
 same-version rollback stays warned when the intended candidate build cannot be
 verified. A failed run that never selected a target, such as a preflight refusal
 that recorded no target version, SHA, tag, or post-update identity, is also
-labeled as historical once the Gateway serves a different version, or a different
-build of the same version, than the run started from: `Last update run failed
-(preflight-no-good-commit) — Gateway is now serving 2026.10.1, not 2026.9.4 that
-the run started from.` A run with an explicit target keeps the rules above.
+labeled as historical once the Gateway serves a different version or build than
+the running Gateway observation saved with that failure: `Last update run failed
+(preflight-no-good-commit) — Gateway is now serving 2026.10.1; recorded serving
+identity was 2026.9.4.` The installed package identity alone cannot establish this
+change: it may already have been ahead of the running Gateway when the update
+failed. Without a saved serving identity, the warning remains. A run with an
+explicit target keeps the rules above.
 Status does not rewrite the failed run or claim the update succeeded.
 Starting, unreachable, degraded, and
 remote Gateways do not qualify for this note. Use
