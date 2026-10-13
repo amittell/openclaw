@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { escapeRegExp } from "../shared/regexp.js";
@@ -9,7 +8,6 @@ const MAX_SECRET_VALUES = 512;
 type SecretValueRedactor = (text: string, mask: (value: string, index: number) => string) => string;
 type SecretRedactionRegistryState = {
   registeredValues: Map<string, true>;
-  registryRevision: number;
   registeredValueRedactor: SecretValueRedactor | undefined;
   longestRegisteredValueLength: number | undefined;
 };
@@ -19,34 +17,13 @@ const state = resolveGlobalSingleton<SecretRedactionRegistryState>(
   Symbol.for("openclaw.secretRedactionRegistry"),
   () => ({
     registeredValues: new Map<string, true>(),
-    registryRevision: 0,
     registeredValueRedactor: undefined,
     longestRegisteredValueLength: undefined,
   }),
 );
 
-export type SecretRedactionRegistrySnapshot = { revision: number; values: readonly string[] };
-const registrySnapshots = resolveGlobalSingleton(
-  Symbol.for("openclaw.secretRedactionRegistrySnapshots"),
-  () =>
-    new AsyncLocalStorage<{
-      snapshot: SecretRedactionRegistrySnapshot;
-      values: ReadonlySet<string>;
-      redactor?: SecretValueRedactor;
-      longestValueLength?: number;
-    }>(),
-);
-
-/** A trusted worker task borrows captured policy without mutating its process registry. */
-export function withSecretRedactionRegistrySnapshot<T>(
-  snapshot: SecretRedactionRegistrySnapshot,
-  run: () => T,
-): T {
-  return registrySnapshots.run({ snapshot, values: new Set(snapshot.values) }, run);
-}
-
+type SecretRedactionRegistrySnapshot = { values: readonly string[] };
 function invalidateMatcher(): void {
-  state.registryRevision += 1;
   state.registeredValueRedactor = undefined;
   state.longestRegisteredValueLength = undefined;
 }
@@ -71,8 +48,8 @@ export function registerSecretValueForRedaction(value: string): void {
   if (encoded !== value) {
     registerOneSecretValue(encoded);
   }
-  // Captured structured payloads are serialized before persistence, so retain
-  // the JSON string-content form for credentials with escaped characters.
+  // Structured logs serialize credentials, so retain the JSON string-content form
+  // for values with escaped characters.
   const jsonEscaped = JSON.stringify(value).slice(1, -1);
   if (jsonEscaped !== value) {
     registerOneSecretValue(jsonEscaped);
@@ -84,16 +61,11 @@ export function registerSecretValueForRedaction(value: string): void {
 
 /** Returns whether a value has SecretRef provenance in the process registry. */
 export function isSecretValueRegisteredForRedaction(value: string): boolean {
-  return (registrySnapshots.getStore()?.values ?? state.registeredValues).has(value);
+  return state.registeredValues.has(value);
 }
 
 export function hasRegisteredSecretValuesForRedaction(): boolean {
-  return (registrySnapshots.getStore()?.values ?? state.registeredValues).size > 0;
-}
-
-/** Changes with registry membership, including bounded eviction and test resets. */
-export function getSecretRedactionRegistryRevision(): number {
-  return registrySnapshots.getStore()?.snapshot.revision ?? state.registryRevision;
+  return state.registeredValues.size > 0;
 }
 
 /**
@@ -101,12 +73,6 @@ export function getSecretRedactionRegistryRevision(): number {
  * text redacted without its tail must keep this much past a cut to mask a value that starts before it.
  */
 export function getLongestRegisteredSecretLength(): number {
-  // A borrowed snapshot is the registry the redactor matches against inside its scope.
-  const scoped = registrySnapshots.getStore();
-  if (scoped) {
-    scoped.longestValueLength ??= longestValueLength(scoped.values);
-    return scoped.longestValueLength;
-  }
   state.longestRegisteredValueLength ??= longestValueLength(state.registeredValues.keys());
   return state.longestRegisteredValueLength;
 }
@@ -121,10 +87,7 @@ function longestValueLength(values: Iterable<string>): number {
 
 /** Exact surface forms are already expanded; snapshots must not register them again. */
 export function captureSecretRedactionRegistrySnapshot(): SecretRedactionRegistrySnapshot {
-  const scoped = registrySnapshots.getStore();
-  return scoped
-    ? { revision: scoped.snapshot.revision, values: [...scoped.values] }
-    : { revision: state.registryRevision, values: [...state.registeredValues.keys()] };
+  return { values: [...state.registeredValues.keys()] };
 }
 
 /** Replaces registered exact values while preserving the caller's mask convention. */
@@ -132,11 +95,6 @@ export function redactRegisteredSecretValues(
   text: string,
   mask: (value: string, index: number) => string,
 ): string {
-  const scoped = registrySnapshots.getStore();
-  if (scoped) {
-    scoped.redactor ??= createSecretValueRedactor(scoped.snapshot.values);
-    return scoped.redactor(text, mask);
-  }
   if (!text || state.registeredValues.size === 0) {
     return text;
   }
@@ -144,7 +102,7 @@ export function redactRegisteredSecretValues(
   return state.registeredValueRedactor(text, mask);
 }
 
-export function createSecretValueRedactor(values: readonly string[]): SecretValueRedactor {
+function createSecretValueRedactor(values: readonly string[]): SecretValueRedactor {
   let compiledMatcher: { prefixes: RegExp; buckets: Map<string, string[]> } | undefined;
   let firstChars: Set<string> | undefined;
   return (text, mask) => {

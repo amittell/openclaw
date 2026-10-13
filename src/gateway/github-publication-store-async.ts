@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
-import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
+import type {
+  GitHubPublicationRow,
+  RepositoryGitHubPublicationRow,
+} from "../state/github-publication-read.types.js";
 import {
   createGitHubPublicationWorkerScope,
   readGitHubPublicationInWorker as read,
@@ -9,6 +12,7 @@ import {
 import type {
   GitHubPublicationDeferral,
   PersonalPublicationMutation,
+  PublicationMaintenanceMutation,
   PublicationMutationReceipt,
   PublicationReadOperations,
   RepositoryPublicationMutation,
@@ -16,10 +20,8 @@ import type {
 } from "../state/github-publication-worker.types.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { PersonalGitHubPublicationRow } from "./github-personal-publication-store.js";
-import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
 import type { GitHubPublicationEffectTransition } from "./github-publication-execution-effects.js";
 import type { GitHubPublicationSourceCapability } from "./github-publication-source.js";
-import { readRepositoryGitHubPublication } from "./github-repository-publication-store.js";
 
 /** Native callers retain live memory authority; durable execution predicates stay in the worker. */
 export type GitHubPublicationTransitionAuthority = {
@@ -147,18 +149,10 @@ export async function claimPersonalGitHubPublicationAsync(
   );
   return {
     row: { ...claimed, gateway_instance_id: instanceId, execution_id: executionId },
-    // Retained final-effect guard until legacy synchronous writers are removed.
+    // The coordinator owns this claim under workspace exclusion until settlement.
     ownsExecution() {
       scope.assertCurrent();
-      const current = readPersonalGitHubPublication(row.owner_profile_id, {
-        requestId: row.request_id,
-      });
-      return (
-        current?.status === "publishing" &&
-        current.gateway_instance_id === instanceId &&
-        current.execution_id === executionId &&
-        current.request_digest === row.request_digest
-      );
+      return true;
     },
     ...effects(async (transition) => {
       return requireRow(
@@ -187,13 +181,7 @@ export async function claimRepositoryGitHubPublicationAsync(
     row: { ...claimed, gateway_instance_id: instanceId, execution_id: executionId },
     ownsExecution() {
       scope.assertCurrent();
-      const current = readRepositoryGitHubPublication(row.request_id);
-      return (
-        current?.status === "publishing" &&
-        current.gateway_instance_id === instanceId &&
-        current.execution_id === executionId &&
-        current.request_digest === row.request_digest
-      );
+      return true;
     },
     ...effects(async (transition) => {
       return requireRow(
@@ -208,6 +196,56 @@ export async function claimRepositoryGitHubPublicationAsync(
 export type RepositoryGitHubPublicationExecutionAsync = Awaited<
   ReturnType<typeof claimRepositoryGitHubPublicationAsync>
 >;
+
+export async function claimGitHubPublicationExecutionAsync(
+  requestId: string,
+  instanceId: string,
+  assertCustody: () => void,
+) {
+  return requireRow(
+    await sharedMutation(
+      mutationScope(),
+      { operation: "claim", requestId, instanceId },
+      assertCustody,
+    ),
+  );
+}
+
+export function createGitHubPublicationExecutionStoreAsync(
+  instanceId: string,
+  authority: GitHubPublicationTransitionAuthority,
+) {
+  const scope = mutationScope();
+  return {
+    async bindWorkspaceSnapshot(
+      input: Extract<SharedPublicationMutation, { operation: "bindWorkspaceSnapshot" }>["input"],
+    ) {
+      return requireRow(
+        await sharedMutation(
+          scope,
+          { operation: "bindWorkspaceSnapshot", input, instanceId },
+          authority,
+        ),
+      );
+    },
+    async updatePublishingFacts(
+      input: Extract<SharedPublicationMutation, { operation: "updatePublishingFacts" }>["input"],
+    ) {
+      return requireRow(
+        await sharedMutation(scope, { operation: "updatePublishingFacts", input, instanceId }, () =>
+          authority.assertCustody(),
+        ),
+      );
+    },
+    async complete(row: GitHubPublicationRow, result: SessionGitHubPublicationResult) {
+      return requireRow(
+        await sharedMutation(scope, { operation: "complete", row, result, instanceId }, () =>
+          authority.assertCustody(),
+        ),
+      );
+    },
+  };
+}
 
 export async function bindRepositoryGitHubPublicationCheckpointAsync(
   row: RepositoryGitHubPublicationRow,
@@ -258,21 +296,28 @@ export async function deferGitHubPublicationRequestsAsync(
   await sharedMutation(mutationScope(), { operation: "defer", selection }, assertCurrent);
 }
 
-export async function markGitHubPublicationReportedAsync(
-  kind: "personal" | "repository" | "shared",
-  requestId: string,
+export async function requirePersonalGitHubPublicationConfirmationAsync(
+  instanceId: string,
   assertCurrent?: () => void,
 ) {
   const scope = mutationScope();
-  const input = { operation: "report" as const, requestId };
-  const assertOwned = assertCurrent ?? scope.assertCurrent;
-  if (kind === "personal") {
-    await personalMutation(scope, input, assertOwned);
-  } else if (kind === "repository") {
-    await repositoryMutation(scope, input, assertOwned);
-  } else {
-    await sharedMutation(scope, input, assertOwned);
-  }
+  await personalMutation(
+    scope,
+    { operation: "restart", instanceId },
+    assertCurrent ?? scope.assertCurrent,
+  );
+}
+
+export async function runGitHubPublicationMaintenanceAsync(
+  input: PublicationMaintenanceMutation,
+  assertCurrent?: () => void,
+) {
+  const scope = mutationScope();
+  await scope.mutate(
+    { type: "githubPublications.maintenance", input: { ...input, operationId: randomUUID() } },
+    assertCurrent ?? scope.assertCurrent,
+    publish,
+  );
 }
 
 export async function readPersonalGitHubPublicationAsync(
@@ -302,4 +347,47 @@ export async function readRepositoryGitHubPublicationBranchAsync(
   return result?.type === "githubPublications.branch"
     ? result.branch
     : { head: undefined, unsettled: false };
+}
+
+export async function listUnreportedPersonalGitHubPublicationsAsync() {
+  const result = await read({ type: "githubPublications.unreported", input: undefined });
+  return result?.type === "githubPublications.unreported" ? result.rows : [];
+}
+
+export async function listGitHubPublicationsForClaimAsync(
+  claim: PublicationReadOperations["githubPublications.claimRequests"]["input"]["claim"],
+  options: { pendingOnly?: boolean } = {},
+) {
+  const result = await read({
+    type: "githubPublications.claimRequests",
+    input: { claim, ...options },
+  });
+  return result?.type === "githubPublications.claimRequests" ? result.rows : [];
+}
+
+export async function listSharedGitHubPublicationsAsync(
+  input: PublicationReadOperations["githubPublications.sharedList"]["input"] = {},
+) {
+  const result = await read({ type: "githubPublications.sharedList", input });
+  return result?.type === "githubPublications.sharedList" ? result.rows : [];
+}
+
+export async function bindAcceptedGitHubPublicationClaimSnapshotAsync(
+  input: Extract<SharedPublicationMutation, { operation: "bindAcceptedSnapshot" }>["input"],
+  assertCustody: () => void,
+) {
+  return requireRow(
+    await sharedMutation(
+      mutationScope(),
+      { operation: "bindAcceptedSnapshot", input },
+      assertCustody,
+    ),
+  );
+}
+
+export async function readGitHubPublicationRequestAsync(
+  input: PublicationReadOperations["githubPublications.sharedRead"]["input"],
+) {
+  const result = await read({ type: "githubPublications.sharedRead", input });
+  return result?.type === "githubPublications.sharedRead" ? result.row : undefined;
 }

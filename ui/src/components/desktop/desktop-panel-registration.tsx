@@ -25,7 +25,7 @@ export type DesktopPanelInputs = Pick<
   | "desktopClientFactory"
 > & { sessions: DesktopPanelController["sessions"] | undefined };
 
-export type DesktopPanelElement = HTMLElement &
+type DesktopPanelElement = HTMLElement &
   Pick<
     DesktopPanelController,
     | keyof DesktopPanelInputs
@@ -82,5 +82,15 @@ export function defineDesktopPanelElement(
 declare global {
   interface HTMLElementTagNameMap {
     "openclaw-desktop-panel": DesktopPanelElement;
+  }
+}
+
+declare module "@solidjs/web" {
+  namespace JSX {
+    interface IntrinsicElements {
+      "openclaw-desktop-panel": HTMLAttributes<DesktopPanelElement> & {
+        [Key in keyof DesktopPanelInputs as `prop:${Key}`]?: DesktopPanelInputs[Key];
+      } & { embedded?: boolean };
+    }
   }
 }

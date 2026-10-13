@@ -146,30 +146,3 @@ export function readLoggingConfig(): LoggingConfig | undefined {
 export function hasConfiguredRedactPatterns(): boolean {
   return (readLoggingConfig()?.redactPatterns?.length ?? 0) > 0;
 }
-
-/** Capture before dispatch; the returned guard never refreshes configuration or reads files. */
-export function captureLoggingRedactionPatternGuard(
-  explicitPatterns?: readonly string[],
-): () => boolean {
-  const captured = (explicitPatterns ?? readLoggingConfig()?.redactPatterns)?.slice();
-  return () => {
-    let current = explicitPatterns;
-    if (current === undefined) {
-      if (loggingState.appliedConfig !== APPLIED_LOGGING_CONFIG_UNOWNED) {
-        current = loggingState.appliedConfig?.redactPatterns;
-      } else {
-        if (
-          !cachedLoggingConfig ||
-          cachedLoggingConfig.selector !== resolveLoggingConfigSelector()
-        ) {
-          return false;
-        }
-        current = cachedLoggingConfig.logging?.redactPatterns;
-      }
-    }
-    return (
-      current?.length === captured?.length &&
-      !current?.some((pattern, index) => pattern !== captured?.[index])
-    );
-  };
-}

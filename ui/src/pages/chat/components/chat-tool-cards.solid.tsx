@@ -1,7 +1,7 @@
 import type { ProgressCardStep } from "@openclaw/gateway-protocol";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import type { JSX } from "@solidjs/web";
+import { dynamic, type JSX } from "@solidjs/web";
 import { For, Match, Show, Switch, createMemo } from "solid-js";
 import { stripShellPreamble } from "../../../../../src/agents/tool-display-exec-shell.js";
 import { iconData } from "../../../components/icon-data.ts";
@@ -152,7 +152,7 @@ function resolveToolRowText(card: ToolCard, view: ToolCallView, outcome: ToolCar
   return [summary.label, summary.name].filter(Boolean).join(" ");
 }
 
-export function ToolIcon(props: {
+function ToolIcon(props: {
   name: string;
   tool?: { toolName: string; pluginToolIcons?: PluginToolIcons };
 }) {
@@ -323,7 +323,7 @@ function progressReceiptLabel(card: ToolCard, outcome: ToolCardOutcome) {
             : t("sessionProgressCard.receipt.cleared");
 }
 
-export function ToolApprovalReviews(props: { card: ToolCard }) {
+function ToolApprovalReviews(props: { card: ToolCard }) {
   const reviews = createMemo(() => readToolApprovalReviews(props.card.details));
   return (
     <Show when={reviews().length > 0}>
@@ -388,7 +388,7 @@ type ToolCardProps = {
   children?: JSX.Element;
 };
 
-export function ToolCardView(props: ToolCardProps) {
+function ToolCardView(props: ToolCardProps) {
   const card = createMemo(() => resolveToolCardDisplay(props.card), { equals: false });
   const outcome = () => resolveToolCardOutcome(card(), props.options.runActive);
   const view = createMemo(() =>
@@ -417,6 +417,8 @@ export function ToolCardView(props: ToolCardProps) {
     }
   };
   const linkedRow = () => (workspaceFilePath() ? "file" : canOpenSubagent() ? "subagent" : null);
+  const Row = dynamic(() => (linkedRow() ? "div" : "button"));
+  const toggle = () => props.options.onToggleExpanded(card().id);
   const rowContent = () => (
     <>
       <span
@@ -470,32 +472,22 @@ export function ToolCardView(props: ToolCardProps) {
             { "is-open": props.options.expanded },
           ]}
         >
-          <Show
-            when={linkedRow()}
-            fallback={
-              <button
-                class={[
-                  "chat-inline-disclosure chat-tool-msg-summary chat-tool-row",
-                  { "chat-tool-row--running": running() },
-                ]}
-                type="button"
-                aria-expanded={props.options.expanded ? "true" : "false"}
-                onPointerEnter={syncToolDisclosureOverflow}
-                onFocus={syncToolDisclosureOverflow}
-                onClick={() => props.options.onToggleExpanded(card().id)}
-              >
-                {rowContent()}
-              </button>
-            }
+          <Row
+            class={[
+              "chat-inline-disclosure chat-tool-msg-summary chat-tool-row",
+              {
+                "chat-tool-row--running": running(),
+                [`chat-tool-row--${linkedRow()}`]: Boolean(linkedRow()),
+              },
+            ]}
+            type={linkedRow() ? undefined : "button"}
+            aria-expanded={linkedRow() ? undefined : props.options.expanded ? "true" : "false"}
+            onPointerEnter={syncToolDisclosureOverflow}
+            onFocus={linkedRow() ? undefined : syncToolDisclosureOverflow}
+            onFocusIn={linkedRow() ? syncToolDisclosureOverflow : undefined}
+            onClick={linkedRow() ? undefined : toggle}
           >
-            <div
-              class={[
-                `chat-inline-disclosure chat-tool-msg-summary chat-tool-row chat-tool-row--${linkedRow()}`,
-                { "chat-tool-row--running": running() },
-              ]}
-              onPointerEnter={syncToolDisclosureOverflow}
-              onFocusIn={syncToolDisclosureOverflow}
-            >
+            <Show when={linkedRow()}>
               <button
                 class="chat-tool-row__toggle"
                 type="button"
@@ -505,11 +497,11 @@ export function ToolCardView(props: ToolCardProps) {
                     ? `${display().label} ${subagent()!.label}`
                     : resolveToolRowText(card(), view(), outcome())
                 }
-                onClick={() => props.options.onToggleExpanded(card().id)}
+                onClick={toggle}
               />
-              {rowContent()}
-            </div>
-          </Show>
+            </Show>
+            {rowContent()}
+          </Row>
           <Show when={props.options.expanded}>
             <Show
               when={props.hasChildren}
@@ -550,7 +542,7 @@ export function ToolCardView(props: ToolCardProps) {
   );
 }
 
-export const ToolCardHost = defineSolidBridge<{
+defineSolidBridge<{
   card: ToolCard | null;
   options: ToolCardOptions;
   hasChildren: boolean;
@@ -576,7 +568,7 @@ export const ToolCardHost = defineSolidBridge<{
     },
   },
 );
-export const ToolIconHost = defineSolidBridge<{
+defineSolidBridge<{
   name: string;
   tool?: { toolName: string; pluginToolIcons?: PluginToolIcons };
 }>("openclaw-chat-tool-icon", (props) => <ToolIcon name={props.name} tool={props.tool} />, {
@@ -585,7 +577,7 @@ export const ToolIconHost = defineSolidBridge<{
     tool: { default: undefined, attribute: false },
   },
 });
-export const ToolReviewsHost = defineSolidBridge<{ card: ToolCard | null }>(
+defineSolidBridge<{ card: ToolCard | null }>(
   "openclaw-chat-tool-reviews",
   (props) => <Show when={props.card}>{(card) => <ToolApprovalReviews card={card()} />}</Show>,
   { properties: { card: { default: null, attribute: false } } },
