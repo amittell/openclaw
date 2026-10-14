@@ -44,8 +44,8 @@ vi.mock("../../run-session-target.js", () => ({
   })),
 }));
 
-const FALLBACK_TEXT =
-  "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+const PROVIDER_FAILURE_TEXT =
+  "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
 const answer = "The note is saved and the report is complete.";
 
 const model: Model = {
@@ -196,19 +196,26 @@ describe("tool-free finalization after a stopped tool call", () => {
     ]);
   });
 
-  it("ends with the original fallback when the extra attempt calls a tool again", async () => {
+  it("preserves the provider failure when the extra attempt calls a tool again", async () => {
     const passes = scriptFinalizationPasses([
       [callTool("write"), say("An answer the stop must never request.")],
       [callTool("exec"), say("An answer the stop must never request.")],
       [say("A third pass must never run.")],
     ]);
 
-    const result = await prepareTerminalWithSettledTurnFinalization(rhBotFinalizationInput());
+    const input = rhBotFinalizationInput();
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
 
     expect(passes.map((pass) => pass.modelCalls)).toEqual([1, 1]);
     expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(2);
+    expect(
+      backendMocks.runSettledFinalization.mock.calls.map(([attempt]) => attempt.disableTools),
+    ).toEqual([true, true]);
+    expect(result.finalizationOutcome).toBe("failed");
+    expect(result.terminalState).toBe(input.initial.terminalState);
+    expect(result.attempt.terminal).toBe(input.initial.attempt.terminal);
     expect(result.prepared.payloadsWithToolMedia).toEqual([
-      expect.objectContaining({ text: FALLBACK_TEXT }),
+      expect.objectContaining({ text: PROVIDER_FAILURE_TEXT }),
     ]);
   });
 });

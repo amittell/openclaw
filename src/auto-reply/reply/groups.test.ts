@@ -167,7 +167,7 @@ describe("group runtime loading", () => {
     {
       name: "direct conversation",
       context: () =>
-        groups.buildDirectChatContext({
+        groups.buildSourceConversationContext({
           sessionCtx: { ChatType: "direct", Provider: "telegram" },
           sourceReplyDeliveryMode: "message_tool_only",
         }),
