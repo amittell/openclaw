@@ -222,7 +222,7 @@ async function persistPluginInstallOwned(
       async () => {
         const [records, persisted] = await Promise.all([
           loadInstalledPluginIndexInstallRecords(),
-          readPersistedInstalledPluginIndexInstallRecords(),
+          Promise.resolve(readPersistedInstalledPluginIndexInstallRecords()),
         ]);
         return { installRecords: records, persistedInstallRecords: persisted };
       },

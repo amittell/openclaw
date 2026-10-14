@@ -20,6 +20,7 @@ import {
   resetLaneState,
   rotateAnswerLaneAfterQueuedBlocksSettle,
 } from "./bot-message-dispatch-draft.js";
+import { logFinalDeliveryOutcome } from "./bot-message-dispatch-final-delivery-log.js";
 import {
   applyQuoteReplyTarget,
   projectPayloadForDelivery,
@@ -482,23 +483,6 @@ export async function observeFinalDelivery(
   } else {
     turn.previewLifecycle.observeFailure(result);
   }
-}
-
-// A final finalized into the preview never reaches deliverReplies, which logs
-// new messages, so each final answer records how it settled here.
-function logFinalDeliveryOutcome(turn: Turn, result: LaneDeliveryResult): void {
-  const { receipt, messageIds, suppression } = result.deliveryResult;
-  const ids = receipt?.platformMessageIds ?? messageIds ?? [];
-  turn.runtime.log?.(
-    [
-      `telegram final delivery outcome=${result.kind}`,
-      `chat=${turn.context.chatId}`,
-      ids.length > 0 && `message=${ids.join(",")}`,
-      suppression && `reason=${suppression.reason}`,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
 }
 
 export async function deliverFinalAnswerText(
