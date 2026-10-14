@@ -3461,6 +3461,37 @@ provenance; it does not prove that a previous toolchain emitted the same failure
 Final head-bound test results and remaining blockers belong to the
 handoff evidence; the passing 10.1 deployment results above do not qualify 10.3.
 
+## Qualification follow-up
+
+At candidate `99a2835418fd`, all 27 focused files passed through native reports
+and the focused complement. The aggregate's collected ordinary cases passed,
+including the Bash workflow and private SQLite staging fixtures. Its optional
+multi-invocation JSON capture rejected three inline project groups; that failed
+invocation is retained as evidence. Final qualification uses the normal reporter
+so those groups execute through their supported owner.
+
+Official full `pnpm lint` controls on exact source `e526106d5714` and release
+`59cb44796b0f` used identical installed toolchains. Source reproduced 26 of the
+candidate's 34 diagnostics, including all 14 non-length findings. Release
+reproduced seven more. The sole new composition failure was the Telegram delivery
+module's 704 counted lines against the 700-line cap. The already-over-cap chat
+send module decreased from 703 counted lines on source to 701 on the candidate.
+These are actual baseline runs, not an inference from matching blobs.
+
+The Telegram outcome logger now lives in a coherent sibling module. Its body,
+comment, two call sites and exact output are retained. Existing delivery-lifecycle
+regressions exercise the real dispatch path and compare the outcome lines. The
+plugin install record load also normalizes the existing synchronous persisted
+reader with `Promise.resolve` inside the existing `Promise.all`. This fixes one
+inherited lint finding while preserving evaluation order, assimilation and the
+separation between recovered records and durable prior ownership. Persistence
+and enablement regressions cover that distinction. Independent review found no
+actionable issue in either change.
+
+Final head-bound results, any remaining inherited check failures, and publication
+verification are recorded in the handoff evidence. No baseline or security policy
+was relaxed to qualify this carry.
+
 ## Validation scope and operational boundary
 
 Required proof uses the exact candidate on the sanctioned M4 host with the pinned
