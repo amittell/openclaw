@@ -1,13 +1,13 @@
 import { Value } from "typebox/value";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { ChatEventSchema } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
-import { createAgentHarnessAttemptLifecycle } from "../agents/harness/attempt-events.js";
-import { createAgentEventTestHarness } from "./server-chat.agent-events.test-harness.js";
 import { buildEmbeddedRunPayloads } from "../agents/embedded-agent-runner/run/payloads.js";
 import { handleAgentEnd } from "../agents/embedded-agent-subscribe.handlers.lifecycle.js";
 import { createContext } from "../agents/embedded-agent-subscribe.handlers.lifecycle.test-helpers.js";
+import { createAgentHarnessAttemptLifecycle } from "../agents/harness/attempt-events.js";
 import { makeAssistantMessageFixture } from "../agents/test-helpers/assistant-message-fixtures.js";
 import { projectChatDisplayMessages } from "./chat-display-projection.js";
+import { createAgentEventTestHarness } from "./server-chat.agent-events.test-harness.js";
 import { emitAgentEvent, registerChatRun } from "./server-chat.agent-events.test-helpers.js";
 import {
   createAgentEventHandler,

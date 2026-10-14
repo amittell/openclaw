@@ -3345,7 +3345,7 @@ about 44 files on this base, so Alex chose a fork-only fix (2026-10-13). Drop th
     7641 updates gave 713 inbound turns, in bursts with many zero hours.
   - The `telegram-final` mirror count is not a delivery check. ailybot read 0 since the restart (3 the hour
     before), yet its reply went out at 17:07:02Z (`outbound send ok accountId=ailybot`, `final delivery
-    outcome=sent`). In the 3 days before the deploy, ailybot had 9 mirrors for 21 sends, main 10 for 99, and
+outcome=sent`). In the 3 days before the deploy, ailybot had 9 mirrors for 21 sends, main 10 for 99, and
     ratbot 5 for 16.
 
 ## Process trap measured today
@@ -3354,7 +3354,6 @@ The shared pre-commit hook (`~/git/openclaw/git-hooks/pre-commit`, via `core.hoo
 `oxfmt --write` on the WORKING TREE and then `git add`s the working-tree version of every staged file.
 A partially staged commit therefore sweeps in the unstaged edits. Commit 1 was rebuilt from a saved
 `write-tree` with `commit-tree`; commit only whole files through the hook.
-
 
 # Carrying onto v2026.10.3 (10.1 -> 10.3), 2026-10-14
 
@@ -3376,30 +3375,30 @@ as ancestry. Two source fixes are already upstream by identical stable patch IDs
 the remaining net changes are carried. No PR closure or title determined a drop.
 No downstream behavior is classified obsolete.
 
-| Source commit | Disposition | Subject |
-| --- | --- | --- |
-| `029439e4e570` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): carry the fork delta onto the 10.1 tag |
-| `84549a3c3119` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): adapt the carried fork code and tests to 10.1 |
-| `2d2723c3751b` | Carried; ancestry and relevant net delta retained | test(agents): carry the #168155 ask_user settlement regression guard |
-| `a067b8cdb6c8` | Already upstream: `6e84f49aa7c2` (#161480, identical patch ID); ancestry retained | fix(logging): long tool text could leak unmasked credentials and stall redaction (#161480) |
-| `b3eee5dc9d67` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): carry upstream #158145 at 70e38024d0bd |
-| `dcc2909d7a08` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): pull #151921 forward to b713781767d |
-| `95e5a8db4048` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): pull #101866 forward to c3e783e8e15 |
-| `7958ebe1b91b` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): pull #89526 forward to 8606a2df718 |
-| `a25baa129c96` | Carried; ancestry and relevant net delta retained | port(v2026.10.1): route the per-call context total through the worker, as #164551 does |
-| `940f1c236962` | Carried; ancestry and relevant net delta retained | test(v2026.10.1): adapt two fork tests to 10.1's session layout and async root loader |
-| `e05fcb377771` | Carried; ancestry and relevant net delta retained | test(v2026.10.1): adapt fork tests to 10.1 and close the PR wrapper inventory |
-| `3745fd3c29a4` | Already upstream: `08efe2bf88f3` (#167309, identical patch ID); ancestry retained | fix: turns fail after runtime notices on strict chat templates (#167309) |
-| `675749231a47` | Carried; ancestry and relevant net delta retained | docs(porting): record the v2026.10.1 carry, verification and deploy |
-| `ce132faf1894` | Carried; ancestry and relevant net delta retained | test(v2026.10.1): pin /temperature seams, trackCompletion precedence, Telegram bot-pair wiring |
-| `6c7106f39996` | Carried; ancestry and relevant net delta retained | fix(pending-inputs): a session rotated after the stage snapshot is not current |
-| `160e3332e9d4` | Carried; ancestry and relevant net delta retained | fix(telegram): log how each final answer reached Telegram |
-| `ccd4194b2a9e` | Carried; ancestry and relevant net delta retained | fix(telegram): record streamed and preview-finalized replies for the replay guard |
-| `e492129aa736` | Carried; ancestry and relevant net delta retained | fix(sessions): non-owner assign_owner reaches only the current session and its spawned sessions |
-| `a5c595e47394` | Carried; ancestry and relevant net delta retained | docs(porting): record the 2026-10-12 follow-up batch and its deploy |
-| `fa5da87400ab` | Carried; ancestry and relevant net delta retained | docs(porting): mac-mini's real-turn gate passed on e492129aa736 |
-| `bf7bf9a2287a` | Carried; ancestry and relevant net delta retained | fix(sessions): replay a keyed user turn one redaction pass past its stored copy |
-| `e526106d5714` | Carried; ancestry and relevant net delta retained | docs(porting): record the #169154 fork fix and its deploy to both bots |
+| Source commit  | Disposition                                                                       | Subject                                                                                         |
+| -------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `029439e4e570` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): carry the fork delta onto the 10.1 tag                                        |
+| `84549a3c3119` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): adapt the carried fork code and tests to 10.1                                 |
+| `2d2723c3751b` | Carried; ancestry and relevant net delta retained                                 | test(agents): carry the #168155 ask_user settlement regression guard                            |
+| `a067b8cdb6c8` | Already upstream: `6e84f49aa7c2` (#161480, identical patch ID); ancestry retained | fix(logging): long tool text could leak unmasked credentials and stall redaction (#161480)      |
+| `b3eee5dc9d67` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): carry upstream #158145 at 70e38024d0bd                                        |
+| `dcc2909d7a08` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): pull #151921 forward to b713781767d                                           |
+| `95e5a8db4048` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): pull #101866 forward to c3e783e8e15                                           |
+| `7958ebe1b91b` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): pull #89526 forward to 8606a2df718                                            |
+| `a25baa129c96` | Carried; ancestry and relevant net delta retained                                 | port(v2026.10.1): route the per-call context total through the worker, as #164551 does          |
+| `940f1c236962` | Carried; ancestry and relevant net delta retained                                 | test(v2026.10.1): adapt two fork tests to 10.1's session layout and async root loader           |
+| `e05fcb377771` | Carried; ancestry and relevant net delta retained                                 | test(v2026.10.1): adapt fork tests to 10.1 and close the PR wrapper inventory                   |
+| `3745fd3c29a4` | Already upstream: `08efe2bf88f3` (#167309, identical patch ID); ancestry retained | fix: turns fail after runtime notices on strict chat templates (#167309)                        |
+| `675749231a47` | Carried; ancestry and relevant net delta retained                                 | docs(porting): record the v2026.10.1 carry, verification and deploy                             |
+| `ce132faf1894` | Carried; ancestry and relevant net delta retained                                 | test(v2026.10.1): pin /temperature seams, trackCompletion precedence, Telegram bot-pair wiring  |
+| `6c7106f39996` | Carried; ancestry and relevant net delta retained                                 | fix(pending-inputs): a session rotated after the stage snapshot is not current                  |
+| `160e3332e9d4` | Carried; ancestry and relevant net delta retained                                 | fix(telegram): log how each final answer reached Telegram                                       |
+| `ccd4194b2a9e` | Carried; ancestry and relevant net delta retained                                 | fix(telegram): record streamed and preview-finalized replies for the replay guard               |
+| `e492129aa736` | Carried; ancestry and relevant net delta retained                                 | fix(sessions): non-owner assign_owner reaches only the current session and its spawned sessions |
+| `a5c595e47394` | Carried; ancestry and relevant net delta retained                                 | docs(porting): record the 2026-10-12 follow-up batch and its deploy                             |
+| `fa5da87400ab` | Carried; ancestry and relevant net delta retained                                 | docs(porting): mac-mini's real-turn gate passed on e492129aa736                                 |
+| `bf7bf9a2287a` | Carried; ancestry and relevant net delta retained                                 | fix(sessions): replay a keyed user turn one redaction pass past its stored copy                 |
+| `e526106d5714` | Carried; ancestry and relevant net delta retained                                 | docs(porting): record the #169154 fork fix and its deploy to both bots                          |
 
 ## Conflict resolutions
 
@@ -3426,6 +3425,41 @@ the exact release. The release still compares serialized replay bytes exactly.
 Keep `bf7bf9a2287a` and its conformance test: the two existing-row comparisons admit
 a keyed user replay one storage-redaction pass past the stored copy only without
 pending-input custody. Pending custody and non-user messages remain exact.
+
+## Release interface test adaptations
+
+The tools-off retry exhaustion test now asserts the release's initial provider
+failure diagnostic, failed outcome and original terminal identity. It retains the
+two-attempt limit, one model call per attempt, disabled tools and third-pass guard.
+The direct-conversation delivery test now enters through the release's public
+`buildSourceConversationContext`; #167898 made the direct helper private. Its fork
+message-tool delivery, silence and ordering assertions remain intact. These are
+test adaptations; neither changes production behavior. Fresh independent review
+found no actionable issue in the two-test commit.
+
+## Check findings and readiness
+
+The first validation of merge `da1d112eae68d9ae6d83cebf6bad5af8639b0035` built
+successfully. Its required check preflights reported 35 line-cap growth violations,
+SQLite main-thread reads increasing from 915 to 916, and the environment-variable
+budget increasing from 474 to 475. Exact source controls at `e526106d5714` already
+fail all three guards against v2026.10.1, including 36 line-cap violations. The
+SQLite query and the shutdown timeout variable are unchanged source carries. The
+variable's source budget note records its 2026-09-08 owner approval.
+
+The candidate crosses one additional line cap in
+`extensions/telegram/src/bot-message-dispatch-delivery.ts`: the merged file has
+704 counted lines against the 700-line cap. The guard prints an allowed baseline,
+not the release's actual line count. The complete fork delivery-log helper and
+both callers are retained; their combined size with the release creates this
+violation. No guard baseline, security policy, test assertion or operational customization
+was weakened to hide these findings. The branch is not ready for deployment while the required check graph
+remains red. Typechecking and the eight remaining policy checks passed at the
+test-adaptation head. Full lint reported 34 diagnostics: 24 on exact source blobs,
+seven on exact release blobs, and three in integrated files. This attributes code
+provenance; it does not prove that a previous toolchain emitted the same failures.
+Final head-bound test results and remaining blockers belong to the
+handoff evidence; the passing 10.1 deployment results above do not qualify 10.3.
 
 ## Validation scope and operational boundary
 
