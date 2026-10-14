@@ -1159,6 +1159,48 @@ describe.each([publicAccessorAdapter, sqliteAdapter])(
         }),
       ]);
     });
+
+    it("replays a keyed user turn whose stored copy a second redaction pass would change", async () => {
+      // Upstream #169154: the first storage pass hints a bearer token and a second pass masks it,
+      // so the run's copy of an admitted user turn could never match its stored copy.
+      const scope = adapter.transcriptScope(paths, "session-redaction-replay");
+      const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const jwt = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: "user-1" })}.${"A1b2C3d4".repeat(3)}`;
+      const appended = await adapter.appendTranscriptMessage(scope, {
+        cwd: paths.tempDir,
+        idempotencyLookup: "scan",
+        message: {
+          role: "user",
+          content: `log line Authorization: Bearer ${jwt} status=200`,
+          idempotencyKey: "channel-user:v1:redaction-replay",
+        },
+      });
+      const stored = appended?.message as { content?: unknown } | undefined;
+      expect(stored?.content).not.toContain(jwt);
+
+      const replayed = await adapter.appendTranscriptMessage(scope, {
+        cwd: paths.tempDir,
+        idempotencyLookup: "scan",
+        message: {
+          role: "user",
+          content: stored?.content,
+          idempotencyKey: "channel-user:v1:redaction-replay",
+        },
+      });
+
+      expect(replayed).toMatchObject({ appended: false, messageId: appended?.messageId });
+      await expect(
+        adapter.appendTranscriptMessage(scope, {
+          cwd: paths.tempDir,
+          idempotencyLookup: "scan",
+          message: {
+            role: "user",
+            content: "a different message",
+            idempotencyKey: "channel-user:v1:redaction-replay",
+          },
+        }),
+      ).rejects.toThrow(/conflicts with the admitted message/u);
+    });
   },
 );
 

@@ -18,6 +18,7 @@ const CASES: ReasonCase[] = [
   ["rate_limit", true, true, false],
   ["overloaded", true, true, false],
   ["billing", true, false, false],
+  ["server_error", true, true, false],
   ["unknown", true, true, false],
   ["empty_response", true, true, false],
   ["no_error_details", true, true, false],

@@ -7,7 +7,6 @@ import {
 import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import { ErrorCodes } from "../../packages/gateway-protocol/src/index.js";
 import { runBeforeToolCallHook } from "../agents/agent-tools.before-tool-call.js";
-import { resolveToolLoopDetectionConfig } from "../agents/agent-tools.js";
 import { getChannelAgentToolMeta } from "../agents/channel-tool-metadata.js";
 import { isKnownCoreToolId } from "../agents/tool-catalog.js";
 import {
@@ -414,12 +413,13 @@ async function invokeGatewayToolWithSignal(
       toolName,
       params: toolArgs,
       toolCallId,
+      // No model run owns an operator invocation, so it must not enter the
+      // session's tool-loop history; plugin before_tool_call hooks still run.
       ctx: {
         agentId,
         config: params.cfg,
         sessionKey,
         workspaceDir,
-        loopDetection: resolveToolLoopDetectionConfig({ cfg: params.cfg, agentId }),
       },
       signal: params.signal,
       approvalMode: params.approvalMode,

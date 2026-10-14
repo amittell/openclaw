@@ -53,6 +53,10 @@ export type CronCompletedPromptRun = {
   runResult: EmbeddedAgentRunResult;
   fallbackProvider: string;
   fallbackModel: string;
+  requestedProvider: string;
+  requestedModel: string;
+  /** True when a model fallback, not the configured primary, served the run. */
+  usedFallback: boolean;
   runStartedAt: number;
   runEndedAt: number;
 };

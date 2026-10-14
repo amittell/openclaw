@@ -46,7 +46,7 @@ import {
   MEDIA_GROUP_TIMEOUT_MS,
   type MediaGroupEntry,
 } from "./bot-updates.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   buildTelegramGroupPeerId,
   buildTelegramThreadParams,
@@ -385,7 +385,12 @@ export function createTelegramInboundMedia({
         const nativeKind = resolveTelegramPrimaryMedia(msg)?.kind ?? "document";
         let media;
         try {
-          media = await resolveMedia({ ctx, maxBytes: mediaMaxBytes, ...mediaRuntime });
+          media = await resolveMedia({
+            ctx,
+            maxBytes: mediaMaxBytes,
+            ...mediaRuntime,
+            scope: buildTelegramMediaScope(entry.chatId, entry.threadSpec.id),
+          });
         } catch (error) {
           if (mediaRuntime.abortSignal?.aborted || isDurablyRetryableInboundMediaError(error)) {
             throw error;
@@ -403,6 +408,7 @@ export function createTelegramInboundMedia({
             contentType: media.contentType,
             ...(media.fileName ? { fileName: media.fileName } : {}),
             kind: media.kind,
+            fileUniqueId: media.fileUniqueId,
             stickerMetadata: media.stickerMetadata,
             sourceMessageId,
           });

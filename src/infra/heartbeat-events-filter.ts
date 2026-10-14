@@ -22,6 +22,15 @@ type StructuredExecCompletionEvent = {
   output: string;
   notes: string;
   succeeded: boolean;
+  /**
+   * Terminated by a signal (e.g. SIGTERM at gateway drain or a cancel) with
+   * neither captured output nor producer notes. This carries no user-facing
+   * content: the completion wake would only produce a "terminated by signal N"
+   * report for an internal process the owner never started (#141973, #156537).
+   * A timeout kill carries the producer's retry guidance as notes, so it is not
+   * metadata-only and still wakes and relays (#164171).
+   */
+  metadataOnlySignalKill: boolean;
 };
 
 function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompletionEvent | null {
@@ -32,14 +41,18 @@ function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompleti
   }
   const action = match[1] ?? "";
   const result = match[3] ?? "";
+  const succeeded = action.toLowerCase() === "completed" && result.toLowerCase() === "code 0";
+  const output = (match[4] ?? "").trim();
+  const notes = (match[5] ?? "").trim();
   return {
     raw: trimmed,
     action,
     id: match[2] ?? "",
     result,
-    output: (match[4] ?? "").trim(),
-    notes: (match[5] ?? "").trim(),
-    succeeded: action.toLowerCase() === "completed" && result.toLowerCase() === "code 0",
+    output,
+    notes,
+    succeeded,
+    metadataOnlySignalKill: !succeeded && /^signal /i.test(result.trim()) && !output && !notes,
   };
 }
 
@@ -48,7 +61,7 @@ export function isRelayableExecCompletionEvent(evt: string): boolean {
   if (!parsed) {
     return isExecCompletionEvent(evt);
   }
-  return Boolean(parsed.output) || !parsed.succeeded;
+  return Boolean(parsed.output) || (!parsed.metadataOnlySignalKill && !parsed.succeeded);
 }
 
 function formatExecEventPromptText(pendingEvents: string[]): {
@@ -65,7 +78,7 @@ function formatExecEventPromptText(pendingEvents: string[]): {
     if (parsed.output) {
       return [parsed.raw];
     }
-    if (parsed.succeeded) {
+    if (parsed.succeeded || parsed.metadataOnlySignalKill) {
       return [];
     }
     hasMissingOutputFailure = true;

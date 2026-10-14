@@ -26,6 +26,7 @@ import type { PluginInstallLogger } from "./install-types.js";
 import {
   clearLoadInstalledPluginIndexInstallRecordsCache,
   loadInstalledPluginIndexInstallRecords,
+  readPersistedInstalledPluginIndexInstallRecords,
   recordPluginInstallInRecords,
   withoutPluginInstallRecords,
 } from "./installed-plugin-index-records.js";
@@ -216,9 +217,15 @@ async function persistPluginInstallOwned(
   let committed = false;
   let retainPublishedPayload = false;
   try {
-    const installRecords = await tracePluginLifecyclePhaseAsync(
+    const { installRecords, persistedInstallRecords } = await tracePluginLifecyclePhaseAsync(
       "install records load",
-      () => loadInstalledPluginIndexInstallRecords(),
+      async () => {
+        const [records, persisted] = await Promise.all([
+          loadInstalledPluginIndexInstallRecords(),
+          readPersistedInstalledPluginIndexInstallRecords(),
+        ]);
+        return { installRecords: records, persistedInstallRecords: persisted };
+      },
       { command: "install" },
     );
     // Validate published bytes in a fresh generation while retaining the prior ledger for cleanup.
@@ -229,7 +236,9 @@ async function persistPluginInstallOwned(
         params.persistenceLogger?.warn?.(managementMessage);
         runtime.log(theme.warn(message));
       };
-      const previousInstall = installRecords[params.pluginId];
+      // Managed npm recovery sees the just-installed package before its first ledger commit.
+      // Only durable prior ownership preserves an operator's existing allow/deny policy.
+      const previousInstall = persistedInstallRecords?.[params.pluginId];
       const replacedInstallRemoval = resolveReplacedManagedInstallRemoval({
         pluginId: params.pluginId,
         previousInstall,

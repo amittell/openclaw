@@ -61,6 +61,10 @@ import {
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
+import {
+  TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS,
+  telegramUploadTimeoutTransformer,
+} from "./request-timeouts.js";
 import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
 import { createTelegramSequentializer } from "./sequentialize.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
@@ -102,6 +106,7 @@ export async function createTelegramBotCore(
 
   const client: ApiClientOptions = {
     fetch: asTelegramClientFetch(finalFetch),
+    timeoutSeconds: TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS,
     ...(normalizedApiRoot ? { apiRoot: normalizedApiRoot } : {}),
   };
   const bot = new Bot(opts.token, {
@@ -109,6 +114,7 @@ export async function createTelegramBotCore(
     ...(opts.botInfo ? { botInfo: opts.botInfo } : {}),
   });
   const accountThrottler = getOrCreateAccountThrottler(opts.token, apiThrottler);
+  bot.api.config.use(telegramUploadTimeoutTransformer);
   bot.api.config.use(accountThrottler.transformer);
   const sendChatActionHandler: TelegramSendChatActionHandler = {
     sendChatAction: (chatId, action, threadParams) =>
@@ -165,7 +171,9 @@ export async function createTelegramBotCore(
         void deferredWork.task
           .then((deferredResult) => {
             updateTracker.finishUpdate(begin.update, {
-              completed: deferredResult.kind !== "failed-retryable",
+              completed:
+                !deferredWork.wasOwnerAbortedWhilePending() &&
+                deferredResult.kind !== "failed-retryable",
             });
           })
           .catch(() => {
@@ -173,8 +181,12 @@ export async function createTelegramBotCore(
           });
         return;
       }
-      if (result?.kind === "failed-retryable" && isTelegramSpooledReplayUpdate(ctx.update)) {
-        throw new TelegramSpooledReplayProcessingError(result.error);
+      if (result?.kind === "failed-retryable") {
+        if (isTelegramSpooledReplayUpdate(ctx.update)) {
+          throw new TelegramSpooledReplayProcessingError(result.error);
+        }
+        updateTracker.finishUpdate(begin.update, { completed: false });
+        return;
       }
       updateTracker.finishUpdate(begin.update, { completed: true });
     } catch (error) {
@@ -400,6 +412,7 @@ export async function createTelegramBotCore(
     } finally {
       await threadBindingManager?.stop();
     }
+    // SAFETY: the wrapper forwards the original parameter tuple and return value unchanged; only the overload set is re-attached.
   }) as typeof bot.stop;
   if (disabledBindingAdapter) {
     registerSessionBindingAdapter(disabledBindingAdapter);

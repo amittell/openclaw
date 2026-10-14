@@ -282,6 +282,7 @@ export {
   readRecentSessionTranscriptActiveEvents,
   readSessionTranscriptBoundedMessageTailPage,
   readRecentSessionTranscriptMessageEvents,
+  readSessionTranscriptConversationSnapshot,
   readSessionTranscriptActivePathEntryRelation,
   readSessionTranscriptMessageEventPage,
   readSessionTranscriptMessageEvents,
@@ -289,6 +290,7 @@ export {
   SessionTranscriptProjectionUnavailableError,
   waitForSessionTranscriptProjection,
 } from "./session-accessor.sqlite-active-events.js";
+export type { SessionTranscriptConversationSnapshotRow } from "./session-accessor.sqlite-active-events.js";
 export type {
   SessionTranscriptBoundedMessageTailPage,
   SessionTranscriptMessageAnchorPage,

@@ -90,6 +90,7 @@ export function canPersistSessionDirectiveDefaults(params: {
 
 const SESSION_LEVEL_DIRECTIVE_FIELDS = [
   ["hasThinkDirective", "thinkingLevel"],
+  ["hasTemperatureDirective", "temperature"],
   ["hasFastDirective", "fastMode"],
   ["hasVerboseDirective", "verboseLevel"],
   ["hasTraceDirective", "traceLevel"],
@@ -178,6 +179,7 @@ export async function acknowledgeIgnoredSessionDirective(params: {
           ...directives,
           [ignoredDirective]: false,
           ...(ignoredDirective === "hasThinkDirective" ? { clearThinkLevel: false } : {}),
+          ...(ignoredDirective === "hasTemperatureDirective" ? { clearTemperature: false } : {}),
           ...(ignoredDirective === "hasFastDirective" ? { clearFastMode: false } : {}),
           ...(ignoredDirective === "hasModelDirective" ? { rawModelProfile: undefined } : {}),
         };
@@ -213,6 +215,14 @@ export function applySessionDirectiveFields(params: {
     }
   } else if (directives.hasThinkDirective && directives.thinkLevel) {
     updateField("thinkingLevel", directives.thinkLevel);
+  }
+  if (directives.clearTemperature) {
+    if (sessionEntry.temperature !== undefined) {
+      delete sessionEntry.temperature;
+      updated = true;
+    }
+  } else if (directives.hasTemperatureDirective && directives.temperature !== undefined) {
+    updateField("temperature", directives.temperature);
   }
   if (directives.clearFastMode) {
     if (sessionEntry.fastMode !== undefined) {

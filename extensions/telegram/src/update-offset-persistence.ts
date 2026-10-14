@@ -97,6 +97,14 @@ export function createTelegramUpdateOffsetPersistence(
     startDrain();
   };
 
+  // Forget the confirmed watermark when the Bot API server proves it belongs to a
+  // different update_id sequence; the next accepted id restarts monotonic catch-up.
+  const reset = () => {
+    acceptedUpdateId = null;
+    committedUpdateId = null;
+    pendingUpdateId = null;
+  };
+
   const stop = async () => {
     stopController.abort(new Error("Telegram update-offset persistence stopped."));
     await activeDrain?.catch(() => undefined);
@@ -105,6 +113,7 @@ export function createTelegramUpdateOffsetPersistence(
   return {
     getCommittedUpdateId: () => committedUpdateId,
     persistUpdateId,
+    reset,
     stop,
   };
 }

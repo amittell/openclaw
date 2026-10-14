@@ -203,7 +203,6 @@ extensions/deepinfra/provider-models.ts	1
 extensions/deepseek/provider-policy-api.ts	2
 extensions/device-pair/index.ts	6
 extensions/device-pair/notify.ts	1
-extensions/diagnostics-otel/src/service-content-normalization.ts	1
 extensions/diagnostics-otel/src/service-exporter.ts	1
 extensions/diagnostics-otel/src/service-logs.ts	8
 extensions/diagnostics-otel/src/service-propagation.ts	2
@@ -580,9 +579,7 @@ extensions/memory-core/src/short-term-promotion-utils.ts	4
 extensions/memory-core/src/standing-intents-tool.ts	1
 extensions/memory-core/src/tools.ts	2
 extensions/memory-lancedb/doctor-contract-api.ts	1
-extensions/memory-lancedb/embeddings.ts	1
 extensions/memory-lancedb/index.ts	8
-extensions/memory-lancedb/lancedb-store.ts	12
 extensions/memory-lancedb/memory-cli.ts	7
 extensions/memory-wiki/doctor-contract-api.ts	1
 extensions/memory-wiki/index.ts	1
@@ -781,7 +778,6 @@ extensions/qa-lab/src/providers/live-config.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-anthropic-wire.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-assistant-text.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-contracts.ts	2
-extensions/qa-lab/src/providers/mock-openai/mock-openai-directives.ts	3
 extensions/qa-lab/src/providers/mock-openai/mock-openai-events.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-input.ts	6
 extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.ts	1
@@ -910,7 +906,6 @@ extensions/telegram/src/api-fetch.ts	1
 extensions/telegram/src/approval-handler.runtime.ts	2
 extensions/telegram/src/audit-membership-runtime.ts	1
 extensions/telegram/src/audit.ts	1
-extensions/telegram/src/bot-core.ts	1
 extensions/telegram/src/bot-deps.ts	1
 extensions/telegram/src/bot-handlers.callback-router-controls.ts	2
 extensions/telegram/src/bot-handlers.callback-router.ts	1
@@ -920,7 +915,6 @@ extensions/telegram/src/bot-handlers.inbound-pipeline.ts	2
 extensions/telegram/src/bot-info-cache.ts	1
 extensions/telegram/src/bot-info.ts	1
 extensions/telegram/src/bot-message-context.body.ts	1
-extensions/telegram/src/bot-message-context.session.ts	2
 extensions/telegram/src/bot-message-context.ts	3
 extensions/telegram/src/bot-message-dispatch-reply.ts	1
 extensions/telegram/src/bot-message-dispatch-session.ts	1
@@ -954,7 +948,6 @@ extensions/telegram/src/request-timeouts.ts	1
 extensions/telegram/src/rich-message.ts	1
 extensions/telegram/src/security-audit.ts	4
 extensions/telegram/src/send-actions.ts	2
-extensions/telegram/src/send-context.ts	2
 extensions/telegram/src/send-edit.ts	1
 extensions/telegram/src/send-location.ts	2
 extensions/telegram/src/send-outbound.ts	1
@@ -1232,7 +1225,6 @@ src/agents/agent-bundle-mcp-runtime-shared.ts	2
 src/agents/agent-bundle-mcp-runtime.ts	3
 src/agents/agent-command-restart-recovery.ts	1
 src/agents/agent-command.ts	1
-src/agents/agent-hooks/compaction-safeguard.ts	13
 src/agents/agent-project-settings-snapshot.ts	5
 src/agents/agent-run-terminal-delivery.ts	1
 src/agents/agent-run-terminal-outcome.ts	2
@@ -1255,15 +1247,11 @@ src/agents/apply-patch-file-ops.ts	2
 src/agents/apply-patch-targets.ts	1
 src/agents/apply-patch.ts	2
 src/agents/auth-profiles/clone.ts	1
-src/agents/auth-profiles/external-auth.ts	1
 src/agents/auth-profiles/oauth-refresh-failure.ts	2
 src/agents/auth-profiles/oauth-refresh-lock-errors.ts	1
-src/agents/auth-profiles/oauth.ts	2
-src/agents/auth-profiles/persisted.ts	2
 src/agents/auth-profiles/policy.ts	1
 src/agents/auth-profiles/portability.ts	1
 src/agents/auth-profiles/profiles.ts	1
-src/agents/auth-profiles/store.ts	1
 src/agents/auth-profiles/usage.ts	1
 src/agents/bash-process-registry.ts	1
 src/agents/bash-tools.exec-approval-followup.ts	5
@@ -1367,10 +1355,8 @@ src/agents/embedded-agent-runner/run/attempt-user-transcript-context-registry.ts
 src/agents/embedded-agent-runner/run/attempt.model-diagnostic-events.ts	4
 src/agents/embedded-agent-runner/run/attempt.model-diagnostic-observation.ts	1
 src/agents/embedded-agent-runner/run/context-recovery-state.ts	2
-src/agents/embedded-agent-runner/run/helpers.ts	2
 src/agents/embedded-agent-runner/run/history-image-prune.ts	2
 src/agents/embedded-agent-runner/run/images.ts	6
-src/agents/embedded-agent-runner/run/incomplete-turn-recovery.ts	2
 src/agents/embedded-agent-runner/run/incomplete-turn-resolution.ts	3
 src/agents/embedded-agent-runner/run/message-transform-stream-wrapper.ts	3
 src/agents/embedded-agent-runner/run/recovery-message-action-capability.ts	1
@@ -1450,7 +1436,6 @@ src/agents/openai-model-routes.ts	2
 src/agents/openclaw-tools.requester-yield.ts	2
 src/agents/plugin-model-catalog.ts	3
 src/agents/plugin-text-transforms.ts	4
-src/agents/prepared-model-catalog.ts	1
 src/agents/prepared-model-catalog.worker.ts	1
 src/agents/prepared-model-runtime.configured.ts	1
 src/agents/prepared-model-runtime.facts.ts	1
@@ -1558,7 +1543,6 @@ src/agents/tools/image-tool.helpers.ts	2
 src/agents/tools/image-tool.ts	1
 src/agents/tools/in-process-gateway.ts	1
 src/agents/tools/message-tool-discovery.ts	2
-src/agents/tools/message-tool-execution.ts	3
 src/agents/tools/mobile-ui-tool.ts	2
 src/agents/tools/music-generate-tool.ts	1
 src/agents/tools/nodes-tool.ts	1
@@ -1718,7 +1702,6 @@ src/channels/streaming.ts	5
 src/channels/thread-bindings-policy.ts	2
 src/channels/turn/execution.ts	2
 src/channels/turn/history-window.ts	1
-src/channels/turn/lifecycle.ts	2
 src/channels/turn/route-dm-scope.ts	1
 src/channels/turn/run-channel-turn.ts	4
 src/claws/add.ts	7
@@ -2148,7 +2131,6 @@ src/gateway/server-methods/open-path.ts	1
 src/gateway/server-methods/plugin-approval.ts	1
 src/gateway/server-methods/plugin-host-hooks.ts	1
 src/gateway/server-methods/restart-request.ts	8
-src/gateway/server-methods/send.ts	1
 src/gateway/server-methods/session-create-initial-turn.ts	2
 src/gateway/server-methods/session-recovery-continuation.ts	1
 src/gateway/server-methods/sessions-compact.ts	1
@@ -2246,7 +2228,6 @@ src/infra/clawhub-client.ts	2
 src/infra/clawhub-install-trust.ts	2
 src/infra/control-ui-assets.ts	1
 src/infra/delivery-queue-sqlite-bound.ts	2
-src/infra/delivery-recovery.shared.ts	4
 src/infra/device-pairing-store.ts	4
 src/infra/diagnostic-event-listener-presence.ts	3
 src/infra/diagnostic-events.ts	4
@@ -2531,7 +2512,7 @@ src/plugins/dashboard-capabilities.ts	1
 src/plugins/dev-source-root.ts	1
 src/plugins/discovery.ts	1
 src/plugins/doctor-contract-module.ts	3
-src/plugins/doctor-contract-registry.ts	1
+src/plugins/doctor-contract-registry.ts	2
 src/plugins/gateway-events.ts	1
 src/plugins/gateway-startup-plugin-activation.ts	1
 src/plugins/gateway-startup-plugin-config.ts	1

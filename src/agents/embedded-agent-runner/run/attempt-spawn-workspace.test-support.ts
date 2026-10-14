@@ -202,6 +202,7 @@ const hoisted = vi.hoisted((): AttemptBaseMocks => {
     reloadPersistedTranscriptAsync: vi.fn(async () => undefined),
     clearNextUserMessagePersistenceSuppression: vi.fn(),
     removeTrailingEntriesAsync: vi.fn(async () => 0),
+    setCompactionCheckpointHandleFormatter: vi.fn(),
   };
   return {
     spawnSubagentDirectMock,
@@ -946,6 +947,7 @@ export function resetEmbeddedAttemptHarness(
   hoisted.embeddedSystemPromptInputs.length = 0;
   hoisted.trajectoryEvents.length = 0;
   resetSessionManagerMocks(hoisted.sessionManager, params.sessionMessages);
+  hoisted.sessionManager.setCompactionCheckpointHandleFormatter.mockReset();
   if (params.subscribeImpl) {
     hoisted.subscribeEmbeddedAgentSessionMock.mockImplementation(params.subscribeImpl);
   }
