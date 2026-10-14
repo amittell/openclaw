@@ -10,9 +10,7 @@ export function normalizeTextForComparison(text: string): string {
     .trim();
 }
 
-// A reply tail is new when it still has a letter or digit after every prior send
-// is taken out of it. Longest sends go first so a send that contains another
-// one is removed whole.
+// Remove longer sends first so overlapping prior messages still count as repeats.
 function hasTextBeyondSentTexts(tail: string, normalizedSentTexts: string[]): boolean {
   let remainder = tail;
   for (const normalizedSent of normalizedSentTexts.toSorted((a, b) => b.length - a.length)) {
@@ -38,11 +36,7 @@ export function isMessagingToolDuplicateNormalized(
       return false;
     }
     if (normalized.includes(normalizedSent)) {
-      // Text that opens with a prior send and then says something new is a
-      // follow-up, not a repeat. The length ratio cannot tell "<sent> All good!"
-      // from "<sent> Actually it failed.", so a tail with any letter or digit is
-      // delivered. A tail that is only punctuation, or only repeats other sends,
-      // still falls through to the ratio.
+      // A sent prefix must not hide a correction; punctuation and repeated sends add no new text.
       if (
         normalized.startsWith(normalizedSent) &&
         hasTextBeyondSentTexts(normalized.slice(normalizedSent.length), normalizedSentTexts)
@@ -66,8 +60,6 @@ export function isMessagingToolDuplicate(text: string, sentTexts: string[]): boo
   if (!normalized || normalized.length < MIN_DUPLICATE_TEXT_LENGTH) {
     return false;
   }
-  // One call with every send: a reply that opens with one send is judged
-  // against the others too.
   return isMessagingToolDuplicateNormalized(normalized, sentTexts.map(normalizeTextForComparison));
 }
 
