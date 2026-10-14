@@ -3304,6 +3304,50 @@ to have a length of 1`), fails identically at `675749231a47`.
   verify-101 now splits `Context overflow` agent-end lines out as `overflow-attempts` (CHECK: read the transcript)
   and counts `final delivery outcome=` lines.
 
+## Fork fix for #169154 (2026-10-13): `fa5da87400ab..bf7bf9a2287a`
+
+One fork-only commit, `bf7bf9a2287a` (`src/config/sessions/session-accessor.sqlite-transcript-message-append.ts`).
+Upstream fixed #169154 in #169237 (`56d559212a0`), which needs #167938's prompt projection; the two conflict in
+about 44 files on this base, so Alex chose a fork-only fix (2026-10-13). Drop this commit when the fork carries
+#167938 and #169237. As of 2026-10-14 no `v2026.10.*` tag contains `56d559212a0`.
+
+- **The defect:** the redactor is not idempotent. The run's copy of an admitted user turn arrives one pass further
+  than the stored copy (stored `Bearer eyJhbG...2C31`, replay `Bearer ***`), so the idempotency-key check with no
+  pending custody threw `TranscriptTurnAdmissionConflictError`. All 32 conflicts in the instrumented probe were
+  that site.
+- **The fix:** `userReplayMatchesAdmittedMessage` also accepts a keyed user replay that equals the stored copy
+  redacted once more. Pending custody and non-user messages still compare exactly.
+- **Checks (M4 Pro, 2026-10-13):** oxlint 0 warnings and 0 errors, oxfmt clean, `tsgo` core rc=0, 4 session test
+  files 110/110. The new conformance test "replays a keyed user turn whose stored copy a second redaction pass
+  would change" fails at `fa5da87400ab` on both adapters with the production error and passes with the fix. The
+  QA inbound-idempotency probe: 4/8 at `fa5da87400ab` (two runs), 8/8 at `bf7bf9a2287a`.
+- **Pushed:** github `upgrade-v2026.10.1` `fa5da87400ab` -> `bf7bf9a2287a` (fast-forward, ls-remote verified).
+- **rh-bot (2026-10-13/14):**
+  - Idle at 19:43:17Z, build 437 s, doctor 84 s, deploy rc=0 at 19:57:03Z, pid 75213. Backup
+    `/Volumes/SSD512/oc101-dbbackup-20261013T194643Z`.
+  - verify: HEAD, build-info and the served build id `bf7bf9a2287a`, readyz 200/200, 1/1 provider, state v20,
+    6 agent DBs v24, local-only PASS, toolSearch unset, config and plist unchanged by the deploy, 36/36 markers.
+  - Real turn (re-run 2026-10-14 12:00Z): inbound 3, send-ok 5, final-outcome lines 1, 0 provider 4xx,
+    0 template 400, 0 surface_error, 0 errored turns, 0 overflow attempts. channel_ingress 9 completed, none
+    re-injected.
+  - Not the deploy: at 18:41 local on 10-13 a config write added `secrets.egressProxy: {enabled: false}`. The
+    hybrid reload waited 300 s, then forced a SIGUSR2 restart at 18:46 that aborted a 55-minute main-session run
+    (new pid 33371). The writer is not identified.
+- **mac-mini (2026-10-14):**
+  - Idle at 13:45:58Z after about 1 h 43 min busy (RatBot transcript activity), build 385 s, doctor 225 s,
+    deploy rc=0 at 13:57:13Z, pid 53804. Backup `/Volumes/Storage/oc101-dbbackup-20261014T134622Z`.
+  - verify: HEAD and the served build id `bf7bf9a2287a`, readyz 200/200, 3/3 providers, state v20, 8 agent DBs
+    v24, local-only PASS, toolSearch False, config and plist unchanged, 36/36 markers.
+  - Real turn (re-run 17:08Z): Kebablebot twice in a group, AILYbot once in its group, RatBot DM twice. Gate
+    reads ok: inbound 5, send-ok 9, final-outcome lines 4, 0 provider 4xx, 0 template 400, 0 surface_error,
+    0 errored turns, 0 overflow attempts. channel_ingress 308 completed, none re-injected.
+  - `update received` is not a turn. The first 3 h after the restart had none; in the 8 MB of log before it,
+    7641 updates gave 713 inbound turns, in bursts with many zero hours.
+  - The `telegram-final` mirror count is not a delivery check. ailybot read 0 since the restart (3 the hour
+    before), yet its reply went out at 17:07:02Z (`outbound send ok accountId=ailybot`, `final delivery
+    outcome=sent`). In the 3 days before the deploy, ailybot had 9 mirrors for 21 sends, main 10 for 99, and
+    ratbot 5 for 16.
+
 ## Process trap measured today
 
 The shared pre-commit hook (`~/git/openclaw/git-hooks/pre-commit`, via `core.hooksPath`) runs
