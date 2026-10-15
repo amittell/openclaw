@@ -383,6 +383,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
   if (!sessionEntry.entry) {
     return;
   }
+  const lifecycleRevision = sessionEntry.entry.lifecycleRevision;
   // Incognito keeps its existing native lifecycle writer. The runtime's private fact
   // joins that same entry update; public event data cannot introduce a review pause.
   const terminalReview =
@@ -457,6 +458,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
         return null;
       }
       if (
+        (phase !== "start" && entry.lifecycleRevision !== lifecycleRevision) ||
         isStaleLifecycleEventForSession({
           owningSessionId,
           currentSessionId: entry.sessionId,
