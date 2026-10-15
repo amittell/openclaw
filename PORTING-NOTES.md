@@ -3505,3 +3505,44 @@ and any inherited or unresolved failures against its exact final commit. Histori
 This branch carry does not deploy or restart either bot. Their installed state,
 credentials and access policy are outside this operation. No CLI credential
 snapshot is part of the source audit or validation.
+
+## Re-qualification and deploy (2026-10-15)
+
+Alex ruled "Qualify, then deploy" on 2026-10-15 at about 04:15Z. The deploy uses the 10.1 build-in-place kit with
+three changes: `BRANCH_REF` defaults to `upgrade-v2026.10.3`, preflight checks that branch with ls-remote, and verify
+adds the markers `userReplayMatchesAdmittedMessage`, `markTelegramVisibleReplyDelivered` and `final delivery
+outcome=`. Schema targets are unchanged from 10.1 (state 20, agent 24), so neither bot migrated anything.
+
+- **Re-qualification (M4 Pro, fresh worktree, isolated state, 04:14-04:52Z):** build 781 s, `tsgo:all`,
+  `format:check`, 26 focused test files (369 tests across 15 shards, including the #169154 conformance case on both
+  adapters), the two OTel focused files, and the QA inbound-idempotency probe 8/8 all passed. The reds match the
+  carry's exact-head run: lint has the same 30 distinct diagnostics (32 errors); `pnpm check --base v2026.10.3` has
+  the same 34 line-cap paths, SQLite T1 915 -> 916 (the same three call sites) and env budget 474 -> 475. The source
+  and release controls that attribute them were not rerun. The 38-shard changed-test aggregate was not rerun.
+- **Harness traps (not findings):** a PATH without `rg` makes the SQLite worker ratchet fail with `spawnSync rg
+  ENOENT` and no finding. At 10.3 the owner-assign test is
+  `src/gateway/local-request-context.session-tools.non-owner-assign.test.ts`.
+- **Markers:** in runtime files (`.mjs`/`.js`), all 39 counts on each bot equal the qualification build. Raw counts
+  that include `.d.ts` files differ for `lastCompletedTurnRequestHash` and `carrierText`: declaration chunks split
+  differently between builds.
+- **rh-bot park hazard, cleared before the deploy:** the `coder` workspace
+  `~/.openclaw/workspace/requesthub/.openclaw/workspace-state.json` came back at 2026-10-14 23:20:14 local from a `git
+  reset` on requesthub branch `fix/central-security-headers`, which still tracks it (the untrack fix is requesthub
+  `309f39ed`). 10.1 and 10.3 both gate startup on its presence and park the LaunchAgent, so any restart would have
+  taken rh-bot down. Preflight check 0g refused. It was renamed to `workspace-state.json.rejected-20261015T042148Z`
+  after `workspace_setup_state` was confirmed to hold the requesthub row.
+- **rh-bot:** idle at 04:50:13Z, build 511 s, doctor 85 s, deploy rc=0 at 05:04:19Z, pid 32036. Backup
+  `/Volumes/SSD512/oc101-dbbackup-20261015T045332Z`. verify: HEAD, build-info and the served id
+  `2026.10.3-1ecf113bef64`, readyz 200/200, 1/1 provider, parked 0, state v20, 6 agent DBs v24, local-only PASS,
+  toolSearch unset, config and plist unchanged. Real turn (re-run 18:14Z): inbound 6 (DMs, a group, two images),
+  send-ok 7, final-outcome lines 2, 0 provider 4xx, 0 template 400, 0 surface_error, 0 errored turns. channel_ingress
+  9 completed, none re-injected.
+- **mac-mini:** idle at 18:20:22Z, build 464 s, doctor 233 s, deploy rc=0 at 18:33:08Z, pid 45327. Backup
+  `/Volumes/Storage/oc101-dbbackup-20261015T182048Z`. verify: HEAD, build-info and the served id, readyz 200/200, 3/3
+  providers, parked 0, state v20, 8 agent DBs v24, local-only PASS, toolSearch False, config and plist unchanged. Real
+  turn (re-run 20:13Z): inbound 5, send-ok 2 plus 2 final-outcome lines, 0 provider 4xx, 0 template 400, 0
+  surface_error, 0 errored turns; channel_ingress 85 completed, none re-injected. RatBot's DM was answered in 2 min 20
+  s and Kebablebot's two DMs in 7 min. AILYbot's group turn (15:25 local) was answered at 16:12:40: its run called
+  `ask_user`, got `no_answer` when the tool's 15-minute wait expired, and continued. That question went out with a
+  `telegram-final` mirror but no `outbound send ok` line, as 9 of 10 earlier `ask_user` questions did on 10.1
+  (10-09..10-14). A second RatBot DM (16:05 local) was still working through tool calls at 16:16.
