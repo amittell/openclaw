@@ -171,6 +171,22 @@ describe("armGatewayPostShutdownExitWatchdog", () => {
     vi.useRealTimers();
   });
 
+  it("waits the 5s default when no timeout is passed", async () => {
+    vi.useFakeTimers();
+    const exitProcess = vi.fn();
+    const handle = armGatewayPostShutdownExitWatchdog({
+      exitProcess,
+      reason: "gateway stopping",
+      shutdownDurationMs: 5,
+    });
+    await vi.advanceTimersByTimeAsync(4995);
+    expect(exitProcess).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(exitProcess).toHaveBeenCalledWith(0);
+    handle.cancel();
+    vi.useRealTimers();
+  });
+
   it("does not call exit when the watchdog is cancelled before the timeout", async () => {
     vi.useFakeTimers();
     const exitProcess = vi.fn();
