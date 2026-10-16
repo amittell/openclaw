@@ -302,10 +302,7 @@ export async function healthCommand(
     }
     for (const plugin of displayPlugins) {
       const channelSummary = summary.channels?.[plugin.id];
-      if (!channelSummary || channelSummary.linked !== true) {
-        continue;
-      }
-      if (!plugin.status?.logSelfId) {
+      if (channelSummary?.linked !== true || !plugin.status?.logSelfId) {
         continue;
       }
       const boundAccounts = defaultAgentId
@@ -329,11 +326,9 @@ export async function healthCommand(
       if (
         accountContext.probeAccount === undefined ||
         !accountContext.enabled ||
-        accountContext.configured !== true
+        accountContext.configured !== true ||
+        accountContext.diagnostics.length > 0
       ) {
-        continue;
-      }
-      if (accountContext.diagnostics.length > 0) {
         continue;
       }
       try {

@@ -30,14 +30,10 @@ export function getConfigReloadObservation(): ConfigReloadObservation {
  * Couples reloader transactions to the published observation. Each transaction
  * holds its source read until it finishes, then publishes it only while its
  * source revision is current, so a newer write or file event revokes it first.
- * A same-source watcher echo that the transaction accepted keeps its read current.
+ * That event's own reload pass reads and publishes the source it observes.
  */
 export function trackReloadObservations(current: () => ConfigSourceObservation) {
-  const acceptedEchoOrigins = new WeakMap<ConfigSourceObservation, number>();
   return {
-    acceptEcho(observed: ConfigSourceObservation, fromRevision: number) {
-      acceptedEchoOrigins.set(observed, fromRevision);
-    },
     track() {
       let candidate: { revision: number; sourceConfig: OpenClawConfig | null } | null = null;
       const observeSnapshot = (revision: number, snapshot: ObservedSnapshot) => {
@@ -57,11 +53,7 @@ export function trackReloadObservations(current: () => ConfigSourceObservation) 
         },
         publishIfCurrent() {
           const observation = current();
-          if (
-            candidate &&
-            (candidate.revision === observation.revision ||
-              candidate.revision === acceptedEchoOrigins.get(observation))
-          ) {
+          if (candidate && candidate.revision === observation.revision) {
             publishReloadObservation(candidate.sourceConfig);
           }
         },

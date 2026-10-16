@@ -266,7 +266,7 @@ describe("config reload observation", () => {
     pluginReadGate.resolve();
     await flushReload(harness.reloader);
 
-    // The write carries its snapshot; the only read is the echo its checkpoint accepted.
+    // The write carries its snapshot; the only read is the pass its watcher echo schedules.
     expect(readSnapshot).toHaveBeenCalledOnce();
     expect(getConfigReloadObservation()).toEqual({
       generation: observedGeneration + 1,
@@ -332,7 +332,7 @@ describe("config reload observation", () => {
     await expect(application).resolves.toMatchObject({ generation: 2 });
     await flushReload(harness.reloader);
 
-    // The lifecycle read, then the echo its checkpoint accepted; no follow-up reload.
+    // The lifecycle read, then the pass its watcher echo schedules, which applies nothing new.
     expect(readSnapshot).toHaveBeenCalledTimes(2);
     expect(harness.onHotReload).toHaveBeenCalledOnce();
     expect(getConfigReloadObservation()).toEqual({

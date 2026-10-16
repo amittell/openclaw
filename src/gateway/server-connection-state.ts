@@ -92,6 +92,9 @@ export function createGatewayConnectionState(params: {
               },
             }
           : undefined;
+        if (!prepared) {
+          return false;
+        }
         return canReceiveSessionEvent({
           cfg,
           policyConfig,
@@ -100,7 +103,7 @@ export function createGatewayConnectionState(params: {
           agentId,
           event,
           payload,
-          ...(prepared ? { prepared } : {}),
+          prepared,
         });
       } catch {
         return false;
