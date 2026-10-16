@@ -18,14 +18,13 @@ export function normalizePromptMetadataString(value: unknown): string | undefine
   return normalizeOptionalString(value)?.replaceAll("\u0000", "") || undefined;
 }
 
-export function normalizePromptMetadataStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
+export function normalizePromptMetadataStringArray(
+  value: string[] | undefined,
+): string[] | undefined {
   const normalized = value
-    .map(normalizePromptMetadataString)
+    ?.map(normalizePromptMetadataString)
     .filter((entry): entry is string => Boolean(entry));
-  return normalized.length > 0 ? normalized : undefined;
+  return normalized?.length ? normalized : undefined;
 }
 
 export function sanitizePromptBody(value: unknown): string | undefined {
