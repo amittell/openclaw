@@ -15,8 +15,7 @@ import {
   readSessionActivitySummary,
   type SessionActivitySummary,
 } from "../config/sessions/activity-summary.js";
-import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { applySessionEntryOperation } from "../config/sessions/session-accessor.sqlite-entry.js";
 import type { SessionEntryPatchCommitted } from "../config/sessions/session-entry-patch.types.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -47,6 +46,7 @@ import {
 import { readActivitySummarySource } from "./session-activity-summary-source.js";
 import {
   activitySummaryScope,
+  createActivitySummaryStorePaths,
   prepareSessionActivitySummaryView,
   resolveActivitySummaryEventTarget,
   sessionActivitySummaryOwnerIsCurrent,
@@ -133,18 +133,17 @@ export function createSessionActivitySummaries(deps: {
   const now = () => deps.scheduler.now();
   const modelRef = (target: ActivitySummaryTarget) =>
     resolveUtilityModelRefForAgent({ cfg: deps.getConfig(), agentId: target.agentId });
+  const storePathFor = createActivitySummaryStorePaths(deps.getConfig);
   const scope = (target: ActivitySummaryTarget) => ({
     agentId: target.agentId,
     sessionKey: target.key,
-    storePath: resolveSessionStorePathCore(deps.getConfig().session?.store, {
-      agentId: target.agentId,
-    }),
+    storePath: storePathFor(target.agentId),
   });
   const current = (state: Tracked) =>
     !disposed &&
     states.get(activitySummaryScope(state)) === state &&
     sessionActivitySummaryOwnerIsCurrent(state, owner) &&
-    scope(state).storePath === state.storePath;
+    storePathFor(state.agentId) === state.storePath;
   const publish = (state: Tracked, value: ActivitySummaryView["state"], force = false) => {
     if (!current(state)) {
       return;
@@ -209,7 +208,6 @@ export function createSessionActivitySummaries(deps: {
       state = undefined;
     }
     if (state) {
-      state.entry = projectActivitySummaryEntry(entry);
       return state;
     }
     if (states.size >= MAX_TRACKED) {
@@ -433,12 +431,9 @@ export function createSessionActivitySummaries(deps: {
         omittedContent: omitted,
       };
       let committedTranscript: SessionEntryPatchCommitted["transcriptPredicate"];
-      const committed = await patchSessionEntryCore(
+      const committed = await applySessionEntryOperation(
         scope(state),
-        (fresh) => {
-          assertCurrentEntry(state, fresh);
-          return { activitySummary: summary };
-        },
+        { kind: "activity-summary", summary, sessionKey: state.key },
         {
           preserveActivity: true,
           onCommitted: (_entry, transcriptPredicate) => {
@@ -458,6 +453,9 @@ export function createSessionActivitySummaries(deps: {
       if (!committed || !current(state)) {
         state.dirty = true;
         return;
+      }
+      if (!committedTranscript) {
+        throw new ActivitySummaryCancelledError();
       }
       state.entry = { ...state.entry, activitySummary: committed.activitySummary };
       assertCurrentOwner(state, ref);
@@ -602,7 +600,7 @@ export function createSessionActivitySummaries(deps: {
     return prepareSessionActivitySummaryView({
       ...target,
       cfg: deps.getConfig(),
-      entry,
+      entry: state?.entry ?? entry,
       storePath: scope(target).storePath,
       admitted: state !== undefined,
     });

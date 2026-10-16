@@ -20,7 +20,9 @@ export { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.j
 export {
   getSqliteDatabaseAdmission,
   publishSqliteDatabaseAdmission,
+  readSqliteDatabasePendingScopedWriteToken,
   readSqliteDatabasePendingWriteToken,
+  readSqliteDatabaseScopedWriteToken,
   readSqliteDatabaseWriteTokenForPath,
   withSqliteDatabaseWriteScope,
   type SqliteDatabaseAdmissionKey,
@@ -40,6 +42,7 @@ export type {
   SqliteWorkerOperations,
 } from "../infra/sqlite-worker-contract.js";
 export { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+export { bindSqliteWorkerDatabase } from "../infra/sqlite-worker-binding.js";
 export { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 export { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 export { ensureOpenClawAgentStandingIntentsSchema } from "../state/openclaw-agent-standing-intents-schema.js";

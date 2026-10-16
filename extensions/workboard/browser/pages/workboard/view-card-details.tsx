@@ -34,6 +34,7 @@ import {
   formatPriorityLabel,
   workboardErrorMessage,
   workboardMutationContext,
+  workboardViewState,
   renderPriorityIcon,
   formatStatusLabel,
   formatUpdatedTime,
@@ -106,10 +107,7 @@ function CardDetailsContent(props: WorkboardProps & { card: WorkboardCard }) {
     initialActiveElement instanceof HTMLElement && initialActiveElement !== document.body
       ? initialActiveElement
       : undefined;
-  const state = () => {
-    void props.revision;
-    return getWorkboardState(props.host);
-  };
+  const state = workboardViewState(() => props);
   const noteValue = liveInputValue(() => state().detailCommentBody);
   const visibleError = () => workboardErrorMessage(state(), props.pageError);
   const card = () => {
@@ -227,7 +225,7 @@ function CardDetailsContent(props: WorkboardProps & { card: WorkboardCard }) {
         label: card().title,
         description: lifecycle().session?.displayName ?? formatted().detail,
         style:
-          "--openclaw-modal-width: 620px; --openclaw-modal-backdrop-filter: none; --wa-color-overlay-modal: rgba(0, 0, 0, 0.24);",
+          "--openclaw-modal-width: 620px; --openclaw-modal-backdrop-filter: none; --openclaw-modal-backdrop-color: rgba(0, 0, 0, 0.24);",
         onCancel: dismissDetails,
       }}
     >

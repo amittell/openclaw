@@ -18,15 +18,12 @@ import type {
 import type { reserveWorktreeCapacityInWorker } from "../agents/worktrees/capacity.worker.js";
 import type { recoverPendingWorktreesInWorker } from "../agents/worktrees/registry-run-end.worker.js";
 import type { WorktreeTemplateWorkerOperations } from "../agents/worktrees/template-registry.worker.js";
+import type { ClawAddStateWorkerOperations } from "../claws/add-state-worker-contract.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type { ConfigHealthEntryBasis } from "../config/io.health-state.types.js";
 import type { SessionEntryCurrentSource } from "../config/sessions/session-entry-current.types.js";
 import type { CronStateWorkerOperations } from "../cron/store/worker-contract.js";
-import type {
-  RepositoryGitHubPublicationPendingQuery,
-  RepositoryGitHubPublicationStatusRow,
-} from "../gateway/github-repository-publication.kernel.js";
 import type {
   SessionGroupCatalogMutation,
   SessionGroupCatalogMutationResult,
@@ -45,7 +42,7 @@ import type {
 } from "../infra/update-run-interruption-contract.js";
 import type { UpdateRunWriteOperations } from "../infra/update-run-mutation.types.js";
 import type { UpdateRunReconciliationOperations } from "../infra/update-run-reconciliation.types.js";
-import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
+import type { PluginStateWriteOperations } from "../plugin-state/plugin-state-worker-contract.js";
 import type { CaptureWorkerOperations } from "../proxy-capture/store.worker-contract.js";
 import type { SecretStoreConfigRefWrite } from "../secrets/store/secret-store-config-ref.kernel.js";
 import type {
@@ -68,6 +65,7 @@ import type {
 import type { GitHubPublicationSourceOperations } from "./github-publication-source-contract.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lease-context.js";
+import type { StateSchemaPublicationBlocker } from "./openclaw-state-schema-publication.js";
 import type { RegisteredStateWorkerOperations } from "./openclaw-state-worker-registry.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 import type { WorkerOperations } from "./worker-operation-registry.js";
@@ -85,12 +83,13 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
   WorktreeTemplateWorkerOperations &
   WorkspaceStateWorkerOperations &
   UpdateRunReconciliationOperations &
+  ClawAddStateWorkerOperations &
   UpdateRunWriteOperations &
   CaptureWorkerOperations &
   TuiLastSessionWorkerOperations &
   SessionStateWorkerOperations &
   SessionUpstreamWorkerOperations &
-  PluginStateWorkerOperations &
+  PluginStateWriteOperations &
   UserPreferenceWorkerOperations &
   CronStateWorkerOperations &
   TranscriptReadOperations &
@@ -104,7 +103,10 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
       output: ReturnType<typeof recoverPendingWorktreesInWorker>;
     };
     "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
-    "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
+    "database.publishSchema": {
+      input: undefined;
+      output: StateSchemaPublicationBlocker | undefined;
+    };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };
     "workspace.replaceAttestation": {
@@ -128,10 +130,6 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
         sessionEntryCurrentSource?: SessionEntryCurrentSource;
       };
       output: void;
-    };
-    "githubRepository.personalPending": {
-      input: RepositoryGitHubPublicationPendingQuery;
-      output: RepositoryGitHubPublicationStatusRow | undefined;
     };
     "agentProvenance.readBatch": {
       input: { agentIds: readonly string[] };
@@ -225,12 +223,13 @@ export type OpenClawStateWorkerRuntimeCommand = Exclude<
     type:
       | "database.inspectIdle"
       | "database.walMaintenance"
+      | "database.publishSchema"
       | "agentDatabases.releaseExitedLease"
       | "worktrees.reserveCapacity"
       | keyof RestartLifecycleWorkerOperations
       | Extract<keyof OpenClawStateWorkerOperations, `deviceAuth.${string}`>
       | keyof CaptureWorkerOperations
-      | keyof PluginStateWorkerOperations
+      | keyof PluginStateWriteOperations
       | keyof WorktreeTemplateWorkerOperations
       | keyof OpenClawStateLeaseLifecycleOperations;
   }

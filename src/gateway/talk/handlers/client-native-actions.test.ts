@@ -7,6 +7,7 @@ import {
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
 } from "../../../agents/embedded-agent-runner/run-state.js";
+import type { EmbeddedAgentRunResult } from "../../../agents/embedded-agent.js";
 import { guardSessionManager } from "../../../agents/session-tool-result-guard-wrapper.js";
 import {
   createAssistant,
@@ -24,6 +25,7 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { readTranscriptEventRows } from "../../../config/sessions/session-accessor.sqlite-read.js";
 import { waitForSessionTranscriptIndexReconcile } from "../../../config/sessions/session-transcript-reconcile.js";
+import { runWithRetainedGatewayRootWork } from "../../../process/gateway-work-admission.js";
 import { onInternalSessionTranscriptUpdate } from "../../../sessions/transcript-events.js";
 import { runOutsideAsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -158,8 +160,10 @@ describe("native Talk action ownership through public plugin registration", () =
       });
       const unsubscribe = onInternalSessionTranscriptUpdate((update) => {
         if ((update.target?.sessionId ?? update.sessionId) === SESSION_ID) {
-          // Match the Gateway subscription: committed publications outlive their producer.
-          const publication = runOutsideAsyncWorkScope(() => publish(update));
+          // Match production subscription ownership: committed broadcasts outlive the producer.
+          const publication = runOutsideAsyncWorkScope(() =>
+            runWithRetainedGatewayRootWork(() => publish(update)),
+          );
           void publication.catch(() => {});
           publications.push(publication);
         }
@@ -196,7 +200,13 @@ describe("native Talk action ownership through public plugin registration", () =
             modelRun = session.prompt(params.prompt);
             await modelRun;
             await recorder?.waitForRuntimePersistence();
-            return { payloads: [{ text: "Both labels are preserved." }], meta: { durationMs: 0 } };
+            return {
+              payloads: [{ text: "Both labels are preserved." }],
+              meta: {
+                durationMs: 0,
+                terminalReply: { disposition: "visible", text: "Both labels are preserved." },
+              },
+            } satisfies EmbeddedAgentRunResult;
           }).catch((error: unknown) => {
             providerStarted.reject(error);
             throw error;

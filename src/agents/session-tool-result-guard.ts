@@ -443,6 +443,14 @@ export function installSessionToolResultGuard(
     callerOptions?: AppendMessageOptions,
   ): Generator<AppendRequest, string | undefined, AppendReceipt> {
     const callerInvalidatesCache = callerOptions?.invalidateSerializedPrefixCache === true;
+    // Publish the owning run before storage clones the message or hooks project it.
+    // Already-admitted immutable replay messages retain their recorded envelope.
+    if (
+      (message.role === "assistant" || message.role === "toolResult") &&
+      !Object.isFrozen(message)
+    ) {
+      Object.assign(message, attachSessionTranscriptRunId(message, transcriptRunId));
+    }
     let nextMessage = message;
     if (message.role === "assistant") {
       const sanitized = sanitizeToolCallInputs([message], {

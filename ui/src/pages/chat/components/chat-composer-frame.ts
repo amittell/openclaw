@@ -14,11 +14,12 @@ import {
 } from "../../../lib/chat/commands.ts";
 import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { clearCompositionEnd, recordCompositionEnd } from "../../../lib/ime.ts";
+import { isSessionRunVisuallyActive } from "../../../lib/session-run-state.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
-import { renderMicrophonePicker, type ChatRunControlsProps } from "./chat-composer-controls.tsx";
+import type { ChatRunControlsProps, MicrophonePickerProps } from "./chat-composer-controls.tsx";
 import {
   adjustTextareaHeight,
   disconnectTextareaOverflowObserver,
@@ -31,7 +32,7 @@ import { createGoalComposerController } from "./chat-composer-goal-mode.tsx";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.tsx";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
-import { resolveComposerQuestionPanel } from "./chat-composer-question.tsx";
+import type { ComposerPrediction } from "./chat-composer-prediction.ts";
 import {
   isSkillMenuVisible,
   resetSkillMenuState,
@@ -56,10 +57,15 @@ import {
   suppressStaleSubmittedDraftReplay,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
+import type { QuestionPanelProps } from "./chat-question-card.ts";
 
 registerChatGoalsEnglish();
 
-export function createChatComposerContext(props: ChatComposerProps) {
+export function createChatComposerContext(
+  props: ChatComposerProps,
+  prediction: ComposerPrediction | undefined,
+  questionPanelProps: QuestionPanelProps | null,
+) {
   const state = getChatComposerState(props.paneId);
   state.slashCommandDispatchConnected = props.connected;
   const canCompose = props.canCompose ?? props.canSend;
@@ -79,8 +85,12 @@ export function createChatComposerContext(props: ChatComposerProps) {
   const sendingForCurrentSession =
     props.sending && (!hasSubmittedProgress || submittedProgress !== undefined);
   const runWorking = isChatRunWorking(props);
-  const composerRunStatus =
-    sendingForCurrentSession || runWorking ? { phase: "in-progress" as const } : props.runStatus;
+  const composerRunStatus = isSessionRunVisuallyActive(
+    sendingForCurrentSession || runWorking,
+    props.startupStatus?.phase,
+  )
+    ? { phase: "in-progress" as const }
+    : props.runStatus;
   const draftKey = composerDraftKey(props);
   if (state.composerDraftScope !== null && state.composerDraftScope.key !== draftKey) {
     // A new draft owns a new input; late IME events from the retired node cannot commit into it.
@@ -88,7 +98,6 @@ export function createChatComposerContext(props: ChatComposerProps) {
     state.textareaRef?.();
     state.composerComposing = false;
     state.composingDraft = null;
-    state.emojiMenu.close();
     state.dictation?.dispose();
     state.dictation = null;
     state.dictationSelection = null;
@@ -147,9 +156,8 @@ export function createChatComposerContext(props: ChatComposerProps) {
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const goalComposer = createGoalComposerController(props, state, requestUpdate);
   const mentionsUnsupported = props.mentionsUnsupported || goalComposer.active;
-  state.mentionMenu.syncDirectory(
-    props.connected && canCompose && !mentionsUnsupported ? props.mentionDirectory : undefined,
-  );
+  const mentionDirectory =
+    props.connected && canCompose && !mentionsUnsupported ? props.mentionDirectory : undefined;
   const getMentions = () => props.getMentions?.() ?? props.mentions ?? [];
   const mentionError =
     getMentions().length > 0 && (mentionsUnsupported || visibleDraft.trimStart().startsWith("/"))
@@ -210,24 +218,9 @@ export function createChatComposerContext(props: ChatComposerProps) {
         ? "queue"
         : "steer"
       : undefined;
-  const questionPanelProps = resolveComposerQuestionPanel(props, state, requestUpdate);
-  const questionTakeoverActive = Boolean(
-    questionPanelProps && !questionPanelProps.model.nonBlocking && !state.questionCollapsed,
-  );
-  if (!state.questionTakeoverActive && questionTakeoverActive) {
-    // A question can arrive mid-IME composition before compositionend commits the host draft.
-    // Commit before unmounting so the detached input cannot leave a stale shadow behind.
-    if (state.composingDraft?.key === draftKey) {
-      commitComposerDraft(props, state.composingDraft.value);
-      state.composingDraft = null;
-    }
-    state.composerComposing = false;
-  }
-  if (state.questionTakeoverActive && !questionTakeoverActive) {
-    state.restoreComposerFocus = true;
-  }
-  state.questionTakeoverActive = questionTakeoverActive;
-  const showComposer = !questionTakeoverActive;
+  const showComposer =
+    !state.presentation.activeQuestionKey?.startsWith("gateway:") ||
+    state.presentation.questionCollapsed;
 
   // Offline text and attachments may enter the persisted reconnect queue, but
   // slash commands are live controls and must not execute against stale state.
@@ -290,7 +283,15 @@ export function createChatComposerContext(props: ChatComposerProps) {
     syncComposerDraftAfterSend(state.composerTextarea);
   };
 
+  const acceptPrediction = () => {
+    if (state.composerComposing || !canCompose) {
+      return;
+    }
+    prediction?.acceptInto(state.composerTextarea);
+  };
   const handleKeyDown = createComposerKeyDownHandler({
+    prediction,
+    acceptPrediction,
     state,
     props,
     skillMenuHost,
@@ -308,13 +309,13 @@ export function createChatComposerContext(props: ChatComposerProps) {
   const updateEmojiMenu = (target: HTMLTextAreaElement) =>
     state.emojiMenu.update(
       target,
-      requestUpdate,
       !state.composerComposing &&
         !state.skillMenuOpen &&
         !state.slashMenuOpen &&
         !state.mentionMenu.open,
     );
   const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
+    prediction?.dismiss();
     adjustTextareaHeight(target, { nativeInput: true });
     target.dir = detectTextDirection(target.value);
     const mentions = getMentions();
@@ -336,7 +337,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
       updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
       updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
       const mentionIntent = typedAtSign ? "trigger" : "input";
-      state.mentionMenu.update(target, requestUpdate, mentionIntent);
+      state.mentionMenu.update(target, mentionIntent);
     }
     updateEmojiMenu(target);
     // The textarea owns ordinary edits; only redraw the pane when surrounding
@@ -350,6 +351,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
     shareTypingSelection(target);
   };
   const handleBeforeInput = (event: InputEvent) => {
+    prediction?.dismiss();
     const target = event.target;
     if (!(target instanceof HTMLTextAreaElement) || target !== state.composerTextarea) {
       return;
@@ -362,7 +364,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
     };
     if (!state.composerComposing && !event.isComposing) {
       markComposerInputIntent(state, composerDraftKey(props));
-      state.emojiMenu.complete(event, requestUpdate, canCompose);
+      state.emojiMenu.complete(event, canCompose);
     }
   };
   const handleInput = (event: InputEvent) => {
@@ -412,7 +414,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
     if (goalComposer.active) {
       return;
     }
-    state.mentionMenu.update(target, requestUpdate);
+    state.mentionMenu.update(target);
     if (event.type === "keyup") {
       return;
     }
@@ -436,11 +438,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
       return;
     }
     clearCompositionEnd(event);
-    const emojiWasOpen = state.emojiMenu.open;
     state.emojiMenu.close();
-    if (emojiWasOpen) {
-      requestUpdate();
-    }
     // SAFETY: The identity check above requires the current composer textarea.
     const target = event.target as HTMLTextAreaElement;
     // A dropped compositionend (detach/blur mid-IME) must not wedge the
@@ -463,7 +461,7 @@ export function createChatComposerContext(props: ChatComposerProps) {
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
-  devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected);
+  devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected, props.sessionKey);
   const startRealtimeTalk = () => {
     // Catalog help does not require history; only starting Talk does.
     if (devicePicker.realtimeStatus !== "ready") {
@@ -488,8 +486,8 @@ export function createChatComposerContext(props: ChatComposerProps) {
     startRealtimeTalk();
   };
   const selectedMicrophoneId = props.realtimeTalkInputDeviceId?.trim() ?? "";
-  const microphonePicker = props.onToggleRealtimeTalk
-    ? renderMicrophonePicker({
+  const microphonePicker: MicrophonePickerProps | undefined = props.onToggleRealtimeTalk
+    ? {
         devices: devicePicker.devices,
         loading: devicePicker.loading,
         open: devicePicker.open,
@@ -515,10 +513,11 @@ export function createChatComposerContext(props: ChatComposerProps) {
         },
         onOpenTalkSettings: props.onOpenTalkSettings,
         onOpenDictationSettings: props.onOpenDictationSettings,
-      })
+      }
     : undefined;
   const dictationOptions = {
     client: props.gatewayClient ?? null,
+    sessionKey: props.sessionKey,
     connected: props.connected,
     enabled: props.composerHoldToRecord !== false,
     dictationAvailable: devicePicker.dictationStatus === "ready",
@@ -653,14 +652,11 @@ export function createChatComposerContext(props: ChatComposerProps) {
   if (props.modelSwitching && state.slashMenuCommand?.key === "think") {
     resetSlashMenuState(state);
   }
-  if (
-    !canCompose ||
-    state.composerComposing ||
-    state.dictation?.locksComposer ||
-    goalComposer.pending
-  ) {
-    state.emojiMenu.close();
-  }
+  const emojiEnabled =
+    canCompose &&
+    !state.composerComposing &&
+    !state.dictation?.locksComposer &&
+    !goalComposer.pending;
   const commandsVisible = props.connected && canCompose;
   if (
     !(commandsVisible && isSkillMenuVisible(state)) &&
@@ -688,6 +684,9 @@ export function createChatComposerContext(props: ChatComposerProps) {
     canCompose,
     showAbortableUi,
     visibleDraft,
+    predictionText: prediction?.text ?? null,
+    acceptPrediction,
+    dismissPrediction: () => prediction?.dismiss(),
     runStatusAnnouncement,
     requestUpdate,
     sendShortcut,
@@ -704,6 +703,8 @@ export function createChatComposerContext(props: ChatComposerProps) {
     runControlsProps,
     menus,
     mentionMenuHost,
+    mentionDirectory,
+    emojiEnabled,
     mentionError,
     skillMenuHost,
     slashMenuHost,

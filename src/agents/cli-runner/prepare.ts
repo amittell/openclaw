@@ -18,7 +18,6 @@ import {
   activateMcpLoopbackClientGrantCapture,
   bindMcpLoopbackClientGrantAdmission,
   deactivateMcpLoopbackClientGrantCapture,
-  mintMcpLoopbackClientGrant,
   revokeMcpLoopbackClientGrant,
   transferMcpLoopbackClientGrant,
 } from "../../gateway/mcp-grant-store.js";
@@ -48,7 +47,6 @@ import {
 } from "../../routing/session-key.js";
 import { captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
 import { resolveUserPath } from "../../utils.js";
-import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import {
   readRunOperatorAuthority,
   resolveAdmittedRunActiveAssertion,
@@ -104,9 +102,10 @@ import { beginContextEngineLogicalTurn } from "../harness/context-engine-turn-be
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import { loadManifestModelCatalog, overlayConfiguredModelCatalog } from "../model-catalog.js";
 import { resolveModelContextWindowProfile } from "../model-context-window.js";
+import { recordModelFallbackStop } from "../model-fallback-stop.js";
 import { recordAdmittedModelRoutingDecision } from "../model-routing-decision.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
-import { collectRuntimeChannelCapabilities } from "../runtime-capabilities.js";
+import { resolveRuntimeChannelPromptContext } from "../runtime-capabilities.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
 import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from "../system-prompt.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
@@ -137,6 +136,7 @@ import {
 import { isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
 import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
+import { mintCliMcpClientGrant } from "./mcp-client-grant.js";
 import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
 import { resolveCliCatalogCapabilities } from "./model-capabilities.js";
 import { detectNodeClaudePlacement, resolveClaudeCliContextModelId } from "./prepare-claude.js";
@@ -420,6 +420,13 @@ async function prepareCliRunContextWithinReadFence(
   if (usesNativeAuthProfile) {
     effectiveAuthProfileId = undefined;
     authCredential = undefined;
+  } else if (params.nativeAuthOnly && effectiveAuthProfileId) {
+    const refusal = new Error(
+      "Automation has no recorded inference account. Explicitly select its account with a model@profile update before running it.",
+    );
+    // Another model would only bypass the operator's account choice.
+    recordModelFallbackStop(refusal);
+    throw refusal;
   } else if (
     effectiveAuthProfileId &&
     backendAuthPolicy &&
@@ -936,9 +943,9 @@ async function prepareCliRunContextWithinReadFence(
   let cleanupPreparedResources: (() => Promise<void>) | undefined;
   let preparedExecution: PrivateCliBackendPreparedExecution | undefined;
   try {
-    const mcpClientGrant =
+    const mcpClient =
       mcpLoopbackRuntime && mcpGrant
-        ? mintMcpLoopbackClientGrant({
+        ? await mintCliMcpClientGrant({ ...params, config: runConfig }, sessionAgentId, {
             ...mcpGrant,
             sessionEventSourcePolicy,
             runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
@@ -948,6 +955,10 @@ async function prepareCliRunContextWithinReadFence(
             ...(mcpToolAuth ? { toolAuth: mcpToolAuth } : {}),
           })
         : undefined;
+    const mcpClientGrant = mcpClient?.grant;
+    // The grant's cleanup also releases the memory audience leased for this turn.
+    const cleanupMcpClientGrant = mcpClient?.cleanup;
+    cleanupPreparedResources = cleanupMcpClientGrant;
     const bindMcpClientGrantAdmission = (
       admittedRunContext: NonNullable<RunCliAgentParams["admittedRunContext"]>,
     ) => {
@@ -1044,17 +1055,6 @@ async function prepareCliRunContextWithinReadFence(
             };
           })()
         : undefined;
-    let mcpClientGrantRevoked = false;
-    const cleanupMcpClientGrant = mcpClientGrant
-      ? async () => {
-          if (mcpClientGrantRevoked) {
-            return;
-          }
-          mcpClientGrantRevoked = true;
-          revokeMcpLoopbackClientGrant(mcpClientGrant.token);
-        }
-      : undefined;
-    cleanupPreparedResources = cleanupMcpClientGrant;
     const rawLoopbackServerConfig = mcpLoopbackRuntime
       ? createMcpLoopbackServerConfig(mcpLoopbackRuntime.port)
       : undefined;
@@ -1399,16 +1399,15 @@ async function prepareCliRunContextWithinReadFence(
             sessionKey: params.sessionKey?.trim() || params.sessionId,
           });
     assertSkillsCurrent();
-    const runtimeChannel = skipsTurnPreparation
-      ? undefined
-      : normalizeMessageChannel(params.messageChannel ?? params.messageProvider);
-    const runtimeCapabilities = skipsTurnPreparation
-      ? undefined
-      : collectRuntimeChannelCapabilities({
-          cfg: params.config,
-          channel: runtimeChannel,
-          accountId: params.agentAccountId,
-        });
+    const { runtimeChannel, runtimeCapabilities, customInlineButtonHint, messageToolHints } =
+      resolveRuntimeChannelPromptContext({
+        cfg: params.config,
+        channel: skipsTurnPreparation
+          ? undefined
+          : (params.messageChannel ?? params.messageProvider),
+        accountId: params.agentAccountId,
+        requester: params,
+      });
     const requesterProfileId = readRunOperatorAuthority(params)?.profileId;
     const builtSystemPrompt = isControlOperation
       ? ""
@@ -1427,6 +1426,8 @@ async function prepareCliRunContextWithinReadFence(
             runtimeChannel,
             runtimeChatType,
             runtimeCapabilities,
+            customInlineButtonHint,
+            messageToolHints,
             ownerNumbers: params.ownerNumbers,
             docsPath: openClawReferences.docsPath ?? undefined,
             sourcePath: openClawReferences.sourcePath ?? undefined,
@@ -1493,6 +1494,7 @@ async function prepareCliRunContextWithinReadFence(
       (params.finalizePromptForResolvedTools ||
         sessionPromptContext?.durableContext ||
         sessionPromptContext?.sessionGapContext ||
+        sessionPromptContext?.preservedTurnsContext ||
         effectiveReplyGuidance) &&
       params.transcriptPrompt === undefined
         ? params.prompt
@@ -1544,8 +1546,8 @@ async function prepareCliRunContextWithinReadFence(
       }));
       params.assertCurrent?.();
       params.abortSignal?.throwIfAborted();
-      const gap = sessionPromptContext?.sessionGapContext;
-      const renderCurrentPrompt = createCliCurrentPromptRenderer(params, reusableCliSession, gap);
+      const notes = { ...sessionPromptContext, writer: cliHistoryWriter };
+      const renderCurrentPrompt = createCliCurrentPromptRenderer(params, reusableCliSession, notes);
       const preferResumableText =
         params.currentInboundEventKind === "room_event" && Boolean(reusableCliSessionId);
       historyPromptCurrentTurn = renderCurrentPrompt(preparedPrompt);

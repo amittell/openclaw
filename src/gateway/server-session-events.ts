@@ -11,7 +11,6 @@ import {
 import { getRuntimeConfig } from "../config/io.js";
 import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
-import { getAgentRunContext, hasLiveAgentRunContext } from "../infra/agent-run-registry.js";
 import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
@@ -19,9 +18,11 @@ import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-eve
 import { runOutsideAsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
-import { prepareForwardedMessageCronJobNameResolver } from "./chat-display-projection.history.js";
+import {
+  prepareForwardedMessageCronJobNameResolver,
+  readPluginSteeringId,
+} from "./chat-display-projection.history.js";
 import { projectChatDisplayMessage } from "./chat-display-projection.js";
-import { chatRunBelongsToAgent } from "./chat-run-owner.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type {
   SessionEventSubscriberRegistry,
@@ -473,7 +474,7 @@ async function handleTranscriptUpdateBroadcast(
     routingAgentId
       ? { key: sessionKey, agentId: routingAgentId, storePath: publicationStorePath }
       : undefined,
-    (read) => {
+    (read, ancestors) => {
       if (params.getSessionRowProjection?.() !== projection) {
         return;
       }
@@ -513,54 +514,29 @@ async function handleTranscriptUpdateBroadcast(
       });
       const broadcastOptions =
         read && projection
-          ? { prepareSessionProjection: prepareSessionEventProjection(projection, read) }
+          ? {
+              prepareSessionProjection: prepareSessionEventProjection(projection, read, {
+                ancestors,
+                encodeMessage: true,
+              }),
+            }
           : undefined;
-      const projected =
+      const messageProjectionParams =
         message === undefined
           ? undefined
-          : projectSessionMessagePayload({
+          : {
               sessionKey,
               ...(eventAgentId ? { agentId: eventAgentId } : {}),
               message,
-              isRunActive: (runId) => {
-                if (activeRunState?.runIds?.includes(runId)) {
-                  return true;
-                }
-                // Some owners expose only session liveness in the aggregate. Read
-                // the exact run instead of treating another run's activity as recovery.
-                const tracked = params.chatAbortControllers.get(runId);
-                const context = getAgentRunContext(runId);
-                const ownerAgentId = routingAgentId ?? compatibilityOwnerAgentId;
-                return Boolean(
-                  ownerAgentId &&
-                  [
-                    tracked?.projectSessionActive !== false && tracked?.controlUiVisible !== false
-                      ? tracked
-                      : undefined,
-                    context?.isControlUiVisible !== false && hasLiveAgentRunContext(runId)
-                      ? context
-                      : undefined,
-                  ].some(
-                    (owner) =>
-                      owner &&
-                      chatRunBelongsToAgent(
-                        { ...owner, defaultAgentId: compatibilityOwnerAgentId },
-                        ownerAgentId,
-                      ) &&
-                      (owner.sessionKey === sessionKey ||
-                        owner.sessionKey === sessionRow?.key ||
-                        (owner.sessionId !== undefined &&
-                          owner.sessionId === sessionRow?.sessionId)),
-                  ),
-                );
-              },
               resolveCronJobName,
               transcriptPosition,
               ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
               ...(messageSeq !== undefined ? { messageSeq } : {}),
               ...(update.runId ? { runId: update.runId } : {}),
               sessionSnapshot,
-            });
+            };
+      const projected =
+        messageProjectionParams && projectSessionMessagePayload(messageProjectionParams);
       // Do not invalidate history for a recoverable attempt: a refetch could
       // publish its durable error row before the owning run settles.
       if (projected?.deferredAssistantError) {
@@ -570,6 +546,28 @@ async function handleTranscriptUpdateBroadcast(
       if (!historyReset && projected?.payload) {
         params.broadcastToConnIds("session.message", projected.payload, connIds, broadcastOptions);
         return;
+      }
+      if (
+        !historyReset &&
+        !projected?.payload &&
+        messageProjectionParams &&
+        read &&
+        projection &&
+        readPluginSteeringId(message)
+      ) {
+        const controlUiProjection = projectSessionMessagePayload({
+          ...messageProjectionParams,
+          includePluginSteering: true,
+        });
+        if (controlUiProjection.payload) {
+          params.broadcastToConnIds("session.message", controlUiProjection.payload, connIds, {
+            prepareSessionProjection: prepareSessionEventProjection(projection, read, {
+              ancestors,
+              encodeMessage: true,
+              controlUiOnly: true,
+            }),
+          });
+        }
       }
 
       // Resets invalidate both audiences; hidden messages notify only broad session listeners.
@@ -673,7 +671,7 @@ export function createLifecycleEventBroadcastHandler(params: {
     try {
       // Committed lifecycle publications settle with the Gateway, not their producer's scope.
       await runOutsideAsyncWorkScope(() =>
-        withPreparedEventRow(projection, query, (read) => {
+        withPreparedEventRow(projection, query, (read, ancestors) => {
           const current = captured ?? projection?.capture(query);
           if (
             params.getSessionRowProjection?.() !== projection ||
@@ -717,7 +715,11 @@ export function createLifecycleEventBroadcastHandler(params: {
             {
               dropIfSlow: true,
               ...(read && projection
-                ? { prepareSessionProjection: prepareSessionEventProjection(projection, read) }
+                ? {
+                    prepareSessionProjection: prepareSessionEventProjection(projection, read, {
+                      ancestors,
+                    }),
+                  }
                 : {}),
             },
           );

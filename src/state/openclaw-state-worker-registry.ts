@@ -5,9 +5,10 @@ import type {
 import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
 
 const loaders = {
-  clawAdoption: () => import("./claw-adoption.worker.js").then((m) => m.clawAdoptionOperations),
   machineState: () =>
     import("./config-machine-state.worker.js").then((m) => m.machineStateOperations),
+  localOnboarding: () =>
+    import("./local-onboarding-state.worker.js").then((m) => m.localOnboardingOperations),
   agentDeletion: () => import("./agent-deletion.worker.js").then((m) => m.agentDeletionOperations),
   agentRecovery: () =>
     import("./agent-deletion-recovery.worker.js").then((m) => m.agentRecoveryOperations),

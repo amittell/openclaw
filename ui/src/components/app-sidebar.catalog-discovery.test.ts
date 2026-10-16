@@ -23,7 +23,7 @@ import {
 } from "../test-helpers/gateway-client.ts";
 import "../test-helpers/app-sidebar-suite.ts";
 import { settleLitElement } from "../test-helpers/lit-settle.ts";
-import "./app-sidebar.ts";
+import "./app-sidebar.tsx";
 
 async function settle(sidebar: SidebarLifecycleState) {
   await vi.advanceTimersByTimeAsync(0);
@@ -456,11 +456,12 @@ describe("AppSidebar expanded catalog refresh visibility", () => {
 
       sidebar.requestUpdate();
       provider.remove();
-      expect(observed.has(scrollBody!)).toBe(false);
       const timersAfterDetach = vi.getTimerCount();
       const observationsAfterDetach = observe.mock.calls.length;
       await settleLitElement(sidebar);
-      expect.soft(vi.getTimerCount()).toBe(timersAfterDetach);
+      // The bridge disposes its root after the same-turn reparenting window.
+      // Disposal may retire existing timers; a detached owner must not add any.
+      expect.soft(vi.getTimerCount()).toBeLessThanOrEqual(timersAfterDetach);
       expect.soft(observe).toHaveBeenCalledTimes(observationsAfterDetach);
       expect.soft(observed.has(scrollBody!)).toBe(false);
 

@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
-import { icons } from "../../../components/icons.ts";
+import { Icon } from "../../../components/solid/icon.tsx";
 import {
   getSkillCommandCompletions,
   getSkillDisplayName,
@@ -8,9 +8,8 @@ import {
   type SlashCommandDef,
 } from "../../../lib/chat/commands.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { solidTemplate } from "./chat-composer-controls.ts";
+import { ComposerContent } from "./chat-composer-content.tsx";
 import { paneDomId } from "./chat-composer-dom.ts";
-import { LitContent } from "./chat-composer-interop.tsx";
 import {
   handleComposerMenuKeydown,
   ComposerMenu,
@@ -287,7 +286,11 @@ function renderSkillMenuContents(
                 state.skillMenuIndex = index;
                 requestUpdate();
               },
-              icon: <LitContent value={icons.pencilSparkles} />,
+              icon: (
+                <ComposerContent>
+                  <Icon name="pencilSparkles" />
+                </ComposerContent>
+              ),
               name: renderSlashMatchedName(
                 getSkillDisplayName(command),
                 state.skillMenuTarget?.query ?? "",
@@ -312,8 +315,4 @@ export function SkillMenu(props: { args: Parameters<typeof renderSkillMenuConten
       </ComposerMenu>
     </Show>
   );
-}
-
-export function renderSkillMenu(...args: Parameters<typeof renderSkillMenuContents>) {
-  return solidTemplate(SkillMenu, { args });
 }

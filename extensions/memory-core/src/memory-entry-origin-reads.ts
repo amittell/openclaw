@@ -1,12 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import { readMemoryEntryOriginsInDatabase } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
-import { withFreshOpenClawAgentDatabaseReadOnly } from "openclaw/plugin-sdk/sqlite-runtime";
+import { withOpenClawAgentDatabaseReadOnly } from "openclaw/plugin-sdk/sqlite-runtime";
 import { tableExists } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
   MEMORY_SESSION_TOMBSTONE_BATCH_SIZE,
   type MemoryOriginReadInput,
   type MemoryOriginReadOutput,
 } from "./memory-entry-origins-task.js";
+import { requireMemorySearchDatabase } from "./memory-search-database.js";
 import { hasMemorySessionTombstone } from "./memory-session-tombstones.js";
 
 function queryOrigins(
@@ -39,10 +40,13 @@ function queryOrigins(
 }
 
 export function readMemoryOriginsInWorker(request: MemoryOriginReadInput): MemoryOriginReadOutput {
-  const result = withFreshOpenClawAgentDatabaseReadOnly(({ db }) => queryOrigins(db, request), {
-    agentId: request.agentId,
-    path: request.databasePath,
-    env: { OPENCLAW_STATE_DIR: request.stateDir },
-  });
+  const result = withOpenClawAgentDatabaseReadOnly(
+    ({ db }) => queryOrigins(requireMemorySearchDatabase(db), request),
+    {
+      agentId: request.agentId,
+      path: request.databasePath,
+      env: { OPENCLAW_STATE_DIR: request.stateDir },
+    },
+  );
   return result.found ? result.value : queryOrigins(undefined, request);
 }

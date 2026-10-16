@@ -1,3 +1,5 @@
+// Initialize the context-free root before a task can lazily import maintenance owners.
+import "../shared/detached-async-context.js";
 import { MessagePort, type Transferable } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -5,19 +7,19 @@ import {
   type WorkerTaskChannel,
   type WorkerTaskControl,
 } from "@openclaw/worker-runtime/worker";
+import { scheduleOpenClawCompileCacheFlush } from "../../node-compile-cache.mjs";
 import { loggingState } from "../logging/state.js";
 import {
   applyAgentDatabaseReaderRequest,
   decodeAgentDatabaseReaderRequest,
   installDeletedAgentDatabaseFences,
 } from "./agent-database-readers.js";
-import {
-  installSqliteDatabaseAdmissions,
-  withSqliteDatabaseAdmissionExchange,
-} from "./sqlite-database-admission.js";
+import { withDatabaseEngineSelection } from "./database-engine/context.js";
+import { withSqliteDatabaseAdmissionExchange } from "./sqlite-database-admission.js";
 import {
   bindSqliteDatabaseAdmissionUpstream,
   exchangeSqliteDatabaseAdmissions,
+  withSqliteDatabaseAdmissionWait,
 } from "./sqlite-worker-database-admission-relay.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "./worker-idle-gc.js";
 import { serveWorkerMemorySamples } from "./worker-memory.js";
@@ -34,7 +36,11 @@ type WorkerTaskHandler<Output> = (
 /** Pool dispatch is serial per worker; handlers finish cleanup before returning their result. */
 export function serveWorkerTasks<Output>(
   handler: WorkerTaskHandler<Output>,
-  options: { transferList?: (value: Output) => Transferable[]; retireOnError?: boolean } = {},
+  options: {
+    transferList?: (value: Output) => Transferable[];
+    retireOnError?: boolean;
+    idleGc?: false;
+  } = {},
 ): void {
   serveOwnedWorkerTasks(handler, options);
 }
@@ -48,35 +54,52 @@ export function serveOwnedWorkerTasks<Output>(
     encodeResourceError?: (error: unknown) => unknown;
     /** Unknown native state cannot publish a reusable task failure before isolate exit. */
     retireOnError?: boolean;
+    /** Guest runtimes own their heap budget and lifetime across task boundaries. */
+    idleGc?: false;
   } = {},
 ): void {
   let memoryPort: MessagePort;
   let taskPort: MessagePort | undefined;
   let databaseAdmissionPort: MessagePort | undefined;
+  let databaseAdmissionDeadlineAtMs: number | undefined;
+  let databaseEngineSelection: WorkerTaskContext["databaseEngineSelection"];
   let closeMemorySamples: (() => void) | undefined;
-  const runWithDatabaseAdmission = async <T>(operation: () => T | Promise<T>): Promise<T> => {
-    const port = databaseAdmissionPort;
-    if (!port) {
-      return operation();
-    }
-    let active = true;
-    try {
-      return await withSqliteDatabaseAdmissionExchange((admissions, location, create) => {
-        if (!active) {
-          throw new Error("SQLite admission facts outlived their worker task");
-        }
-        return exchangeSqliteDatabaseAdmissions(port, admissions, location, create);
-      }, operation);
-    } finally {
-      active = false;
-    }
+  const runWithTaskContext = async <T>(operation: () => T | Promise<T>): Promise<T> => {
+    const run = async () => {
+      const port = databaseAdmissionPort;
+      if (!port) {
+        return operation();
+      }
+      let active = true;
+      try {
+        return await withSqliteDatabaseAdmissionExchange((admissions, location, create) => {
+          if (!active) {
+            throw new Error("SQLite admission facts outlived their worker task");
+          }
+          return exchangeSqliteDatabaseAdmissions(port, admissions, location, create);
+        }, operation);
+      } finally {
+        active = false;
+      }
+    };
+    // Offline ports reuse workers across engines; cleanup retains the last task's selection.
+    return databaseEngineSelection
+      ? withDatabaseEngineSelection(databaseEngineSelection, run)
+      : run();
   };
   serveRuntimeWorkerTasks<Output, WorkerTaskContext>(
-    (input, channel, control) => runWithDatabaseAdmission(() => handler(input, channel, control)),
+    (input, channel, control) =>
+      withSqliteDatabaseAdmissionWait(
+        {
+          deadlineAtMs: databaseAdmissionDeadlineAtMs,
+          assertActive: () => control.throwIfCancelled(),
+        },
+        () => runWithTaskContext(() => handler(input, channel, control)),
+      ),
     {
       ...options,
       closeResource: (key) =>
-        runWithDatabaseAdmission(async () => {
+        runWithTaskContext(async () => {
           const request = decodeAgentDatabaseReaderRequest(key);
           if (!request && !options.closeResource) {
             throw new Error("Worker does not own retained resources");
@@ -115,14 +138,21 @@ export function serveOwnedWorkerTasks<Output>(
         cancelWorkerIdleGc();
       },
       installTaskContext(context) {
+        databaseAdmissionDeadlineAtMs = context.databaseAdmissionDeadlineAtMs;
+        databaseEngineSelection = context.databaseEngineSelection;
         installDeletedAgentDatabaseFences(context.deletedAgentDatabaseFences);
-        installSqliteDatabaseAdmissions(context.databaseAdmissions);
         if (context.databaseAdmissionPort) {
           bindSqliteDatabaseAdmissionUpstream(context.databaseAdmissionPort);
         }
         databaseAdmissionPort ??= context.databaseAdmissionPort;
       },
-      onIdle: scheduleWorkerIdleGc,
+      onIdle() {
+        // Later tasks can load additional modules; an empty native flush does no I/O.
+        scheduleOpenClawCompileCacheFlush();
+        if (options.idleGc !== false) {
+          scheduleWorkerIdleGc();
+        }
+      },
       onRetire() {
         cancelWorkerIdleGc();
         try {
