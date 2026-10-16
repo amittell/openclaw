@@ -90,6 +90,7 @@ type CronHarnessOptions = {
 };
 type DreamingPluginApi = Parameters<typeof registerShortTermPromotionDreaming>[0];
 type DreamingPluginApiTestDouble = DreamingPluginApi & {
+  backgroundTasks: Promise<unknown>[];
   scheduler: ReturnType<typeof createTestPluginServiceScheduler>;
   logger: ReturnType<typeof createLogger>;
   on: ReturnType<typeof vi.fn>;
@@ -212,6 +213,7 @@ function createDreamingTestContext(
 ) {
   const logger = createLogger();
   const harness = createCronHarness(params.initialJobs, params.cronOptions);
+  const backgroundTasks: Promise<unknown>[] = [];
   const api: DreamingPluginApiTestDouble = {
     ...createTestPluginApi({
       config: params.config ?? createDreamingConfig(),
@@ -219,9 +221,17 @@ function createDreamingTestContext(
       logger,
     }),
     logger,
+    backgroundTasks,
     on: vi.fn<DreamingPluginApi["on"]>(),
     scheduler: createTestPluginServiceScheduler(),
     registerService: vi.fn<DreamingPluginApi["registerService"]>(),
+  };
+  api.lifecycle.runInBackgroundContext = (run) => {
+    const result = run();
+    if (result instanceof Promise) {
+      backgroundTasks.push(result);
+    }
+    return result;
   };
   Object.assign(api.runtime, { agent: createPluginRuntimeMock().agent }, params.runtime);
   return { api, harness, logger };
@@ -265,7 +275,13 @@ function getBeforeAgentReplyHandler(onMock: ReturnType<typeof vi.fn>) {
   );
   return call[1] as (
     event: { cleanedBody: string },
-    ctx: { agentId?: string; trigger?: string; workspaceDir?: string; sessionKey?: string },
+    ctx: {
+      agentId?: string;
+      trigger?: string;
+      workspaceDir?: string;
+      sessionKey?: string;
+      heartbeatEventQueueSessionKey?: string;
+    },
   ) => Promise<unknown>;
 }
 
@@ -286,6 +302,7 @@ async function triggerDreamingServiceStart(
     logger: api.logger,
   } as OpenClawPluginServiceContext;
   await getDreamingService(api).start({ ...context, scheduler: api.scheduler });
+  await Promise.all(api.backgroundTasks);
 }
 
 async function triggerDreamingServiceStop(api: DreamingPluginApiTestDouble): Promise<void> {
@@ -308,15 +325,15 @@ function registerShortTermPromotionDreamingForTest(api: DreamingPluginApiTestDou
 }
 
 describe("dreaming service reconciliation", () => {
-  it("drains pending reconciliation on service stop without arming runtime recovery", async () => {
+  it("starts before reconciliation settles and drains it on stop without arming runtime recovery", async () => {
     vi.useFakeTimers();
     let rejectStartupList: (reason?: unknown) => void = () => undefined;
-    const startupListPromise = new Promise<CronJobLike[]>((_resolve, reject) => {
+    const startupListPromise = new Promise<never>((_resolve, reject) => {
       rejectStartupList = reject;
     });
     let listCalls = 0;
-    const addCalls: CronAddInput[] = [];
-    const cron: CronParam = {
+    const add = vi.fn(async () => ({}));
+    const cron = {
       async list() {
         listCalls += 1;
         if (listCalls === 1) {
@@ -324,23 +341,26 @@ describe("dreaming service reconciliation", () => {
         }
         return [];
       },
-      async add(input) {
-        addCalls.push(input);
-        return {};
-      },
+      add,
       async update() {
         return {};
       },
       async remove() {
         return { removed: false };
       },
-    };
+      async removeStaleJobFamily() {
+        return 0;
+      },
+    } satisfies NonNullable<ReturnType<NonNullable<OpenClawPluginServiceContext["getCron"]>>>;
     const { api, logger } = createDreamingTestContext();
 
     try {
       registerShortTermPromotionDreamingForTest(api);
-      const startup = triggerDreamingServiceStart(api, {
+      await getDreamingService(api).start({
         config: api.config,
+        stateDir: ".",
+        logger,
+        scheduler: api.scheduler,
         getCron: () => cron,
       });
 
@@ -351,11 +371,11 @@ describe("dreaming service reconciliation", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(stopped).toBe(false);
       rejectStartupList(new Error("startup list failed"));
-      await Promise.all([startup, stopping]);
+      await stopping;
       await vi.advanceTimersByTimeAsync(constants.RUNTIME_CRON_RECONCILE_INTERVAL_MS);
 
       expect(listCalls).toBe(1);
-      expect(addCalls).toHaveLength(0);
+      expect(add).not.toHaveBeenCalled();
       expectLogContains(logger.error, "dreaming startup reconciliation failed");
     } finally {
       rejectStartupList(new Error("test cleanup"));
@@ -580,7 +600,7 @@ describe("dreaming service reconciliation", () => {
 
   it("only triggers managed dreaming when the queued cron event is still pending", async () => {
     const { api, harness } = createDreamingTestContext({
-      config: createDreamingConfig({ enabled: false }),
+      config: createDreamingConfig({ enabled: true, phases: { deep: { limit: 0 } } }),
     });
 
     registerShortTermPromotionDreamingForTest(api);
@@ -603,7 +623,7 @@ describe("dreaming service reconciliation", () => {
 
     expect(first).toEqual({
       handled: true,
-      reason: "memory-core: short-term dreaming disabled",
+      reason: "memory-core: short-term dreaming disabled by limit",
     });
 
     resetSystemEventsForTest();
@@ -618,7 +638,7 @@ describe("dreaming service reconciliation", () => {
 
   it("resolves queued managed dreaming cron events from the base session for isolated heartbeats", async () => {
     const { api, harness } = createDreamingTestContext({
-      config: createDreamingConfig({ enabled: false }),
+      config: createDreamingConfig({ enabled: true, phases: { deep: { limit: 0 } } }),
     });
 
     registerShortTermPromotionDreamingForTest(api);
@@ -635,12 +655,17 @@ describe("dreaming service reconciliation", () => {
     const beforeAgentReply = getBeforeAgentReplyHandler(api.on);
     const result = await beforeAgentReply(
       { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-      { trigger: "heartbeat", workspaceDir: ".", sessionKey: "agent:main:main:heartbeat" },
+      {
+        trigger: "heartbeat",
+        workspaceDir: ".",
+        sessionKey: "agent:main:main:heartbeat",
+        heartbeatEventQueueSessionKey: "agent:main:main",
+      },
     );
 
     expect(result).toEqual({
       handled: true,
-      reason: "memory-core: short-term dreaming disabled",
+      reason: "memory-core: short-term dreaming disabled by limit",
     });
   });
 

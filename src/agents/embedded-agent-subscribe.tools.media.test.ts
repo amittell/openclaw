@@ -10,6 +10,10 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { mergeSessionTranscriptContext } from "../channels/inbound-event/session-transcript-context.runtime.js";
 import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
+import {
   extractToolResultMediaArtifact,
   recordToolResultLocalMediaReplayAuthorization,
 } from "./embedded-agent-tool-media.js";
@@ -91,10 +95,19 @@ describe("extractToolResultMediaArtifact candidate bounds", () => {
 });
 
 // Session writes retain database workers; the suite root is drained once before removal.
-const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-media-authority-");
+const sessionDirs = useSessionStoreTempDirs(
+  (cleanup) =>
+    afterAll(async () => {
+      await cleanup();
+      clearRuntimeConfigSnapshot();
+    }),
+  "openclaw-media-authority-",
+);
 let mediaAuthorityFixtureId = 0;
 
 async function openPersistedSessionManager() {
+  // Channel context reads history in the session worker, which needs the prepared runtime config.
+  setRuntimeConfigSnapshot({});
   const root = sessionDirs.make();
   const sessionId = `session-${mediaAuthorityFixtureId++}`;
   const target = {
