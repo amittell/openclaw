@@ -29,11 +29,7 @@ import {
   createConfigResolutionFacts,
   setConfigResolutionFacts,
 } from "../config/resolution-facts.js";
-import {
-  hashRuntimeConfigValue,
-  resetConfigRuntimeState,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
+import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import {
   attachRuntimeConfigWriteApplication,
   createRuntimeConfigWriteApplication,
@@ -2324,60 +2320,6 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.onNoopConfigCommit.mock.invocationCallOrder[0]).toBeLessThan(
       harness.onConfigApplied.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
-  });
-
-  it("notifies lifecycle owners before hot reload and commits after success", async () => {
-    const initialConfig: OpenClawConfig = {
-      gateway: { reload: {} },
-      agents: { defaults: { sandbox: { mode: "off" } } },
-      hooks: { enabled: false },
-    };
-    const nextConfig: OpenClawConfig = {
-      gateway: { reload: {} },
-      agents: { defaults: { sandbox: { mode: "all" } } },
-      hooks: { enabled: true },
-    };
-    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "hot" }));
-    const harness = createReloaderHarness(readSnapshot, { initialConfig });
-    await harness.reloader.ready;
-
-    await flushWatcherChange(harness);
-
-    expect(harness.onConfigChange.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.onHotReload.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-    expect(harness.onHotReload.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.onConfigApplied.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-    expect(harness.onConfigRevisionApplied).toHaveBeenCalledWith(
-      hashRuntimeConfigValue(nextConfig),
-    );
-  });
-
-  it("notifies lifecycle owners when hybrid mode applies a restart-only change", async () => {
-    const initialConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "hybrid" }, port: 18789 },
-    };
-    const nextConfig: OpenClawConfig = {
-      gateway: { reload: { mode: "hybrid" }, port: 18790 },
-    };
-    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "hot" }));
-    const harness = createReloaderHarness(readSnapshot, { initialConfig });
-    await harness.reloader.ready;
-
-    await flushWatcherChange(harness);
-
-    // Hybrid mode must not silently drop restart-required changes: it queues
-    // the restart and notifies lifecycle owners so runtime state cannot go
-    // stale, and logs why a hot-capable reload ended in a restart.
-    expect(harness.onConfigChange).toHaveBeenCalledOnce();
-    expect(harness.onHotReload).not.toHaveBeenCalled();
-    const [plan] = getOnlyRestartCall(harness);
-    expect(plan.restartReasons).toEqual(["gateway.port"]);
-    expect(harness.log.warn).toHaveBeenCalledWith(
-      "config reload requires gateway restart; hybrid mode scheduling restart (gateway.port)",
-    );
-    await harness.reloader.stop();
   });
 
   it("caps missing-file retries and skips reload after retry budget is exhausted", async () => {

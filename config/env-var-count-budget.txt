@@ -9,7 +9,4 @@
 # custom-type constant no longer counts as an OPENCLAW_* name.
 # Cleanup since the last restore (OAuth sidecar retirement #163186, browser deslop #163709) removed names net of additions.
 # OPENCLAW_NODE_EXEC_FALLBACK was removed by the core subsystem cleanup (#164153).
-# Raised 474 -> 475 with owner approval (2026-09-08, carried onto 10.1) for the fork's
-# OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS, which tunes the gateway
-# post-shutdown force-exit watchdog in src/gateway/server-close.ts.
-475
+474

@@ -28,6 +28,7 @@ import { broadcastChatDelta, broadcastChatError, broadcastChatFinal } from "./ch
 import type { StartChatDispatchParams } from "./chat-send-agent-dispatch.types.js";
 import { scheduleChatDashboardSessionTitle } from "./chat-send-background.js";
 import { readChatSendReplyPayload } from "./chat-send-command-replies.js";
+import { bindChatSendCompletedTurn } from "./chat-send-completed-turn.js";
 import {
   createChatSendDispatchErrorLifecycle,
   formatReturnedAgentErrors,
@@ -35,10 +36,7 @@ import {
 import { finalizeAcceptedChatSendMessageInjection } from "./chat-send-message-injection.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
 import { createChatSendReplyDispatch } from "./chat-send-reply-dispatch.js";
-import {
-  finalizeChatSendDispatchedReplies,
-  recordChatSendCompletedTurn,
-} from "./chat-send-reply-finalization.js";
+import { finalizeChatSendDispatchedReplies } from "./chat-send-reply-finalization.js";
 import {
   classifyAcceptedChatSendFailure,
   runAcceptedChatSendDispatch,
@@ -592,15 +590,12 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
-              recordCompletedTurn: () =>
-                recordChatSendCompletedTurn({
-                  agentId,
-                  expectedSessionId: admittedSessionId,
-                  logGateway: context.logGateway,
-                  requestHash: userTurnRecorder.getPendingInputRequestHash?.(),
-                  sessionKey,
-                  storePath,
-                }),
+              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, {
+                agentId,
+                expectedSessionId: admittedSessionId,
+                sessionKey,
+                storePath,
+              }),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

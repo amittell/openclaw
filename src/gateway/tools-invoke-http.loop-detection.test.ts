@@ -47,7 +47,7 @@ let port = 0;
 let server: ReturnType<typeof createServer> | undefined;
 
 beforeAll(async () => {
-  server = createServer((req, res) => {
+  const httpServer = createServer((req, res) => {
     void handleToolsInvokeHttpRequest(req, res, {
       auth: { mode: "token", token: TEST_GATEWAY_TOKEN, allowTailscale: false },
     }).catch((err: unknown) => {
@@ -55,17 +55,20 @@ beforeAll(async () => {
       res.end(String(err));
     });
   });
+  server = httpServer;
   await new Promise<void>((resolve, reject) => {
-    server?.once("error", reject);
-    server?.listen(0, "127.0.0.1", () => {
-      port = (server?.address() as AddressInfo).port;
+    httpServer.once("error", reject);
+    httpServer.listen(0, "127.0.0.1", () => {
+      port = (httpServer.address() as AddressInfo).port;
       resolve();
     });
   });
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server?.close(() => resolve()));
+  await new Promise<void>((resolve) => {
+    server?.close(() => resolve());
+  });
 });
 
 beforeEach(() => {

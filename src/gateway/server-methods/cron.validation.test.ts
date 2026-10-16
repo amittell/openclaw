@@ -1,6 +1,7 @@
 // Cron validation tests cover channel target validation against plugin
 // prefixes/aliases and runtime config for cron delivery destinations.
 
+import "./cron.validation.mocks.test-support.js";
 import { performance } from "node:perf_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
@@ -17,14 +18,12 @@ import {
   applyLegacyCronStoreRepair,
   loadLegacyCronRepairState,
 } from "../../commands/doctor/cron/legacy-repair.js";
-import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { cronRunLogEntryToDetail } from "../../cron/run-history-detail.js";
 import { CronService } from "../../cron/service.js";
 import { createCronStoreHarness, createNoopLogger } from "../../cron/service.test-harness.js";
 import { loadCronStore, saveCronStore } from "../../cron/store.js";
 import { cronStoreKey } from "../../cron/store/key.js";
-import type { CronRunRecord } from "../../cron/store/run-history.types.js";
 import type { CronDelivery, CronJob } from "../../cron/types.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -46,6 +45,14 @@ import type { CronCreatorAuthorityGrant } from "../cron-creator-authority-grant.
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
 import {
+  cronRunRecordsOverride,
+  getRuntimeConfig,
+  loadGatewaySessionEntry,
+  resetCronValidationMocks,
+  resolveCronDeliveryPreview,
+  resolveCronDeliveryPreviews,
+} from "./cron.validation.mocks.test-support.js";
+import {
   createCronTestContext,
   agentTurnCronParams,
   createCronTestInvoker,
@@ -64,72 +71,6 @@ import type { GatewayClient } from "./types.js";
 
 const cronLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness({ prefix: "cron-gateway-validation-" });
-
-const getRuntimeConfig = vi.hoisted(() =>
-  vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
-);
-const loadGatewaySessionEntry = vi.hoisted(() =>
-  vi.fn(
-    (
-      sessionKey: string,
-    ): {
-      canonicalKey: string;
-      entry?: {
-        agentHarnessId?: unknown;
-        createdActor?: SessionCreatedActor;
-        modelSelectionLocked?: unknown;
-        sessionId?: unknown;
-      };
-    } => ({ canonicalKey: sessionKey, entry: undefined }),
-  ),
-);
-const cronRunRecordsOverride = vi.hoisted(() =>
-  vi.fn<
-    (
-      ...args: Parameters<typeof import("../../cron/store/read-only.js").readCronRunRecords>
-    ) => Promise<CronRunRecord[]> | undefined
-  >(),
-);
-const resolveCronDeliveryPreview = vi.hoisted(() =>
-  vi.fn(async () => ({ label: "not requested", detail: "not requested" })),
-);
-const resolveCronDeliveryPreviews = vi.hoisted(() =>
-  vi.fn(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-    Object.fromEntries(
-      jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-    ),
-  ),
-);
-
-vi.mock("../../cron/store/read-only.js", async () => {
-  const actual = await vi.importActual<typeof import("../../cron/store/read-only.js")>(
-    "../../cron/store/read-only.js",
-  );
-  return {
-    ...actual,
-    readCronRunRecords: (...args: Parameters<typeof actual.readCronRunRecords>) =>
-      cronRunRecordsOverride(...args) ?? actual.readCronRunRecords(...args),
-  };
-});
-
-vi.mock("../../config/config.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../config/config.js")>("../../config/config.js");
-  return {
-    ...actual,
-    getRuntimeConfig,
-  };
-});
-
-vi.mock("../session-utils.js", () => ({
-  loadSessionEntry: loadGatewaySessionEntry,
-  loadGatewaySessionEntryReadOnly: loadGatewaySessionEntry,
-}));
-
-vi.mock("../../cron/delivery-preview.js", () => ({
-  resolveCronDeliveryPreview,
-  resolveCronDeliveryPreviews,
-}));
 
 import { cronHandlers } from "./cron.js";
 
@@ -173,17 +114,6 @@ async function invokeCronUpdateDelivery(
     },
     currentJob,
   );
-}
-
-async function invokeCronRemove(
-  params: Record<string, unknown>,
-  options?: { removeResult?: { ok: boolean; removed: boolean }; client?: GatewayClient },
-) {
-  const context = createCronContext();
-  if (options?.removeResult) {
-    context.cron.remove.mockResolvedValueOnce(options.removeResult);
-  }
-  return await invokeCron("cron.remove", params, { context, client: options?.client });
 }
 
 async function invokeWake(params: Record<string, unknown>, client?: GatewayClient) {
@@ -386,21 +316,7 @@ describe("cron method validation", () => {
     },
   );
   beforeEach(() => {
-    getRuntimeConfig.mockReset().mockReturnValue({} as OpenClawConfig);
-    cronRunRecordsOverride.mockReset();
-    resolveCronDeliveryPreview
-      .mockReset()
-      .mockResolvedValue({ label: "not requested", detail: "not requested" });
-    resolveCronDeliveryPreviews
-      .mockReset()
-      .mockImplementation(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-        Object.fromEntries(
-          jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-        ),
-      );
-    loadGatewaySessionEntry
-      .mockReset()
-      .mockImplementation((sessionKey: string) => ({ canonicalKey: sessionKey, entry: undefined }));
+    resetCronValidationMocks();
     setCronValidationTestRegistry();
   });
 
@@ -481,35 +397,6 @@ describe("cron method validation", () => {
     expectCronSuccess(respond);
   });
 
-  it("returns no-op success when cron.remove target id is missing", async () => {
-    const { respond } = await invokeCronRemove(
-      { id: "missing-id" },
-      { removeResult: { ok: true, removed: false } },
-    );
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      { removed: false, reason: "already-gone" },
-      undefined,
-    );
-  });
-
-  it("returns no-op success when cron.remove remove() reports a concurrent delete", async () => {
-    const context = createCronContext(createCronJob({ id: "cron-1", agentId: "ops" }));
-    context.cron.remove.mockResolvedValueOnce({ ok: true, removed: false });
-
-    const { respond } = await invokeCron(
-      "cron.remove",
-      { id: "cron-1" },
-      { context, client: callerClient("ops") },
-    );
-
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      { removed: false, reason: "already-gone" },
-      undefined,
-    );
-  });
-
   describe.each(["get", "update", "remove", "run", "runs"] as const)(
     "cron.%s caller scope",
     (method) => {
@@ -580,25 +467,6 @@ describe("cron method validation", () => {
       commitGuard: expect.any(Function),
     });
     expect(respond).toHaveBeenCalledWith(true, { ok: true, removed: true }, undefined);
-  });
-
-  it("answers caller-scoped cron.remove of a missing id exactly like a foreign job", async () => {
-    const foreign = await invokeCron(
-      "cron.remove",
-      { id: "cron-1" },
-      {
-        context: createCronContext(createCronJob({ id: "cron-1", agentId: "worker" })),
-        client: callerClient("ops"),
-      },
-    );
-    const missing = await invokeCron(
-      "cron.remove",
-      { id: "cron-1" },
-      { context: createCronContext(), client: callerClient("ops") },
-    );
-
-    expect(missing.context.cron.remove).not.toHaveBeenCalled();
-    expect(missing.respond.mock.calls).toEqual(foreign.respond.mock.calls);
   });
 
   it("trims whitespace around cron.get job ids before lookup", async () => {

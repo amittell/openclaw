@@ -10,12 +10,7 @@ import {
   readLatestConfigSnapshotAuditRecordAsync,
   upsertConfigSnapshotAuditRecordAsync,
 } from "../config/config-journal-snapshot.js";
-import {
-  appendConfigAuditRecord,
-  capConfigAuditIssues,
-  capConfigAuditPaths,
-  type ConfigExternalChangeAuditRecord,
-} from "../config/io.audit.js";
+import { capConfigAuditIssues, capConfigAuditPaths } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { hashRuntimeConfigValue, resolveConfigWriteFollowUp } from "../config/runtime-snapshot.js";
@@ -54,7 +49,9 @@ import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
-import { publishReloadObservation, trackReloadObservation } from "./config-reload-observed.js";
+import { appendConfigExternalChangeAudit } from "./config-reload-external-audit.js";
+import { trackSourceReloadObservation, warnHybridRestart } from "./config-reload-observability.js";
+import { publishReloadObservation } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   isNoopGatewayReloadPlan,
@@ -167,21 +164,6 @@ export function startGatewayConfigReloader(
     if (stopped) {
       throw new GatewayConfigReloadSupersededError();
     }
-  };
-  const appendExternalAudit = async (
-    record: Omit<ConfigExternalChangeAuditRecord, "ts" | "source" | "event" | "configPath">,
-  ) => {
-    await appendConfigAuditRecord({
-      env: process.env,
-      homedir,
-      record: {
-        ts: new Date().toISOString(),
-        source: "config-io",
-        event: "config.external",
-        configPath: opts.watchPath,
-        ...record,
-      },
-    });
   };
 
   // CAS token is the unfiltered slot: a slot owned by another config path must
@@ -742,13 +724,7 @@ export function startGatewayConfigReloader(
       // above), otherwise a config that switches modes logs nothing.
       // "hybrid" is the hot-capable mode (legacy "hot" resolves to it), so a
       // restart-required plan here is the case operators need explained.
-      if (nextSettings.mode === "hybrid") {
-        opts.log.warn(
-          `config reload requires gateway restart; hybrid mode scheduling restart (${plan.restartReasons.join(
-            ", ",
-          )})`,
-        );
-      }
+      warnHybridRestart(opts.log, nextSettings.mode, plan.restartReasons);
       await opts.onConfigChange?.(plan, nextConfig);
       await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
@@ -892,10 +868,7 @@ export function startGatewayConfigReloader(
     pending = false;
     clearReloadTimer();
     let attemptedCandidate: InProcessConfigCandidate | null = null;
-    const observation = trackReloadObservation(() => ({
-      epoch: source.observation.revision,
-      acceptedFromEpoch: observationAcceptedFromRevision.get(source.observation),
-    }));
+    const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
     try {
       assertLeaseOwned();
       if (pendingInProcessConfig) {
@@ -1008,7 +981,7 @@ export function startGatewayConfigReloader(
       acceptedSourceSnapshot = undefined;
       if (!snapshot.valid) {
         if (newObservedRawHash) {
-          await appendExternalAudit({
+          await appendConfigExternalChangeAudit(opts.watchPath, {
             detectedBy: "watch",
             previousHash: previousObservedRawHash,
             nextHash: observedRawHash,
@@ -1044,7 +1017,7 @@ export function startGatewayConfigReloader(
       ) {
         // Returning to accepted bytes after a rejected edit is still an observed transition.
         // A slot upsert can race awaitWriteFinish; the rare duplicate still carries exact hashes.
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "watch",
           previousHash: previousObservedRawHash,
           nextHash: observedRawHash,
@@ -1168,10 +1141,7 @@ export function startGatewayConfigReloader(
       let candidate = pendingInProcessConfig ?? retryWriteCandidate;
       let committed = false;
       // Same per-transaction tracker as runReload: publish this read while it is current.
-      const observation = trackReloadObservation(() => ({
-        epoch: source.observation.revision,
-        acceptedFromEpoch: observationAcceptedFromRevision.get(source.observation),
-      }));
+      const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
       try {
         const expectedSourceConfig = params.write
           ? params.write.persistedSourceConfig
@@ -1392,7 +1362,7 @@ export function startGatewayConfigReloader(
       if (priorSnapshot && opts.initialSnapshotRawHash === null) {
         currentRawHash = priorSnapshot.rawHash;
         currentFingerprintedAuthoredConfig = priorSnapshot.fingerprintedAuthoredConfig;
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "startup",
           previousHash: priorSnapshot.rawHash,
           nextHash: null,
@@ -1413,7 +1383,7 @@ export function startGatewayConfigReloader(
               }),
             )
           : [];
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "startup",
           previousHash: priorSnapshot.rawHash,
           nextHash: opts.initialSnapshotRawHash,

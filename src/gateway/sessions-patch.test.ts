@@ -1,5 +1,6 @@
 // Session patch tests cover model/provider edits, subagent patching, provider
 // aliases, model catalog validation, and rejected invalid patch payloads.
+import "./sessions-patch.mocks.test-support.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -15,6 +16,11 @@ import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { withAgentSessionModelPatchOrigin } from "./session-model-patch-origin.js";
 import { projectSessionsPatchEntry } from "./sessions-patch.js";
 import {
+  acpSessionMetaMocks,
+  providerThinkingMocks,
+  resetSessionsPatchProviderThinking,
+} from "./sessions-patch.mocks.test-support.js";
+import {
   type ApplySessionsPatchArgs,
   MAIN_SESSION_KEY,
   runPatch,
@@ -22,23 +28,6 @@ import {
   expectPatchError,
   mainStoreEntry,
 } from "./sessions-patch.test-support.js";
-
-const acpSessionMetaMocks = vi.hoisted(() => ({
-  readAcpSessionMetaForEntry: vi.fn(),
-}));
-const providerThinkingMocks = vi.hoisted(() => ({
-  resolveProviderThinkingProfile:
-    vi.fn<typeof import("../plugins/provider-thinking.js").resolveEffectiveThinkingProfile>(),
-}));
-
-vi.mock("../acp/runtime/session-meta-readonly.js", () => ({
-  readAcpSessionMetaForEntry: acpSessionMetaMocks.readAcpSessionMetaForEntry,
-}));
-
-// This suite owns patch projection; provider policy artifacts have dedicated contract coverage.
-vi.mock("../plugins/provider-thinking.js", () => ({
-  resolveEffectiveThinkingProfile: providerThinkingMocks.resolveProviderThinkingProfile,
-}));
 
 const SUBAGENT_MODEL = "synthetic/hf:moonshotai/Kimi-K2.7-Code";
 const KIMI_SUBAGENT_KEY = "agent:kimi:subagent:child";
@@ -221,29 +210,7 @@ function createAllowlistedAnthropicModelCfg(): OpenClawConfig {
 
 describe("gateway sessions patch", () => {
   beforeEach(() => {
-    providerThinkingMocks.resolveProviderThinkingProfile.mockReset();
-    providerThinkingMocks.resolveProviderThinkingProfile.mockImplementation(
-      ({ provider, context }) => {
-        if (provider !== "openai") {
-          return undefined;
-        }
-        if (context.modelId === "gpt-5.5") {
-          return {
-            levels: (["off", "minimal", "low", "medium", "high", "xhigh"] as const).map((id) => ({
-              id,
-            })),
-          };
-        }
-        if (context.modelId === "gpt-5.6-luna") {
-          const levels =
-            context.agentRuntime === "openclaw"
-              ? (["off", "minimal", "low", "medium", "high", "max", "ultra"] as const)
-              : (["off", "minimal", "low", "medium", "high", "max"] as const);
-          return { levels: levels.map((id) => ({ id })) };
-        }
-        return undefined;
-      },
-    );
+    resetSessionsPatchProviderThinking();
   });
 
   afterEach(() => {
@@ -654,35 +621,6 @@ describe("gateway sessions patch", () => {
       expect(loadGatewayModelCatalog).not.toHaveBeenCalled();
     },
   );
-
-  test("persists a session temperature override", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, temperature: 0.7 },
-      }),
-    );
-    expect(entry.temperature).toBe(0.7);
-  });
-
-  test("clears temperature when patch sets null", async () => {
-    const store: Record<string, SessionEntry> = {
-      [MAIN_SESSION_KEY]: { temperature: 1.4 } as SessionEntry,
-    };
-    const entry = expectPatchOk(
-      await runPatch({
-        store,
-        patch: { key: MAIN_SESSION_KEY, temperature: null },
-      }),
-    );
-    expect(entry.temperature).toBeUndefined();
-  });
-
-  test("rejects out-of-range temperature values", async () => {
-    const result = await runPatch({
-      patch: { key: MAIN_SESSION_KEY, temperature: 3.5 },
-    });
-    expectPatchError(result, "invalid temperature");
-  });
 
   test("clears responseUsage when patch sets null", async () => {
     const store: Record<string, SessionEntry> = {

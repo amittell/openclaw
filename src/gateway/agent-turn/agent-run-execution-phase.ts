@@ -27,7 +27,6 @@ import {
   setChannelSourceTurnId,
   setChannelSourceTurnSameThreadRequired,
 } from "../../auto-reply/reply/source-turn-id.js";
-import { recordSessionPendingInputCompletedTurn } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
@@ -59,6 +58,7 @@ import {
   resolveAgentRestartRecoveryExecutionIdentityAdmission,
 } from "./agent-restart-recovery-context.js";
 import { dispatchAgentRunWithCommentaryMedia } from "./agent-run-commentary-media.js";
+import { recordAgentRunCompletedTurnMarker } from "./agent-run-completed-turn.js";
 import { createAgentRunDiagnostics } from "./agent-run-diagnostics.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
 import { resolveExecutionIdentitySpawnFacts } from "./agent-run-execution-lineage.js";
@@ -180,27 +180,6 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         );
       const recorder = prepared.userTurn.recorder;
       return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
-    };
-    /**
-     * Fire-and-forget answered-turn marker. Reached only from the success exit below
-     * (`await execution` returned without throwing and without an abort), so a run that
-     * died, threw or was cancelled leaves no marker and stays re-drivable.
-     */
-    const recordCompletedTurnMarker = () => {
-      const requestHash = prepared.userTurn.recorder?.getPendingInputRequestHash?.();
-      const markerSessionKey = params.resolvedSessionKey;
-      const expectedSessionId = params.resolvedSessionId;
-      if (!requestHash || !markerSessionKey || !expectedSessionId) {
-        return;
-      }
-      void recordSessionPendingInputCompletedTurn(
-        {
-          agentId: params.activeSessionAgentId,
-          sessionKey: markerSessionKey,
-          ...(params.storePath ? { storePath: params.storePath } : {}),
-        },
-        { expectedSessionId, requestHash },
-      ).catch(diagnostics.warning("failed to record answered agent turn marker"));
     };
     return await prepared.activeGatewayWorkAdmission.run(async () => {
       await yieldAfterAgentAcceptedAck();
@@ -674,7 +653,8 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         );
         dispatched = true;
         await execution;
-        recordCompletedTurnMarker();
+        // Success exit only: a run that threw or was aborted stays re-drivable.
+        recordAgentRunCompletedTurnMarker(params, diagnostics);
       } catch (err) {
         if (prepared.activeRunAbort.controller.signal.aborted && isAbortError(err)) {
           await finishUndispatchedAbort();
