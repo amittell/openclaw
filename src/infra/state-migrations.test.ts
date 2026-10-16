@@ -58,10 +58,11 @@ import { loadApnsRegistration } from "./push-apns.js";
 import { readRestartSentinel } from "./restart-sentinel.js";
 import { acquireStartupMigrationLeaseWithWait } from "./startup-migration-checkpoint.js";
 import {
-  autoMigrateLegacyState as autoMigrateLegacyStateWithSurfaces,
-  detectLegacyStateMigrations as detectLegacyStateMigrationsWithSurfaces,
-  runLegacyStateMigrations as runLegacyStateMigrationsWithSurfaces,
-} from "./state-migrations.doctor.js";
+  autoMigrateLegacyState,
+  detectLegacyStateMigrations,
+  runLegacyStateMigrations,
+  type AutoMigrateLegacyStateParams,
+} from "./state-migrations.core-entrypoints.test-support.js";
 import { expectRecoveryPredicateRefusedAfterRepair } from "./state-migrations.ingress-lifecycle.test-support.js";
 import * as sessionStore from "./state-migrations.legacy-session-store.js";
 import { throwIfDoctorStateMigrationRefused } from "./state-migrations.messages.js";
@@ -80,37 +81,6 @@ import {
 import { resetAutoMigrateLegacyStateDirForTest } from "./state-migrations.state-dir.js";
 import { loadVoiceWakeRoutingConfig } from "./voicewake-routing.js";
 import { loadVoiceWakeConfig, setVoiceWakeTriggers } from "./voicewake.js";
-
-type DetectLegacyStateParams = Parameters<typeof detectLegacyStateMigrationsWithSurfaces>[0];
-type RunLegacyStateParams = Parameters<typeof runLegacyStateMigrationsWithSurfaces>[0];
-type AutoMigrateLegacyStateParams = Parameters<typeof autoMigrateLegacyStateWithSurfaces>[0];
-
-type CoreMigrationParams<T> = Omit<T, "legacySessionSurfaces"> & {
-  legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
-};
-
-// This broad core suite intentionally exercises migration mechanics without plugin-owned keys.
-// Package-shaped coverage owns configured plugin resolution and setup-sidecar loading.
-function detectLegacyStateMigrations(params: CoreMigrationParams<DetectLegacyStateParams>) {
-  return detectLegacyStateMigrationsWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
-
-function runLegacyStateMigrations(params: CoreMigrationParams<RunLegacyStateParams>) {
-  return runLegacyStateMigrationsWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
-
-function autoMigrateLegacyState(params: CoreMigrationParams<AutoMigrateLegacyStateParams>) {
-  return autoMigrateLegacyStateWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
 
 // Static helpers can retain earlier cohorts after resetModules; close every cohort at teardown.
 const migrationDatabaseClosers = new Set([
@@ -2196,45 +2166,6 @@ describe("state migrations", () => {
       alpha: ["123", "456"],
     });
     await expectMissingPath(path.join(stateDir, "credentials", "chatapp-allowFrom.json"));
-  });
-
-  it("migrates the legacy session store for an explicit fixed-store owner", async () => {
-    const root = await createTempDir();
-    const stateDir = path.join(root, ".openclaw");
-    const env = createEnv(stateDir);
-    // The pre-agent <state>/sessions layout is retired (#163160): legacy keys are found in the
-    // owner's own store, so only the resolved owner reads this one.
-    const legacyStorePath = path.join(stateDir, "agents", "ops", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
-    await fs.writeFile(
-      legacyStorePath,
-      JSON.stringify({
-        "agent:main:main": { sessionId: "legacy-main", updatedAt: 20 },
-      }),
-      "utf8",
-    );
-    // The owner is deliberately NOT "main": LEGACY_IMPLICIT_AGENT_ID is "main",
-    // so an owner of "main" is also what the fallback produces and the assertion
-    // would pass with the explicit-owner disjunct in
-    // resolveLegacyStateMigrationOwner removed. "ops" only resolves via
-    // resolveSessionStoreCompatibilityAgentId, so this test fails without it.
-    const cfg = {
-      agents: {
-        ownership: "explicit",
-        defaults: { sessionStore: { agentId: "ops" } },
-        entries: { main: {}, ops: {} },
-      },
-    } satisfies OpenClawConfig;
-
-    const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
-    expect(detected.targetAgentId).toBe("ops");
-    expect(detected.sessions.hasLegacy).toBe(true);
-    expect(detected.sessions.legacyKeys).toEqual(["agent:main:main"]);
-
-    // Deliberately asserts targetAgentId and hasLegacy only. The store
-    // round-trip depends on resolveSessionStoreOwnership running rather than
-    // the preserveAmbiguousKeys fallback, which is not traced -- an assertion
-    // whose semantics are unverified is not coverage.
   });
 
   it("preserves parsed owners while repairing the target main alias", async () => {

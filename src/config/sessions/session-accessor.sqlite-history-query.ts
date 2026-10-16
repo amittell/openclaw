@@ -5,10 +5,7 @@ import type {
   SessionTranscriptDisplayDeltaResult,
   SessionTranscriptMessageByIdOptions,
 } from "../../gateway/session-transcript-read.types.js";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-} from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { hasSqlitePostCommitScope } from "../../infra/sqlite-post-commit.js";
 import {
@@ -19,6 +16,10 @@ import {
 } from "../../sessions/transcript-anchor-page.js";
 import type { TranscriptReadWindowOptions } from "../../sessions/transcript-read-window.js";
 import { isVisibleTranscriptRecord } from "../../sessions/transcript-visible-record.js";
+import {
+  readActiveMessagePositionRows,
+  resolveKeptPrefixStart,
+} from "./session-accessor.sqlite-active-message-positions.js";
 import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
 import type {
   SessionTranscriptRawDeltaLimits,
@@ -300,18 +301,8 @@ export function readTranscriptDisplayDeltaFromProjection(
   const visible = resolveVisibleMessagePositions(projection);
   const firstSeq = result.events[0]!.seq;
   const lastSeq = result.events.at(-1)!.seq;
-  const db = getActiveTranscriptKysely(projection.database);
   const sequences = new Map(
-    executeSqliteQuerySync(
-      projection.database.db,
-      db
-        .selectFrom("session_transcript_active_events")
-        .select(["event_seq", "message_position"])
-        .where("session_id", "=", projection.resolved.sessionId)
-        .where("event_seq", ">=", firstSeq)
-        .where("event_seq", "<=", lastSeq)
-        .where("message_position", "is not", null),
-    ).rows.map((row) => [
+    readActiveMessagePositionRows(projection, { firstSeq, lastSeq }).map((row) => [
       row.event_seq,
       row.message_position === null
         ? undefined
@@ -698,63 +689,6 @@ export type SessionTranscriptCompactionShadowPage = {
   shadowedCount: number;
 };
 
-/** Display position of the first visible row at or after an entry; undefined when off-branch. */
-function resolveDisplayPositionAtOrAfter(
-  projection: CurrentTranscriptProjection,
-  history: VisibleHistoryProjection,
-  entryId: string,
-): number | undefined {
-  const db = getActiveTranscriptKysely(projection.database);
-  const row = executeSqliteQueryTakeFirstSync(
-    projection.database.db,
-    db
-      .selectFrom("session_transcript_active_events as active")
-      .select("active.message_position")
-      .where("active.session_id", "=", projection.resolved.sessionId)
-      .where("active.message_position", "is not", null)
-      .where("active.active_position", ">=", (eb) =>
-        eb
-          .selectFrom("transcript_event_identities as identity")
-          .innerJoin("session_transcript_active_events as anchor", (join) =>
-            join
-              .onRef("anchor.session_id", "=", "identity.session_id")
-              .onRef("anchor.event_seq", "=", "identity.seq"),
-          )
-          .select("anchor.active_position")
-          .where("identity.session_id", "=", projection.resolved.sessionId)
-          .where("identity.event_id", "=", entryId),
-      )
-      .orderBy("active.active_position", "asc")
-      .limit(1),
-  );
-  if (!row || row.message_position === null) {
-    return undefined;
-  }
-  const seq = resolveHistoryMessageSequence(
-    resolveVisibleMessagePositions(projection),
-    history,
-    row.message_position,
-  );
-  return seq === undefined ? undefined : seq - 1;
-}
-
-/** Where a boundary's kept prefix starts; the boundary itself when nothing before it was kept. */
-function resolveKeptPrefixStart(
-  projection: CurrentTranscriptProjection,
-  history: VisibleHistoryProjection,
-  boundary: VisibleHistoryBoundary,
-  event: Record<string, unknown>,
-): number {
-  const firstKeptEntryId = event.firstKeptEntryId;
-  const keptStart =
-    typeof firstKeptEntryId === "string"
-      ? resolveDisplayPositionAtOrAfter(projection, history, firstKeptEntryId)
-      : undefined;
-  return keptStart !== undefined && keptStart < boundary.displayPosition
-    ? keptStart
-    : boundary.displayPosition;
-}
-
 /**
  * Reads the rows a compaction summary replaced: from the previous compaction's kept prefix
  * (or the visible window start) up to this boundary's kept prefix. The kept prefix is
@@ -791,14 +725,10 @@ export function readSessionTranscriptCompactionShadowPage(
     const maxMessages = resolveIntegerOption(options.maxMessages, 0, { min: 0 });
     const endExclusive = spanEnd - offset;
     const start = Math.max(spanStart, endExclusive - maxMessages);
-    return {
-      displaySource: history.displaySource,
-      events: readVisibleHistoryRange(projection, start, endExclusive, history).map((entry) => ({
-        ...entry,
-        seq: entry.seq - spanStart,
-      })),
-      offset,
-      shadowedCount,
-    };
+    const rows = readVisibleHistoryRange(projection, start, endExclusive, history);
+    for (const entry of rows) {
+      entry.seq -= spanStart;
+    }
+    return { displaySource: history.displaySource, events: rows, offset, shadowedCount };
   });
 }
