@@ -10,7 +10,7 @@ function cfgWith(channel: unknown, account: unknown): OpenClawConfig {
     channels: {
       telegram: {
         ...(channel ? { botLoopProtection: channel } : {}),
-        accounts: { main: { ...(account ? { botLoopProtection: account } : {}) } },
+        accounts: { main: account ? { botLoopProtection: account } : {} },
       },
     },
   } as unknown as OpenClawConfig;

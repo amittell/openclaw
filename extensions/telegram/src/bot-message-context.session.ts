@@ -27,6 +27,7 @@ import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coe
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { NormalizedAllowFrom } from "./bot-access.js";
 import { isSenderAllowed, normalizeAllowFrom } from "./bot-access.js";
+import { isTelegramMediaKind } from "./bot-message-context.media-kind.js";
 import type {
   TelegramMediaRef,
   TelegramMessageContextOptions,
@@ -213,19 +214,6 @@ function formatReplyChainEntry(entry: TelegramReplyChainEntry, index: number): s
     entry.mediaRef ? `[media_ref:${entry.mediaRef}]` : undefined,
   ].filter(Boolean);
   return `[${labels.join(" ")}]\n${bodyLines.join("\n")}`;
-}
-
-const TELEGRAM_MEDIA_KINDS = new Set<TelegramMediaKind>([
-  "audio",
-  "document",
-  "image",
-  "sticker",
-  "video",
-]);
-
-function isTelegramMediaKind(value: string): value is TelegramMediaKind {
-  // SAFETY: Set.has only reads; a non-member string returns false, which is exactly this predicate's contract.
-  return TELEGRAM_MEDIA_KINDS.has(value as TelegramMediaKind);
 }
 
 export async function buildTelegramInboundContextPayload(params: {

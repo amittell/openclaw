@@ -21,6 +21,13 @@ import type { TelegramBotOptions } from "./bot.types.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
 import { commitTelegramMessageDispatchReplay } from "./message-dispatch-dedupe.js";
 import {
+  createIdleIngressWorker,
+  createListeningIngressWorker,
+  type WorkerMessageListener,
+  type WorkerPollErrorListener,
+  type WorkerPollSuccessListener,
+} from "./polling-session-ingress-worker.test-support.js";
+import {
   directUpdate,
   failedUpdateIds,
   forumUpdate,
@@ -118,23 +125,6 @@ type DrainPendingDeliveriesCall = {
     now: number,
   ) => { match: boolean; bypassBackoff: boolean };
 };
-type WorkerPollSuccessListener = (message: {
-  type: "poll-success";
-  offset: null;
-  count: number;
-  finishedAt: number;
-}) => void;
-type WorkerPollErrorListener = (message: {
-  type: "poll-error";
-  message: string;
-  errorCode?: number;
-  finishedAt: number;
-}) => void;
-type WorkerMessageListener = (message: TelegramIngressWorkerMessage) => void;
-type TestWorkerMessage =
-  | TelegramIngressWorkerMessage
-  | { type: "poll-success"; finishedAt: number; count: number }
-  | { type: "poll-error"; finishedAt: number; message: string };
 type AsyncVoidFn = () => Promise<void>;
 type MockCallSource = { mock: { calls: Array<Array<unknown>> } };
 type IsolatedIngressOptions = NonNullable<
@@ -300,58 +290,6 @@ async function withTempSpool<T>(fn: (stateDir: string) => Promise<T>): Promise<T
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
-}
-
-function createIdleIngressWorker() {
-  let stopWorker: (() => void) | undefined;
-  const workerDone = new Promise<void>((resolve) => {
-    stopWorker = resolve;
-  });
-  const workerStop = vi.fn(async () => {
-    stopWorker?.();
-  });
-  const createWorker = vi.fn(() => ({
-    onMessage: vi.fn(() => () => undefined),
-    stop: workerStop,
-    task: vi.fn(async () => {
-      await workerDone;
-    }),
-  }));
-  return {
-    createWorker,
-    stop: () => stopWorker?.(),
-    workerStop,
-  };
-}
-
-function createListeningIngressWorker() {
-  let listener: WorkerMessageListener | undefined;
-  const listening = createDeferred<void>();
-  const firstAck = createDeferred<void>();
-  const idle = createIdleIngressWorker();
-  const ackSpooledUpdate = vi.fn(() => firstAck.resolve());
-  const createWorker = vi.fn(() => {
-    const worker = idle.createWorker();
-    return {
-      ...worker,
-      ackSpooledUpdate,
-      onMessage: vi.fn((nextListener: WorkerMessageListener) => {
-        listener = nextListener;
-        listening.resolve();
-        return () => undefined;
-      }),
-    };
-  });
-  return {
-    ackSpooledUpdate,
-    firstAck: firstAck.promise,
-    createWorker,
-    emit: (message: TestWorkerMessage) => listener?.(message as TelegramIngressWorkerMessage),
-    hasListener: () => listener !== undefined,
-    listening: listening.promise,
-    stop: idle.stop,
-    workerStop: idle.workerStop,
-  };
 }
 
 function startIsolatedIngressSession(params: {

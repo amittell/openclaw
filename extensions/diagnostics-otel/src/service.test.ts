@@ -268,6 +268,7 @@ import {
 } from "./service-exporter-health.js";
 import { createDiagnosticsLogExporter } from "./service-logs.js";
 import { createDiagnosticsOtelService } from "./service.js";
+import { mockCall, mockCallArg } from "./service.mock-calls.test-support.js";
 import {
   CHILD_SPAN_ID,
   createOtelContext,
@@ -384,18 +385,6 @@ function startedSpanParentContextsByName(name: string) {
         call[2] as { spanContext?: { traceId?: string; spanId?: string } } | undefined
       )?.spanContext,
     }));
-}
-
-function mockCall(mock: { mock: { calls: unknown[][] } }, callIndex = 0): unknown[] {
-  const call = mock.mock.calls.at(callIndex);
-  if (!call) {
-    throw new Error(`Expected mock call at index ${callIndex}`);
-  }
-  return call;
-}
-
-function mockCallArg(mock: { mock: { calls: unknown[][] } }, argIndex: number, callIndex = 0) {
-  return mockCall(mock, callIndex)[argIndex];
 }
 
 type TestExporterOptions = {

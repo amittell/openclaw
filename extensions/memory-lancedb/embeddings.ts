@@ -206,7 +206,7 @@ class OpenAiCompatibleEmbeddings {
         lastError = error;
       }
     }
-    throw lastError ?? new Error("memory-lancedb: all embedding endpoints failed");
+    throw toErrorObject(lastError, "memory-lancedb: all embedding endpoints failed");
   }
 
   private async postVia(
