@@ -107,32 +107,14 @@ import {
   type PreparedAuthProfileStoreOwner,
 } from "./sqlite.js";
 import { loadPersistedAuthProfileState } from "./state.js";
+import { withCredentialSources } from "./store-credential-sources.js";
 import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
 import { createAuthProfileStoreReadRuntime } from "./store-read.js";
 import {
   buildLocalAuthProfileStoreForSave,
   type SaveAuthProfileStoreOptions,
 } from "./store-save.js";
-import type {
-  AuthProfileCredentialSource,
-  AuthProfileStore,
-  RuntimeAuthProfileStore,
-} from "./types.js";
-
-function withCredentialSources(
-  store: AuthProfileStore,
-  databasePath: string,
-): RuntimeAuthProfileStore {
-  return {
-    ...store,
-    runtimeCredentialSources: Object.fromEntries(
-      Object.entries(store.profiles).map(([profileId, credential]) => [
-        profileId,
-        { databasePath, provider: credential.provider },
-      ]),
-    ),
-  };
-}
+import type { AuthProfileCredentialSource, AuthProfileStore } from "./types.js";
 
 /** Run a bounded operation without persisted or external CLI auth profiles. */
 export function withEnvOnlyAuthProfileStore<T>(run: () => T): T {

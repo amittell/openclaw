@@ -26,19 +26,13 @@ import type { MessageActionResult } from "../../infra/outbound/message-action-co
 import { projectGatewayQueuedDeliveryResult } from "../../infra/outbound/message-action-execution.js";
 import { hasAcceptedMessageActionResult } from "../../infra/outbound/message-action-result-acceptance.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
-import { hasSendMediaPayload } from "../../infra/outbound/message-action-send-payload.js";
 import { isDeliveredCurrentSourceReplyAsync } from "../../infra/outbound/source-reply-mirror.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { getPreparedMessageToolCatalog } from "../../plugins/prepared-message-tool-catalog.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
-import {
-  isMessagingToolDuplicateNormalized,
-  normalizeTextForComparison,
-} from "../embedded-agent-helpers/messaging-dedupe.js";
 import * as embeddedMessageDelivery from "../embedded-agent-message-delivery.js";
 import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
@@ -56,12 +50,9 @@ import {
   resolveEffectiveCurrentChannelContext,
   resolveMessageToolActionSchemaActions,
 } from "./message-tool-discovery.js";
+import { checkDuplicateSend, recordPollVote } from "./message-tool-execution.send-guards.js";
 import {
-  DUPLICATE_SEND_MAX_TRACKED_PER_RUN,
-  DUPLICATE_SEND_MIN_LENGTH_RATIO,
-  DUPLICATE_SEND_TTL_MS,
   POLL_VOTE_ECHO_TTL_MS,
-  recentMessageToolSendsByRun,
   recentPollVoteBySession,
 } from "./message-tool-execution.send-suppression.js";
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
@@ -90,8 +81,6 @@ import {
   type VisibleTextSuppressionReason,
 } from "./message-tool-visible-content.js";
 import { isPollVoteEchoText, resolvePollVoteEchoRoute } from "./poll-vote-echo.js";
-
-const messageToolLog = createSubsystemLogger("message-tool");
 
 type MessageToolOptions = {
   agentAccountId?: string;
@@ -492,44 +481,9 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         }
       }
 
-      // Strictly per-run: repeating an answer in a LATER run (user asked again)
-      // is legitimate; only intra-run re-narration is the pathology.
-      const duplicateSendKey = options?.runId?.trim() || undefined;
-      // Text-only guard: a media send with a repeated caption is a distinct
-      // deliverable and must never be suppressed. Media detection is shared with
-      // the send path so every param it delivers from also bypasses the guard.
-      const duplicateSendHasMedia = hasSendMediaPayload(params);
-      const duplicateSendText =
-        action === "send" && !duplicateSendHasMedia
-          ? (readToolStringParam(params, "text") ??
-            readToolStringParam(params, "message") ??
-            readToolStringParam(params, "content"))
-          : undefined;
-      if (duplicateSendKey && duplicateSendText && pollVoteEchoRoute) {
-        const tracked = recentMessageToolSendsByRun.get(duplicateSendKey);
-        if (tracked && Date.now() - tracked.recordedAt <= DUPLICATE_SEND_TTL_MS) {
-          const normalized = normalizeTextForComparison(duplicateSendText);
-          const priorOnRoute = tracked.sends
-            .filter(
-              (sent) =>
-                sent.route === pollVoteEchoRoute &&
-                sent.normalized.length >= normalized.length * DUPLICATE_SEND_MIN_LENGTH_RATIO,
-            )
-            .map((sent) => sent.normalized);
-          if (isMessagingToolDuplicateNormalized(normalized, priorOnRoute)) {
-            // Observability: the suppression verdict only reaches the model;
-            // this warn line is the sole operator-visible signal the guard fired.
-            messageToolLog.warn(
-              `duplicate_send suppressed: near-duplicate outbound message blocked for run=${duplicateSendKey}`,
-            );
-            return jsonResult({
-              status: "suppressed",
-              reason: "duplicate_send",
-              message:
-                "Suppressed a near-duplicate of a message already sent in this run. The earlier message was delivered; do not re-send it.",
-            });
-          }
-        }
+      const duplicateSend = checkDuplicateSend(action, params, options?.runId, pollVoteEchoRoute);
+      if (duplicateSend?.suppressed) {
+        return duplicateSend.suppressed;
       }
 
       const hasCurrentMessageId =
@@ -753,48 +707,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           ) {
             // SAFETY: details is provider-supplied and untyped; pollVotedOption stays unknown and is accepted only when typeof is string.
             const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
-            const option =
-              typeof details?.pollVotedOption === "string" ? details.pollVotedOption.trim() : "";
-            if (option) {
-              const recordedAt = Date.now();
-              // Prune expired entries on write so a session that votes but never
-              // sends a follow-up text can't leak a record forever in a long-lived
-              // gateway; the map stays bounded to sessions that voted within the TTL.
-              for (const [key, entry] of recentPollVoteBySession) {
-                if (recordedAt - entry.recordedAt >= POLL_VOTE_ECHO_TTL_MS) {
-                  recentPollVoteBySession.delete(key);
-                }
-              }
-              recentPollVoteBySession.set(pollEchoSessionKey, {
-                option,
-                route: pollVoteEchoRoute,
-                recordedAt,
-              });
-            }
+            recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
           }
-          if (duplicateSendKey && duplicateSendText && pollVoteEchoRoute) {
-            // Record only after a non-throwing send so a failed delivery can still
-            // be retried with the same text.
-            const recordedAt = Date.now();
-            for (const [key, entry] of recentMessageToolSendsByRun) {
-              if (recordedAt - entry.recordedAt > DUPLICATE_SEND_TTL_MS) {
-                recentMessageToolSendsByRun.delete(key);
-              }
-            }
-            const entry = recentMessageToolSendsByRun.get(duplicateSendKey) ?? {
-              sends: [],
-              recordedAt,
-            };
-            entry.recordedAt = recordedAt;
-            entry.sends.push({
-              route: pollVoteEchoRoute,
-              normalized: normalizeTextForComparison(duplicateSendText),
-            });
-            if (entry.sends.length > DUPLICATE_SEND_MAX_TRACKED_PER_RUN) {
-              entry.sends.splice(0, entry.sends.length - DUPLICATE_SEND_MAX_TRACKED_PER_RUN);
-            }
-            recentMessageToolSendsByRun.set(duplicateSendKey, entry);
-          }
+          // Record only after a non-throwing send so a failed delivery can still
+          // be retried with the same text.
+          duplicateSend?.recordDelivered();
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

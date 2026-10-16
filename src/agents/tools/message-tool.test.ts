@@ -8,8 +8,6 @@ import type { DecisionReceiptV1 } from "../../../packages/gateway-protocol/src/i
 import { createExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { configureMessageActionDecisionSink } from "../../audit/message-action-decision.js";
 import { markInboundContextLabel } from "../../auto-reply/reply/inbound-context-marker.js";
-import type { ChannelMessageAdapterShape } from "../../channels/message/types.js";
-import type { ChannelMessageCapability } from "../../channels/plugins/message-capabilities.js";
 import type {
   ChannelMessageActionName,
   ChannelPlugin,
@@ -41,6 +39,7 @@ import { createOpenClawTools } from "../openclaw-tools.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { createMessageTool } from "./message-tool-execution.js";
 import { sanitizeMessageToolVisiblePayload } from "./message-tool-visible-content.js";
+import { createChannelPlugin } from "./message-tool.test-support.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 type CreateMessageTool = typeof createMessageTool;
@@ -51,12 +50,6 @@ const EMPTY_PREPARED_MESSAGE_TOOL_CATALOG = {
   channels: [],
   getChannel: () => undefined,
 } as const;
-
-type DescribeMessageTool = NonNullable<
-  NonNullable<ChannelPlugin["actions"]>["describeMessageTool"]
->;
-type MessageToolDiscoveryContext = Parameters<DescribeMessageTool>[0];
-type MessageToolSchema = NonNullable<ReturnType<DescribeMessageTool>>["schema"];
 
 function createTelegramPollExtraToolSchemas() {
   return {
@@ -369,55 +362,6 @@ afterEach(() => {
     revokeMessageActionTurnCapability(token);
   }
 });
-
-function createChannelPlugin(params: {
-  id: string;
-  aliases?: string[];
-  actions?: ChannelMessageActionName[];
-  capabilities?: readonly ChannelMessageCapability[];
-  toolSchema?: MessageToolSchema | ((params: MessageToolDiscoveryContext) => MessageToolSchema);
-  describeMessageTool?: DescribeMessageTool;
-  messageActionTargetAliases?: NonNullable<ChannelPlugin["actions"]>["messageActionTargetAliases"];
-  config?: Partial<ChannelPlugin["config"]>;
-  message?: ChannelMessageAdapterShape;
-  messaging?: ChannelPlugin["messaging"];
-  outbound?: ChannelPlugin["outbound"];
-}): ChannelPlugin {
-  return {
-    id: params.id as ChannelPlugin["id"],
-    meta: {
-      id: params.id as ChannelPlugin["id"],
-      label: params.id,
-      selectionLabel: params.id,
-      docsPath: `/channels/${params.id}`,
-      blurb: "Test channel",
-      aliases: params.aliases,
-    },
-    capabilities: { chatTypes: ["direct", "group"], media: true },
-    config: {
-      listAccountIds: () => ["default"],
-      resolveAccount: () => ({}),
-      ...params.config,
-    },
-    ...(params.message ? { message: params.message } : {}),
-    ...(params.messaging ? { messaging: params.messaging } : {}),
-    ...(params.outbound ? { outbound: params.outbound } : {}),
-    actions: {
-      describeMessageTool:
-        params.describeMessageTool ??
-        ((ctx) => {
-          const schema =
-            typeof params.toolSchema === "function" ? params.toolSchema(ctx) : params.toolSchema;
-          return {
-            actions: params.actions ?? [],
-            capabilities: params.capabilities,
-            ...(schema ? { schema } : {}),
-          };
-        }),
-      messageActionTargetAliases: params.messageActionTargetAliases,
-    },
-  };
-}
 
 function registerPlugins(...plugins: ChannelPlugin[]) {
   setActivePluginRegistry(
@@ -3162,153 +3106,6 @@ describe("message tool sandbox passthrough", () => {
       currentChannelId: "forged-current",
       skipCrossContextDecoration: true,
     });
-  });
-});
-
-describe("duplicate send guard", () => {
-  const currentChat = "iMessage;-;+15550001111";
-  let runCounter = 0;
-
-  // The guard is keyed strictly by runId so intra-run re-narration is caught
-  // while a later run may legitimately repeat the same answer.
-  function createSendTool(runId?: string) {
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "imessage",
-          source: "test",
-          plugin: createChannelPlugin({ id: "imessage" }),
-        },
-      ]),
-    );
-    mocks.runMessageAction.mockImplementation(
-      async () =>
-        ({
-          kind: "send",
-          channel: "imessage",
-          action: "send",
-          to: currentChat,
-          handledBy: "plugin",
-          payload: { ok: true },
-          dryRun: false,
-        }) as MessageActionResult,
-    );
-    return createMessageTool({
-      currentChannelProvider: "imessage",
-      currentChannelId: currentChat,
-      agentAccountId: "primary",
-      agentSessionKey: "agent:test:imessage:direct:dup-guard",
-      runId: runId ?? `run-dup-${(runCounter += 1)}`,
-      sourceReplyDeliveryMode: "message_tool_only",
-      runMessageAction: mocks.runMessageAction as never,
-    });
-  }
-
-  it("suppresses a near-duplicate resend within the same run", async () => {
-    const tool = createSendTool();
-    const first = await tool.execute("send-1", {
-      action: "send",
-      channel: "imessage",
-      message: "Restock alert: flux stock is 37 units, reorder soon.",
-    });
-    expect(first.details).not.toMatchObject({ status: "suppressed" });
-
-    const second = await tool.execute("send-2", {
-      action: "send",
-      channel: "imessage",
-      message: "FYI — Restock alert: flux stock is 37 units, reorder soon. Please action.",
-    });
-    expect(second.details).toMatchObject({ status: "suppressed", reason: "duplicate_send" });
-    expect(mocks.runMessageAction).toHaveBeenCalledTimes(1);
-  });
-
-  it("delivers distinct texts in the same run", async () => {
-    const tool = createSendTool();
-    await tool.execute("send-1", {
-      action: "send",
-      channel: "imessage",
-      message: "Restock alert: flux stock is 37 units, reorder soon.",
-    });
-    const second = await tool.execute("send-2", {
-      action: "send",
-      channel: "imessage",
-      message: "Separately: the widget count is healthy at 120 units.",
-    });
-    expect(second.details).not.toMatchObject({ status: "suppressed" });
-    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not suppress the same text in a different run", async () => {
-    const first = createSendTool("run-dup-cross-a");
-    await first.execute("send-1", {
-      action: "send",
-      channel: "imessage",
-      message: "Restock alert: flux stock is 37 units, reorder soon.",
-    });
-    const second = createSendTool("run-dup-cross-b");
-    const result = await second.execute("send-2", {
-      action: "send",
-      channel: "imessage",
-      message: "Restock alert: flux stock is 37 units, reorder soon.",
-    });
-    expect(result.details).not.toMatchObject({ status: "suppressed" });
-    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
-  });
-
-  // Every media source the send path reads must bypass the guard: a captioned
-  // attachment is a distinct deliverable, not a re-narration of its caption.
-  it.each([
-    { name: "a buffer data URL", media: { buffer: "data:image/png;base64,iVBORw0KGgo=" } },
-    {
-      name: "attachments[].media",
-      media: { attachments: [{ media: "https://example.com/r.png" }] },
-    },
-    { name: "attachments[].path", media: { attachments: [{ path: "/tmp/restock.png" }] } },
-    { name: "a mediaUrls array", media: { mediaUrls: ["https://example.com/r.png"] } },
-    { name: "a bare mediaUrls string", media: { mediaUrls: "https://example.com/r.png" } },
-    { name: "image", media: { image: "https://example.com/r.png" } },
-    { name: "voiceText", media: { voiceText: "Flux stock is 37 units." } },
-    { name: "media", media: { media: "https://example.com/r.png" } },
-  ])("delivers a repeated caption sent with $name", async ({ media }) => {
-    const tool = createSendTool();
-    const caption = "Restock alert: flux stock is 37 units, reorder soon.";
-    const first = await tool.execute("send-1", {
-      action: "send",
-      channel: "imessage",
-      message: caption,
-    });
-    expect(first.details).not.toMatchObject({ status: "suppressed" });
-
-    const second = await tool.execute("send-2", {
-      action: "send",
-      channel: "imessage",
-      message: caption,
-      ...media,
-    });
-    expect(second.details).not.toMatchObject({ status: "suppressed" });
-    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
-    expect(lastRunMessageActionInput()?.params).toMatchObject(media);
-  });
-
-  it("delivers consecutive buffer sends that share a caption", async () => {
-    const tool = createSendTool();
-    const caption = "Restock alert: flux stock is 37 units, reorder soon.";
-    const first = await tool.execute("send-1", {
-      action: "send",
-      channel: "imessage",
-      message: caption,
-      buffer: "data:image/png;base64,iVBORw0KGgo=",
-    });
-    expect(first.details).not.toMatchObject({ status: "suppressed" });
-
-    const second = await tool.execute("send-2", {
-      action: "send",
-      channel: "imessage",
-      message: caption,
-      buffer: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
-    });
-    expect(second.details).not.toMatchObject({ status: "suppressed" });
-    expect(mocks.runMessageAction).toHaveBeenCalledTimes(2);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

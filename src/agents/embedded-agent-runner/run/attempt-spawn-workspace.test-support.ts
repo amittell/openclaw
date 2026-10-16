@@ -36,6 +36,7 @@ import {
 } from "../../sessions/model-registry-runtime.js";
 import type { WorkspaceBootstrapFile } from "../../workspace.js";
 import { getSkillMocks, resetSkillMocks } from "./attempt-skills-mock.test-support.js";
+import { createCompletedAssistantStream } from "./attempt-spawn-workspace.assistant-stream-mock.test-support.js";
 import {
   readMockSessionCacheTtlTimestamp,
   resetSessionManagerMocks,
@@ -839,16 +840,6 @@ type SessionPromptOverride = (
   options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
 ) => Promise<void>;
 
-function createCompletedAssistantStream() {
-  return {
-    async result() {
-      return { role: "assistant", content: "done" };
-    },
-    [Symbol.asyncIterator]() {
-      return (async function* () {})();
-    },
-  };
-}
 const ATTEMPT_SPAWN_WORKSPACE_TEST_SPECIFIER = "./attempt.ts?spawn-workspace-test";
 
 const loadRunEmbeddedAttempt = createLazyPromise(
