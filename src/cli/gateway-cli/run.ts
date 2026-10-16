@@ -31,7 +31,6 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
-import { recordGatewayRestartTrace } from "../../gateway/restart-trace.js";
 import { isGatewayEffectiveConfigConflictError } from "../../gateway/server-runtime-config.js";
 import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import { isChannelStartupSuppressedByEnvironment } from "../../gateway/server-sidecar-startup-mode.js";
@@ -80,6 +79,12 @@ import { enforceGatewayRunFutureConfigGuard } from "./future-config-guard.js";
 import { getGatewayStartGuardErrors } from "./pre-bootstrap.js";
 import { runGatewayLoop } from "./run-loop.js";
 import type { GatewayRunOpts } from "./run-options.js";
+import {
+  createGatewayZombieDetectionLog,
+  EXIT_CONFIG_ERROR,
+  resolveGatewayLockErrorExitCode,
+  SupervisedGatewayLockError,
+} from "./run-supervised-lock.js";
 import type { GatewayRunRuntimeHooks } from "./runtime-hooks.js";
 import {
   resolveGatewayStartupFailureExitCode,
@@ -95,13 +100,6 @@ const SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 1000;
 const GATEWAY_SHELL_ENV_CONVERGENCE_MAX_READS = 4;
 
 type GatewayRunLogger = Pick<ReturnType<typeof createSubsystemLogger>, "info" | "warn">;
-
-/**
- * EX_CONFIG (78) from sysexits.h — used for configuration errors so systemd
- * (via RestartPreventExitStatus=78) stops restarting instead of entering a
- * restart storm that can render low-resource hosts unresponsive.
- */
-const EXIT_CONFIG_ERROR = 78;
 
 const GATEWAY_AUTH_MODES: readonly GatewayAuthMode[] = [
   "none",
@@ -316,20 +314,6 @@ function isGatewayRetryableLockError(err: unknown): boolean {
   );
 }
 
-class SupervisedGatewayLockError extends GatewayLockError {
-  constructor(
-    message: string,
-    cause: unknown,
-    readonly exitCode: 1 | typeof EXIT_CONFIG_ERROR,
-  ) {
-    super(message, cause);
-  }
-}
-
-function resolveGatewayLockErrorExitCode(err: unknown): number {
-  return err instanceof SupervisedGatewayLockError ? err.exitCode : 1;
-}
-
 function isGatewayHealthzResponse(statusCode: number | undefined, body: string): boolean {
   if (statusCode !== 200) {
     return false;
@@ -386,10 +370,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
   const retryMs = params.retryMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_MS;
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS;
   const startedAt = now();
-  // Dedup the zombie_detected signal across the recovery cycle. Cleared when
-  // the cycle resolves (either the prior gateway becomes healthy and we defer,
-  // or we time out and throw); a fresh recovery later starts a new cycle.
-  const zombieDetection = { loggedThisCycle: false };
+  const logZombieDetected = createGatewayZombieDetectionLog(supervisor, params);
 
   for (;;) {
     try {
@@ -421,22 +402,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
 
       const elapsedMs = now() - startedAt;
       const shouldRetry = elapsedMs < timeoutMs;
-      // Probe came back unhealthy while the lock is held: either the previous
-      // gateway is mid-shutdown (503 from /healthz?strict=1) or it is a zombie that
-      // lost the close path but kept the HTTP listener. Log once per recovery cycle,
-      // not every retry tick, so a normal 30s drain cannot inflate telemetry.
-      if (!zombieDetection.loggedThisCycle) {
-        recordGatewayRestartTrace("gateway.preflight.zombie_detected", elapsedMs, [
-          ["supervisor", supervisor],
-          ["port", params.port],
-        ]);
-        params.log.warn(
-          `gateway.preflight.zombie_detected supervisor=${supervisor} port=${params.port}; lock held but /healthz reported unhealthy (likely zombie or draining)`,
-        );
-        if (shouldRetry) {
-          zombieDetection.loggedThisCycle = true;
-        }
-      }
+      logZombieDetected(elapsedMs, shouldRetry);
       if (!shouldRetry) {
         if (lifecycleContention) {
           throw err;

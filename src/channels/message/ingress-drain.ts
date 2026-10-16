@@ -22,6 +22,7 @@ import {
 } from "./ingress-claim-owner.js";
 import { createIngressWriter } from "./ingress-claim-writes.js";
 import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
+import { createIngressStallSettlements } from "./ingress-drain-stall-settlement.js";
 import {
   activeClaimKey,
   createIngressDispatchQuiescence,
@@ -143,10 +144,7 @@ export function createChannelIngressDrain<
   const activeByClaim = new Map<string, ActiveHandlerState<TPayload, TMetadata>>();
   const laneOwnerByKey = new Map<string, ActiveHandlerState<TPayload, TMetadata>>();
   let disposed = false;
-  let retireSettlementObservers!: () => void;
-  const settlementObserversRetired = new Promise<void>((resolve) => {
-    retireSettlementObservers = resolve;
-  });
+  const stallSettlements = createIngressStallSettlements();
 
   const log = (message: string) => {
     options.onLog?.(message);
@@ -172,7 +170,7 @@ export function createChannelIngressDrain<
     if (!retainOwnerUntilDispose || disposed) {
       deregisterLiveIngressDrainInstance(ownerId);
     }
-    retireSettlementObservers();
+    stallSettlements.retire();
     const reason = disposed
       ? new Error("ingress-drain-disposed")
       : toErrorObject(options.abortSignal?.reason, "ingress-drain-aborted");
@@ -301,24 +299,12 @@ export function createChannelIngressDrain<
       now,
       adoptionStallTimeoutMs,
       isStopped,
-      settlementObserversRetired,
+      settlementObserversRetired: stallSettlements.retired,
       applyFailureDisposition,
       log,
       formatError,
     });
     state.stallTimer.unref?.();
-  };
-
-  const finishDeferredAfterOwnershipLoss = async (
-    state: ActiveHandlerState<TPayload, TMetadata>,
-  ) => {
-    state.quiescence.markDeferredSettled();
-    // A terminal callback normally runs after dispatch returned deferred. If a
-    // dispatcher invokes it while unwinding, returning lets that dispatcher
-    // quiesce first instead of making both sides wait on each other.
-    if (state.quiescence.isDispatchSettled()) {
-      await state.stallSettlementTask?.catch(() => undefined);
-    }
   };
 
   const releaseUnadopted = async (
@@ -329,7 +315,7 @@ export function createChannelIngressDrain<
       return;
     }
     if (state.guillotined || state.superseded) {
-      await finishDeferredAfterOwnershipLoss(state);
+      await stallSettlements.finishDeferredAfterOwnershipLoss(state);
       return;
     }
     clearStallTimer(state);
@@ -384,11 +370,11 @@ export function createChannelIngressDrain<
       onAdopted: async () => {
         // Lost adoption is loud: guillotine/supersede already tombstoned/failed the claim.
         if (state.guillotined) {
-          await finishDeferredAfterOwnershipLoss(state);
+          await stallSettlements.finishDeferredAfterOwnershipLoss(state);
           throw new IngressAdoptionLostError("guillotined");
         }
         if (state.superseded) {
-          await finishDeferredAfterOwnershipLoss(state);
+          await stallSettlements.finishDeferredAfterOwnershipLoss(state);
           throw new IngressAdoptionLostError("superseded");
         }
         if (state.phase === "adopted" || state.phase === "settled") {
@@ -435,7 +421,7 @@ export function createChannelIngressDrain<
           return;
         }
         if (state.guillotined || state.superseded) {
-          await finishDeferredAfterOwnershipLoss(state);
+          await stallSettlements.finishDeferredAfterOwnershipLoss(state);
           return;
         }
         state.quiescence.markDeferredSettled();
@@ -517,11 +503,7 @@ export function createChannelIngressDrain<
             : runOutsideGatewayRootWorkAdmission(() =>
                 options.dispatchClaimedEvent(claim, lifecycle),
               ));
-          if (result?.kind === "deferred") {
-            state.quiescence.markDeferred();
-          } else if (result?.kind === "failed-retryable") {
-            state.quiescence.markDeferredSettled();
-          }
+          stallSettlements.noteDispatchResult(state, result);
         } catch (err) {
           state.quiescence.markDeferredSettled();
           throw err;
@@ -811,20 +793,12 @@ export function createChannelIngressDrain<
     recoverStaleClaims,
     drainOnce,
     activeLaneKeys: () => new Set(laneOwnerByKey.keys()),
-    hasPendingStallSettlements: () =>
-      [...activeByClaim.values()].some(
-        (state) => state.stallSettlementTask !== undefined && state.phase !== "settled",
-      ),
+    hasPendingStallSettlements: () => stallSettlements.hasPending(activeByClaim.values()),
     waitForIdle: async () => {
       const tasks = [...activeByClaim.values()].map((state) => state.task);
       await Promise.allSettled(tasks);
     },
-    waitForStallSettlements: async () => {
-      const tasks = [...activeByClaim.values()].flatMap((state) =>
-        state.stallSettlementTask ? [state.stallSettlementTask] : [],
-      );
-      await Promise.race([Promise.allSettled(tasks), settlementObserversRetired]);
-    },
+    waitForStallSettlements: () => stallSettlements.waitFor(activeByClaim.values()),
     dispose,
   };
 }

@@ -35,7 +35,6 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveMessageReceiptPrimaryId } from "../message/receipt.js";
 import { createChannelReplyPipeline } from "../message/reply-pipeline.js";
 import { recordInboundSession } from "../session.js";
-import { recordAgentRunTerminalOutcome } from "./agent-run-terminal-outcome.js";
 import {
   createSuppressedChannelDeliveryResult,
   isChannelPartialDeliveryError,
@@ -44,7 +43,6 @@ import {
   type AnyChannelDeliveryAdapter,
   CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
   deliverChannelTurnDispatchFallback,
-  failureAlreadyDeliveredVisible,
   markChannelDeliveryErrorVisible,
 } from "./delivery-visibility.js";
 import {
@@ -53,13 +51,15 @@ import {
   resolvePendingFinalCompletion,
   toCoreManagedDeliveryInfo,
 } from "./direct-delivery-custody.js";
-import { hasVisibleChannelTurnDispatch } from "./dispatch-result.js";
-import type { ChannelTurnDispatchResultLike } from "./dispatch-result.js";
+import {
+  shouldDeliverDispatchFailureFallback,
+  throwIfTerminalDurableDeliveryFailed,
+  toSurfacedDispatchError,
+} from "./dispatch-failure.js";
 import {
   deliverInboundReplyWithMessageSendContextCore,
   deliverStructuredInboundReplyWithMessageSendContextCore,
   isDurableInboundReplyDeliveryHandled,
-  throwIfDurableInboundReplyDeliveryFailed,
   type DurableInboundReplyDeliveryParams,
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
@@ -475,17 +475,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
       if (durable.status === "failed" && isPlatformMessageNotDispatchedError(durable.error)) {
         await settleFailedPendingFinalDelivery(preparedPayload, durable.error);
       }
-      try {
-        throwIfDurableInboundReplyDeliveryFailed(durable);
-      } catch (err: unknown) {
-        // Tag terminal preflight failures so the Bug 2 fallback
-        // (visible non-outcome) does not double-send after them.
-        if (typeof err === "object" && err !== null && Object.isExtensible(err)) {
-          // SAFETY: guarded above by typeof "object", non-null and Object.isExtensible, so tagging is allowed.
-          (err as { durableTerminal?: unknown }).durableTerminal = true;
-        }
-        throw err;
-      }
+      throwIfTerminalDurableDeliveryFailed(durable);
       if (isDurableInboundReplyDeliveryHandled(durable)) {
         // Durable sends emit canonical message_sent after outbound hooks settle.
         await runChannelDeliveryObserver({
@@ -684,55 +674,24 @@ async function dispatchChannelTurnWithDeliveryOwner(
         if (settlementError !== undefined && isChannelPartialDeliveryError(settlementError)) {
           throw toErrorObject(settlementError, "channel delivery settlement failed");
         }
-        // Visible non-outcome (Bug 2): a user-visible turn whose dispatch failed
-        // with NOTHING visible already settled must still end in a visible
-        // outcome - deliver the fallback before rethrowing. Opt out when a
-        // durable partial send already delivered (visibleReplySent marker), a
-        // terminal durable preflight failure settled the send (durableTerminal),
-        // a payload was already queued, or the turn is observeOnly/system.
-        const durableTerminal =
-          // SAFETY: optional probe on an unknown error; ?. covers null/undefined and a miss yields undefined.
-          (dispatchError as { durableTerminal?: unknown })?.durableTerminal === true;
-        if (
-          params.admission?.kind !== "observeOnly" &&
-          params.ctxPayload.InternalTurnSource === undefined &&
-          dispatchError !== undefined &&
-          settlementError === undefined &&
-          !durableTerminal &&
-          !failureAlreadyDeliveredVisible(dispatchError)
-        ) {
-          const nothingVisible =
-            !dispatchResult ||
-            // SAFETY: hasVisibleChannelTurnDispatch reads only optional structural fields; !dispatchResult excluded above.
-            !hasVisibleChannelTurnDispatch(dispatchResult as ChannelTurnDispatchResultLike);
-          if (nothingVisible) {
-            try {
-              await deliverChannelTurnDispatchFallback(delivery, {
-                text: CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
-              });
-            } catch {
-              // Preserve the original dispatch error.
-            }
+        // Visible non-outcome (Bug 2): a failed user-visible turn with nothing
+        // visible settled still ends in a visible outcome before rethrowing.
+        const fallbackNeeded = shouldDeliverDispatchFailureFallback(params, {
+          dispatchError,
+          dispatchResult,
+          settlementError,
+        });
+        if (fallbackNeeded) {
+          try {
+            await deliverChannelTurnDispatchFallback(delivery, {
+              text: CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
+            });
+          } catch {
+            // Preserve the original dispatch error.
           }
         }
         if (dispatchError !== undefined) {
-          // Record a terminal failure so the ingress drain dead-letter path sees a
-          // recorded outcome instead of a silent non-outcome (blocker 3): the visible
-          // fallback above already put an explanation in front of the user. Non-visible
-          // turns (e.g. a terminal durable preflight failure) keep the original error text.
-          const surfacedError =
-            params.admission?.kind === "observeOnly"
-              ? dispatchError
-              : toErrorObject(dispatchError, "channel dispatch failed");
-          if (
-            typeof surfacedError === "object" &&
-            surfacedError !== null &&
-            Object.isExtensible(surfacedError)
-          ) {
-            // SAFETY: guarded above by typeof "object", non-null and Object.isExtensible.
-            recordAgentRunTerminalOutcome(surfacedError as object, "failed");
-          }
-          throw surfacedError;
+          throw toSurfacedDispatchError(dispatchError);
         }
         if (settlementError !== undefined) {
           throw toErrorObject(settlementError, "channel delivery settlement failed");

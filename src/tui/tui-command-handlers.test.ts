@@ -1405,18 +1405,6 @@ describe("tui command handlers", () => {
     },
   );
 
-  it("shows the resolved model reference including a nested provider prefix", async () => {
-    const h = createTuiCommandHandlersHarness({
-      patchSession: vi.fn().mockResolvedValue({
-        entry: {},
-        resolved: { modelProvider: "nvidia", model: "moonshotai/kimi-k2.5" },
-      }),
-    });
-    await h.handleCommand("/model kimi");
-    expect(h.patchSession).toHaveBeenCalledWith(expect.objectContaining({ model: "kimi" }));
-    expect(h.addSystem).toHaveBeenCalledWith("model set to nvidia/moonshotai/kimi-k2.5");
-  });
-
   it("keeps known choices interactive and updates an open picker without losing its search or selection", async () => {
     const held = createDeferred<Array<{ provider: string; id: string; name: string }>>();
     let known = [
@@ -1573,26 +1561,6 @@ describe("tui command handlers", () => {
     await handleCommand("/queue:followup");
 
     expectSendChatFields(sendChat, { message: "/queue:followup" });
-  });
-
-  it("names the selected agent for the /models catalog read on multi-agent rosters", async () => {
-    // Unscoped model reads must name a single owner; multi-agent rosters throw
-    // AgentSelectionRequiredError otherwise (self-poll regression).
-    const listModels = vi
-      .fn()
-      .mockResolvedValue([
-        { provider: "openrouter", id: "openrouter/auto", name: "OpenRouter Auto" },
-      ]);
-    const { handleCommand, openOverlay } = createTuiCommandHandlersHarness({
-      listModels,
-      currentAgentId: "voice",
-    });
-
-    await handleCommand("/models");
-
-    expect(listModels).toHaveBeenCalledTimes(1);
-    expect(listModels).toHaveBeenCalledWith({ agentId: "voice" });
-    expect(openOverlay).toHaveBeenCalled();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

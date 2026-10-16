@@ -36,6 +36,7 @@ import { applyModelRuntimeDirective } from "./directive-handling.model-runtime.j
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import { maybeHandleModelDirectiveInfo } from "./directive-handling.model.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
+import { appendQueueDirectiveAcks } from "./directive-handling.queue-ack.js";
 import { maybeHandleQueueDirective } from "./directive-handling.queue-validation.js";
 import {
   acknowledgeIgnoredSessionDirective,
@@ -51,10 +52,8 @@ import {
   resolveDirectiveTouchedSessionFields,
   withOptions,
 } from "./directive-handling.shared.js";
-import {
-  appendTemperatureAck,
-  formatTemperatureDirectiveReply,
-} from "./directive-handling.temperature.js";
+import { resolveTemperatureQueryReply } from "./directive-handling.temperature-query.js";
+import { appendTemperatureAck } from "./directive-handling.temperature.js";
 import { resolveDirectiveRuntimeContext } from "./directive-runtime-context.js";
 import type { ReasoningLevel, ThinkLevel } from "./directives.js";
 import {
@@ -150,19 +149,9 @@ export async function handleDirectiveOnly(
   if (modelInfo) {
     return acknowledgeIgnoredDirective(modelInfo, "hasModelDirective");
   }
-  // Bare `/temperature` with no value is a query, not a mutation: answer with the
-  // session's current value instead of falling through to the persistence path.
-  if (
-    directives.hasTemperatureDirective &&
-    directives.temperature === undefined &&
-    !directives.clearTemperature
-  ) {
-    const sessionTemperature =
-      typeof sessionEntry.temperature === "number" ? sessionEntry.temperature : undefined;
-    return acknowledgeIgnoredDirective(
-      formatTemperatureDirectiveReply(directives, sessionTemperature),
-      "hasTemperatureDirective",
-    );
+  const temperatureQueryReply = resolveTemperatureQueryReply(directives, sessionEntry);
+  if (temperatureQueryReply) {
+    return acknowledgeIgnoredDirective(temperatureQueryReply, "hasTemperatureDirective");
   }
 
   const modelResolution = resolveModelSelectionFromDirective({
@@ -710,20 +699,7 @@ export async function handleDirectiveOnly(
       `Thinking level set to ${remappedUnsupportedThinkLevel} (${nextThinkLevel} not supported for ${resolvedProvider}/${resolvedModel}).`,
     );
   }
-  if (directives.hasQueueDirective && directives.queueMode) {
-    parts.push(prefixSystemMessage(`Queue mode set to ${directives.queueMode}.`));
-  } else if (directives.hasQueueDirective && directives.queueReset) {
-    parts.push(prefixSystemMessage("Queue mode reset to default."));
-  }
-  if (directives.hasQueueDirective && typeof directives.debounceMs === "number") {
-    parts.push(prefixSystemMessage(`Queue debounce set to ${directives.debounceMs}ms.`));
-  }
-  if (directives.hasQueueDirective && typeof directives.cap === "number") {
-    parts.push(prefixSystemMessage(`Queue cap set to ${directives.cap}.`));
-  }
-  if (directives.hasQueueDirective && directives.dropPolicy) {
-    parts.push(prefixSystemMessage(`Queue drop set to ${directives.dropPolicy}.`));
-  }
+  appendQueueDirectiveAcks(directives, parts);
   if (fastModeChanged && !params.persistenceState) {
     const nextFastMode = directives.clearFastMode ? fastModeState.mode : sessionEntry.fastMode;
     enqueueSystemEvent(formatFastModeConfirmation(nextFastMode), {
