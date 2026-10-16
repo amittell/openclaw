@@ -69,19 +69,11 @@ import {
   type SessionTranscriptDeliveryMirror,
   type SubagentCompletionDirectDeliveryMirror,
 } from "./transcript-mirror.js";
-import {
-  groundRecentConversationRows,
-  selectRecentConversationRows,
-} from "./transcript-recent-grounding.js";
-import {
-  extractRecentConversationText,
-  type ReadRecentSessionConversationTextOptions,
-  type SessionRecentConversationText,
+import { groundRecentConversationRows } from "./transcript-recent-grounding.js";
+import type {
+  ReadRecentSessionConversationTextOptions,
+  SessionRecentConversationText,
 } from "./transcript-recent-text.js";
-import {
-  isWithinTranscriptWindow,
-  normalizeRecentTranscriptLimit,
-} from "./transcript-recent-window.js";
 import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 import { captureOwnedTranscriptWriteAssertion } from "./transcript-write-context.js";
 
@@ -174,22 +166,22 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
   assertCurrent: () => void,
   options: ReadRecentGroundedConversationTextOptions = {},
 ): Promise<SessionRecentConversationText[]> {
-  const limit = normalizeRecentTranscriptLimit(options.limit);
   try {
+    const { readRecentSessionConversationTextAsync } =
+      await import("../../gateway/session-transcript-readers.js");
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
-    // Rows and their same-turn provenance come from one transcript state; a cold-storage restore
-    // retries the selection, and grounding runs after it on what was selected.
+    // Rows and their same-turn media provenance come from one transcript snapshot; a cold-storage
+    // restore retries the read, and grounding runs after it on what was selected.
     const rows = await readRestoredSessionTranscript(
       scope,
       () =>
-        selectRecentConversationRows(scope, limit, (event) => {
-          const entry = extractRecentConversationText(event, options);
-          return entry && isWithinTranscriptWindow(entry.timestamp, options) ? entry : undefined;
+        readRecentSessionConversationTextAsync(scope, {
+          ...options,
+          includeTurnMediaReferences: true,
         }),
       { assertCurrent },
     );
     return await groundRecentConversationRows(rows, {
-      limit,
       boundReplayBytes: options.boundReplayBytes === true,
     });
   } catch (error) {
