@@ -634,7 +634,6 @@ export async function prepareCronRunContext(params: {
               sourceReplyDeliveryMode: sourceDelivery.sourceReplyDeliveryMode,
               requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
             },
-            persistSessionEntry: persistCronSessionRow,
           })
         : undefined;
       await runContinuationSession?.initialize();

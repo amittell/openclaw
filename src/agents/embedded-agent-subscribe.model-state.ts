@@ -245,7 +245,7 @@ export function createEmbeddedModelState(
     recordAuxiliaryUsage: (usage: Usage) => recordModelUsage(normalizeUsage(usage)),
     getUsageTotals: () => toNormalizedUsage(totals),
     getLastAssistantUsage: () => normalizeUsage(lastUsage),
-    getCurrentAttemptAssistant: () => (completed ? structuredClone(completed) : undefined),
+    getCurrentAttemptAssistant: () => completed,
     hasSuccessfulModelResponse: () => successfulModelResponse,
   };
 }

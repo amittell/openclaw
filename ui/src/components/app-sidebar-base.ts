@@ -17,7 +17,7 @@ import { prepareSessionNavigationHandoff } from "../lib/sessions/navigation-hand
 import { SESSION_NAVIGATION_KEY_PARAM } from "../lib/sessions/route-navigation.ts";
 import { parseAgentSessionKey, resolveUiConfiguredMainKey } from "../lib/sessions/session-key.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
-import type { SessionOwnerFilterController } from "./session-owner-filter-controller.ts";
+import type { SessionOwnerFilter } from "./session-owner-filter.ts";
 import type { ContextualSidebar } from "./sidebar-context-state.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
 
@@ -259,9 +259,6 @@ export abstract class AppSidebarBase {
     }
     const finish = this.finishUpdate;
     this.finishUpdate = undefined;
-    for (const controller of this.controllers) {
-      controller.hostUpdated?.();
-    }
     this.updated();
     finish?.(true);
   }
@@ -271,7 +268,7 @@ export abstract class AppSidebarBase {
   protected updated(): void {}
 
   get sessionInvolvingMeFilterActive(): boolean {
-    return this.sidebarSnapshot?.involvingMe ?? this.sessionOwnerFilter.involvingMe;
+    return this.sidebarSnapshot?.involvingMe ?? this.sessionOwnerFilter.read().involvingMe;
   }
 
   get sessionCatalogRowsVisible(): boolean {
@@ -282,7 +279,7 @@ export abstract class AppSidebarBase {
     );
   }
 
-  abstract readonly sessionOwnerFilter: SessionOwnerFilterController;
+  abstract readonly sessionOwnerFilter: SessionOwnerFilter;
 
   setSessionOwnerFilter = (ownerId: string | null, involvingMe = false) => {
     this.sessionOwnerFilter.set(ownerId, involvingMe);
