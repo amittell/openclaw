@@ -276,10 +276,16 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved jsonPathValue on the experimental database-engine worker entrypoint.
       // +11: approved experimental engine-owned search capabilities on existing entrypoints.
       // +14: versioned Decision data contracts, lossless codecs, validation, and typed errors.
+      // +4: Decision execution/context types; completes Peter Steinberger's
+      // approved +18 exports / +6 callables scope (2026-09-26, #157148 and #157225).
       // +1: approved boot-selected family lookup on the database-engine runtime.
       // +1: shared auth-patch application replaces manual plugin config merging.
+      // +6: packaged Settings placement, snapshot, components, context, view, and
+      // DoctorMemoryStatusPayload for the plugin-owned Memory overview.
+      // +2: MemorySearchResponse and AgentsWorkspaceGetResult type-only contracts
+      // for the plugin-owned indexed Memory search presentation.
       // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
-      3791,
+      3803,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
