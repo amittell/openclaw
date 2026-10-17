@@ -86,75 +86,56 @@ describe("buildTelegramMessageContext media carriers", () => {
     expect(context?.ctxPayload.media?.map((fact) => fact.kind)).toEqual(["image"]);
   });
 
-  describe("a reply to a cached image sent as a document", () => {
-    const repliedDocument = {
-      message_id: 10,
-      date: 1_699_999_999,
-      chat: { id: 42, type: "private", first_name: "Ada" },
-      from: { id: 7, is_bot: true, first_name: "Bot" },
-      caption: "Weekly chart",
-      document: {
-        file_id: "doc-1",
-        file_unique_id: "doc-u1",
-        file_name: "chart.jpg",
-        mime_type: "image/jpeg",
-      },
-    };
-    // What reply hydration records for that message: the saved file, typed by its bytes.
-    const hydratedEntry = {
-      messageId: "10",
-      sender: "Bot",
-      senderId: "7",
-      body: "Weekly chart",
-      mediaPath: "/tmp/openclaw/media/inbound/chart.jpg",
-      mediaKind: "image" as const,
-      mediaType: "image/jpeg",
-    };
-
-    it("keeps the hydrated image type and path", async () => {
+  it.each([
+    { fileName: "chart.jpg", kind: "image", contentType: "image/jpeg" },
+    { fileName: "report.pdf", kind: "document", contentType: "application/pdf" },
+  ] as const)(
+    "preserves hydrated $contentType reply media and Telegram's selected quote",
+    async ({ fileName, kind, contentType }) => {
+      const mediaPath = `/tmp/openclaw/media/inbound/${fileName}`;
       const context = await buildTelegramMessageContextForTest({
         message: {
           chat: { id: 42, type: "private", first_name: "Ada" },
           text: "What does it show?",
-          reply_to_message: repliedDocument,
-        },
-        replyChain: [hydratedEntry],
-      });
-
-      expect(context?.ctxPayload.ReplyChain?.[0]).toMatchObject({
-        mediaPath: "/tmp/openclaw/media/inbound/chart.jpg",
-        mediaKind: "image",
-        mediaType: "image/jpeg",
-      });
-      expect(context?.ctxPayload.media).toEqual([
-        expect.objectContaining({
-          path: "/tmp/openclaw/media/inbound/chart.jpg",
-          kind: "image",
-          contentType: "image/jpeg",
-        }),
-      ]);
-    });
-
-    it("still takes the selected quote body from Telegram", async () => {
-      const context = await buildTelegramMessageContextForTest({
-        message: {
-          chat: { id: 42, type: "private", first_name: "Ada" },
-          text: "Why this part?",
-          reply_to_message: repliedDocument,
+          reply_to_message: {
+            message_id: 10,
+            date: 1_699_999_999,
+            chat: { id: 42, type: "private", first_name: "Ada" },
+            from: { id: 7, is_bot: true, first_name: "Bot" },
+            caption: "Weekly chart",
+            document: {
+              file_id: "doc-1",
+              file_unique_id: "doc-u1",
+              file_name: fileName,
+              mime_type: contentType,
+            },
+          },
           quote: { text: "Weekly", position: 0 },
         },
-        replyChain: [hydratedEntry],
+        replyChain: [
+          {
+            messageId: "10",
+            sender: "self",
+            senderId: "7",
+            body: "Weekly chart",
+            mediaPath,
+            mediaKind: kind,
+            mediaType: contentType,
+          },
+        ],
       });
 
+      expect(context?.ctxPayload.media).toEqual([
+        expect.objectContaining({ path: mediaPath, kind, contentType }),
+      ]);
+      expect(context?.ctxPayload.ReplyToBody).toBe("Weekly");
       expect(context?.ctxPayload.ReplyChain?.[0]).toMatchObject({
+        sender: "self",
         body: "Weekly",
         isQuote: true,
-        mediaKind: "image",
-        mediaType: "image/jpeg",
       });
-      expect(context?.ctxPayload.ReplyToBody).toBe("Weekly");
-    });
-  });
+    },
+  );
 
   it("keeps mixed aggregate media out of command text and preserves voice modality", async () => {
     const context = await buildTelegramMessageContextForTest({

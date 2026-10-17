@@ -15,10 +15,6 @@ import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { evaluateSupplementalContextVisibility } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeAllowFrom } from "./bot-access.js";
-import {
-  replyTargetToChainEntry,
-  withoutNativeReplyMedia,
-} from "./bot-message-context.reply-target.js";
 import type { BuildTelegramInboundContextPayloadParams } from "./bot-message-context.session.types.js";
 import type {
   TelegramMediaRef,
@@ -69,6 +65,35 @@ export async function loadTelegramMessageContextSessionRuntime(
   runtime: TelegramMessageContextSessionRuntime | undefined,
 ): Promise<TelegramMessageContextSessionRuntime> {
   return runtime ?? import("./bot-message-context.session.runtime.js");
+}
+
+function replyTargetToChainEntry(
+  replyTarget: TelegramReplyTarget,
+  media?: TelegramMediaRef,
+): TelegramReplyChainEntry {
+  const { forwardedFrom } = replyTarget;
+  return {
+    ...(replyTarget.id ? { messageId: replyTarget.id } : {}),
+    sender: replyTarget.sender,
+    ...(replyTarget.senderId ? { senderId: replyTarget.senderId } : {}),
+    ...(replyTarget.senderUsername ? { senderUsername: replyTarget.senderUsername } : {}),
+    ...(replyTarget.body ? { body: replyTarget.body } : {}),
+    ...(replyTarget.mediaType
+      ? { mediaKind: replyTarget.mediaType, mediaType: replyTarget.mediaType }
+      : {}),
+    ...(media?.path
+      ? {
+          mediaPath: media.path,
+          mediaKind: media.kind,
+          ...(media.contentType ? { mediaType: media.contentType } : {}),
+        }
+      : {}),
+    ...(replyTarget.kind === "quote" ? { isQuote: true } : {}),
+    ...(forwardedFrom?.from ? { forwardedFrom: forwardedFrom.from } : {}),
+    ...(forwardedFrom?.fromId ? { forwardedFromId: forwardedFrom.fromId } : {}),
+    ...(forwardedFrom?.fromUsername ? { forwardedFromUsername: forwardedFrom.fromUsername } : {}),
+    ...(forwardedFrom?.date ? { forwardedDate: forwardedFrom.date * 1000 } : {}),
+  };
 }
 
 function formatTelegramForwardedMessageBody(params: {
@@ -267,7 +292,9 @@ export async function buildTelegramInboundContextPayload(
       entry.messageId === visibleReplyTargetEntry?.messageId ? visibleReplyTargetEntry : undefined;
     const visibleEntry = {
       ...entry,
-      ...(entry.mediaPath ? withoutNativeReplyMedia(selectedReplyEntry) : selectedReplyEntry),
+      ...selectedReplyEntry,
+      // The saved file owns classification, including images sent as Telegram documents.
+      ...(entry.mediaPath ? { mediaKind: entry.mediaKind, mediaType: entry.mediaType } : {}),
       // Preserve authenticated identity while Telegram's selected quote body wins.
       sender: entry.sender,
       senderId: entry.senderId,
@@ -708,3 +735,4 @@ export async function buildTelegramInboundContextPayload(
     },
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
