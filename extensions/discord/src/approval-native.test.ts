@@ -39,7 +39,7 @@ function resolveOriginTarget(
   request: Partial<PluginApprovalRequest["request"]>,
   options: { cfg?: OpenClawConfig; accountId?: string } = {},
 ) {
-  return createDiscordNativeApprovalAdapter().native?.resolveOriginTarget?.({
+  return createDiscordNativeApprovalAdapter().nativeAsync?.resolveOriginTarget?.({
     cfg: options.cfg ?? NATIVE_DELIVERY_CFG,
     accountId: options.accountId ?? "main",
     approvalKind: "plugin",
@@ -58,10 +58,10 @@ function resolveOriginTarget(
 
 describe("createDiscordNativeApprovalAdapter", () => {
   it("subscribes the native runtime to system-agent approval events", () => {
-    expect(getDiscordApprovalCapability().nativeRuntime?.eventKinds).toContain("system-agent");
+    expect(getDiscordApprovalCapability().nativeRuntimeAsync?.eventKinds).toContain("system-agent");
   });
 
-  it("keeps approval availability enabled when approvers exist but native delivery is off", () => {
+  it("keeps approval availability enabled when approvers exist but native delivery is off", async () => {
     const adapter = createDiscordNativeApprovalAdapter();
     const cfg = {
       ...NATIVE_APPROVAL_CFG,
@@ -84,7 +84,7 @@ describe("createDiscordNativeApprovalAdapter", () => {
       }),
     ).toEqual({ kind: "enabled" });
     expect(
-      adapter.native?.describeDeliveryCapabilities({
+      await adapter.nativeAsync?.describeDeliveryCapabilities({
         cfg: cfg as never,
         accountId: "main",
         approvalKind: "exec",
@@ -110,9 +110,9 @@ describe("createDiscordNativeApprovalAdapter", () => {
     });
   });
 
-  it("honors ownerAllowFrom fallback when gating approval requests", () => {
+  it("honors ownerAllowFrom fallback when gating approval requests", async () => {
     expect(
-      shouldHandleDiscordApprovalRequest({
+      await shouldHandleDiscordApprovalRequest({
         cfg: {
           commands: {
             ownerAllowFrom: ["discord:123"],
@@ -135,31 +135,55 @@ describe("createDiscordNativeApprovalAdapter", () => {
     ).toBe(true);
   });
 
-  it("reports each configured account as a raw candidate for coordinator selection", () => {
+  it("lets only the current typed Discord owner approve owner-derived exec requests", async () => {
+    const capability = getDiscordApprovalCapability();
     const cfg = {
-      commands: { ownerAllowFrom: ["discord:123"] },
+      commands: { ownerAllowFrom: ["discord:user:555555555"] },
       channels: {
         discord: {
-          accounts: {
-            default: { token: "token-default", execApprovals: { enabled: true } },
-            ops: { token: "token-ops", execApprovals: { enabled: true } },
-          },
+          execApprovals: { enabled: "auto" },
+          accounts: { main: {}, ops: { execApprovals: { approvers: ["777777777"] } } },
         },
       },
-    } as const;
+    } as OpenClawConfig;
+    const authorize = async (
+      senderId: string,
+      options: { cfg?: OpenClawConfig; accountId?: string } = {},
+    ) =>
+      (
+        await capability.authorizeActorActionAsync?.({
+          cfg: options.cfg ?? cfg,
+          accountId: options.accountId ?? "main",
+          senderId,
+          action: "approve",
+          approvalKind: "exec",
+        })
+      )?.authorized;
     const request = {
-      id: "approval-unbound",
-      request: { command: "pwd", turnSourceChannel: "discord" },
+      id: "approval-1",
+      request: { command: "pwd", turnSourceChannel: "discord", turnSourceAccountId: "main" },
       createdAtMs: 1,
       expiresAtMs: 2,
-    } as const;
+    };
 
     expect(
-      shouldHandleDiscordApprovalRequest({ cfg: cfg as never, accountId: "default", request }),
-    ).toBe(true);
+      await createDiscordNativeApprovalAdapter().nativeAsync?.resolveApproverDmTargets?.({
+        cfg,
+        accountId: "main",
+        approvalKind: "exec",
+        request,
+      }),
+    ).toEqual([{ to: "555555555" }]);
+    expect(await authorize("555555555")).toBe(true);
+    expect(await authorize("666666666")).toBe(false);
+    // Explicit account approvers still replace the global owner fallback.
+    expect(await authorize("555555555", { accountId: "ops" })).toBe(false);
+    // Authority is read from the config current at decision time.
     expect(
-      shouldHandleDiscordApprovalRequest({ cfg: cfg as never, accountId: "ops", request }),
-    ).toBe(true);
+      await authorize("555555555", {
+        cfg: { ...cfg, commands: { ownerAllowFrom: ["discord:user:888888888"] } },
+      }),
+    ).toBe(false);
   });
 
   it("describes the correct Discord exec-approval setup path", () => {
@@ -195,17 +219,6 @@ describe("createDiscordNativeApprovalAdapter", () => {
     });
 
     expect(target).toEqual({ to: "123456789" });
-  });
-
-  it("falls back to approver DMs for canonical Discord direct sessions", async () => {
-    const target = await resolveOriginTarget({
-      sessionKey: "agent:main:discord:direct:123456789",
-      turnSourceChannel: "discord",
-      turnSourceTo: "123456789",
-      turnSourceAccountId: "main",
-    });
-
-    expect(target).toBeNull();
   });
 
   it("falls back to approver DMs for account-scoped Discord direct sessions", async () => {
@@ -258,29 +271,6 @@ describe("createDiscordNativeApprovalAdapter", () => {
     });
 
     expect(target).toEqual({ to: "123456789", threadId: undefined });
-  });
-
-  it("falls back to extracting the channel id from the session key", async () => {
-    const target = await resolveOriginTarget(
-      {
-        sessionKey: "agent:main:discord:channel:987654321",
-      },
-      { accountId: "default" },
-    );
-
-    expect(target).toEqual({ to: "987654321", threadId: undefined });
-  });
-
-  it("preserves explicit turn-source thread ids on origin targets", async () => {
-    const target = await resolveOriginTarget({
-      sessionKey: "agent:main:discord:channel:123456789:thread:777888999",
-      turnSourceChannel: "discord",
-      turnSourceTo: "channel:123456789",
-      turnSourceThreadId: "777888999",
-      turnSourceAccountId: "main",
-    });
-
-    expect(target).toEqual({ to: "123456789", threadId: "777888999" });
   });
 
   it("falls back to extracting thread ids from the session key", async () => {

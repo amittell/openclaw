@@ -71,7 +71,12 @@ async function generation() {
     JSON.stringify({
       name: "openclaw",
       version: "1.0.0",
-      exports: { "./plugin-sdk/core": { default: "./dist/plugin-sdk/core.js" } },
+      exports: {
+        "./plugin-sdk/core": {
+          types: "./dist/plugin-sdk/core.d.ts",
+          default: "./dist/plugin-sdk/core.js",
+        },
+      },
     }),
   );
   const git = (...args: string[]) =>
@@ -92,7 +97,7 @@ async function generation() {
     "fixture",
   );
   const sha = git("rev-parse", "HEAD");
-  for (const name of ["entry.js", "index.js", "plugin-sdk/core.js"]) {
+  for (const name of ["entry.js", "index.js", "plugin-sdk/core.js", "plugin-sdk/core.d.ts"]) {
     await fs.writeFile(path.join(root, "dist", name), "export {};\n");
   }
   await fs.writeFile(path.join(root, "dist", "control-ui", "index.html"), "ready");
@@ -107,6 +112,29 @@ async function generation() {
 }
 
 describe("sealed immutable generation", () => {
+  it.each(["config", "commondir"])(
+    "refuses build-authored Git helpers through %s before privileged Git verification",
+    async (kind) => {
+      const { root, sha } = await generation();
+      const metadata = kind === "config" ? path.join(root, ".git") : path.join(root, "shared-git");
+      if (kind === "commondir") {
+        await fs.cp(path.join(root, ".git"), metadata, { recursive: true });
+        await fs.writeFile(path.join(root, ".git", "commondir"), "../shared-git\n");
+      }
+      await fs.appendFile(path.join(metadata, "config"), '\n[filter "candidate"]\n\tclean = cat\n');
+      await fs.writeFile(
+        path.join(metadata, "info", "attributes"),
+        "source.txt filter=candidate\n",
+      );
+      await sealImmutableGeneration(root);
+      const command = vi.fn(runGit);
+      await expect(verifyImmutableGeneration(root, sha, command)).rejects.toThrow(
+        kind === "config" ? "unsupported Git configuration" : "independent Git metadata",
+      );
+      expect(command).not.toHaveBeenCalled();
+    },
+  );
+
   it("checks the selected generation even when the caller supplies another Git repository", async () => {
     const { root, sha } = await generation();
     const foreign = temporary.make("openclaw-immutable-foreign-git-");
@@ -149,7 +177,7 @@ describe("sealed immutable generation", () => {
     ["different HEAD", /HEAD does not match/u],
     ["dirty source", /uncommitted source/u],
     ["stale build", /git runtime mismatch/u],
-    ["missing SDK", /ENOENT/u],
+    ["missing SDK declarations", /core\.d\.ts/u],
   ] as const)("refuses a sealed release with %s", async (kind, error) => {
     const { root, sha } = await generation();
     if (kind === "dirty source") {
@@ -159,8 +187,8 @@ describe("sealed immutable generation", () => {
         path.join(root, "dist", "build-info.json"),
         JSON.stringify({ commit: "0".repeat(40) }),
       );
-    } else if (kind === "missing SDK") {
-      await fs.unlink(path.join(root, "dist", "plugin-sdk", "core.js"));
+    } else if (kind === "missing SDK declarations") {
+      await fs.unlink(path.join(root, "dist", "plugin-sdk", "core.d.ts"));
     }
     await sealImmutableGeneration(root);
     await expect(
