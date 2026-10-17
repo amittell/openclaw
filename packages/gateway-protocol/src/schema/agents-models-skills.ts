@@ -99,6 +99,7 @@ export const AgentsListResultSchema = closedObject({
 /** Creates a configured agent; the server supplies an omitted workspace. */
 export const AgentsCreateParamsSchema = closedObject({
   name: NonEmptyString,
+  expectedOwnerId: Type.Optional(NonEmptyString),
   workspace: Type.Optional(NonEmptyString),
   model: Type.Optional(NonEmptyString),
   emoji: Type.Optional(Type.String()),
@@ -111,6 +112,7 @@ export const AgentsCreateResultSchema = closedObject({
   agentId: NonEmptyString,
   name: NonEmptyString,
   workspace: NonEmptyString,
+  agentDir: Type.Optional(NonEmptyString),
   model: Type.Optional(NonEmptyString),
 });
 
@@ -247,6 +249,8 @@ export const ModelsProbeResultSchema = closedObject({
 export const SkillsStatusParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
   sessionKey: Type.Optional(NonEmptyString),
+  /** Refresh file-backed discovery before reporting status after an explicit local change. */
+  refresh: Type.Optional(Type.Boolean()),
 });
 
 /** Empty request payload for listing available skill bins. */
@@ -392,6 +396,19 @@ export const SkillsSecurityVerdictsResultSchema = closedObject({
   ),
 });
 
+/** Reads the current SKILL.md for a discovered, agent-scoped local skill. */
+export const SkillsFileGetParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+  path: NonEmptyString,
+});
+
+/** Full source for the skill file preview. */
+export const SkillsFileGetResultSchema = closedObject({
+  path: NonEmptyString,
+  name: NonEmptyString,
+  content: Type.String(),
+});
+
 /** Reads the rendered skill card for one installed skill. */
 export const SkillsSkillCardParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
@@ -518,6 +535,18 @@ export const SkillsWorkshopChangeResultSchema = closedObject({
   change: SkillWorkshopChangeSchema,
 });
 
+/** Reverts every skill change one background review made; `runId` is the review's run id. */
+export const SkillsWorkshopUndoParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+  runId: NonEmptyString,
+});
+
+/** `changes` holds this call's reverts; empty with `already-undone`. */
+export const SkillsWorkshopUndoResultSchema = closedObject({
+  status: Type.Union([Type.Literal("undone"), Type.Literal("already-undone")]),
+  changes: Type.Array(SkillWorkshopChangeSchema),
+});
+
 export const GitHubIdentityScopeSchema = Type.Union([
   Type.Literal("system"),
   Type.Literal("agent"),
@@ -541,11 +570,13 @@ export const GitHubAuthorSchema = closedObject({
 });
 
 export const GitHubIdentityFactsSchema = closedObject({
+  stale: Type.Optional(Type.Boolean()),
   source: GitHubIdentitySourceSchema,
   credentialKind: Type.Union([
     Type.Literal("native"),
     Type.Literal("managed-pat"),
     Type.Literal("managed-oauth"),
+    Type.Literal("app-installation"),
   ]),
   credentialState: Type.Union([
     Type.Literal("available"),
@@ -797,8 +828,12 @@ export type SkillsWorkshopReadResult = Static<typeof SkillsWorkshopReadResultSch
 export type SkillsWorkshopArchiveParams = Static<typeof SkillsWorkshopArchiveParamsSchema>;
 export type SkillsWorkshopRestoreParams = Static<typeof SkillsWorkshopRestoreParamsSchema>;
 export type SkillsWorkshopChangeResult = Static<typeof SkillsWorkshopChangeResultSchema>;
+export type SkillsWorkshopUndoParams = Static<typeof SkillsWorkshopUndoParamsSchema>;
+export type SkillsWorkshopUndoResult = Static<typeof SkillsWorkshopUndoResultSchema>;
 export type SkillsSecurityVerdictsParams = Static<typeof SkillsSecurityVerdictsParamsSchema>;
 export type SkillsSecurityVerdictsResult = Static<typeof SkillsSecurityVerdictsResultSchema>;
+export type SkillsFileGetParams = Static<typeof SkillsFileGetParamsSchema>;
+export type SkillsFileGetResult = Static<typeof SkillsFileGetResultSchema>;
 export type SkillsSkillCardParams = Static<typeof SkillsSkillCardParamsSchema>;
 export type SkillsSkillCardResult = Static<typeof SkillsSkillCardResultSchema>;
 export type SkillsUploadBeginParams = Static<typeof SkillsUploadBeginParamsSchema>;

@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { contextBudgetStatusFixture } from "../../config/sessions/context-budget.test-support.js";
 import {
   appendTranscriptMessage,
@@ -11,9 +12,11 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { prepareGatewayRecipientProfile } from "../expected-profile.js";
 import {
   prepareOperatorModelPresentation,
   projectOperatorModelRead,
@@ -57,6 +60,7 @@ function fixture() {
       },
     },
   };
+  setRuntimeConfigSnapshot(cfg);
   const client = identifiedClient(person.id);
   client.connect.scopes = ["operator.read"];
   return { cfg, client, person };
@@ -79,14 +83,73 @@ function onlyRecord(value: unknown) {
 }
 
 describe("historical model disclosure", () => {
+  it("skips worker deflation when model projection replaces the serialized history", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const f = fixture();
+      await state.writeConfig(f.cfg);
+      setRuntimeConfigSnapshot(f.cfg);
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:projected-history-compression",
+        sessionId: "projected-history-compression",
+      };
+      await upsertSessionEntryCore(scope, {
+        sessionId: scope.sessionId,
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: f.person.id },
+      });
+      const content = "Synthetic projected history. ".repeat(512);
+      await appendTranscriptMessage(scope, {
+        eventId: "projected-history-reply",
+        message: { role: "assistant", provider: "example", model: "allowed", content },
+      });
+      const context = await createHistoryReadContext({
+        getRuntimeConfig: () => f.cfg,
+        getCommittedRuntimeConfig: () => f.cfg,
+      });
+      const read = vi.spyOn(historyPages, "readChatHistoryPage");
+      try {
+        for (const role of ["reader", "staff"] as const) {
+          setUserProfileRole(f.person.id, role);
+          invalidateOperatorRolePolicy(f.person.id);
+          const respond = vi.fn<RespondFn>();
+          await handleChatHistoryRequest({
+            params: { sessionKey: scope.sessionKey, maxChars: 20_000 },
+            client: f.client,
+            context,
+            respond,
+            acceptsSerializedJson: true,
+            acceptsDeflatedSegments: true,
+            req: { type: "req", id: role, method: "chat.history" },
+            isWebchatConnect: () => false,
+            method: "chat.history",
+          });
+          const page = await read.mock.results.at(-1)?.value;
+          expect(Boolean(page?.encodedMessagesDeflate?.byteLength)).toBe(role === "staff");
+          const payload = response(respond);
+          const messages =
+            payload.messages instanceof SerializedJsonArray
+              ? payload.messages.materialize()
+              : payload.messages;
+          expect(onlyRecord(messages)).toMatchObject({ content });
+        }
+      } finally {
+        read.mockRestore();
+      }
+    });
+  });
+
   it("projects concrete tuples while preserving clearing facts, bookkeeping and content", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = fixture();
+      using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+      prepareGatewayRecipientProfile(f.client);
       expectDefined(f.cfg.gateway?.roles?.definitions.reader, "reader role").modelPolicy = {
         sourceAgent: "main",
         allow: ["example/allowed*"],
         deny: ["example/allowed-denied"],
       };
+      setRuntimeConfigSnapshot(f.cfg);
       const project = expectDefined(
         prepareOperatorModelPresentation({ cfg: f.cfg, policyConfig: f.cfg, client: f.client }),
         "restricted presentation",
@@ -237,6 +300,7 @@ describe("historical model disclosure", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const f = fixture();
       await state.writeConfig(f.cfg);
+      setRuntimeConfigSnapshot(f.cfg);
       let committed = f.cfg;
       const scope = {
         agentId: "main",

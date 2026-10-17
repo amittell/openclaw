@@ -22,12 +22,13 @@ import {
 import { formatErrorMessage } from "./errors.js";
 import type {
   ExecApprovalChannelRuntime,
-  ExecApprovalChannelRuntimeAdapter,
+  ExecApprovalChannelRuntimeAdapterAsync,
 } from "./exec-approval-channel-runtime.types.js";
 import type { ExecApprovalRequest, ExecApprovalResolved } from "./exec-approvals.js";
 export type {
   ExecApprovalChannelRuntime,
   ExecApprovalChannelRuntimeAdapter,
+  ExecApprovalChannelRuntimeAdapterAsync,
 } from "./exec-approval-channel-runtime.types.js";
 
 type ApprovalRequestEvent = ApprovalRequestInput;
@@ -97,7 +98,7 @@ export function createExecApprovalChannelRuntime<
   TRequest extends ApprovalRequestEvent = ExecApprovalRequest,
   TResolved extends ApprovalResolvedEvent = ExecApprovalResolved,
 >(
-  adapter: ExecApprovalChannelRuntimeAdapter<TPending, TRequest, TResolved>,
+  adapter: ExecApprovalChannelRuntimeAdapterAsync<TPending, TRequest, TResolved>,
 ): ExecApprovalChannelRuntime<TRequest, TResolved> {
   const log = createSubsystemLogger(adapter.label);
   const nowMs = adapter.nowMs ?? Date.now;
@@ -153,30 +154,31 @@ export function createExecApprovalChannelRuntime<
       log.debug(`ignored duplicate request ${request.id}`);
       return;
     }
-    if (opts?.alreadyAccepted !== true && !adapter.shouldHandle(request)) {
-      return;
-    }
-
-    log.debug(`received request ${request.id}`);
     const entry = pending.begin(request.id, { request, entries: [] });
     let entries: TPending[];
     try {
+      const eligibility = opts?.alreadyAccepted === true ? true : adapter.shouldHandle(request);
+      const eligible = typeof eligibility === "boolean" ? eligibility : await eligibility;
+      if (
+        !eligible ||
+        (opts?.ignoreIfInactive && !shouldRun) ||
+        !pending.isCurrent(entry) ||
+        entry.queued
+      ) {
+        pending.remove(request.id, entry);
+        return;
+      }
+      log.debug(`received request ${request.id}`);
       entries = await adapter.deliverRequested(request);
     } catch (err) {
       pending.remove(request.id, entry);
       throw err;
-    }
-    if (!pending.isCurrent(entry)) {
-      return;
     }
     if (!entries.length) {
       pending.remove(request.id, entry);
       return;
     }
     await pending.completeDelivery(entry, { request, entries });
-    if (!pending.isCurrent(entry)) {
-      return;
-    }
 
     const timeoutMs = Math.max(0, request.expiresAtMs - nowMs());
     pending.scheduleExpiry(entry, timeoutMs, (expired) => {
@@ -282,8 +284,11 @@ export function createExecApprovalChannelRuntime<
 
       shouldRun = true;
       startPromise = (async () => {
-        if (!adapter.isConfigured()) {
+        if (!(await adapter.isConfigured())) {
           log.debug("disabled");
+          return;
+        }
+        if (!shouldRun) {
           return;
         }
 
@@ -293,9 +298,16 @@ export function createExecApprovalChannelRuntime<
           // Subscribe before replay so a request created during the list calls is not lost.
           unsubscribeGatewayRuntime = gatewayRuntime.subscribe({
             eventKinds,
-            // SAFETY: Gateway-owned subscribers publish the canonical normalized request union.
-            shouldHandle: (request) =>
-              shouldRun && adapter.shouldHandle(request as NormalizedApprovalRequest<TRequest>),
+            shouldHandle: (request) => {
+              if (!shouldRun) {
+                return false;
+              }
+              // SAFETY: Gateway-owned subscribers publish the canonical normalized request union.
+              const eligible = adapter.shouldHandle(request as NormalizedApprovalRequest<TRequest>);
+              return typeof eligible === "boolean"
+                ? eligible && shouldRun
+                : eligible.then((accepted) => accepted && shouldRun);
+            },
             onRequested: (request) => {
               spawn(
                 "error handling approval request",
@@ -398,9 +410,7 @@ export function createExecApprovalChannelRuntime<
       gatewayClient?.stop();
       gatewayClient = null;
       await replayPromise?.catch(() => {});
-      if (wasActive) {
-        pending.clear();
-      }
+      pending.clear();
       await adapter.onStopped?.();
       if (wasActive) {
         log.debug("stopped");

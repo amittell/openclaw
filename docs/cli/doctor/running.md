@@ -21,6 +21,14 @@ must still check the process exit status: `Doctor complete.` records completion
 of the checks, but a subsequent crash remains a failed candidate-Doctor step
 during an update.
 
+SIGINT and SIGTERM cancel Doctor's preparation before it stops a Gateway or
+starts repairs. If repair already owns state, Doctor settles its admitted work
+and restores any service it stopped before exiting.
+
+If a native SQLite snapshot request fails, Doctor exits with an error even when
+an optional check defers its work. Resolve the reported snapshot or filesystem
+failure before retrying; a deferred check does not certify a successful inspection.
+
 ## Postures
 
 Doctor supports these postures:
@@ -31,7 +39,7 @@ Doctor supports these postures:
 | Advisory JSON             | `openclaw doctor --json`                  | Read-only findings; exits successfully after producing a report.                      |
 | Repair                    | `openclaw doctor --fix`                   | Applies supported repairs, using prompts unless non-interactive repair is safe.       |
 | Lint                      | `openclaw doctor --lint [--json]`         | Read-only findings with threshold-based exit codes for CI gates.                      |
-| Shared SQLite maintenance | `openclaw doctor --state-sqlite compact`  | Explicitly checkpoints, compacts, and verifies the canonical shared state DB.         |
+| Shared SQLite maintenance | `openclaw doctor --state-sqlite compact`  | Explicitly checkpoints, compacts, and verifies the shared state DB.                   |
 | Session SQLite tools      | `openclaw doctor --session-sqlite <mode>` | Inspects or maintains SQLite sessions and explicitly imports legacy history.          |
 
 Use `openclaw doctor --json` when an operator or script wants the advisory Doctor report as JSON. It exits successfully after producing a report; inspect `ok` and `findings` for health state. Use explicit `openclaw doctor --lint --json` when CI should exit nonzero for findings at the selected severity threshold. Prefer `--fix` when a human operator wants Doctor to edit config or state.
@@ -92,6 +100,12 @@ macOS job between respawns is not offline: Doctor stops it before repair and
 resumes it afterward. Run repair from a shell outside the Gateway process tree. For externally supervised or unmatched installations, stop
 and start the Gateway through its owning supervisor.
 
+After pre-repair backups complete, Doctor checks update conflicts against current
+committed rows through its retained read-only maintenance connection. These checks
+share Doctor's repair scope with managed-service continuation checks, avoiding
+repeated whole-database scans with or without a cached writer.
+Pre-repair inspections still preserve the source database and its sidecars.
+
 Before a Linux maintenance stop, Doctor backs up and refreshes outdated OpenClaw
 unit policy and confirms `daemon-reload`. Operator drop-ins remain unchanged.
 The current service stop policy is 330 seconds. A resident Gateway can still have
@@ -106,7 +120,9 @@ stop at the deadline with a warning naming active root requests and cron runs;
 unknown custody is not a refusal. An owned service confirmed offline can receive
 the policy refresh without being started.
 
-During [automatic triage](/cli/triage#automatic-failure-handoff), repair can run
+Unattended update and Gateway startup failures collect
+[diagnostics only](/cli/triage#automatic-failure-handoff). An older, already admitted
+managed repair handoff can remain active across an upgrade. In that subtree, repair can run
 against an offline target when schema and maintenance locks permit it. If repair
 needs to stop the managed Gateway, Doctor refuses inside its automatic fixing
 subtree because that stop would cancel recovery. Use read-only diagnosis or safe
@@ -124,6 +140,19 @@ block Gateway startup without prompting, including shared-state audit schema,
 legacy workspace setup, legacy session stores, and exec approvals. Malformed or
 conflicting input is retained and requires the manual action in the diagnostic.
 The updater uses this repair path before accepting the installed target.
+
+Migration checks default to whole-database `quick_check`, full integrity checks
+for tables the migration rewrites or re-indexes, and foreign-key checks. Add
+`--full-integrity-check` to check every table and index during migration:
+
+```bash
+openclaw doctor --fix --full-integrity-check
+```
+
+The default can miss an index/table mismatch in an untouched table. Explicit
+verification, recovery, and compaction keep their existing checks. See
+[migration integrity checks](/install/updating#migration-integrity-checks) for
+the coverage and installed-updater boundary.
 
 Update-time Doctor runs startup-required repairs before optional inspections.
 When the installed updater supports post-restart inspections, Doctor moves
@@ -200,7 +229,7 @@ If migration or config repair cannot finish, Doctor leaves the stopped service
 stopped and reports an incomplete repair with exit code 1. When state requires
 manual recovery, the diagnosis names its path and the next action:
 
-- **Unsupported canonical workspace version:** use an OpenClaw build that supports
+- **Unsupported workspace version:** use an OpenClaw build that supports
   that version. Preserve the shared database unchanged.
 - **Unreadable or conflicting exec policy:** stop the Gateway and node hosts,
   then reconcile the named legacy file or interrupted claim with a verified copy
@@ -259,6 +288,7 @@ openclaw channels status --probe
 | `--generate-gateway-token`      | Generate and configure a gateway token.                                                                                                                                                                                                               |
 | `--allow-exec`                  | Allow doctor to execute configured `exec` SecretRefs while verifying secrets.                                                                                                                                                                         |
 | `--deep`                        | Scan system services for extra gateway installs; report recent Gateway supervisor restart handoffs.                                                                                                                                                   |
+| `--full-integrity-check`        | Use full database integrity checks during migrations instead of the default quick check plus full checks of affected tables.                                                                                                                          |
 | `--lint`                        | Run the [structured health checks](/cli/doctor/health-contract) in read-only mode and emit diagnostic findings.                                                                                                                                       |
 | `--post-upgrade`                | Run post-upgrade plugin compatibility checks; findings go to stdout; exit code 1 if any error-level finding is present.                                                                                                                               |
 | `--state-sqlite <mode>`         | Run explicit shared state SQLite maintenance. The only mode is `compact`.                                                                                                                                                                             |

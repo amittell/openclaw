@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import {
-  createChannelApprovalHandlerFromCapability,
-  createLazyChannelApprovalNativeRuntimeAdapter,
-} from "openclaw/plugin-sdk/approval-handler-runtime";
+import { createLazyChannelApprovalNativeRuntimeAdapterAsync } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
+import { createChannelApprovalHandlerFromCapability } from "openclaw/plugin-sdk/approval-handler-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { parseExecApprovalData } from "./approval-custom-id.js";
 import { discordApprovalNativeRuntime } from "./approval-handler.runtime.js";
-import { Container, parseCustomId } from "./internal/discord.js";
+import { parseCustomId } from "./internal/components.base.js";
+import { Container } from "./internal/components.message.js";
 
 async function buildExecApprovalPayloadText(commandText: string): Promise<string> {
   const pending = await discordApprovalNativeRuntime.presentation.buildPendingPayload({
@@ -133,7 +132,7 @@ describe("discordApprovalNativeRuntime", () => {
       context: { token: "discord-token", config: {} },
       nowMs: () => 0,
       capability: {
-        nativeRuntime: createLazyChannelApprovalNativeRuntimeAdapter({
+        nativeRuntimeAsync: createLazyChannelApprovalNativeRuntimeAdapterAsync({
           capabilityBoundary: true,
           eventKinds: discordApprovalNativeRuntime.eventKinds,
           isConfigured: () => true,

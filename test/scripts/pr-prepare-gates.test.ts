@@ -260,6 +260,7 @@ describe("private QA build scope", () => {
       {
         cwd: repoDir,
         env: {
+          OPENCLAW_PR_GATES_REMOTE: "local",
           OPENCLAW_BUILD_PRIVATE_QA: options.qa,
           OPENCLAW_VITEST_MAX_WORKERS: options.workers,
         },
@@ -579,9 +580,9 @@ pr_git() {
     "merge-base ${mainSha} ${reusedHead}") printf '%s\\n' ${reusedBase} ;;
     "merge-base ${mainSha} ${currentHead}") printf '%s\\n' ${currentBase} ;;
     "cat-file -e ${reusedBase}^{commit}"|"cat-file -e ${reusedHead}^{commit}") return 0 ;;
-    "diff --name-only ${reusedBase}..${mainSha}") cat main-paths.txt; return ${readable ? 0 : 1} ;;
-    "diff --name-only ${reusedBase}..${currentBase}") cat incorporated-paths.txt; return ${readable ? 0 : 1} ;;
-    "diff --name-only ${reusedBase}..${reusedHead}") cat prepared-paths.txt ;;
+    "diff --name-only --no-renames ${reusedBase}..${mainSha}") cat main-paths.txt; return ${readable ? 0 : 1} ;;
+    "diff --name-only --no-renames ${reusedBase}..${currentBase}") cat incorporated-paths.txt; return ${readable ? 0 : 1} ;;
+    "diff --name-only --no-renames ${reusedBase}..${reusedHead}") cat prepared-paths.txt ;;
     *) echo "unexpected fixture Git query: $*" >&2; return 99 ;;
   esac
 }
@@ -699,7 +700,7 @@ fi
         "prepare_gates 4242",
         "cat .local/gates.env",
       ].join("\n"),
-      { cwd: repoDir },
+      { cwd: repoDir, env: { OPENCLAW_PR_GATES_REMOTE: "local" } },
     );
 
     expect(result.status).toBe(0);
@@ -746,7 +747,7 @@ fi
       ].join("\n"),
       {
         cwd: repoDir,
-        env: mode === "hosted" ? { OPENCLAW_TESTBOX: "1" } : { OPENCLAW_PR_GATES_REMOTE: "github" },
+        env: mode === "hosted" ? { OPENCLAW_TESTBOX: "1" } : {},
       },
     );
 

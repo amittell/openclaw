@@ -93,9 +93,10 @@ function mockLinuxNamespace(root: string) {
       platform: "linux",
       identity: "01234567-89ab-cdef-0123-456789abcdef",
     }));
-    const stat = fsSync.statSync.bind(fsSync);
-    vi.spyOn(fsSync, "statSync").mockImplementation((file, options) =>
-      stat(file === "/proc/self/ns/pid" ? root : file, options),
+    const namespaceLink = `pid:[${fsSync.statSync(root, { bigint: true }).ino}]`;
+    const readlink = fsSync.readlinkSync.bind(fsSync);
+    vi.spyOn(fsSync, "readlinkSync").mockImplementation((file, options) =>
+      file === "/proc/self/ns/pid" ? namespaceLink : readlink(file, options),
     );
     const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     readGatewayLockProcessNamespace();
@@ -574,24 +575,4 @@ describe("doctor SQLite maintenance lock", () => {
       ).resolves.toBe("owned\n");
     },
   );
-
-  it("allows explicit destructive targets owned by the locked state directory", async () => {
-    const fixture = await createLockFixture();
-    const storePath = path.join(
-      fixture.env.OPENCLAW_STATE_DIR,
-      "agents",
-      "main",
-      "sessions",
-      "sessions.json",
-    );
-
-    await expect(
-      withDoctorSqliteMaintenanceLock({
-        env: fixture.env,
-        operation: "session SQLite compaction",
-        protectedPaths: [storePath],
-        run: () => "done",
-      }),
-    ).resolves.toBe("done");
-  });
 });

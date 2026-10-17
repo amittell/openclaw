@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { listSessionEntriesCore } from "../config/sessions/session-accessor.js";
 import * as transcriptFts from "../config/sessions/session-transcript-fts.js";
-import { assertAgentDatabaseMaintenanceAuthority } from "../state/openclaw-agent-db-lease.js";
+import { createTranscriptEventInserter } from "../config/sessions/transcript-payload.js";
+import { assertAgentDatabaseMaintenanceAuthority } from "../state/openclaw-agent-db-maintenance-authority.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -15,7 +16,7 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import { OPENCLAW_AGENT_SCHEMA_V24_SQL } from "../state/openclaw-agent-schema-v24.test-support.js";
-import { recordOpenClawDatabaseQuarantine } from "../state/openclaw-quarantine-store.js";
+import { seedOpenClawDatabaseQuarantine } from "../state/openclaw-quarantine-store.test-support.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -24,12 +25,13 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   completeGatewayBootLifecycle,
-  inspectGatewayCrashLoopBreaker,
-  recordGatewayBootStart,
+  inspectGatewayCrashLoopBreakerAsync,
+  beginGatewayBootLifecycle,
 } from "./gateway-boot-lifecycle.js";
 import * as nodeSqlite from "./node-sqlite.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import { corruptSqliteIndexKey } from "./sqlite-index-corruption.test-support.js";
+import { admitSqliteSchema } from "./sqlite-schema-facts.js";
 import { GATEWAY_STARTUP_MAINTENANCE_REQUIRED_REASON } from "./startup-maintenance-required.js";
 import { historicalV14AgentSchemaSql } from "./state-migrations.media-persistence.historical-schema.test-support.js";
 import { migrateLegacyMediaPersistence } from "./state-migrations.media-persistence.js";
@@ -38,27 +40,33 @@ import { repairDoctorSessionWindowsBeforeMigration } from "./state-migrations.se
 
 const tempDirs: string[] = [];
 
-function seedOrphanSessionWindows(pathname: string) {
-  using database = new NativeDatabaseSync(pathname);
+function seedOrphanSessionWindows(pathname: string, schemaVersion: number) {
+  using database = nodeSqlite.openNodeSqliteDatabase(pathname);
+  admitSqliteSchema(database);
   database.exec("PRAGMA foreign_keys = OFF;");
   const insertNode = database.prepare(`INSERT INTO session_nodes
     (session_key, current_session_id, entry_json, updated_at) VALUES (?, ?, ?, 1)`);
   const insertWindow = database.prepare(`INSERT INTO session_windows
     (session_id, session_key, created_at, updated_at) VALUES (?, ?, 1, 1)`);
-  const insertEvent = database.prepare(`INSERT INTO transcript_events
-    (session_id, seq, event_json, created_at) VALUES (?, 0, ?, 1)`);
+  const insertLegacyEvent =
+    schemaVersion < OPENCLAW_AGENT_SCHEMA_VERSION
+      ? database.prepare(`INSERT INTO transcript_events
+        (session_id, seq, event_json, created_at) VALUES (?, 0, ?, 1)`)
+      : undefined;
   for (const sessionId of ["retained", "orphan-one", "orphan-two"]) {
     const sessionKey = `agent:main:${sessionId}`;
     insertNode.run(sessionKey, sessionId, JSON.stringify({ sessionId, updatedAt: 1 }));
     insertWindow.run(sessionId, sessionKey);
-    insertEvent.run(
-      sessionId,
-      JSON.stringify({
-        id: `message-${sessionId}`,
-        type: "message",
-        message: { role: "user", content: sessionId },
-      }),
-    );
+    const eventJson = JSON.stringify({
+      id: `message-${sessionId}`,
+      type: "message",
+      message: { role: "user", content: sessionId },
+    });
+    if (insertLegacyEvent) {
+      insertLegacyEvent.run(sessionId, eventJson);
+    } else {
+      createTranscriptEventInserter(database, sessionId)({ seq: 0, eventJson, createdAt: 1 });
+    }
     transcriptFts.createSessionTranscriptFtsInserter(
       database,
       sessionId,
@@ -100,10 +108,14 @@ it.each([
         openOpenClawAgentDatabase(options);
       }
       closeOpenClawAgentDatabasesForTest();
-      seedOrphanSessionWindows(pathname);
+      seedOrphanSessionWindows(pathname, schemaVersion);
       const readRows = (database: DatabaseSync) => ({
         windows: database.prepare("SELECT * FROM session_windows ORDER BY session_id").all(),
-        events: database.prepare("SELECT * FROM transcript_events ORDER BY session_id, seq").all(),
+        events: database
+          .prepare(
+            "SELECT session_id, seq, event_json, event_zstd, event_utf8_bytes, navigation_json, created_at FROM transcript_events ORDER BY session_id, seq",
+          )
+          .all(),
         search: database
           .prepare("SELECT session_id, text FROM session_transcript_fts ORDER BY session_id")
           .all(),
@@ -124,14 +136,12 @@ it.each([
           count: scenario === "unrelated violation" ? 3 : 2,
         });
       }
-      expect(
-        recordOpenClawDatabaseQuarantine({
-          env: state.env,
-          kind: "agent",
-          path: pathname,
-          reason: "fixture orphan session windows",
-        }),
-      ).toBe(true);
+      seedOpenClawDatabaseQuarantine({
+        env: state.env,
+        kind: "agent",
+        path: pathname,
+        reason: "fixture orphan session windows",
+      });
 
       let removedSearchRows: number | undefined;
       if (scenario === "cleanup failure") {
@@ -174,9 +184,18 @@ it.each([
         );
         const retained = readRows(repaired);
         for (const key of ["windows", "events", "search"] as const) {
-          expect(retained[key]).toEqual(
-            original[key].filter((row) => row.session_id === "retained"),
-          );
+          const expected = [];
+          for (const row of original[key]) {
+            if (row.session_id !== "retained") {
+              continue;
+            }
+            expected.push(
+              key === "windows" && schemaVersion === 24
+                ? { ...row, row_transcript_json: null, row_transcript_updated_at: null }
+                : row,
+            );
+          }
+          expect(retained[key]).toEqual(expected);
         }
         expect(() => openOpenClawAgentDatabase(options)).not.toThrow();
       } else {
@@ -440,7 +459,11 @@ describe("legacy media persistence Doctor migration from historical schemas", ()
     try {
       const result = await scope.run(() => migrateLegacyMediaPersistence({ env }));
       expect(rejected).toBe(true);
-      expect(result.changes).toEqual([]);
+      expect(result.changes).toEqual([
+        expect.stringContaining(
+          `Saved pre-repair SQLite backup: ${path.join(path.dirname(databasePath), "openclaw-media-persistence-recovery-")}`,
+        ),
+      ]);
       expect(result.warnings).toEqual([
         expect.stringContaining("Recovery backup coverage is no longer current"),
       ]);
@@ -587,8 +610,8 @@ describe("media persistence gateway lifecycle recovery", () => {
 
     const nowMs = 1_000_000;
     for (let index = 0; index < 3; index += 1) {
-      const bootId = recordGatewayBootStart(env, nowMs + index);
-      completeGatewayBootLifecycle(
+      const bootId = (await beginGatewayBootLifecycle(env, nowMs + index)).id;
+      await completeGatewayBootLifecycle(
         bootId,
         {
           outcome: "startup_failed",
@@ -599,7 +622,7 @@ describe("media persistence gateway lifecycle recovery", () => {
         nowMs + index + 1,
       );
     }
-    expect(inspectGatewayCrashLoopBreaker(env, nowMs + 4).tripped).toBe(false);
+    expect((await inspectGatewayCrashLoopBreakerAsync(env, nowMs + 4)).tripped).toBe(false);
 
     const result = await migrateLegacyMediaPersistence({ env });
 
@@ -611,7 +634,7 @@ describe("media persistence gateway lifecycle recovery", () => {
         )
         .get(),
     ).toMatchObject({ count: 3 });
-    expect(inspectGatewayCrashLoopBreaker(env, nowMs + 5)).toMatchObject({
+    expect(await inspectGatewayCrashLoopBreakerAsync(env, nowMs + 5)).toMatchObject({
       tripped: false,
       uncleanBoots: 0,
     });
@@ -633,14 +656,12 @@ it.each([true])(
       const index = "sqlite_autoindex_session_nodes_1";
       corruptSqliteIndexKey(initial.path, index, "index-original", "index-damaged!");
       if (quarantined) {
-        expect(
-          recordOpenClawDatabaseQuarantine({
-            env: state.env,
-            kind: "agent",
-            path: initial.path,
-            reason: `row 1 missing from index ${index}`,
-          }),
-        ).toBe(true);
+        seedOpenClawDatabaseQuarantine({
+          env: state.env,
+          kind: "agent",
+          path: initial.path,
+          reason: `row 1 missing from index ${index}`,
+        });
       }
 
       const result = await migrateLegacyMediaPersistence({ env: state.env });
@@ -674,14 +695,12 @@ it.each([true])(
       expect(repaired.db.prepare(payloadSql).all()).toEqual(rows);
 
       closeOpenClawAgentDatabasesForTest();
-      expect(
-        recordOpenClawDatabaseQuarantine({
-          env: state.env,
-          kind: "agent",
-          path: initial.path,
-          reason: `row 1 missing from index ${index}`,
-        }),
-      ).toBe(true);
+      seedOpenClawDatabaseQuarantine({
+        env: state.env,
+        kind: "agent",
+        path: initial.path,
+        reason: `row 1 missing from index ${index}`,
+      });
       const resumed = await migrateLegacyMediaPersistence({ env: state.env });
       expect(resumed).toEqual({ changes: [], warnings: [] });
       expect(openOpenClawAgentDatabase(options).db.prepare(payloadSql).all()).toEqual(rows);

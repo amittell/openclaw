@@ -10,7 +10,7 @@ import {
 import type { ChatComposerRecoveryOwner } from "./chat-send-contract.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import type { ChatAttachmentReadLifecycle } from "./components/chat-attachment-reads.ts";
-import { reviewPrivateComposerDraft } from "./components/private-composer-recovery-dialog.ts";
+import { reviewPrivateComposerDraft } from "./components/private-composer-recovery-dialog.tsx";
 import {
   isIncognitoComposerScope,
   isChatComposerOwnerCurrent,
@@ -371,6 +371,7 @@ export function resumeStagedPanes(
   narrow: boolean,
 ): void {
   const visiblePaneIds = new Set(visiblePanesOf(layout, narrow).map((pane) => pane.id));
+  // The page resumes retained native pane hosts across their renderer boundaries.
   for (const pane of root.querySelectorAll<StagedAttachmentPane>("openclaw-chat-pane")) {
     if (visiblePaneIds.has(pane.paneId)) {
       pane.resumeStagedAttachments?.();

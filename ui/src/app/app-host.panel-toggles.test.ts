@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   BROWSER_PANEL_TOGGLE_EVENT,
   HOME_PANEL_TOGGLE_EVENT,
@@ -8,19 +8,23 @@ import {
 } from "../components/panel-toggle-contract.ts";
 import { takeSessionPanelToggle } from "../components/session-panel-toggle-buffer.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
+import { createShellOwner } from "./app-host-solid.test-support.ts";
 import {
   createLazyElementSpec,
   resetAppHostTestGlobals,
   type TestOptionalCustomElement,
 } from "./app-host.test-support.ts";
-import "./app-host.ts";
 import { ShellChromeOwner, type ShellChromeHost } from "./app-shell-chrome.ts";
+import type { ShellOwnedElements } from "./app-shell-lazy-view.tsx";
 import type { ApplicationContext } from "./context.ts";
-import type { LazyCustomElementRequestController } from "./lazy-custom-element.ts";
+import type { LazyCustomElementRequests } from "./lazy-custom-element.ts";
 import { persistLazyShellAction, readLazyShellAction } from "./lazy-shell-action.ts";
 
 type ShellPanelToggleState = {
-  lazyCustomElements: LazyCustomElementRequestController;
+  element: HTMLElement;
+  elements: ShellOwnedElements;
+  terminalPanel?: HTMLElement;
+  lazyCustomElements: LazyCustomElementRequests;
   routeState: { routeId: string };
   runtime: { context: ApplicationContext };
   terminalPanelElement: TestOptionalCustomElement;
@@ -36,7 +40,7 @@ function configurePanelShell(
   kind: "terminal" | "browser" = "terminal",
 ): ShellPanelToggleState {
   window.history.replaceState(null, "", "/usage");
-  const shell = document.createElement("openclaw-app-shell") as unknown as ShellPanelToggleState;
+  const shell = createShellOwner() as unknown as ShellPanelToggleState;
   if (kind === "browser") {
     shell.browserPanelElement = element;
     Object.defineProperty(window, "webkit", {
@@ -67,13 +71,14 @@ function configurePanelShell(
     configurable: true,
     get: () => Promise.resolve(true),
   });
-  // The production shell keeps panel tags mounted before definition; replay is
-  // gated on the rendered element, so the harness mounts the tag the same way.
-  Object.defineProperty(shell, "renderRoot", {
-    configurable: true,
-    get: () => shell,
-  });
-  (shell as unknown as HTMLElement).appendChild(document.createElement(element.tagName));
+  const panel = shell.element.appendChild(document.createElement(element.tagName));
+  if (kind === "browser") {
+    shell.elements.browserPanel = panel;
+  } else {
+    shell.terminalPanel = panel;
+  }
+  document.body.append(shell.element);
+  onTestFinished(() => shell.element.remove());
   return shell;
 }
 
@@ -154,7 +159,7 @@ describe("OpenClaw shell panel toggles", () => {
 
   it("buffers panel toggle events until the active chat pane mounts", () => {
     const terminalElement = createLazyElementSpec("session terminal panel");
-    const shell = document.createElement("openclaw-app-shell") as unknown as ShellPanelToggleState;
+    const shell = createShellOwner() as unknown as ShellPanelToggleState;
     shell.terminalPanelElement = terminalElement;
     shell.routeState = { routeId: "chat" };
 

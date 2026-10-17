@@ -1,22 +1,19 @@
 // Onboard command tests cover guided setup entrypoints, setup aliases, and CLI messaging.
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeProviderModelFixture } from "../agents/test-helpers/provider-model-fixture.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as providerAuthChoices from "../plugins/provider-auth-choices.js";
 import type { ProviderAuthMethod, ProviderPlugin } from "../plugins/types.js";
 import { resolveUserPath } from "../utils.js";
 import * as nonInteractiveApiKeys from "./onboard-non-interactive/api-keys.js";
+import {
+  type ConfigSnapshotStub,
+  registerOnboardResetDiscoveryTests,
+} from "./onboard-reset-discovery.test-support.js";
 import { setupWizardCommand } from "./onboard.js";
 import { createTestRuntime as makeRuntime } from "./test-runtime-config-helpers.js";
-
-type ConfigSnapshotStub = {
-  exists: boolean;
-  valid: boolean;
-  config: OpenClawConfig;
-  sourceConfig?: OpenClawConfig;
-  readError?: { code: string | null };
-};
 
 type ProviderAuthMethodNonInteractiveValidationContext = Parameters<
   NonNullable<ProviderAuthMethod["validateNonInteractive"]>
@@ -177,6 +174,7 @@ function mockLocalResetPreflight(params: {
 describe("setupWizardCommand", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     mocks.hasInteractiveOnboardingTty.mockReturnValue(true);
     mocks.readConfigFileSnapshot.mockResolvedValue({ exists: false, valid: false, config: {} });
@@ -261,7 +259,15 @@ describe("setupWizardCommand", () => {
       expect(runtime.error).toHaveBeenCalledWith(message);
       expect(vi.mocked(runtime.log).mock.calls).toEqual(
         "json" in options
-          ? [[JSON.stringify({ ok: false, phase: "options", message }, null, 2)]]
+          ? [
+              [
+                JSON.stringify(
+                  { ok: false, error: { type: "cli_error", message }, phase: "options", message },
+                  null,
+                  2,
+                ),
+              ],
+            ]
           : [],
       );
       expect(runtime.exit).toHaveBeenCalledWith(1);
@@ -464,7 +470,11 @@ describe("setupWizardCommand", () => {
       expect(runtime.error).toHaveBeenCalledExactlyOnceWith(message);
       if (json) {
         expect(runtime.log).toHaveBeenCalledExactlyOnceWith(
-          JSON.stringify({ ok: false, phase: "options", message }, null, 2),
+          JSON.stringify(
+            { ok: false, error: { type: "cli_error", message }, phase: "options", message },
+            null,
+            2,
+          ),
         );
       } else {
         expect(runtime.log).not.toHaveBeenCalled();
@@ -771,13 +781,87 @@ describe("setupWizardCommand", () => {
     );
   });
 
-  it("validates an inferred custom auth choice before reset", async () => {
-    await expectAuthPreflightError({ customBaseUrl: "https://example.com/v1" }, () =>
-      [
-        'Auth choice "custom-api-key" requires a base URL and model ID.',
-        "Use --custom-base-url and --custom-model-id.",
-      ].join("\n"),
+  registerOnboardResetDiscoveryTests({ mocks, expectAuthPreflightError });
+
+  it("rejects no-auth combined with a custom API key before reset", async () => {
+    await expectAuthPreflightError(
+      {
+        customBaseUrl: "https://example.com/v1",
+        customModelId: "test-model",
+        customApiKey: "conflicting-key",
+        customNoAuth: true,
+      },
+      () =>
+        "Custom provider flags conflict: --custom-no-auth cannot be combined with --custom-api-key. Omit one.",
     );
+  });
+
+  it("rejects Azure no-auth before reset", async () => {
+    await expectAuthPreflightError(
+      {
+        customBaseUrl: "https://resource.openai.azure.com",
+        customModelId: "test-model",
+        customNoAuth: true,
+      },
+      () =>
+        'auth: "none" requires the openai-completions adapter. Select that adapter or configure an API key.',
+    );
+  });
+
+  it.each([false, true])("preflights Responses after reset (no-auth: %s)", async (noAuth) => {
+    const runtime = makeRuntime();
+    mocks.readConfigFileSnapshot.mockResolvedValue({
+      exists: true,
+      valid: true,
+      config: {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://example.com/v1",
+              api: "openai-completions",
+              auth: "none",
+              models: noAuth
+                ? [
+                    makeProviderModelFixture({
+                      provider: "custom",
+                      id: "test-model",
+                      api: "openai-completions",
+                      baseUrl: "https://example.com/v1",
+                    }),
+                  ]
+                : [],
+            },
+          },
+        },
+      },
+    });
+
+    await setupWizardCommand(
+      {
+        reset: true,
+        nonInteractive: true,
+        acceptRisk: true,
+        customProviderId: "custom",
+        customBaseUrl: "https://example.com/v1",
+        customModelId: "test-model",
+        customCompatibility: "openai-responses",
+        customApiKey: noAuth ? undefined : "synthetic-replacement-key",
+        customNoAuth: noAuth,
+      },
+      runtime,
+    );
+
+    expect(runtime.error.mock.calls).toEqual(
+      noAuth
+        ? [
+            [
+              'auth: "none" requires the openai-completions adapter. Select that adapter or configure an API key.',
+            ],
+          ]
+        : [],
+    );
+    expect(mocks.handleReset).toHaveBeenCalledTimes(noAuth ? 0 : 1);
+    expect(mocks.runNonInteractiveSetup).toHaveBeenCalledTimes(noAuth ? 0 : 1);
   });
 
   it("rejects ambiguous interactive provider flags before reset", async () => {
@@ -935,7 +1019,11 @@ describe("setupWizardCommand", () => {
           'Auth choice "claude-cli" is deprecated.\nUse "--auth-choice demo-provider-api-key".';
         expect(runtime.error).toHaveBeenCalledExactlyOnceWith(message);
         expect(runtime.log).toHaveBeenCalledExactlyOnceWith(
-          JSON.stringify({ ok: false, phase: "options", message }, null, 2),
+          JSON.stringify(
+            { ok: false, error: { type: "cli_error", message }, phase: "options", message },
+            null,
+            2,
+          ),
         );
         expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
         expect(mocks.withSetupMigrationTargetLock).not.toHaveBeenCalled();

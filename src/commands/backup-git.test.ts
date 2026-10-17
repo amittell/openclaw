@@ -17,7 +17,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/config.js")>();
-  return { ...actual, getRuntimeConfig: mocks.getRuntimeConfig };
+  return {
+    ...actual,
+    getRuntimeConfig: mocks.getRuntimeConfig,
+    loadConfig: mocks.getRuntimeConfig,
+    readConfigFileSnapshot: async () => ({ config: mocks.getRuntimeConfig() }),
+    captureRuntimeConfigAsyncReader:
+      (...args: Parameters<typeof mocks.getRuntimeConfig>) =>
+      async () =>
+        mocks.getRuntimeConfig(...args),
+  };
 });
 
 vi.mock("../snapshot/git-backup.js", () => ({
@@ -28,8 +37,9 @@ vi.mock("../snapshot/git-backup.js", () => ({
   verifyGitBackupRef: mocks.verifyGitBackupRef,
 }));
 
-vi.mock("../state/backup-run-records.js", () => ({
-  recordBackupRunOutcome: mocks.recordBackupRunOutcome,
+// mock-isolation: Git backup settlement uses a controlled outcome; routing has real-ledger coverage.
+vi.mock("./backup-outcome.js", () => ({
+  recordBackupRunOutcomeWithOwner: mocks.recordBackupRunOutcome,
 }));
 
 import {
@@ -67,6 +77,59 @@ describe("Git backup command agent selection", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  it.each([
+    { engine: "sqlite" },
+    { engine: "postgres" },
+    { engine: "sqlite", families: { workboard: { engine: "postgres" } } },
+  ] as const)("preserves Git backup and restore with database selection %j", async (database) => {
+    mocks.getRuntimeConfig.mockReturnValue({ database });
+    await expect(
+      backupGitCreateCommand(createTestRuntime(), {
+        global: true,
+        repository: "/tmp/repository",
+      }),
+    ).resolves.toMatchObject({ commit: "backup-commit" });
+    await expect(
+      backupGitRestoreCommand(createTestRuntime(), {
+        global: true,
+        repository: "/tmp/repository",
+        target: "/tmp/restored.sqlite",
+      }),
+    ).resolves.toMatchObject({ commit: "backup-commit" });
+  });
+
+  it.each(["workboard", "logbook", "team-reports", "matrix__account_state"])(
+    "selects the recorded plugin store %s for Git verification and restore",
+    async (store) => {
+      await backupGitVerifyCommand(createTestRuntime(), { repository: "/tmp/repository", store });
+      await backupGitRestoreCommand(createTestRuntime(), {
+        repository: "/tmp/repository",
+        store,
+        target: "/tmp/restored.sqlite",
+      });
+      expect(mocks.verifyGitBackupRef).toHaveBeenCalledWith(
+        expect.objectContaining({ identity: { role: "generic", id: store } }),
+      );
+      expect(mocks.restoreGitBackupRef).toHaveBeenCalledWith(
+        expect.objectContaining({ identity: { role: "generic", id: store } }),
+      );
+    },
+  );
+
+  it.each([{ global: true }, { agent: "main" }])(
+    "rejects an ambiguous plugin store selector alongside %j",
+    async (scope) => {
+      await expect(
+        backupGitVerifyCommand(createTestRuntime(), {
+          repository: "/tmp/repository",
+          store: "workboard",
+          ...scope,
+        }),
+      ).rejects.toThrow("Choose exactly one Git backup scope");
+      expect(mocks.verifyGitBackupRef).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["success", "failure", "uncertain"] as const)(
     "retains backup custody through artifact and outcome settlement: %s",
@@ -204,6 +267,5 @@ describe("Git backup command agent selection", () => {
     expect(mocks.restoreGitBackupRef).toHaveBeenCalledWith(
       expect.objectContaining({ identity: { role: "agent", agentId: "retired-agent" } }),
     );
-    expect(mocks.getRuntimeConfig).not.toHaveBeenCalled();
   });
 });

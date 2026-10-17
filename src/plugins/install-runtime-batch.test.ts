@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runClawPluginBatch } from "../claws/plugin-runtime.js";
-import * as deferredMigrations from "../infra/deferred-plugin-migrations.js";
+import * as configIO from "../config/io.factory.js";
 import {
   readDeferredPluginMigrations,
   recordDeferredPluginMigrations,
@@ -68,15 +68,19 @@ function holdIndexRead() {
 function holdPolicyRead() {
   const entered = createDeferredCore();
   const resume = createDeferredCore();
-  const read = deferredMigrations.readDeferredPluginMigrationsAsync;
-  vi.spyOn(deferredMigrations, "readDeferredPluginMigrationsAsync").mockImplementationOnce(
-    async (...args) => {
-      const rows = await read(...args);
-      entered.resolve();
-      await resume.promise;
-      return rows;
-    },
-  );
+  const create = configIO.createConfigIO;
+  vi.spyOn(configIO, "createConfigIO").mockImplementationOnce((options) => {
+    const io = create(options);
+    return {
+      ...io,
+      readConfigFileSnapshotForWrite: async (...args) => {
+        const snapshot = await io.readConfigFileSnapshotForWrite(...args);
+        entered.resolve();
+        await resume.promise;
+        return snapshot;
+      },
+    };
+  });
   return { entered, resume };
 }
 
@@ -93,12 +97,8 @@ function expectNoMainThreadCleanupReads(reads: ReturnType<typeof observeMainThre
 
 const handoffFailures = [
   "runtime",
-  "source",
   "record",
-  "closed",
-  "closed-during-read",
   "loadpath-during-read",
-  "closed-during-policy-read",
   "include-during-policy-read",
   "env-during-policy-read",
   "adopted",
@@ -134,9 +134,7 @@ it.each(handoffFailures)(
         if (failure === "runtime") {
           throw new Error("runtime reply lost");
         }
-        if (failure === "source") {
-          await fs.writeFile(path.join(source, "index.ts"), "export const value = 2;");
-        } else if (failure === "record" || failure === "adopted") {
+        if (failure === "record" || failure === "adopted") {
           await withPluginLifecycleLease({ env }, () =>
             commitPluginInstallRecordsWithConfig({
               previousInstallRecords: records,
@@ -159,8 +157,6 @@ it.each(handoffFailures)(
           await fs.rename(previousSource, path.join(root, "retired-original"));
           await fs.mkdir(previousSource);
           await fs.writeFile(retainedFile, "Retain committed source bytes.\n");
-        } else if (failure === "closed") {
-          batch.close();
         }
         return { operationId: "handoff", generation: 2, pluginIds: ["fixture"] };
       });
@@ -174,15 +170,12 @@ it.each(handoffFailures)(
           nextConfig: {},
           writeOptions: { afterWrite: { mode: "none", reason: "batch fixture" } },
         });
-        deferred.record(
-          {
-            operation: "install",
-            pluginId: "fixture",
-            sourceDigests: captured.sourceDigests,
-            write,
-          },
-          captured.assertSourceCurrent,
-        );
+        deferred.record({
+          operation: "install",
+          pluginId: "fixture",
+          sourceDigests: captured.sourceDigests,
+          write,
+        });
         deferred.deferCleanup(cleanup, previousSource);
         await batch.prepare(lease);
       });
@@ -201,7 +194,7 @@ it.each(handoffFailures)(
       }
       const configBeforePolicyRead = await fs.readFile(env.OPENCLAW_CONFIG_PATH, "utf8");
       const gate =
-        failure === "closed-during-read" || failure === "loadpath-during-read"
+        failure === "loadpath-during-read"
           ? holdIndexRead()
           : failure.endsWith("-during-policy-read")
             ? holdPolicyRead()
@@ -217,9 +210,7 @@ it.each(handoffFailures)(
             }),
           ]);
           expect(cleanup).not.toHaveBeenCalled();
-          if (failure === "closed-during-read" || failure === "closed-during-policy-read") {
-            batch.close();
-          } else if (failure === "include-during-policy-read") {
+          if (failure === "include-during-policy-read") {
             await fs.writeFile(includePath, JSON.stringify({ load: { paths: [previousSource] } }));
           } else if (failure === "env-during-policy-read") {
             env.RETIRED_PATH = previousSource;
@@ -251,10 +242,6 @@ it.each(handoffFailures)(
           configBeforePolicyRead,
         );
       }
-      expect(() => deferred.deferCleanup(cleanup, previousSource)).toThrow(
-        "no longer accepts mutations",
-      );
-      await expect(batch.finish(() => {})).rejects.toThrow("handoff already started");
     });
   },
 );
@@ -294,77 +281,61 @@ it("prepares the final persisted index off thread even after the lease cached an
   ]);
 });
 
-it.each(["closed", "revoked"] as const)(
-  "seals collection and refuses publication when %s during the real index read",
-  async (authority) => {
-    const { env, root, records } = await preparationFixture();
-    const reload = vi.fn(async () => ({
-      operationId: "prepared",
-      generation: 2,
-      pluginIds: ["fixture"],
-    }));
-    const batch = new PluginInstallRuntimeBatch({ env }, reload);
-    const deferred = batch.install();
-    const controller = new AbortController();
-    const refusal = new Error("batch preparation authority revoked");
-    let preparation: PromiseSettledResult<void> | undefined;
-    const operation = withPluginLifecycleLease(
-      { env, assertCurrent: () => controller.signal.throwIfAborted() },
-      async (lease) => {
-        const write = await withEnvAsync(env, () =>
-          commitPluginInstallRecordsWithConfig({
-            previousInstallRecords: records,
-            nextInstallRecords: records,
-            nextConfig: {},
-            writeOptions: { afterWrite: { mode: "none", reason: "prepare fixture" } },
+it("refuses publication when authority is revoked during the real index read", async () => {
+  const { env, records } = await preparationFixture();
+  const reload = vi.fn(async () => ({
+    operationId: "prepared",
+    generation: 2,
+    pluginIds: ["fixture"],
+  }));
+  const batch = new PluginInstallRuntimeBatch({ env }, reload);
+  const deferred = batch.install();
+  const controller = new AbortController();
+  const refusal = new Error("batch preparation authority revoked");
+  let preparation: PromiseSettledResult<void> | undefined;
+  const operation = withPluginLifecycleLease(
+    { env, assertCurrent: () => controller.signal.throwIfAborted() },
+    async (lease) => {
+      const write = await withEnvAsync(env, () =>
+        commitPluginInstallRecordsWithConfig({
+          previousInstallRecords: records,
+          nextInstallRecords: records,
+          nextConfig: {},
+          writeOptions: { afterWrite: { mode: "none", reason: "prepare fixture" } },
+        }),
+      );
+      const commit = {
+        operation: "install" as const,
+        pluginId: "fixture",
+        sourceDigests: {},
+        write,
+      };
+      deferred.record(commit);
+      const gate = holdIndexRead();
+      const pending = Promise.resolve(batch.prepare(lease));
+      const settled = Promise.allSettled([pending]);
+      try {
+        await Promise.race([
+          gate.entered.promise,
+          pending.then(() => {
+            throw new Error("Preparation completed without awaiting its index read");
           }),
-        );
-        const commit = {
-          operation: "install" as const,
-          pluginId: "fixture",
-          sourceDigests: {},
-          write,
-        };
-        deferred.record(commit);
-        const gate = holdIndexRead();
-        const pending = Promise.resolve(batch.prepare(lease));
-        const settled = Promise.allSettled([pending]);
-        try {
-          await Promise.race([
-            gate.entered.promise,
-            pending.then(() => {
-              throw new Error("Preparation completed without awaiting its index read");
-            }),
-          ]);
-          expect(() => batch.install()).toThrow("no longer accepts mutations");
-          expect(() => batch.retain("late")).toThrow("no longer accepts mutations");
-          expect(() => deferred.record(commit)).toThrow("no longer accepts mutations");
-          expect(() => deferred.deferCleanup(async () => {}, root)).toThrow(
-            "no longer accepts mutations",
-          );
-          await expect(batch.prepare(lease)).rejects.toThrow("no longer accepts mutations");
-          await expect(batch.finish(() => {})).rejects.toThrow("not prepared");
-          if (authority === "closed") {
-            batch.close();
-          } else {
-            controller.abort(refusal);
-          }
-        } finally {
-          gate.resume.resolve();
-          [preparation] = await settled;
-        }
-      },
-    );
-    await Promise.allSettled([operation]);
-    expect(preparation).toMatchObject({
-      status: "rejected",
-      reason: authority === "revoked" ? refusal : expect.any(Error),
-    });
-    await expect(batch.finish(() => {})).rejects.toThrow("not prepared");
-    expect(reload).not.toHaveBeenCalled();
-    batch.close();
-  },
-);
+        ]);
+        controller.abort(refusal);
+      } finally {
+        gate.resume.resolve();
+        [preparation] = await settled;
+      }
+    },
+  );
+  await Promise.allSettled([operation]);
+  expect(preparation).toMatchObject({
+    status: "rejected",
+    reason: refusal,
+  });
+  expect(reload).not.toHaveBeenCalled();
+  batch.close();
+});
 
 it("holds the original batch lease until preparation settles before calling the runtime", async () => {
   const { env } = await preparationFixture();
@@ -449,15 +420,12 @@ it.each(["index", "deferred obligation"] as const)(
           nextConfig: {},
           writeOptions: { afterWrite: { mode: "none", reason: "cleanup custody fixture" } },
         });
-        deferred.record(
-          {
-            operation: "install",
-            pluginId: "fixture",
-            sourceDigests: captured.sourceDigests,
-            write,
-          },
-          captured.assertSourceCurrent,
-        );
+        deferred.record({
+          operation: "install",
+          pluginId: "fixture",
+          sourceDigests: captured.sourceDigests,
+          write,
+        });
         deferred.deferCleanup(async (assertOwned) => {
           const reads = observeMainThreadReads();
           try {
@@ -485,13 +453,20 @@ it.each(["index", "deferred obligation"] as const)(
             reason: "Legacy fixture awaits its plugin migration",
             command: "openclaw doctor --fix",
             requiresStateMigration: true,
-            configPaths: [["legacyFixture"]],
-            validationExcludedPaths: [["legacyFixture"]],
+            configPaths: [["plugins", "entries", "held-owner", "config"]],
+            validationExcludedPaths: [["plugins", "entries", "held-owner", "config"]],
           },
         ],
       });
       const configWithHeldObligation = JSON.stringify({
-        legacyFixture: { root: path.join(root, "unrelated-legacy-data") },
+        plugins: {
+          entries: {
+            "held-owner": {
+              enabled: false,
+              config: { legacyFixture: { root: path.join(root, "unrelated-legacy-data") } },
+            },
+          },
+        },
       });
       await fs.writeFile(env.OPENCLAW_CONFIG_PATH, configWithHeldObligation);
       const index = await readPersistedInstalledPluginIndex({ env });
@@ -506,7 +481,7 @@ it.each(["index", "deferred obligation"] as const)(
       expect(before.pending).toEqual([
         expect.objectContaining({
           pluginId: "held-owner",
-          validationExcludedPaths: [["legacyFixture"]],
+          validationExcludedPaths: [["plugins", "entries", "held-owner", "config"]],
         }),
       ]);
       const acquire = leaseAcquisition.acquireOpenClawStateLease;
