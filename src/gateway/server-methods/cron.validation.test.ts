@@ -45,14 +45,6 @@ import type { CronCreatorAuthorityGrant } from "../cron-creator-authority-grant.
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
 import {
-  cronRunRecordsOverride,
-  getRuntimeConfig,
-  loadGatewaySessionEntry,
-  resetCronValidationMocks,
-  resolveCronDeliveryPreview,
-  resolveCronDeliveryPreviews,
-} from "./cron.validation.mocks.test-support.js";
-import {
   createCronTestContext,
   agentTurnCronParams,
   createCronTestInvoker,
@@ -73,6 +65,14 @@ const cronLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness({ prefix: "cron-gateway-validation-" });
 
 import { cronHandlers } from "./cron.js";
+const {
+  cronRunRecordsOverride,
+  getRuntimeConfig,
+  loadGatewaySessionEntry,
+  resetCronValidationMocks,
+  resolveCronDeliveryPreview,
+  resolveCronDeliveryPreviews,
+} = await import("./cron.validation.mocks.test-support.js");
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   return createCronTestContext(currentJobs, getRuntimeConfig);

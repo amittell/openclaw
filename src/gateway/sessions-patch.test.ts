@@ -16,11 +16,6 @@ import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { withAgentSessionModelPatchOrigin } from "./session-model-patch-origin.js";
 import { projectSessionsPatchEntry } from "./sessions-patch.js";
 import {
-  acpSessionMetaMocks,
-  providerThinkingMocks,
-  resetSessionsPatchProviderThinking,
-} from "./sessions-patch.mocks.test-support.js";
-import {
   type ApplySessionsPatchArgs,
   MAIN_SESSION_KEY,
   runPatch,
@@ -28,6 +23,8 @@ import {
   expectPatchError,
   mainStoreEntry,
 } from "./sessions-patch.test-support.js";
+const { acpSessionMetaMocks, providerThinkingMocks, resetSessionsPatchProviderThinking } =
+  await import("./sessions-patch.mocks.test-support.js");
 
 const SUBAGENT_MODEL = "synthetic/hf:moonshotai/Kimi-K2.7-Code";
 const KIMI_SUBAGENT_KEY = "agent:kimi:subagent:child";

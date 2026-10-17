@@ -45,13 +45,13 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
-import { mocks, resetServerCloseMocks } from "./server-close.mocks.test-support.js";
 import {
   createGatewayCloseTestDepsFactory,
   createGatewayCloseTestHandlerFactory,
   type GatewayCloseParams,
   createTestChatRunState,
 } from "./server-close.test-support.js";
+const { mocks, resetServerCloseMocks } = await import("./server-close.mocks.test-support.js");
 
 const WEBSOCKET_CLOSE_GRACE_MS = 1_000;
 const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;

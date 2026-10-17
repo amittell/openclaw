@@ -1,11 +1,11 @@
 import "./server-close.mocks.test-support.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
-import { mocks, resetServerCloseMocks } from "./server-close.mocks.test-support.js";
 import {
   createGatewayCloseTestDepsFactory,
   createGatewayCloseTestHandlerFactory,
 } from "./server-close.test-support.js";
+const { mocks, resetServerCloseMocks } = await import("./server-close.mocks.test-support.js");
 
 const serverClose = await import("./server-close.js");
 const { isGatewayShuttingDown, resetGatewayShuttingDownForTest } = serverClose;

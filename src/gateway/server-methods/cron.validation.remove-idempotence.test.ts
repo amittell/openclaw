@@ -4,10 +4,6 @@ import type { CronJob } from "../../cron/types.js";
 import { resetPluginRuntimeStateForTest } from "../../plugins/runtime.js";
 import { cronHandlers } from "./cron.js";
 import {
-  getRuntimeConfig,
-  resetCronValidationMocks,
-} from "./cron.validation.mocks.test-support.js";
-import {
   createCronCallerClient as callerClient,
   createCronJob,
   createCronTestContext,
@@ -15,6 +11,8 @@ import {
   setCronValidationTestRegistry,
 } from "./cron.validation.test-support.js";
 import type { GatewayClient } from "./types.js";
+const { getRuntimeConfig, resetCronValidationMocks } =
+  await import("./cron.validation.mocks.test-support.js");
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   return createCronTestContext(currentJobs, getRuntimeConfig);

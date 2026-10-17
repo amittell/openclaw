@@ -3519,18 +3519,21 @@ outcome=`. Schema targets are unchanged from 10.1 (state 20, agent 24), so neith
   carry's exact-head run: lint has the same 30 distinct diagnostics (32 errors); `pnpm check --base v2026.10.3` has
   the same 34 line-cap paths, SQLite T1 915 -> 916 (the same three call sites) and env budget 474 -> 475. The source
   and release controls that attribute them were not rerun. The 38-shard changed-test aggregate was not rerun.
-- **Harness traps (not findings):** a PATH without `rg` makes the SQLite worker ratchet fail with `spawnSync rg
-  ENOENT` and no finding. At 10.3 the owner-assign test is
+- **Harness traps (not findings):** a PATH without `rg` makes the SQLite worker ratchet fail with
+  `spawnSync rg ENOENT` and no finding. At 10.3 the owner-assign test is
   `src/gateway/local-request-context.session-tools.non-owner-assign.test.ts`.
 - **Markers:** in runtime files (`.mjs`/`.js`), all 39 counts on each bot equal the qualification build. Raw counts
   that include `.d.ts` files differ for `lastCompletedTurnRequestHash` and `carrierText`: declaration chunks split
   differently between builds.
-- **rh-bot park hazard, cleared before the deploy:** the `coder` workspace
-  `~/.openclaw/workspace/requesthub/.openclaw/workspace-state.json` came back at 2026-10-14 23:20:14 local from a `git
-  reset` on requesthub branch `fix/central-security-headers`, which still tracks it (the untrack fix is requesthub
-  `309f39ed`). 10.1 and 10.3 both gate startup on its presence and park the LaunchAgent, so any restart would have
-  taken rh-bot down. Preflight check 0g refused. It was renamed to `workspace-state.json.rejected-20261015T042148Z`
-  after `workspace_setup_state` was confirmed to hold the requesthub row.
+- **rh-bot "park hazard" (retracted 2026-10-16: not a hazard on 10.x):** the `coder` workspace file
+  `~/.openclaw/workspace/requesthub/.openclaw/workspace-state.json` came back at 2026-10-14 23:20:14 local from a
+  `git reset` on requesthub branch `fix/central-security-headers`, which still tracks it (the untrack fix is
+  requesthub `309f39ed`). Preflight check 0g refused, and the file was renamed to
+  `workspace-state.json.rejected-20261015T042148Z`. The claim that 10.1 and 10.3 park on it was wrong: upstream
+  #164399 (`b2c392dc096`, in `v2026.10.1` and `v2026.10.3`) retired that path from the gate, which now checks only
+  `<workspace>/openclaw-workspace-state.json`, hashed `workspace-attestations/*.attested` and a header-bearing
+  `<workspace>.attested` (each also with a `.doctor-importing` claim). `v2026.9.9` still gated on the dotted path.
+  The rename was harmless and unnecessary. Check 0g in the deploy kit now tests the 10.x paths.
 - **rh-bot:** idle at 04:50:13Z, build 511 s, doctor 85 s, deploy rc=0 at 05:04:19Z, pid 32036. Backup
   `/Volumes/SSD512/oc101-dbbackup-20261015T045332Z`. verify: HEAD, build-info and the served id
   `2026.10.3-1ecf113bef64`, readyz 200/200, 1/1 provider, parked 0, state v20, 6 agent DBs v24, local-only PASS,
@@ -3546,3 +3549,41 @@ outcome=`. Schema targets are unchanged from 10.1 (state 20, agent 24), so neith
   `ask_user`, got `no_answer` when the tool's 15-minute wait expired, and continued. That question went out with a
   `telegram-final` mirror but no `outbound send ok` line, as 9 of 10 earlier `ask_user` questions did on 10.1
   (10-09..10-14). A second RatBot DM (16:05 local) was still working through tool calls at 16:16.
+
+## Fork debt cleared on the 10.3 carry (2026-10-16)
+
+Alex asked on 2026-10-16 to fix the remaining issues and chose: the fork's own lint errors, the SQLite and env
+guard growth, and all 34 line-cap findings. The 7 lint errors that `v2026.10.3` itself carries were left alone.
+Five parallel edit-only lanes worked on the Air; validation ran on the M4 Pro. Every move is a pure relocation into
+a sibling module or a sibling test file, with these exceptions, each listed in its lane commit:
+
+- **Env budget back to 474:** `OPENCLAW_GATEWAY_POST_SHUTDOWN_EXIT_TIMEOUT_MS` (approved 2026-09-08) is removed.
+  Neither bot set it. The post-shutdown watchdog now always uses its 5 s default; its option seams stay. The two
+  tests of the env variable were deleted, and a new test asserts the 5 s default.
+- **SQLite T1 back to 915:** the fork's compaction shadow page (`resolveDisplayPositionAtOrAfter`) now reads
+  through the same active-message-position reader as the upstream delta query
+  (`session-accessor.sqlite-active-message-positions.ts`). It still runs on the Gateway main thread inside the same
+  snapshot as the upstream history readers; main-thread work is unchanged, one call site fewer.
+- **`only-throw-error` in `channels/turn/lifecycle.ts`:** an observe-only dispatch failure is now wrapped with
+  `toErrorObject` like every other turn, as upstream does. Only a non-Error rejection changes.
+- **`no-control-regex` in `media/store.ts`:** `[\u0000-\u001f\u007f-\u009f]` became `\p{Cc}` with the `u` flag,
+  the same 65 code points.
+- **Upstream code moved** where fork code alone could not reach the allowance: listed per lane commit (for example
+  the poll-vote record in `message-tool-execution.ts`, the `/queue` ack in `directive-handling.impl.ts`, the lock
+  error helpers in `gateway-cli/run.ts`). The next carry should expect these files to conflict at the new seams.
+
+Validation on the M4 (`c68acf-debtqual.sh`, worktree at `f2e3503673ec`, isolated state, PATH with `rg`):
+install, build 708 s, `tsgo:all`, and `pnpm check --base v2026.10.3` with every preflight green (line-cap ratchet
+"no new violations or over-cap growth", SQLite worker ratchet "no T1 call-count growth", env budget, max-lines,
+assertion SAFETY, duplicate scan). Touched tests: 117 files at head, 2464 passed and 1 skipped; the 102 of them
+that exist at `69ec2ec6857`, 2465 passed and 1 skipped. The difference is the two deleted env tests and the one new
+default test. Lint left 6 `import(no-duplicates)` errors in the gateway test files and `format:check` flagged two
+code spans that wrapped across lines in the 2026-10-15 section; both are fixed in the follow-up commit and rechecked.
+
+The 2026-10-15 AILYbot note: its `ask_user` questions are delivered. The `telegram-final` mirrors at 15:33 and
+16:00 local are the question prompts; the 16:00 one came back `answered`. The prompt path sends through the durable
+batch and fails closed when nothing reaches the chat; it simply logs no `outbound send ok` line. One
+`ask_user failed: Session-scoped access requires a verified user profile` (17:51 local) came from an
+`announce:requester-settle` run with no verified user, which is upstream behavior (same code in 10.1).
+
+Neither bot is redeployed by this section; both still run `1ecf113bef64`.

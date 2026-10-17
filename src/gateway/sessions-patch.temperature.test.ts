@@ -4,15 +4,13 @@ import type { SessionEntry } from "../config/sessions.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
 import {
-  acpSessionMetaMocks,
-  resetSessionsPatchProviderThinking,
-} from "./sessions-patch.mocks.test-support.js";
-import {
   MAIN_SESSION_KEY,
   runPatch,
   expectPatchOk,
   expectPatchError,
 } from "./sessions-patch.test-support.js";
+const { acpSessionMetaMocks, resetSessionsPatchProviderThinking } =
+  await import("./sessions-patch.mocks.test-support.js");
 
 describe("gateway sessions patch", () => {
   beforeEach(() => {
