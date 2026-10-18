@@ -6,7 +6,9 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
+import { withSessionTranscriptQuestionAnswers } from "../../config/sessions/session-transcript-read-fence.js";
 import { QuestionManager } from "../../gateway/question-manager.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   createGatewaySchedulerClock,
@@ -16,6 +18,11 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { claimPendingAgentQuestionAnswer } from "../harness/gateway-question.js";
+import {
+  createAgentQuestionAnswerAuthority,
+  withAgentQuestionAnswerAuthority,
+} from "../harness/host-private-capabilities.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { createAskUserTool } from "../tools/ask-user-tool.js";
@@ -203,3 +210,162 @@ for (const outcome of ["timeout", "answer"] as const) {
     },
   );
 }
+
+// #174994: a plain-text answer appended by the ingress path (a different manager,
+// bypassing the blocked run's tool-result guard) while ask_user is armed must not
+// kill the settlement. The settlement runs inside the blocked run's
+// withSessionTranscriptQuestionAnswers custody; the ingress claim admits the
+// answer into that custody after persistApproved(). The blocked run's toolResult
+// append holds a stale prepared parent; it must re-base onto the new tail and
+// succeed.
+it("answer settlement survives a concurrent inbound user append (#174994)", async () => {
+  const sessionId = "concurrent-append";
+  const target = {
+    agentId: "main",
+    sessionId,
+    sessionKey: `agent:main:${sessionId}`,
+    storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+  };
+  const recorderTarget = {
+    agentId: "main",
+    sessionId,
+    sessionKey: target.sessionKey,
+    storePath: target.storePath,
+    sessionEntry: undefined,
+    cwd: state.workspaceDir,
+  };
+  await upsertSessionEntryCore(target, { sessionId, updatedAt: 1 });
+  const manager = await SessionManager.openAsync(target, state.workspaceDir);
+  installSessionToolResultGuard(manager);
+  const persist = (message: Parameters<typeof persistAgentSessionMessage>[1]) =>
+    persistAgentSessionMessage(manager, message, { invalidateSerializedPrefixCache: false });
+  // The blocked run's original user turn is a real admitted recorder.
+  const creator = createUserTurnTranscriptRecorder({
+    target: recorderTarget,
+    input: { text: "Which target?", idempotencyKey: "creator:user" },
+  });
+  const creatorResult = await creator.persistApproved();
+  assert(creatorResult);
+  await manager.reloadPersistedTranscriptAsync();
+  const args = {
+    questions: [
+      {
+        id: "target",
+        header: "Target",
+        question: "Which target?",
+        options: [{ label: "Staging" }, { label: "Production" }],
+      },
+    ],
+  };
+  const call = makeAgentAssistantMessage({
+    content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: args }],
+    stopReason: "toolUse",
+  });
+  const callId = await persist(call);
+  assert(callId);
+  const before = readTranscriptMutationAtSync(target);
+  assert(typeof before === "number");
+  const clock = createGatewaySchedulerClock(Date.now());
+  const scheduler = createTestGatewayScheduler(clock.clock);
+  const questions = new QuestionManager(scheduler);
+  const waiting = createDeferredCore();
+  let questionId = "";
+  type GatewayCall = Extract<
+    NonNullable<Parameters<typeof createAskUserTool>[0]["gatewayCall"]>,
+    (...args: never[]) => unknown
+  >;
+  const gatewayCall = (async (
+    method: string,
+    _options: unknown,
+    params: Record<string, unknown>,
+  ) => {
+    if (method === "question.request") {
+      expect(params.timeoutMs).toBe(900_000);
+      questionId = questions.request(params as Parameters<QuestionManager["request"]>[0]).id;
+      return { id: questionId };
+    }
+    if (method === "question.waitAnswer") {
+      const answer = questions.waitAnswer(questionId);
+      waiting.resolve();
+      return answer;
+    }
+    if (method === "question.resolve") {
+      return questions.resolve(
+        params.id as string,
+        params.answers as Parameters<QuestionManager["resolve"]>[1],
+        params.resolvedBy as string | undefined,
+        { resolutionId: params.resolutionId as string | undefined },
+      );
+    }
+    throw new Error(`Unexpected question method: ${method}`);
+  }) as GatewayCall;
+  await withSessionTranscriptQuestionAnswers(
+    creator,
+    () => {},
+    async (admit) => {
+      const authority = createAgentQuestionAnswerAuthority({
+        sessionKey: target.sessionKey,
+        fingerprint: undefined,
+        project: () => undefined,
+        assertActive: () => {},
+        admitTranscriptAnswer: admit,
+      });
+      await withAgentQuestionAnswerAuthority(authority, async () => {
+        const pending = createAskUserTool({ sessionKey: target.sessionKey, gatewayCall }).execute(
+          "ask",
+          args,
+        );
+        try {
+          await waiting.promise;
+          expect(questions.get(questionId)?.status).toBe("pending");
+          // The ingress path appends the inbound answer through a real claim that
+          // admits the answer into the blocked run's custody after persistApproved().
+          const source = createUserTurnTranscriptRecorder({
+            target: recorderTarget,
+            input: { text: "Staging", idempotencyKey: "source:user" },
+          });
+          const claimed = await claimPendingAgentQuestionAnswer({
+            sessionKey: target.sessionKey,
+            text: "Staging",
+            sourceRecorder: source,
+            authority: { kind: "run", assertCurrent: () => {} },
+          });
+          expect(claimed).toBe(true);
+          const result = await pending;
+          const details = { status: "answered", answers: { answers: { target: ["Staging"] } } };
+          expect(result.details).toEqual(details);
+          const answerId = source.getAdmissionReceipt()?.entryId;
+          assert(answerId);
+          const settled = await persist({
+            role: "toolResult",
+            toolCallId: "ask",
+            toolName: "ask_user",
+            content: result.content,
+            details: result.details,
+            isError: false,
+            timestamp: 3,
+          }).then(
+            (entryId) => ({ entryId }),
+            (error: unknown) => ({ error }),
+          );
+          const after = readTranscriptMutationAtSync(target);
+          expect(after).toBeGreaterThan(before);
+          await manager.reloadPersistedTranscriptAsync();
+          const events = await loadTranscriptEvents(target);
+          // The settlement must succeed and land after the inbound answer.
+          expect(settled).toEqual({ entryId: expect.any(String) });
+          expect(events.at(-1)).toMatchObject({
+            parentId: answerId,
+            message: { role: "toolResult", toolCallId: "ask", toolName: "ask_user", details },
+          });
+          expect(manager.getPersistedEntries()).toEqual(events);
+        } finally {
+          await Promise.allSettled([pending]);
+        }
+      });
+    },
+  );
+  questions.close();
+  await questions.drain();
+  await scheduler.stop();
+});
