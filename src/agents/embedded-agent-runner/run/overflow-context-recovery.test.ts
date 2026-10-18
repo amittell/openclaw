@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import {
+  loadSessionEntry,
+  replaceSessionEntry,
+} from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
@@ -25,6 +31,8 @@ import { createEmbeddedRunCompactionRuntime } from "./compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("recoverEmbeddedRunOverflow transcript ownership", () => {
   it.each(["frozen", "cache-ttl"] as const)(
@@ -88,12 +96,15 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
         using idle = retainEmbeddedSessionPromptState(sessionId);
         expect(idle.state.toolResults.frozen.size).toBe(0);
       }
+      // A real, clean row: the overflow retry must leave it free of restart-recovery state
+      // (fork #13), and an unseeded store would let that check pass on a missing row.
       const target = {
         agentId: "main",
         sessionId,
         sessionKey: `agent:main:${sessionId}`,
-        storePath: "/tmp/unused-in-memory-recovery.sqlite",
+        storePath: path.join(tempDirs.make("openclaw-overflow-recovery-"), "sessions.json"),
       };
+      await replaceSessionEntry(target, { sessionId, updatedAt: 1, status: "running" });
       const admission = prepareSystemAgentRunAdmission(
         {},
         `run-${mode}`,
@@ -197,6 +208,11 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
           manager.buildSessionContext().messages.find((message) => message.role === "toolResult")
             ?.content,
         ).toEqual(expectedContent);
+        const stored = loadSessionEntry(target);
+        expect(stored).toMatchObject({ sessionId, status: "running" });
+        expect(stored).not.toHaveProperty("abortedLastRun", true);
+        expect(stored).not.toHaveProperty("mainRestartRecovery");
+        expect(stored).not.toHaveProperty("restartRecoveryRuns");
       } finally {
         admission.close();
       }

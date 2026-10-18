@@ -364,14 +364,20 @@ export function transitionMainSessionRecovery(
   switch (command.kind) {
     case "mark_interrupted": {
       const state = entry.mainRestartRecovery;
+      // A mark without a cause (operator recovery) keeps a restart already on record.
+      const cause = command.cause ?? state?.cause;
       if (!state) {
-        entry.mainRestartRecovery = createCycle(command.cycleId);
-      } else if (state.foregroundClaims || state.reservation) {
+        entry.mainRestartRecovery = {
+          ...createCycle(command.cycleId),
+          ...(cause ? { cause } : {}),
+        };
+      } else if (state.foregroundClaims || state.reservation || cause !== state.cause) {
         // Restart owns continuation now. Process-bound foreground and reservation
         // leases cannot authorize the old lifecycle after this durable handoff.
         updateRecoveryState(entry, state, {
           foregroundClaims: undefined,
           reservation: undefined,
+          ...(cause ? { cause } : {}),
         });
       }
       entry.status = "running";

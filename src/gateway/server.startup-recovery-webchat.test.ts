@@ -233,6 +233,13 @@ it(
           updatedAt: Date.now() - 10_000,
           status: "running",
           abortedLastRun: true,
+          // Gateway close marked this row, so its cycle records the restart.
+          mainRestartRecovery: {
+            cycleId: "marked-cycle",
+            revision: 1,
+            chargedAttempts: 0,
+            cause: "gateway_restart",
+          },
         },
       );
       clearSessionStoreCacheForTest();
@@ -384,6 +391,13 @@ it(
         status: "running",
         abortedLastRun: true,
         updatedAt: Date.now() - 10_000,
+        // A second Gateway close marked the reset parent.
+        mainRestartRecovery: {
+          cycleId: "marked-cycle-reset",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
       }));
       await addRecoveryChild(currentChildMarker);
       const resetRecovery = recoverRestartAbortedMainSessions({

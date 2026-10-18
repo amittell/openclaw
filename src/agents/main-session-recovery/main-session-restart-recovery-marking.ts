@@ -3,6 +3,7 @@ import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { resolveStateDir } from "../../config/paths.js";
 import type {
   InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
   RestartRecoveryRun,
 } from "../../config/sessions.js";
 import {
@@ -46,6 +47,8 @@ async function markRecoveryStore(params: {
   sessionKey?: string;
   assertCommitAllowed?: () => void;
   statuses?: Array<NonNullable<SessionEntry["status"]>>;
+  /** Set only by marking that follows a real Gateway shutdown or boot. */
+  cause?: MainRestartRecoveryCause;
   plan: (
     entry: SessionEntry,
     sessionKey: string,
@@ -114,6 +117,7 @@ async function markRecoveryStore(params: {
           kind: "mark_interrupted",
           cycleId: randomUUID(),
           now: Date.now(),
+          ...(params.cause ? { cause: params.cause } : {}),
           ...plan,
         });
         replacements.push({ sessionKey, entry });
@@ -194,6 +198,8 @@ export async function markRestartAbortedMainSessions(params: {
         const storeResult = await markRecoveryStore({
           ...target,
           sessionKey: selectedSessionKey,
+          // Its only production caller is Gateway close, which marks for the next boot.
+          cause: "gateway_restart",
           assertCommitAllowed: () => {
             if (isCurrent && !isCurrent()) {
               throw new Error("Restart recovery owner changed before commit");
@@ -295,6 +301,7 @@ type OrphanMarkParams = {
 async function markOrphanedMainSessionStore(
   params: OrphanMarkParams & {
     target: RestartRecoveryStoreTarget & { sessionKey?: string };
+    cause?: MainRestartRecoveryCause;
     expectedSessionId?: string;
     expectedLifecycleRevision?: string;
     assertCommitAllowed?: () => void;
@@ -306,6 +313,7 @@ async function markOrphanedMainSessionStore(
   const orphanChecks: Array<() => boolean> = [];
   return await markRecoveryStore({
     ...params.target,
+    ...(params.cause ? { cause: params.cause } : {}),
     statuses: params.target.sessionKey ? undefined : ["running"],
     assertCommitAllowed: () => {
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
@@ -417,6 +425,8 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
         ...params,
         target,
         lifecycleGeneration,
+        // Boot marking: the previous process ended while these turns ran.
+        cause: "gateway_restart",
       });
       assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
       result.marked += storeResult.marked;

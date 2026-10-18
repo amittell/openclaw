@@ -1,6 +1,16 @@
+/**
+ * Why a recovery cycle exists. Only Gateway shutdown and boot marking record
+ * "gateway_restart". A cycle without a cause (a same-process abort reaching recovery,
+ * operator recovery, or state written before this field) is resumed the same way, but
+ * its notice must not claim a restart happened.
+ */
+export type MainRestartRecoveryCause = "gateway_restart";
+
 export type MainRestartRecoveryState = {
   /** Stable identity for one interrupted episode; prevents clear-and-rewedge ABA matches. */
   cycleId: string;
+  /** Only "gateway_restart" lets the resume notice say a restart happened. */
+  cause?: MainRestartRecoveryCause;
   /** Monotonic identity for observations within the current recovery cycle. */
   revision: number;
   /** Attempts charged when their reservation is persisted, before dispatch. */
