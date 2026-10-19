@@ -10,8 +10,10 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import * as systemPresence from "../../../infra/system-presence.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
+import type { HealthSummary } from "../../health/types.js";
 import { startGatewayTailscaleExposure } from "../../server-tailscale.js";
 import { prepareTailscalePublishedOrigin } from "../../tailscale-published-origin.js";
+import { getHealthCache } from "../health-state.js";
 import type { GatewayWsClient } from "../ws-types.js";
 
 // Hello update-scope tests cover authenticated role/scope and recovery ownership projection.
@@ -432,6 +434,69 @@ describe("sendGatewayHello update detail scope", () => {
       expect(Value.Check(preChangeV4, snapshot)).toBe(false);
     }
   });
+
+  it.each(
+    [false, true].flatMap((cached) =>
+      [false, true].flatMap((runtimeConfigCap) =>
+        [false, true].map((onDemand) => ({ cached, runtimeConfigCap, onDemand })),
+      ),
+    ),
+  )(
+    "projects hello health with cached=$cached runtimeConfigCap=$runtimeConfigCap onDemand=$onDemand",
+    async ({ cached, runtimeConfigCap, onDemand }) => {
+      const runtimeConfig = { state: "drift" as const, driftPaths: ["agents.defaults.model"] };
+      const health: HealthSummary = {
+        ok: true,
+        ts: 123,
+        durationMs: 1,
+        channels: {},
+        channelOrder: [],
+        channelLabels: {},
+        heartbeatSeconds: 0,
+        agents: [],
+        sessions: { path: "", count: 5000, recent: [] },
+        runtimeConfig,
+      };
+      vi.mocked(getHealthCache).mockReturnValue(cached ? health : null);
+      readCurrentRuntimeConfigHealthMock.mockReturnValue(runtimeConfig);
+      const context = makeContext("operator", ["operator.read"]);
+      context.connectParams = {
+        ...context.connectParams,
+        caps: [
+          ...(onDemand ? [GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND] : []),
+          ...(runtimeConfigCap ? RUNTIME_CONFIG_CAPS : []),
+        ],
+      };
+
+      await sendGatewayHello(
+        context as never,
+        makeState("operator", ["operator.read"]) as never,
+        {},
+      );
+
+      expect(helloSnapshot(context)).toMatchObject({
+        presence: [],
+        stateVersion: { presence: 1, health: 1 },
+        uptimeMs: 1,
+      });
+      const { runtimeConfig: _runtimeConfig, ...legacyHealth } = health;
+      expect(helloSnapshot(context)?.health).toEqual(
+        onDemand
+          ? {}
+          : cached
+            ? runtimeConfigCap
+              ? health
+              : legacyHealth
+            : runtimeConfigCap
+              ? { runtimeConfig }
+              : {},
+      );
+      expect(readCurrentRuntimeConfigHealthMock).toHaveBeenCalledTimes(
+        !cached && !onDemand && runtimeConfigCap ? 1 : 0,
+      );
+      expect(health.runtimeConfig).toBe(runtimeConfig);
+    },
+  );
 
   it.each([undefined, []])(
     "sends hello without membership reads for idle presence (%j)",

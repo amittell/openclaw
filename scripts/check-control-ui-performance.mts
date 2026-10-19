@@ -52,15 +52,16 @@ const CONTROL_UI_LOCALE_GZIP_BYTES = 300 * KIB;
 // Small, explicit headroom over the optimized baseline. Budget changes should
 // accompany an intentional loading or chunking decision.
 const controlUiPerformanceBudgets = {
-  // Combined deferrals use 7/27/22 requests; retain two per path.
+  // Schema runtime deferrals use 7/25/20 requests; retain two per path.
   startupJsRequests: 9,
-  chatBootJsRequests: 29,
-  newBootJsRequests: 24,
-  // Measured 1,566,022 / 1,119,513 B; retain under 1% headroom.
-  chatBootJsGzipBytes: 1_580_000,
-  newBootJsGzipBytes: 1_130_000,
+  chatBootJsRequests: 27,
+  newBootJsRequests: 22,
+  // Shared locale policy measured Chat at 1,491,714 B; the approved ceiling
+  // retains under 1% headroom. New Session keeps its existing independent limit.
+  chatBootJsGzipBytes: 1_500_000,
+  newBootJsGzipBytes: 1_050_000,
   startupCssRequests: 1,
-  startupJsGzipBytes: 339_000,
+  startupJsGzipBytes: 338_900,
   // Keep 45 KiB advisory: tiny integrated changes must not exhaust the budget.
   // The fixed 50 KiB ceiling bounds accumulation of small changes.
   startupCssGzipBytes: 50 * KIB,

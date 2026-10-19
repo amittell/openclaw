@@ -114,6 +114,8 @@ Advertise only capabilities the client actually implements.
 `runtime-config-health` opts in to the `runtimeConfig` drift diagnostic in the
 `hello-ok` health snapshot, `health` events, and `health` responses. Clients that do
 not advertise it receive those payloads without the field.
+Clients that also advertise `hello-health-on-demand` receive an empty hello health
+snapshot; they can still obtain the diagnostic through health requests and events.
 
 `usage-refreshing` allows a cold `usage.status` request to return immediately
 with `refreshing: true` and an empty provider list. A client advertising it must

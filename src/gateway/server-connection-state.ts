@@ -1,9 +1,11 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  GATEWAY_CLIENT_CAPS,
+  hasGatewayClientCap,
+} from "../../packages/gateway-protocol/src/client-info.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-// Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createEventWebPushDelivery } from "./event-web-push.js";
 import { omitRuntimeConfigHealthForClient } from "./health/runtime-config-cap.js";
 import { createMentionInbox } from "./mention-inbox.js";
@@ -18,8 +20,9 @@ import { GatewayConnectionWork } from "./server-connection-work.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
+import type { GatewayContextResolver } from "./server-methods/types.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
-import { SessionAncestorReferences } from "./session-ancestor-references.js";
+import { ConnectionSessionRows } from "./session-ancestor-references.js";
 import { prepareSessionEventProjection } from "./session-event-projection.js";
 import { resolveSessionEventAgentScope } from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
@@ -29,24 +32,38 @@ import { canReceiveSessionEvent, prepareProjectedSessionSharing } from "./sessio
 export function createGatewayConnectionState(params: {
   scheduler: GatewayScheduler;
   bootId: string;
+  resolveGatewayContext?: GatewayContextResolver;
   cfg: import("../config/config.js").OpenClawConfig;
   getRuntimeConfig?: () => import("../config/config.js").OpenClawConfig;
 }) {
   const loadRuntimeConfig = params.getRuntimeConfig ?? (() => params.cfg);
   let sessionRowProjection: SessionRowProjection | undefined;
-  let ancestorReferences = new WeakMap<GatewayClient, SessionAncestorReferences>();
+  const connectionRows = new WeakMap<GatewayClient, ConnectionSessionRows>();
   const clients = new GatewayClientRegistry(undefined, (client) => {
-    ancestorReferences.delete(client);
+    connectionRows.get(client)?.clear("close");
+    connectionRows.delete(client);
+    client.presenceSnapshot = undefined;
   });
+  // Subscription changes revoke ancestor certification, not socket-held wire rows.
   const forgetConnectionAncestors = (connId: string) => {
     const client = clients.getByConnectionId(connId);
     if (client) {
-      ancestorReferences.delete(client);
+      connectionRows.get(client)?.clearAncestors();
+    }
+  };
+  const clearConnectionRows = () => {
+    for (const client of clients) {
+      connectionRows.get(client)?.clear("projection");
+    }
+  };
+  const clearAncestors = () => {
+    for (const client of clients) {
+      connectionRows.get(client)?.clearAncestors();
     }
   };
   const forgetAncestor = (key: string) => {
     for (const client of clients) {
-      ancestorReferences.get(client)?.forget(key);
+      connectionRows.get(client)?.forget(key);
     }
   };
   // RPCs survive ordinary disconnects, so connection-owned projections still
@@ -73,6 +90,11 @@ export function createGatewayConnectionState(params: {
         projection: sessionRowProjection,
       }),
     sessionMessageSubscribers,
+    onSessionDeliveryLost: (client) => {
+      if (hasGatewayClientCap(client.connect.caps, GATEWAY_CLIENT_CAPS.SESSION_ROW_DELTAS)) {
+        connectionRows.get(client)?.clear("delivery-lost");
+      }
+    },
     canReceiveSessionEvent: (client, sessionKeys, agentId, event, payload) => {
       try {
         const projection = sessionRowProjection;
@@ -134,22 +156,24 @@ export function createGatewayConnectionState(params: {
             if (key !== undefined) {
               forgetAncestor(key);
             } else {
-              ancestorReferences = new WeakMap();
+              clearAncestors();
             }
           },
           references: (client) => {
-            let references = ancestorReferences.get(client);
+            let references = connectionRows.get(client);
             if (!references) {
-              references = new SessionAncestorReferences();
-              ancestorReferences.set(client, references);
+              references = new ConnectionSessionRows();
+              connectionRows.set(client, references);
             }
             return references;
           },
-          forgetConnectionAncestors: (client) => ancestorReferences.delete(client),
+          forgetConnectionAncestors: (client) => connectionRows.get(client)?.clearAncestors(),
           createRunProjector: () =>
             createVisibleActiveSessionRunProjector(
-              { chatAbortControllers },
               projection.state.rowContext.projectedAgentRuns,
+              undefined,
+              params.resolveGatewayContext,
+              projection.physicalPaths,
             ),
         },
       );
@@ -187,21 +211,19 @@ export function createGatewayConnectionState(params: {
   const chatRunRegistry = chatRunState.registry;
   const addChatRun = chatRunRegistry.add;
   const removeChatRun = chatRunRegistry.remove;
-  const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
-  const chatQueuedTurns = new Map<string, import("./chat-queued-turns.js").QueuedChatTurnEntry>();
   const toolEventRecipients = chatRunState.toolEventRecipients;
 
   return {
     getSessionRowProjection: () => sessionRowProjection,
     attachSessionRowProjection(this: void, projection: SessionRowProjection) {
       sessionRowProjection = projection;
-      ancestorReferences = new WeakMap();
+      clearConnectionRows();
       const unsubscribe = sessionChanges.subscribeFacts((change) => {
         if (!("all" in change) && change.scope === "acp") {
           return;
         }
         if ("all" in change) {
-          ancestorReferences = new WeakMap();
+          clearAncestors();
         } else if (change.factsInvalidated || (change.facts && change.facts.kind !== "unchanged")) {
           forgetAncestor(change.sessionKey);
         }
@@ -210,7 +232,7 @@ export function createGatewayConnectionState(params: {
         unsubscribe();
         if (sessionRowProjection === projection) {
           sessionRowProjection = undefined;
-          ancestorReferences = new WeakMap();
+          clearConnectionRows();
         }
       };
     },
@@ -225,8 +247,6 @@ export function createGatewayConnectionState(params: {
     chatRunState,
     addChatRun,
     removeChatRun,
-    chatAbortControllers,
-    chatQueuedTurns,
     toolEventRecipients,
     sessionEventSubscribers,
     sessionMessageSubscribers,

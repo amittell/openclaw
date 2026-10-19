@@ -133,6 +133,7 @@ export async function sendGatewayHello(
       ? sha256Base64Url(JSON.stringify(recoveryScopeMaterial))
       : undefined;
   const canMigrateRecovery = role === "operator" && !authenticatedPrincipal && Boolean(deviceToken);
+  const snapshotStartedAt = performance.now();
   const sessionRowProjection = getSessionRowProjection(buildRequestContext());
   const snapshot = buildGatewaySnapshot({
     client: context.handler.getClient(),
@@ -141,6 +142,8 @@ export async function sendGatewayHello(
     revisionProjector: buildRequestContext().configRevisionProjector,
     sessionRowProjection,
   });
+  context.recordAttachTiming?.("snapshotMs", snapshotStartedAt);
+  const descriptorsStartedAt = performance.now();
   const controlUiTabs = listControlUiPluginTabs(scopes, {
     requireGatewayAuthGrant: resolvedAuth.mode !== "none",
   });
@@ -270,6 +273,7 @@ export async function sendGatewayHello(
       hasMultipleSessionSharingIdentities: hasMultipleResidentSessionSharingIdentities(),
     },
   };
+  context.recordAttachTiming?.("helloDescriptorsMs", descriptorsStartedAt);
   advanceHandshakePhase("hello_payload_prepared");
 
   let bootstrapHandoff: SetupHandoff | undefined;
@@ -313,7 +317,9 @@ export async function sendGatewayHello(
   // after it completes so hello cannot serialize an earlier config generation.
   const cachedHealth = getHealthCache();
   snapshot.stateVersion.health = getHealthVersion();
-  if (cachedHealth) {
+  if (hasGatewayClientCap(connectParams.caps, GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND)) {
+    snapshot.health = {};
+  } else if (cachedHealth) {
     snapshot.health = omitRuntimeConfigHealthForClient(cachedHealth, connectParams.caps);
   } else {
     snapshot.health = {};

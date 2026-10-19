@@ -1,8 +1,9 @@
+import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import type { Snapshot } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import { buildRuntimeConfigHealth } from "../../commands/health-runtime-config.js";
-import { createConfigIO, getRuntimeConfig } from "../../config/io.js";
-import { STATE_DIR } from "../../config/paths.js";
+import { getRuntimeConfig } from "../../config/io.js";
+import { CONFIG_PATH, STATE_DIR } from "../../config/paths.js";
 import {
   getRuntimeConfigAppliedHash,
   getRuntimeConfigSourceSnapshot,
@@ -22,9 +23,10 @@ import {
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { GatewayConfigRevisionProjector } from "../config-revision-token.js";
 import { projectUpdateAvailable } from "../events.js";
-import type { HealthSummary } from "../health/types.js";
+import type { ChannelHealthSummary, HealthSummary } from "../health/types.js";
 import { createPresenceRecipientProjection } from "../presence-projection.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
+import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
 import type { GatewayClient } from "../server-methods/types.js";
 import type { SessionRowProjection } from "../session-row-projection.js";
 import type { GatewayEventLoopHealth } from "./event-loop-health.js";
@@ -33,6 +35,7 @@ let presenceVersion = 1;
 let healthVersion = 1;
 let healthCache: HealthSummary | null = null;
 let healthCacheConfigKey: string | null = null;
+let healthDigest: string | undefined;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 
 type RuntimeConfigHealthContext = {
@@ -102,7 +105,7 @@ export function buildGatewaySnapshot(opts: {
   if (opts.includeSensitive === true) {
     const auth = resolveGatewayAuth({ authConfig: cfg.gateway?.auth, env: process.env });
     // Surface resolved paths only to admin callers that already have broader gateway access.
-    snapshot.configPath = createConfigIO().configPath;
+    snapshot.configPath = CONFIG_PATH;
     snapshot.stateDir = STATE_DIR;
     snapshot.authMode = auth.mode;
   }
@@ -186,11 +189,63 @@ export function readCurrentRuntimeConfigHealth(): HealthSummary["runtimeConfig"]
 function publishPublicHealthSnapshot(snapshot: HealthSummary, configKey: string): HealthSummary {
   healthCache = snapshot;
   healthCacheConfigKey = configKey;
-  healthVersion += 1;
-  if (broadcastHealthUpdate) {
-    broadcastHealthUpdate(snapshot);
+  const digest = healthEventDigest(snapshot);
+  if (digest !== healthDigest) {
+    healthDigest = digest;
+    healthVersion += 1;
+    broadcastHealthUpdate?.(snapshot);
   }
   return snapshot;
+}
+
+function healthEventDigest(snap: HealthSummary): string {
+  const channel = ({
+    authAgeMs: _authAgeMs,
+    lastProbeAt: _lastProbeAt,
+    lastInboundAt: _lastInboundAt,
+    lastOutboundAt: _lastOutboundAt,
+    lastTransportActivityAt: _lastTransportActivityAt,
+    lastMessageAt: _lastMessageAt,
+    lastEventAt: _lastEventAt,
+    lastRunActivityAt: _lastRunActivityAt,
+    busy: _busy,
+    activeRuns: _activeRuns,
+    activeRunStartedAt: _activeRunStartedAt,
+    accounts,
+    ...status
+  }: ChannelHealthSummary): unknown => ({
+    ...status,
+    ...(accounts
+      ? {
+          accounts: Object.fromEntries(
+            Object.entries(accounts).map(([id, value]) => [id, channel(value)]),
+          ),
+        }
+      : {}),
+  });
+  // The sampler owns continuous degradation age; brief load spikes are diagnostics.
+  const sustainedEventLoopDegradation =
+    snap.eventLoop?.degraded === true &&
+    (snap.eventLoop.degradedSinceMs ?? 0) >= HEALTH_REFRESH_INTERVAL_MS;
+  // Keep lifecycle timestamps/errors and plugin-owned status. Sampling noise and
+  // routine activity are diagnostics, not health transitions; tick owns liveness
+  // and session events own session activity. Full diagnostics remain in the cache.
+  return stableStringify({
+    ...snap,
+    ts: undefined,
+    durationMs: undefined,
+    eventLoop: snap.eventLoop
+      ? {
+          degraded: sustainedEventLoopDegradation,
+          reasons: sustainedEventLoopDegradation ? snap.eventLoop.reasons : [],
+        }
+      : undefined,
+    channels: Object.fromEntries(
+      Object.entries(snap.channels).map(([id, value]) => [id, channel(value)]),
+    ),
+    agents: snap.agents.map(({ sessions: _sessions, ...agent }) => agent),
+    sessions: undefined,
+  });
 }
 
 export async function refreshGatewayHealthSnapshot(opts?: {
@@ -214,51 +269,48 @@ export async function refreshGatewayHealthSnapshot(opts?: {
 
   const promise = (async () => {
     const { collectGatewayHealthSnapshot } = await import("../health/collector.js");
-    const collectPublishedSnapshot = async () => {
-      while (true) {
-        const contextBeforeCollection = readRuntimeConfigHealthContext();
-        let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
-        try {
-          runtimeSnapshot = opts?.getRuntimeSnapshot?.();
-        } catch {
-          runtimeSnapshot = undefined;
-        }
-        const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
-        const collected = await collectGatewayHealthSnapshot({
-          audience,
-          probe: strength === "probe",
-          runtimeSnapshot,
-          ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
-          ...(opts?.getSessionRowProjection
-            ? { sessionRowProjection: opts.getSessionRowProjection() }
-            : {}),
-        });
-        const contextAfterCollection = readRuntimeConfigHealthContext();
-        if (contextBeforeCollection.key !== contextAfterCollection.key) {
-          continue;
-        }
-        const prepared = preparePublishedHealthSnapshot(collected, contextAfterCollection);
-        if (
-          prepared.configKey === contextBeforeCollection.key &&
-          contextBeforeCollection.key === readRuntimeConfigHealthContext().key
-        ) {
-          return prepared;
-        }
+    while (true) {
+      const contextBeforeCollection = readRuntimeConfigHealthContext();
+      let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
+      try {
+        runtimeSnapshot = opts?.getRuntimeSnapshot?.();
+      } catch {
+        runtimeSnapshot = undefined;
       }
-    };
-    const prepared = await collectPublishedSnapshot();
-    const { configKey, snapshot: snap } = prepared;
-    // Channel collection can outlive several sampling windows. Read diagnostics
-    // only when this new snapshot is ready to return, cache, or broadcast.
-    const eventLoop = opts?.getEventLoopHealth?.();
-    if (eventLoop) {
-      snap.eventLoop = eventLoop;
+      const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
+      const collected = await collectGatewayHealthSnapshot({
+        audience,
+        probe: strength === "probe",
+        runtimeSnapshot,
+        ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
+        ...(opts?.getSessionRowProjection
+          ? { sessionRowProjection: opts.getSessionRowProjection() }
+          : {}),
+      });
+      const contextAfterCollection = readRuntimeConfigHealthContext();
+      if (contextBeforeCollection.key !== contextAfterCollection.key) {
+        continue;
+      }
+      const { configKey, snapshot: snap } = preparePublishedHealthSnapshot(
+        collected,
+        contextAfterCollection,
+      );
+      // Channel collection can outlive several sampling windows. Read diagnostics
+      // only when this new snapshot is ready to return, cache, or broadcast.
+      const eventLoop = opts?.getEventLoopHealth?.();
+      if (eventLoop) {
+        snap.eventLoop = eventLoop;
+      }
+      // Keep the final config check and publication in the same synchronous frame.
+      if (configKey !== readRuntimeConfigHealthContext().key) {
+        continue;
+      }
+      // Diagnostic snapshots publish in completion order; the next refresh replaces them.
+      if (!includeSensitive) {
+        publishPublicHealthSnapshot(snap, configKey);
+      }
+      return snap;
     }
-    // Diagnostic snapshots publish in completion order; the next refresh replaces them.
-    if (!includeSensitive) {
-      publishPublicHealthSnapshot(snap, configKey);
-    }
-    return snap;
   })().finally(() => {
     state[strength] = null;
   });
