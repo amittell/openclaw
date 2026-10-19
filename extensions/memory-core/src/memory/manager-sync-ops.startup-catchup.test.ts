@@ -167,7 +167,7 @@ describe("session startup catch-up", () => {
       },
     });
     const harness = await Harness.create([], true);
-    const parse = vi.spyOn(memorySessions, "buildSessionEntry");
+    const parse = vi.spyOn(memorySessions, "buildSessionEntries");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
       await expect(harness.markStartupDirtyFiles(true)).resolves.toEqual([]);
@@ -181,6 +181,8 @@ describe("session startup catch-up", () => {
       expect(harness.indexedPaths).toEqual([]);
 
       await append(session, "Remember my favorite fruit is mango.");
+      await expect(harness.markStartupDirtyFiles(true)).resolves.toEqual([session.sessionKey]);
+      parse.mockClear();
       await harness.catchUp();
       expect(parse).not.toHaveBeenCalled();
       await flushSessionSync(harness);
@@ -360,6 +362,60 @@ describe("session startup catch-up", () => {
     } finally {
       reads.mockRestore();
     }
+  });
+
+  const recallRun = {
+    sessionId: "active-memory-mabc123-1a2b3c4d",
+    sessionKey: "agent:main:explicit:chat-1:active-memory:0123456789ab",
+  };
+
+  it("excludes Active Memory recall runs from targeted indexing", async () => {
+    const session = await writeSqliteSession({
+      ...recallRun,
+      content: "Recall prompt that must stay out.",
+    });
+    const harness = await Harness.create([]);
+
+    await harness.runSyncForTest({
+      reason: "queued-sessions",
+      sessions: [{ agentId: "main", sessionId: session.sessionId, sessionKey: session.sessionKey }],
+    });
+
+    expect(harness.indexedPaths).toEqual([]);
+    expect(harness.indexedContents).toEqual([]);
+  });
+
+  it("excludes Active Memory recall transcripts that have no session store entry", async () => {
+    const suffix = ".jsonl.deleted.2026-08-09T00-00-00.000Z";
+    await writeSessionFile(`thread${suffix}`, "ordinary archived conversation");
+    await writeSessionFile(`${recallRun.sessionId}${suffix}`, "Recall prompt that must stay out.");
+    const harness = await Harness.create([], true);
+
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    await harness.catchUp();
+    await flushSessionSync(harness);
+
+    expect(harness.indexedPaths).toEqual([`sessions/main/thread${suffix}`]);
+  });
+
+  it("prunes Active Memory recall runs indexed by earlier versions", async () => {
+    const session = await writeSqliteSession({
+      ...recallRun,
+      content: "Recall prompt indexed by an older version.",
+    });
+    const harness = await Harness.create(
+      [{ path: session.corpusPath, hash: "old-hash", mtime: 10, size: 10 }],
+      true,
+    );
+
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    await harness.catchUp();
+    await flushSessionSync(harness);
+
+    expect(harness.indexedPaths).toEqual([]);
+    expect(harness.deletedSources).toEqual([
+      { path: session.corpusPath, source: "sessions", expectedHash: "old-hash" },
+    ]);
   });
 
   it("keeps targeted indexing on the SQLite store resolved by its corpus snapshot", async () => {

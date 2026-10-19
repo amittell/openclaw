@@ -45,11 +45,12 @@ export function CronPageContent(props: { page: ReturnType<typeof createCronPage>
     };
     return {
       ...page.actions,
-      onHighlightedRun: page.highlightRun,
+      onRunMount: page.registerRun,
       loading: page.cron().cronLoading,
       hasLoaded: page.cron().cronJobsSnapshotRevision !== null,
       listError: page.cron().cronJobsError,
       canManage,
+      connected: page.cron().connected,
       status: page.cron().cronStatus,
       jobs: page.cron().cronJobs,
       jobsLoadingMore: page.cron().cronJobsLoadingMore,
@@ -90,7 +91,7 @@ export function CronPageContent(props: { page: ReturnType<typeof createCronPage>
       runsSortDir: page.cron().cronRunsSortDir,
       eventSource,
       fieldErrors,
-      canSubmit: !hasCronFormErrors(fieldErrors),
+      canSubmit: page.cron().connected && !hasCronFormErrors(fieldErrors),
       agentSuggestions: suggestions.agentSuggestions,
       modelSuggestions: suggestions.modelSuggestions,
       thinkingSuggestions: THINKING_SUGGESTIONS,
