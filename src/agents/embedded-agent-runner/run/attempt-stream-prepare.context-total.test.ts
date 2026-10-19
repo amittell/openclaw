@@ -9,6 +9,7 @@ import {
   resolveFreshSessionTotalTokens,
   SESSION_TOTAL_TOKENS_VERSION,
 } from "../../../config/sessions/types.js";
+import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import { withStateDirEnv } from "../../../test-helpers/state-dir-env.js";
 import {
   createAssistant,
@@ -17,6 +18,7 @@ import {
   registerAgentSessionLoopTestLifecycle,
   streamMocks,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { detachActiveEmbeddedRun } from "../runs.js";
 import { testing } from "../runs.test-support.js";
 import { prepareCatalogExecutor } from "./attempt-stream-prepare.test-support.js";
 
@@ -66,17 +68,29 @@ describe("prepareEmbeddedAttemptStream context total", () => {
           final.usage.contextUsage = { state: "unavailable" };
           return createAssistantResultStream(final);
         });
-      const prepared = prepareCatalogExecutor({
-        activeSession: session,
-        sessionKey: target.sessionKey,
-        attempt: { ...target, sessionTarget: target },
+      await withSessionTurn(target, async (replyOperation) => {
+        const prepared = prepareCatalogExecutor({
+          activeSession: session,
+          sessionKey: target.sessionKey,
+          replyOperation,
+          attempt: { ...target, sessionTarget: target },
+        });
+        try {
+          await session.prompt("Look it up.");
+          await prepared.contextTotalTokensWriter.close();
+        } finally {
+          prepared.subscription.unsubscribe();
+          detachActiveEmbeddedRun(
+            target.sessionId,
+            prepared.queueHandle,
+            target.sessionKey,
+            undefined,
+            undefined,
+            prepared.registration,
+          );
+          await prepared.contextTotalTokensWriter.abandon();
+        }
       });
-      try {
-        await session.prompt("Look it up.");
-        await prepared.contextTotalTokensWriter.close();
-      } finally {
-        prepared.subscription.unsubscribe();
-      }
       const row = loadSessionEntry({ ...target, readConsistency: "latest" });
       expect(resolveFreshSessionTotalTokens(row)).toBe(12_000);
     });
