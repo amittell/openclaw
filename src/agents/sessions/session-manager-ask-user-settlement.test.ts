@@ -1,12 +1,12 @@
 import path from "node:path";
 import { afterAll, assert, beforeAll, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import {
   loadTranscriptEvents,
   readTranscriptMutationAtSync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
-import { withSessionTranscriptQuestionAnswers } from "../../config/sessions/session-transcript-read-fence.js";
 import { QuestionManager } from "../../gateway/question-manager.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -19,10 +19,8 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { claimPendingAgentQuestionAnswer } from "../harness/gateway-question.js";
-import {
-  createAgentQuestionAnswerAuthority,
-  withAgentQuestionAnswerAuthority,
-} from "../harness/host-private-capabilities.js";
+import { createAdmittedHostCapabilityTestFixture } from "../harness/host-capability.test-support.js";
+import { withPreparedEmbeddedRunToolAuthority } from "../harness/tool-authority.runtime.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { createAskUserTool } from "../tools/ask-user-tool.js";
@@ -214,158 +212,197 @@ for (const outcome of ["timeout", "answer"] as const) {
 // #174994: a plain-text answer appended by the ingress path (a different manager,
 // bypassing the blocked run's tool-result guard) while ask_user is armed must not
 // kill the settlement. The settlement runs inside the blocked run's
-// withSessionTranscriptQuestionAnswers custody; the ingress claim admits the
+// production tool-authority wrapper; the ingress claim admits the
 // answer into that custody after persistApproved(). The blocked run's toolResult
 // append holds a stale prepared parent; it must re-base onto the new tail and
 // succeed.
-it("answer settlement survives a concurrent inbound user append (#174994)", async () => {
-  const sessionId = "concurrent-append";
-  const target = {
-    agentId: "main",
-    sessionId,
-    sessionKey: `agent:main:${sessionId}`,
-    storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
-  };
-  const recorderTarget = {
-    agentId: "main",
-    sessionId,
-    sessionKey: target.sessionKey,
-    storePath: target.storePath,
-    sessionEntry: undefined,
-    cwd: state.workspaceDir,
-  };
-  await upsertSessionEntryCore(target, { sessionId, updatedAt: 1 });
-  const manager = await SessionManager.openAsync(target, state.workspaceDir);
-  installSessionToolResultGuard(manager);
-  const persist = (message: Parameters<typeof persistAgentSessionMessage>[1]) =>
-    persistAgentSessionMessage(manager, message, { invalidateSerializedPrefixCache: false });
-  // The blocked run's original user turn is a real admitted recorder.
-  const creator = createUserTurnTranscriptRecorder({
-    target: recorderTarget,
-    input: { text: "Which target?", idempotencyKey: "creator:user" },
-  });
-  const creatorResult = await creator.persistApproved();
-  assert(creatorResult);
-  await manager.reloadPersistedTranscriptAsync();
-  const args = {
-    questions: [
-      {
-        id: "target",
-        header: "Target",
-        question: "Which target?",
-        options: [{ label: "Staging" }, { label: "Production" }],
-      },
-    ],
-  };
-  const call = makeAgentAssistantMessage({
-    content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: args }],
-    stopReason: "toolUse",
-  });
-  const callId = await persist(call);
-  assert(callId);
-  const before = readTranscriptMutationAtSync(target);
-  assert(typeof before === "number");
-  const clock = createGatewaySchedulerClock(Date.now());
-  const scheduler = createTestGatewayScheduler(clock.clock);
-  const questions = new QuestionManager(scheduler);
-  const waiting = createDeferredCore();
-  let questionId = "";
-  type GatewayCall = Extract<
-    NonNullable<Parameters<typeof createAskUserTool>[0]["gatewayCall"]>,
-    (...args: never[]) => unknown
-  >;
-  const gatewayCall = (async (
-    method: string,
-    _options: unknown,
-    params: Record<string, unknown>,
-  ) => {
-    if (method === "question.request") {
-      expect(params.timeoutMs).toBe(900_000);
-      questionId = questions.request(params as Parameters<QuestionManager["request"]>[0]).id;
-      return { id: questionId };
-    }
-    if (method === "question.waitAnswer") {
-      const answer = questions.waitAnswer(questionId);
-      waiting.resolve();
-      return answer;
-    }
-    if (method === "question.resolve") {
-      return questions.resolve(
-        params.id as string,
-        params.answers as Parameters<QuestionManager["resolve"]>[1],
-        params.resolvedBy as string | undefined,
-        { resolutionId: params.resolutionId as string | undefined },
-      );
-    }
-    throw new Error(`Unexpected question method: ${method}`);
-  }) as GatewayCall;
-  await withSessionTranscriptQuestionAnswers(
-    creator,
-    () => {},
-    async (admit) => {
-      const authority = createAgentQuestionAnswerAuthority({
-        sessionKey: target.sessionKey,
-        fingerprint: undefined,
-        project: () => undefined,
-        assertActive: () => {},
-        admitTranscriptAnswer: admit,
-      });
-      await withAgentQuestionAnswerAuthority(authority, async () => {
-        const pending = createAskUserTool({ sessionKey: target.sessionKey, gatewayCall }).execute(
-          "ask",
-          args,
+it.each(["answer", "unrelated-user"] as const)(
+  "guards concurrent inbound answer settlement through the production owner: %s (#174994)",
+  async (scenario) => {
+    const sessionId = `concurrent-append-${scenario}`;
+    const target = {
+      agentId: "main",
+      sessionId,
+      sessionKey: `agent:main:${sessionId}`,
+      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+    };
+    const recorderTarget = {
+      agentId: "main",
+      sessionId,
+      sessionKey: target.sessionKey,
+      storePath: target.storePath,
+      sessionEntry: undefined,
+      cwd: state.workspaceDir,
+    };
+    await upsertSessionEntryCore(target, { sessionId, updatedAt: 1 });
+    const manager = await SessionManager.openAsync(target, state.workspaceDir);
+    installSessionToolResultGuard(manager);
+    const persist = (message: Parameters<typeof persistAgentSessionMessage>[1]) =>
+      persistAgentSessionMessage(manager, message, { invalidateSerializedPrefixCache: false });
+    // The blocked run's original user turn is a real admitted recorder.
+    const creator = createUserTurnTranscriptRecorder({
+      target: recorderTarget,
+      input: { text: "Which target?", idempotencyKey: "creator:user" },
+    });
+    const creatorResult = await creator.persistApproved();
+    assert(creatorResult);
+    await manager.reloadPersistedTranscriptAsync();
+    const args = {
+      questions: [
+        {
+          id: "target",
+          header: "Target",
+          question: "Which target?",
+          options: [{ label: "Staging" }, { label: "Production" }],
+        },
+      ],
+    };
+    const call = makeAgentAssistantMessage({
+      content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: args }],
+      stopReason: "toolUse",
+    });
+    const callId = await persist(call);
+    assert(callId);
+    const before = readTranscriptMutationAtSync(target);
+    assert(typeof before === "number");
+    const clock = createGatewaySchedulerClock(Date.now());
+    const scheduler = createTestGatewayScheduler(clock.clock);
+    const questions = new QuestionManager(scheduler);
+    const waiting = createDeferredCore();
+    let questionId = "";
+    type GatewayCall = Extract<
+      NonNullable<Parameters<typeof createAskUserTool>[0]["gatewayCall"]>,
+      (...args: never[]) => unknown
+    >;
+    const gatewayCall = (async (
+      method: string,
+      _options: unknown,
+      params: Record<string, unknown>,
+    ) => {
+      if (method === "question.request") {
+        expect(params.timeoutMs).toBe(900_000);
+        questionId = questions.request(params as Parameters<QuestionManager["request"]>[0]).id;
+        return { id: questionId };
+      }
+      if (method === "question.waitAnswer") {
+        const answer = questions.waitAnswer(questionId);
+        waiting.resolve();
+        return answer;
+      }
+      if (method === "question.resolve") {
+        return questions.resolve(
+          params.id as string,
+          params.answers as Parameters<QuestionManager["resolve"]>[1],
+          params.resolvedBy as string | undefined,
+          { resolutionId: params.resolutionId as string | undefined },
         );
-        try {
-          await waiting.promise;
-          expect(questions.get(questionId)?.status).toBe("pending");
-          // The ingress path appends the inbound answer through a real claim that
-          // admits the answer into the blocked run's custody after persistApproved().
-          const source = createUserTurnTranscriptRecorder({
-            target: recorderTarget,
-            input: { text: "Staging", idempotencyKey: "source:user" },
-          });
-          const claimed = await claimPendingAgentQuestionAnswer({
-            sessionKey: target.sessionKey,
-            text: "Staging",
-            sourceRecorder: source,
-            authority: { kind: "run", assertCurrent: () => {} },
-          });
-          expect(claimed).toBe(true);
-          const result = await pending;
-          const details = { status: "answered", answers: { answers: { target: ["Staging"] } } };
-          expect(result.details).toEqual(details);
-          const answerId = source.getAdmissionReceipt()?.entryId;
-          assert(answerId);
-          const settled = await persist({
-            role: "toolResult",
-            toolCallId: "ask",
-            toolName: "ask_user",
-            content: result.content,
-            details: result.details,
-            isError: false,
-            timestamp: 3,
-          }).then(
-            (entryId) => ({ entryId }),
-            (error: unknown) => ({ error }),
-          );
-          const after = readTranscriptMutationAtSync(target);
-          expect(after).toBeGreaterThan(before);
-          await manager.reloadPersistedTranscriptAsync();
-          const events = await loadTranscriptEvents(target);
-          // The settlement must succeed and land after the inbound answer.
-          expect(settled).toEqual({ entryId: expect.any(String) });
-          expect(events.at(-1)).toMatchObject({
-            parentId: answerId,
-            message: { role: "toolResult", toolCallId: "ask", toolName: "ask_user", details },
-          });
-          expect(manager.getPersistedEntries()).toEqual(events);
-        } finally {
-          await Promise.allSettled([pending]);
-        }
+      }
+      throw new Error(`Unexpected question method: ${method}`);
+    }) as GatewayCall;
+    const attempt = {
+      agentId: target.agentId,
+      sessionId,
+      sessionKey: target.sessionKey,
+      sessionFile: creatorResult.sessionFile,
+      runId: `question-${scenario}`,
+      workspaceDir: state.workspaceDir,
+      config: {},
+      provider: "fixture",
+      modelId: "fixture",
+      messageProvider: "webchat",
+      senderIsOwner: true,
+      userTurnTranscriptRecorder: creator,
+    };
+    const host = await createAdmittedHostCapabilityTestFixture(attempt);
+    const releaseSettlement = createDeferredCore();
+    const details = { status: "answered", answers: { answers: { target: ["Staging"] } } };
+    const run = withPreparedEmbeddedRunToolAuthority(
+      { admittedRunContext: host.admittedRunContext },
+      { ...attempt, hostCapabilities: host.hostCapabilities },
+      undefined,
+      async () => {
+        const result = await createAskUserTool({
+          agentId: target.agentId,
+          runId: attempt.runId,
+          sessionKey: target.sessionKey,
+          gatewayCall,
+        }).execute("ask", args);
+        await releaseSettlement.promise;
+        expect(result.details).toEqual(details);
+        return persist({
+          role: "toolResult",
+          toolCallId: "ask",
+          toolName: "ask_user",
+          content: result.content,
+          details: result.details,
+          isError: false,
+          timestamp: 3,
+        });
+      },
+    );
+    const outcome = run.then(
+      (entryId) => ({ entryId, error: undefined }),
+      (error: unknown) => ({ entryId: undefined, error }),
+    );
+    try {
+      await awaitGateBeforeSettlement(
+        waiting.promise,
+        run,
+        "Tool authority preparation ended before ask_user started waiting",
+      );
+      expect(questions.get(questionId)?.status).toBe("pending");
+      // Ingress owns a different async scope. Only the claim may admit its real
+      // persisted answer into the blocked production run's custody.
+      const source = createUserTurnTranscriptRecorder({
+        target: recorderTarget,
+        input: { text: "Staging", idempotencyKey: "source:user" },
       });
-    },
-  );
-  questions.close();
-  await questions.drain();
-  await scheduler.stop();
-});
+      const claimed = await claimPendingAgentQuestionAnswer({
+        sessionKey: target.sessionKey,
+        text: "Staging",
+        sourceRecorder: source,
+        authority: { kind: "run", assertCurrent: () => {} },
+      });
+      expect(claimed).toBe(true);
+      const answerId = source.getAdmissionReceipt()?.entryId;
+      assert(answerId);
+      if (scenario === "unrelated-user") {
+        await createUserTurnTranscriptRecorder({
+          target: recorderTarget,
+          input: { text: "An unrelated new turn", idempotencyKey: "unrelated:user" },
+        }).persistApproved();
+      }
+      const beforeSettlement = await loadTranscriptEvents(target);
+      releaseSettlement.resolve();
+      const settled = await outcome;
+      const events = await loadTranscriptEvents(target);
+      if (scenario === "unrelated-user") {
+        expect(settled.error).toBeInstanceOf(SqliteTranscriptMutationConflictError);
+        expect(settled.entryId).toBeUndefined();
+        expect(events).toEqual(beforeSettlement);
+      } else {
+        expect(settled.error).toBeUndefined();
+        expect(settled.entryId).toEqual(expect.any(String));
+        expect(readTranscriptMutationAtSync(target)).toBeGreaterThan(before);
+        expect(events.at(-1)).toMatchObject({
+          parentId: answerId,
+          message: { role: "toolResult", toolCallId: "ask", toolName: "ask_user", details },
+        });
+        await manager.reloadPersistedTranscriptAsync();
+        expect(manager.getPersistedEntries()).toEqual(events);
+      }
+    } finally {
+      // A refused claim or assertion must unblock waitAnswer before we await run.
+      questions.close();
+      releaseSettlement.resolve();
+      await outcome;
+      try {
+        await questions.drain();
+        await scheduler.stop();
+      } finally {
+        host.closeHost();
+        host.closeAdmission();
+      }
+    }
+  },
+);
