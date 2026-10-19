@@ -25,7 +25,7 @@ import {
   createSolidApplicationContextProvider,
 } from "../test-helpers/solid-application-context.tsx";
 import { flush } from "../test-helpers/solid-settle.ts";
-import { CanvasWidgetView, type OpenClawCanvasWidgetView } from "./canvas-widget-view.ts";
+import { CanvasWidgetView, type OpenClawCanvasWidgetView } from "./canvas-widget-view.tsx";
 import { WIDGET_PROMPT_EVENT } from "./mcp-app-security.ts";
 
 const repeat = (length: number) => "x".repeat(length);
@@ -122,7 +122,13 @@ function mount(
     const contextRequest = event as ApplicationContextRequest;
     if (contextRequest.context === applicationContext) {
       event.stopPropagation();
-      contextRequest.callback({ gateway } as unknown as ApplicationContext);
+      contextRequest.callback({
+        gateway,
+        sessions: {
+          subscribeMessages: async (key: string) => ({ key }),
+          unsubscribeMessages: async () => {},
+        },
+      } as unknown as ApplicationContext);
     }
   });
   view.docId = docId;

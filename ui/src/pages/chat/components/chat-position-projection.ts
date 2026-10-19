@@ -3,7 +3,7 @@ import { resolveMessageVisibleContent } from "../../../lib/chat/message-visibili
 import type { SystemEventRenderItem } from "../chat-system-event-grouping.ts";
 import { persistedMessageEntryId } from "../chat-thread-items.ts";
 import { isSessionActivityGroup } from "../chat-turn-boundary.ts";
-import { prepareChatMessageRender } from "./chat-message-markdown.ts";
+import { prepareChatMessageRender } from "./chat-message-markdown-view.tsx";
 
 type ChatPositionMarker = {
   id: string;
@@ -12,11 +12,7 @@ type ChatPositionMarker = {
   message: unknown;
 };
 
-export type ChatPositionIndex = {
-  markers: ChatPositionMarker[];
-  /** Transcript order, including continuations after an intervening user steer. */
-  markerIdsByMessageId: Map<string, string>;
-};
+export type ChatPositionIndex = ReturnType<typeof projectChatPositions>;
 
 type RenderItem = SystemEventRenderItem;
 
@@ -25,7 +21,7 @@ export function projectChatPositions(
   expandedWork: ReadonlyMap<string, boolean>,
   messageRowKeysById: Map<string, string>,
   searchActive = false,
-): ChatPositionIndex {
+) {
   const markers = new Map<string, ChatPositionMarker>();
   const markerIdsByMessageId = new Map<string, string>();
   const add = (
@@ -111,5 +107,6 @@ export function projectChatPositions(
   for (const item of items) {
     visit(item, item.key);
   }
+  // Transcript order includes continuations after an intervening user steer.
   return { markers: [...markers.values()], markerIdsByMessageId };
 }

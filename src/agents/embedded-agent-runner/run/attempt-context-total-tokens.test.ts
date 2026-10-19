@@ -135,6 +135,16 @@ describe("createContextTotalTokensWriter", () => {
         tokensUsed: 60_000,
         budgetLimitedAt: expect.any(Number),
       });
+
+      // Compaction lowers the current context, but Goal usage retains the peak.
+      const compacted = createContextTotalTokensWriter(fixture.attempt());
+      compacted.offer(usage({ input: 30_000, output: 100 }));
+      await compacted.close();
+      expect(resolveFreshSessionTotalTokens(fixture.read())).toBe(30_000);
+      expect(fixture.read()?.goal).toMatchObject({
+        status: "budget_limited",
+        tokensUsed: 60_000,
+      });
     });
   });
 
