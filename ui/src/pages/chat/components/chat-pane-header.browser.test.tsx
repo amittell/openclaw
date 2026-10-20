@@ -7,18 +7,17 @@ import {
   selectChatLayoutAction,
 } from "../../../test-helpers/chat-layout-menu.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import "../../../styles.css";
 import "../../../styles/chat/startup-layout.css";
 import "../../../styles/chat/layout.css";
 import "../../../styles/chat/split-view.css";
 import { openSlot, setSidebarOpen } from "../sidebar-layout.ts";
-import type { ChatDetails } from "./chat-details.tsx";
 import {
   chatPaneHeaderSharing,
   chatPaneHeaderSessionMenu,
   mountChatPaneHeader,
 } from "./chat-pane-header.test-support.ts";
-import "./chat-details.tsx";
 import { ChatSidebarEditorMenu } from "./chat-sidebar-editor-menu.tsx";
 
 describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
@@ -38,6 +37,96 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
     afterEach(() => {
       dispose();
       containers.splice(0).forEach((container) => container.remove());
+    });
+
+    it.each([
+      [390, 844],
+      [768, 1024],
+      [1366, 768],
+      [1440, 900],
+    ])("keeps the agent identity and keyboard context usable at %sx%s", async (width, height) => {
+      const { userEvent } = await import("vitest/browser");
+      await page.viewport(width, height);
+      const { container, props } = mountChatPaneHeader(containers, {
+        mergedChrome: width <= 768,
+        narrow: width <= 768,
+        agent: {
+          id: "research",
+          name: "Research lead for international policy and technology",
+          textAvatar: "🔬",
+        },
+        sessionMenuAction: chatPaneHeaderSessionMenu(),
+      });
+      const header = container.querySelector<HTMLElement>(".chat-pane__header")!;
+      const trigger = container.querySelector<HTMLButtonElement>(
+        ".chat-pane__agent-identity > button",
+      )!;
+      const name = container.querySelector<HTMLElement>(".chat-pane__agent-name")!;
+      const actions = container.querySelector<HTMLElement>(".chat-pane__header-trailing")!;
+      const settings = container.querySelector<HTMLButtonElement>(".chat-pane__agent-settings")!;
+      expect(trigger.checkVisibility()).toBe(true);
+      expect(name.getBoundingClientRect().width).toBeGreaterThan(40);
+      const headerCenter = header.getBoundingClientRect().left + header.clientWidth / 2;
+      const identity = container.querySelector<HTMLElement>(".chat-pane__header-agent")!;
+      const identityCenter = identity.getBoundingClientRect().left + identity.clientWidth / 2;
+      expect(Math.abs(identityCenter - headerCenter)).toBeLessThanOrEqual(2);
+      expect(trigger.getBoundingClientRect().right).toBeLessThanOrEqual(
+        actions.getBoundingClientRect().left,
+      );
+      expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+      // Idle pill is only avatar and name; settings is hover-only, outside the
+      // pill, and has no title tooltip.
+      expect(trigger.querySelector(":scope > svg")).toBeNull();
+      expect(settings.hasAttribute("title")).toBe(false);
+      expect(getComputedStyle(settings).opacity).toBe("0");
+      const idleBackground = getComputedStyle(settings).backgroundColor;
+      await userEvent.hover(trigger);
+      expect(getComputedStyle(settings).opacity).toBe("1");
+      expect(getComputedStyle(settings).backgroundColor).toBe(idleBackground);
+      expect(settings.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+        trigger.getBoundingClientRect().right - 0.5,
+      );
+      expect(settings.getBoundingClientRect().right).toBeLessThanOrEqual(
+        actions.getBoundingClientRect().left,
+      );
+      trigger.focus();
+      await userEvent.keyboard("{Enter}");
+      const context = container.querySelector<HTMLElement>(".chat-pane__agent-context")!;
+      await expect.poll(() => context.matches(":popover-open")).toBe(true);
+      expect(context.textContent).toContain("Session title");
+      expect(context.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
+      expect(context.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+      await userEvent.keyboard("{Escape}");
+      await expect.poll(() => context.matches(":popover-open")).toBe(false);
+      expect(document.activeElement).toBe(trigger);
+      settings.click();
+      expect(props.onOpenAgentSettings).toHaveBeenCalledWith("research");
+    });
+
+    it.each([
+      ["window controls on the left", "--chat-pane-header-inset-start", "paddingLeft", "90px"],
+      ["caption buttons on the right", "--chat-pane-header-inset-end", "paddingRight", "146px"],
+    ] as const)("centers the agent on the pane with %s", async (_label, inset, side, value) => {
+      await page.viewport(1440, 900);
+      const { container } = mountChatPaneHeader(containers, {
+        agent: { id: "research", name: "Research lead", textAvatar: "🔬" },
+      });
+      const header = container.querySelector<HTMLElement>(".chat-pane__header")!;
+      // Mirrors the shell's window-chrome inset rules, which set both values.
+      header.style.setProperty(inset, value);
+      header.style[side] = value;
+      const headerRect = header.getBoundingClientRect();
+      const trigger = container
+        .querySelector<HTMLElement>(".chat-pane__agent-identity > button")!
+        .getBoundingClientRect();
+      const actions = container
+        .querySelector<HTMLElement>(".chat-pane__header-trailing")!
+        .getBoundingClientRect();
+      expect(
+        Math.abs(trigger.left + trigger.width / 2 - (headerRect.left + headerRect.width / 2)),
+      ).toBeLessThanOrEqual(1);
+      expect(trigger.right).toBeLessThanOrEqual(actions.left);
+      expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
     });
 
     it("opens the labelled Layout menu and dispatches focus, swap, docking, and panel choices", async () => {
@@ -152,13 +241,18 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
           "open-split-view",
         ]);
         const surface = menu.querySelector<HTMLElement>(":scope > .oc-menu")!;
+        // Measure the settled surface, not its opening scale transition.
+        await Promise.all(surface.getAnimations().map((animation) => animation.finished));
         const bounds = surface.getBoundingClientRect();
         expect(bounds.width).toBeCloseTo(264, 0);
-        expect(direction === "ltr" ? bounds.left : window.innerWidth - bounds.right).toBeCloseTo(
-          8,
+        // The phone menu opens from its header trigger, not a viewport corner.
+        const anchor = trigger.getBoundingClientRect();
+        expect(direction === "ltr" ? bounds.right : bounds.left).toBeCloseTo(
+          direction === "ltr" ? anchor.right : anchor.left,
           0,
         );
-        expect(window.innerHeight - bounds.bottom).toBeCloseTo(8, 0);
+        expect(bounds.top).toBeGreaterThanOrEqual(anchor.bottom);
+        expect(bounds.top - anchor.bottom).toBeLessThanOrEqual(12);
         expect(bounds.height).toBeCloseTo(360, 0);
         expect(surface.scrollHeight).toBeGreaterThan(surface.clientHeight);
         const terminalDetails = surface.querySelector<HTMLElement>(
@@ -282,7 +376,13 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
               onActivate: onTerminal,
             },
           ],
-          detailsControl: { chat: undefined, mobile: false, presentation: true, setRef: () => {} },
+          detailsControl: {
+            chat: undefined,
+            mobile: false,
+            presentation: true,
+            elements: {},
+            setRef: () => {},
+          },
           sidebarLayout: { columns: [] },
           onLayoutChange: vi.fn(),
           onToggleSidePanel: vi.fn(),
@@ -291,7 +391,7 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
         });
         container.style.width = `${width}px`;
         const header = container.querySelector<HTMLElement>(".chat-pane__header")!;
-        await container.querySelector<ChatDetails>("openclaw-chat-details")?.updateComplete;
+        flush();
         await expect.element(page.elementLocator(header)).toBeVisible();
         expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
         const bounds = header.getBoundingClientRect();
@@ -355,7 +455,13 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
           state === "idle"
             ? "position: fixed; top: 80px; left: 80px; width: 1000px"
             : "position: fixed; top: 80px; left: 500px; width: 650px";
-        await container.querySelector("openclaw-chat-pane-versions-menu")?.updateComplete;
+        await waitForSolid(() =>
+          expect(
+            container.querySelector(
+              editor ? ".sidebar-file-view__action" : ".chat-pane__branches-trigger",
+            ),
+          ).not.toBeNull(),
+        );
         const trigger = container.querySelector<HTMLButtonElement>(
           editor ? ".sidebar-file-view__action" : ".chat-pane__branches-trigger",
         )!;

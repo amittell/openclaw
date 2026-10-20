@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runWithLocalStateOwner } from "../cli/local-state-owner.js";
+import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { resolveDatabaseEngineInput } from "../infra/database-engine/config.js";
 import { withDatabaseEngineSelection } from "../infra/database-engine/context.js";
@@ -24,7 +25,9 @@ export async function withDatabasePortStateOwner<T>(
   const config = (await readDatabasePortConfigSnapshot(ctx)).snapshot.config;
   const shared = path.join(ctx.stateDir, "state", "openclaw.sqlite");
   // Interrupted publication can leave config on the old engine. Custody follows the physical store.
-  const engine = fs.existsSync(shared) ? readBackupEngine(shared).engine : config.database?.engine;
+  const engine = fs.existsSync(shared)
+    ? readBackupEngine(shared).engine
+    : resolveDatabaseFamilyEngines(config).state;
   await selectDatabasePortEngine(ctx, config, engine);
   return withDatabaseEngineSelection(ctx.engineSelection, () =>
     runWithLocalStateOwner({
@@ -35,7 +38,7 @@ export async function withDatabasePortStateOwner<T>(
       databasePortRecovery: recovery,
       databasePortMaintenance: true,
       runLocal: ({ env, assertCurrent, signal }) => {
-        Object.assign(ctx, { env, assertCurrent, signal });
+        Object.assign(ctx, { env, stateDir: resolveStateDir(env), assertCurrent, signal });
         return run();
       },
     }),
@@ -48,10 +51,14 @@ export async function selectDatabasePortEngine(
   engine: DatabaseEngineId | undefined,
 ) {
   // This task-scoped holder follows offline publication; boot selections remain frozen.
+  const effectiveEngines = { ...resolveDatabaseFamilyEngines(config), state: engine ?? "sqlite" };
   Object.assign(ctx.engineSelection, {
-    effectiveEngines: Object.freeze(resolveDatabaseFamilyEngines({ database: { engine } })),
+    effectiveEngines: Object.freeze(effectiveEngines),
     postgres:
-      engine === "postgres" ? await resolveDatabaseEngineInput(postgresConfig(config)) : undefined,
+      ctx.engineSelection.postgres ??
+      (Object.values(effectiveEngines).includes("postgres")
+        ? await resolveDatabaseEngineInput(postgresConfig(config), ctx.env)
+        : undefined),
   });
 }
 
