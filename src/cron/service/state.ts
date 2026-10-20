@@ -409,6 +409,8 @@ export type CronStatusSummary = {
   sqlitePath: string;
   jobs: number;
   nextWakeAtMs: number | null;
+  /** Account-scoped jobs that cannot resolve a creator channel and fail closed until reauthorized. */
+  reauthorizationRequired: number;
 };
 
 export type CronRunResult =
