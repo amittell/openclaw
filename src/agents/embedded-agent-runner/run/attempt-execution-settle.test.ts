@@ -1,7 +1,8 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { awaitGateBeforeSettlement } from "../../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
@@ -864,6 +865,50 @@ describe("runEmbeddedAttemptSettledPhase", () => {
     // A failed prompt drops its pending per-call total once the subscription is released.
     expect(fixture.contextTotalTokensWriter.close).not.toHaveBeenCalled();
     expect(fixture.order.slice(-2)).toEqual(["clear-active-run", "context-total-abandon"]);
+  });
+
+  it("waits for the context writer to drain before returning a prompt failure", async ({
+    signal,
+  }) => {
+    const fixture = createFixture(mocks);
+    const failure = new Error("prompt failed");
+    const abandonStarted = createDeferredCore();
+    const drained = createDeferredCore();
+    mocks.runPrompt.mockRejectedValueOnce(failure);
+    fixture.contextTotalTokensWriter.abandon.mockImplementationOnce(async () => {
+      abandonStarted.resolve();
+      await drained.promise;
+    });
+    let settled = false;
+    const outcome = runEmbeddedAttemptSettledPhase(fixture.input).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error: unknown) => {
+        settled = true;
+        return { error };
+      },
+    );
+
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(
+          abandonStarted.promise,
+          outcome,
+          "settlement finished without abandoning the context writer",
+        ),
+        signal,
+      );
+      expect(mocks.clearActiveEmbeddedRun).toHaveBeenCalledOnce();
+      await nextTurn();
+      expect(settled).toBe(false);
+    } finally {
+      drained.resolve();
+      await outcome;
+    }
+
+    expect(await outcome).toEqual({ error: failure });
   });
 
   it("reports a backend cleanup failure after releasing a successful run", async () => {
