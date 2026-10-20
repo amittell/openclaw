@@ -52,15 +52,18 @@ vi.mock("../../config/config.js", async () => {
   };
 });
 
+// mock-isolation: Secret refs pass through unchanged so no Gateway secrets RPC is made.
 vi.mock("../../cli/command-secret-gateway.js", () => ({
   resolveCommandSecretRefsViaGateway: mocks.resolveCommandSecretRefsViaGateway,
 }));
 
+// mock-isolation: Keep channel secret contracts and plugin provider discovery out of target lookup.
 vi.mock("../../cli/command-secret-targets.js", () => ({
   getScopedChannelsCommandSecretTargets: mocks.getScopedChannelsCommandSecretTargets,
 }));
 
-vi.mock("../../channels/plugins/message-tool-api.js", () => ({
+vi.mock("../../channels/plugins/message-tool-api.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../channels/plugins/message-tool-api.js")>()),
   resolveBundledChannelMessageToolDiscoveryAdapter: () => ({
     describeMessageTool: () => ({ actions: ["send"], capabilities: [] }),
   }),

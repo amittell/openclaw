@@ -6,6 +6,7 @@ import { sessionsAbortCommand } from "./sessions-abort.js";
 
 const callGatewayCli = vi.hoisted(() => vi.fn());
 
+// mock-isolation: Script abort RPC outcomes without connecting to an operator Gateway.
 vi.mock("../cli/gateway-rpc.js", () => ({ callGatewayFromCliWithTransport: callGatewayCli }));
 
 function createRuntime() {

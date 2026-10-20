@@ -180,17 +180,16 @@ type CompactionSuffix = {
 
 type SummaryQualityRetention = Parameters<typeof createSummaryQualityRetentionPlan>[2];
 
-function assembleSuffix(
-  parts: {
-    splitTurnSection?: ContextSection;
-    generatedSplitTurnSection?: string;
-    preservedTurnsSection?: ContextSection;
-    toolFailureSection?: string;
-    fileOpsSummary?: string;
-    workspaceContext?: string;
-  },
-  reserveSplitTurn = false,
-): CompactionSuffix {
+type CompactionSuffixParts = {
+  splitTurnSection?: ContextSection;
+  generatedSplitTurnSection?: string;
+  preservedTurnsSection?: ContextSection;
+  toolFailureSection?: string;
+  fileOpsSummary?: string;
+  workspaceContext?: string;
+};
+
+function assembleSuffix(parts: CompactionSuffixParts, reserveSplitTurn = false): CompactionSuffix {
   let text = "";
   let reservedChars = 0;
   const contextRanges: CompactionSuffix["contextRanges"] = [];

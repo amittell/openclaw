@@ -32,7 +32,8 @@ import {
   AgentSelectionRequiredError,
   AgentSelectionRequiredError as RealAgentSelectionRequiredError,
 } from "./agent-scope-config.js";
-vi.mock("./agent-scope.js", () => ({
+vi.mock("./agent-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-scope.js")>()),
   listAgentIds: () => mocks.agentIds,
   resolveAgentDir: (_config: object, agentId: string, env?: NodeJS.ProcessEnv) =>
     env?.OPENCLAW_STATE_DIR

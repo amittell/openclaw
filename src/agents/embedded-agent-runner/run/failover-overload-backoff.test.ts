@@ -14,7 +14,10 @@ vi.mock("../../../infra/backoff.js", async () => {
   );
   return { ...actual, sleepWithAbort: mocks.sleepWithAbort };
 });
-vi.mock("../logger.js", () => ({ log: mocks.log }));
+vi.mock("../logger.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logger.js")>()),
+  log: mocks.log,
+}));
 
 import { createEmbeddedRunFailoverRetryController } from "./failover-retry-controller.js";
 import { resolveOverloadFailoverBackoffPolicy } from "./helpers.js";

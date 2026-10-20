@@ -23,6 +23,7 @@ import { recoverRestartAbortedMainSessions } from "./main-session-restart-recove
 // Fork #13: a same-process abort can reach restart recovery too. Only a cycle that Gateway
 // close or boot marked may tell the model, or the user, that the Gateway restarted.
 
+// mock-isolation: Recovery resumes through the fixture runtime without a Gateway connection.
 vi.mock("../../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({ runId: "run-resumed" })),
 }));

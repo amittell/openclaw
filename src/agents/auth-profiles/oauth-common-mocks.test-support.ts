@@ -45,6 +45,7 @@ vi.mock("./doctor.js", () => ({
   formatAuthDoctorHint: async () => undefined,
 }));
 
+// mock-isolation: Host CLI credential files and env-backed tokens must not leak into OAuth store tests.
 vi.mock("./external-cli-sync.js", () => ({
   areOAuthCredentialsEquivalent: (a: unknown, b: unknown) => a === b,
   hasUsableOAuthCredential: (credential: OAuthCredential | undefined, now = Date.now()) =>

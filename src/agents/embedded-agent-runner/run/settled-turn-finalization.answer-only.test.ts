@@ -22,15 +22,19 @@ const backendMocks = vi.hoisted(() => ({
   runSettledFinalization: vi.fn(),
 }));
 
+// mock-isolation: No backend attempt runs in finalization tests; runtime-model provenance stays unset.
 vi.mock("./backend.js", () => ({
   resolveRuntimeModelAttempt: () => undefined,
 }));
+// mock-isolation: Script the settled-finalization turn instead of running a real agent harness.
 vi.mock("../../harness/selection.js", () => ({
   runAgentHarnessSettledTurnFinalization: backendMocks.runSettledFinalization,
 }));
+// mock-isolation: Mirror appends hit a no-op spy so no session transcript is written.
 vi.mock("../../../plugin-sdk/session-transcript-runtime.js", () => ({
   appendAssistantMirrorMessageByIdentity: vi.fn(),
 }));
+// mock-isolation: Resolve synthetic session paths without opening a host database.
 vi.mock("../../run-session-target.js", () => ({
   resolveAgentRunSessionTarget: vi.fn(async (params: { sessionId: string }) => ({
     agentId: "main",

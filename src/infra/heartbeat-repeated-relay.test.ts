@@ -42,6 +42,7 @@ const deliverOutboundPayloadsInternal = vi.hoisted(() =>
   ),
 );
 
+// mock-isolation: Record heartbeat deliveries without the real outbound queue or channel sends.
 vi.mock("./outbound/deliver.js", () => ({
   deliverOutboundPayloads: deliverOutboundPayloadsInternal,
   deliverOutboundPayloadsInternal,

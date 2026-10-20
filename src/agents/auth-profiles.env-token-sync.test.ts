@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
 // they are written inside a describe, because the nesting misstates their real
 // execution order. Kept at module scope for that reason; 4.1.11 tolerated the
 // nested form this fork's test was written against.
+// mock-isolation: Synthetic token profiles must not reach real provider-plugin external auth discovery.
 vi.mock("../plugins/provider-runtime.js", () => ({
   resolveExternalAuthProfilesWithPlugins: mocks.resolveExternalAuthProfilesWithPlugins,
 }));

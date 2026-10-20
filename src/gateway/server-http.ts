@@ -47,7 +47,6 @@ import {
   classifyWorkerBootstrapArtifactTransferPath,
   WORKER_BOOTSTRAP_ARTIFACT_TRANSFER_PATH,
 } from "./gateway-http-route-contracts.js";
-import { resetShuttingDownProbeResponseLogForTest as resetGatewayHealthzShuttingDownLogForTest } from "./gateway-shutdown-state.js";
 import type { AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import {
   finishFailedGatewayHttpResponse,
@@ -119,12 +118,6 @@ import {
   handleNodeWorkspaceTransferHttpRequest,
   type NodeWorkspaceTransferHttpCallback,
 } from "./worker-environments/node-workspace-transfer-http.js";
-
-// Re-export for source compatibility; backing impl now lives in
-// `gateway-shutdown-state.ts` so the per-cycle reset happens at the
-// state-transition site (markGatewayShuttingDown / resetGatewayShuttingDownState).
-// Per ClawSweeper review P3 on #88908.
-export { resetGatewayHealthzShuttingDownLogForTest };
 
 type WatchNodeHttpRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 type McpOAuthCallbackHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;

@@ -52,6 +52,7 @@ vi.mock("../../infra/outbound/deliver.js", async (importOriginal) => {
   return { ...actual };
 });
 
+// mock-isolation: Capture message_sent emission without firing real plugin or internal hooks.
 vi.mock("../../infra/outbound/message-sent-hook.js", () => ({
   createMessageSentEmitter,
 }));
@@ -61,6 +62,7 @@ vi.mock("../../plugins/hook-runner-global.js", async (importOriginal) => {
   return { ...actual, getGlobalHookRunner };
 });
 
+// mock-isolation: Script recent conversation text without touching the session transcript store.
 vi.mock("../../config/sessions/transcript.js", () => ({
   readRecentUserAssistantTextForSession,
 }));

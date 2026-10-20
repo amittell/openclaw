@@ -37,7 +37,8 @@ const createMemoryRuntimeMock = vi.hoisted(() =>
 
 const createStandingIntentExecutorMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./src/standing-intents-tool.js", () => ({
+vi.mock("./src/standing-intents-tool.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./src/standing-intents-tool.js")>()),
   createStandingIntentExecutor: createStandingIntentExecutorMock,
 }));
 

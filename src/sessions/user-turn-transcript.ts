@@ -576,7 +576,6 @@ export function createUserTurnTranscriptRecorder(
     },
     getPendingInputMessage: () => pendingInput?.message,
     ...processing,
-    getPendingInputRequestHash: () => pendingInput?.requestHash,
     isPendingInputConsumed: () => pendingInput?.state === "consumed",
     withPendingInput: (run) => (pendingInput ? pendingInput.run(run) : run()),
     finishPendingInput: (disposition) => {

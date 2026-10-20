@@ -37,6 +37,8 @@ export function createUserTurnProcessingCompletion(
         pendingInput?.run(() => {});
       }
     },
+    // Fork: chat.send's answered-turn marker reads the stage-time request identity.
+    getPendingInputRequestHash: () => readPendingInput()?.requestHash,
     getProcessingCompletion: () =>
       processingCompletion?.ok ? processingCompletion.value : readPendingInput()?.completion,
     completeProcessing: (outcome: AgentRunTerminalOutcome) => {

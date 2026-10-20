@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   markGatewayShuttingDown,
   resetGatewayShuttingDownForTest,
+  resetShuttingDownProbeResponseLogForTest,
 } from "./gateway-shutdown-state.js";
-import { resetGatewayHealthzShuttingDownLogForTest } from "./server-http.js";
 import {
   AUTH_NONE,
   createRequest,
@@ -39,7 +39,7 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 
 afterEach(() => {
   resetGatewayShuttingDownForTest();
-  resetGatewayHealthzShuttingDownLogForTest();
+  resetShuttingDownProbeResponseLogForTest();
   gatewayProbeWarn.mockClear();
 });
 

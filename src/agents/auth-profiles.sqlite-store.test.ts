@@ -52,6 +52,7 @@ import {
   upsertAuthProfileWithLockOrThrow,
 } from "./auth-profiles/upsert-with-lock.js";
 
+// mock-isolation: Host CLI credential files and env-backed tokens must not leak into the SQLite store fixture.
 vi.mock("./auth-profiles/external-cli-sync.js", () => ({
   listExternalCliSyncProviderIds: () => [],
   resolveExternalCliAuthProfiles: () => [],

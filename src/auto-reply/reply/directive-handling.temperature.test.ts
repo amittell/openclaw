@@ -13,7 +13,8 @@ import { resolveReplyDirectiveRouting } from "./get-reply-directives-routing.js"
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { buildTestCtx } from "./test-ctx.js";
 
-vi.mock("../../agents/sticky-model-selection.js", () => ({
+vi.mock("../../agents/sticky-model-selection.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/sticky-model-selection.js")>()),
   persistStickyModelSelectionBestEffort: vi.fn(),
 }));
 

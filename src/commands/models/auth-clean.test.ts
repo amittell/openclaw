@@ -17,26 +17,31 @@ const mocks = vi.hoisted(() => ({
   resolveKnownAgentId: vi.fn<() => string | null>(() => null),
 }));
 
-vi.mock("../../agents/agent-scope.js", () => ({
+vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/agent-scope.js")>()),
   resolveDefaultAgentId: mocks.resolveDefaultAgentId,
   resolveAgentDir: mocks.resolveAgentDir,
 }));
 
+// mock-isolation: Serve scripted auth-profile stores without reading the host agent directory.
 vi.mock("../../agents/auth-profiles.js", () => ({
   ensureAuthProfileStore: mocks.ensureAuthProfileStore,
   loadAuthProfileStoreWithoutExternalProfiles: mocks.loadAuthProfileStoreWithoutExternalProfiles,
 }));
 
+// mock-isolation: Capture locked store writes without touching a real auth-profile store.
 vi.mock("../../agents/auth-profiles/store-runtime.js", () => ({
   updateAuthProfileStoreWithLock: mocks.updateAuthProfileStoreWithLock,
   loadAgentLocalAuthProfileStore: mocks.loadAgentLocalAuthProfileStore,
 }));
 
+// mock-isolation: Serve the models config in memory without reading the host config file.
 vi.mock("./load-config.js", () => ({
   loadModelsConfig: mocks.loadModelsConfig,
 }));
 
-vi.mock("./shared.js", () => ({
+vi.mock("./shared.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./shared.js")>()),
   resolveKnownAgentId: mocks.resolveKnownAgentId,
 }));
 

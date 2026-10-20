@@ -24,13 +24,17 @@ const mocks = vi.hoisted(() => ({
   execute: vi.fn(async () => ({ content: [{ type: "text", text: "[]" }], details: {} })),
 }));
 
+// mock-isolation: Serve the loop-detection config without reading the host config file.
 vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => mocks.cfg }));
+// mock-isolation: Config IO stays in memory so no host config file is read.
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => mocks.cfg }));
 vi.mock("../config/sessions.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../config/sessions.js")>()),
   resolveMainSessionKey: () => SESSION_KEY,
 }));
+// mock-isolation: Authorize the loopback request without real Gateway auth or rate-limit state.
 vi.mock("./auth.js", () => ({ authorizeHttpGatewayConnect: async () => ({ ok: true }) }));
+// mock-isolation: Exercise loop detection with one inert tool instead of the real tool catalog.
 vi.mock("../agents/openclaw-tools.js", () => ({
   createOpenClawTools: () => [
     {

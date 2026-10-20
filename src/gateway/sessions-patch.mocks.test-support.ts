@@ -10,11 +10,13 @@ const providerThinkingMocks = vi.hoisted(() => ({
     vi.fn<typeof import("../plugins/provider-thinking.js").resolveEffectiveThinkingProfile>(),
 }));
 
+// mock-isolation: Script ACP session metadata without reading the OpenClaw state database.
 vi.mock("../acp/runtime/session-meta-readonly.js", () => ({
   readAcpSessionMetaForEntry: acpSessionMetaMocks.readAcpSessionMetaForEntry,
 }));
 
 // This suite owns patch projection; provider policy artifacts have dedicated contract coverage.
+// mock-isolation: Script thinking profiles without resolving provider policy artifacts from plugin metadata.
 vi.mock("../plugins/provider-thinking.js", () => ({
   resolveEffectiveThinkingProfile: providerThinkingMocks.resolveProviderThinkingProfile,
 }));

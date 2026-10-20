@@ -710,6 +710,7 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "extensions/qa-lab/src/node-exec.test.ts",
   "extensions/qa-lab/src/posix-process-group.test.ts",
   "extensions/qa-lab/src/providers/mock-openai/server.test.ts",
+  "extensions/qa-lab/src/providers/mock-openai/server.thread-memory.test.ts",
   "extensions/qa-lab/src/providers/mock-openai/server.tool-search-targets.test.ts",
   "extensions/qa-lab/src/qa-gateway-config.test.ts",
   "extensions/qa-lab/src/run-config.test.ts",

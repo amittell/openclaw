@@ -69,7 +69,8 @@ describe("memory plugin e2e", () => {
         );
       },
     }));
-    vi.doMock("./lancedb-runtime.js", () => ({
+    vi.doMock("./lancedb-runtime.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lancedb-runtime.js")>()),
       loadLanceDbModule: vi.fn(async () => ({
         connect: vi.fn(async () => ({
           tableNames: vi.fn(async () => ["memories"]),
@@ -151,7 +152,8 @@ describe("memory plugin e2e", () => {
         );
       },
     }));
-    vi.doMock("./lancedb-runtime.js", () => ({
+    vi.doMock("./lancedb-runtime.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lancedb-runtime.js")>()),
       loadLanceDbModule: vi.fn(async () => ({
         connect: vi.fn(async () => ({
           tableNames: vi.fn(async () => ["memories"]),
@@ -233,7 +235,8 @@ describe("memory plugin e2e", () => {
         );
       },
     }));
-    vi.doMock("./lancedb-runtime.js", () => ({
+    vi.doMock("./lancedb-runtime.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lancedb-runtime.js")>()),
       loadLanceDbModule: vi.fn(async () => ({
         connect: vi.fn(async () => ({
           tableNames: vi.fn(async () => ["memories"]),
@@ -350,7 +353,8 @@ describe("memory plugin e2e", () => {
         );
       },
     }));
-    vi.doMock("./lancedb-runtime.js", () => ({
+    vi.doMock("./lancedb-runtime.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lancedb-runtime.js")>()),
       loadLanceDbModule: vi.fn(async () => ({
         connect: vi.fn(async () => ({
           tableNames: vi.fn(async () => ["memories"]),

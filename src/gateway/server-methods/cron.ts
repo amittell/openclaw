@@ -657,13 +657,8 @@ export const cronHandlers: GatewayRequestHandlers = {
       context.logGateway.info("cron: job removed", { jobId });
       respond(true, result, undefined);
     },
-    {
-      allowCurrentJob: true,
-      // Idempotent delete: a second, racing remove of an already-gone job is a no-op success.
-      // A scoped caller gets the same not-found as for another agent's job.
-      respondMissingToUnscopedCaller: (respond) =>
-        respond(true, { removed: false, reason: "already-gone" }, undefined),
-    },
+    // Idempotent delete: a second, racing remove of an already-gone job is a no-op success.
+    { allowCurrentJob: true, missingIsAlreadyGoneForUnscopedCaller: true },
   ),
   "cron.run": scopedCronJobHandler(
     "cron.run",

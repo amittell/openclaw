@@ -107,6 +107,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     sessionKey,
   } = session;
   const { clientInfo, p, reconnectResumeRequested, supportsTaskSuggestions } = request;
+  const turnTarget = { agentId, expectedSessionId: admittedSessionId, sessionKey, storePath };
   const {
     accountId,
     ctx,
@@ -615,12 +616,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
-              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, {
-                agentId,
-                expectedSessionId: admittedSessionId,
-                sessionKey,
-                storePath,
-              }),
+              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, turnTarget),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

@@ -10,6 +10,7 @@ import {
   withTempSessionStore,
 } from "./session-store.test-support.js";
 
+// mock-isolation: Classify CLI providers from a fixed list instead of the plugin CLI-backend registry.
 vi.mock("../model-selection.js", () => ({
   isCliProvider: (provider: string, _cfg?: OpenClawConfig) =>
     ["claude-cli", "codex-cli", "google-gemini-cli"].includes(provider.trim().toLowerCase()),

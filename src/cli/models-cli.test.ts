@@ -85,7 +85,8 @@ vi.mock("../commands/models/auth-activate.js", () => ({
 vi.mock("../commands/models/auth-logout.js", () => ({
   modelsAuthLogoutCommand: mocks.modelsAuthLogoutCommand,
 }));
-vi.mock("../commands/models/auth-clean.js", () => ({
+vi.mock("../commands/models/auth-clean.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../commands/models/auth-clean.js")>()),
   modelsAuthCleanCommand: mocks.modelsAuthCleanCommand,
 }));
 vi.mock("../commands/models/auth-order.js", async (importOriginal) => ({

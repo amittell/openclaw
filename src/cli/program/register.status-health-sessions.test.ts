@@ -33,9 +33,12 @@ vi.mock("../../commands/sessions-compact.js", () => {
   mocks.ownerLoaded();
   return { sessionsCompactCommand: mocks.sessionsCompactCommand };
 });
-vi.mock("../../commands/sessions-abort.js", () => {
+vi.mock("../../commands/sessions-abort.js", async (importOriginal) => {
   mocks.ownerLoaded();
-  return { sessionsAbortCommand: mocks.sessionsAbortCommand };
+  return {
+    ...(await importOriginal<typeof import("../../commands/sessions-abort.js")>()),
+    sessionsAbortCommand: mocks.sessionsAbortCommand,
+  };
 });
 vi.mock("../../commands/sessions-lifecycle.js", async (importOriginal) => {
   mocks.ownerLoaded();

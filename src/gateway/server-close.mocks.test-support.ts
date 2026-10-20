@@ -29,6 +29,7 @@ vi.mock("../channels/plugins/index.js", async () => ({
   listChannelPlugins: mocks.listChannelPlugins,
 }));
 
+// mock-isolation: Observe watcher shutdown without touching a real Gmail watcher process.
 vi.mock("../hooks/gmail-watcher.js", () => ({
   stopGmailWatcher: mocks.stopGmailWatcher,
 }));
@@ -43,14 +44,17 @@ vi.mock("../hooks/internal-hooks.js", async () => {
   };
 });
 
+// mock-isolation: Observe harness disposal without disposing harnesses from the active plugin registry.
 vi.mock("../agents/harness/registry.js", () => ({
   disposeRegisteredAgentHarnesses: mocks.disposeAgentHarnesses,
 }));
 
+// mock-isolation: Observe code-mode disposal without the process-global code-mode run state.
 vi.mock("../agents/code-mode-state.js", () => ({
   disposeAllCodeModeRuns: mocks.disposeAllCodeModeRuns,
 }));
 
+// mock-isolation: Observe pool shutdown without closing the shared provider transport dispatchers.
 vi.mock("../agents/provider-transport-dispatcher-pool.js", () => ({
   closeProviderTransportDispatcherPool: mocks.closeProviderTransportDispatcherPool,
 }));
@@ -69,15 +73,18 @@ vi.mock("../agents/agent-bundle-lsp-runtime.js", async () => ({
   disposeAllBundleLspRuntimes: mocks.disposeAllBundleLspRuntimes,
 }));
 
+// mock-isolation: Observe the embedding drain without module-level provider admission state.
 vi.mock("./embeddings-provider-lifetime.js", () => ({
   drainRetainedOpenAiEmbeddingProviders: mocks.drainRetainedEmbeddingProviders,
 }));
 
+// mock-isolation: Observe the shutdown write fence without real session-suspension state.
 vi.mock("../agents/session-suspension.js", () => ({
   fenceSessionSuspensionWritesForGatewayShutdown:
     mocks.fenceSessionSuspensionWritesForGatewayShutdown,
 }));
 
+// mock-isolation: Observe ACP disposal without the real ACP session-manager singleton.
 vi.mock("../acp/control-plane/manager.js", () => ({
   disposeAcpSessionManager: mocks.disposeAcpSessionManager,
 }));
@@ -89,6 +96,7 @@ vi.mock("../plugin-state/plugin-state-store.js", async () => ({
   closePluginStateDatabaseAsync: mocks.closePluginStateDatabaseAsync,
 }));
 
+// mock-isolation: Capture close-path log lines without the real subsystem logger sinks.
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: vi.fn(() => ({
     debug: vi.fn(),
