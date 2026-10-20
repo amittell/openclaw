@@ -1,4 +1,3 @@
-import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
 import {
   createSqliteQueryCache,
@@ -6,19 +5,19 @@ import {
   prepareSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import type { EngineConnection } from "../../infra/sql-connection.js";
 import {
   readSqliteDatabaseScopedWriteToken,
   sqliteSessionIdWriteScope,
 } from "../../infra/sqlite-database-admission.js";
 import {
   getSqliteReadScopeRevision,
-  hasUncommittedSqliteWrites,
   runSqliteReadOperationSync,
   type SqliteReadScopeRevision,
 } from "../../infra/sqlite-schema-facts.js";
 import {
   assertTransactionUsable,
-  runSqliteDeferredTransactionSync,
+  runSqliteReadSnapshotSync,
 } from "../../infra/sqlite-transaction.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
@@ -45,7 +44,7 @@ export const sessionColdArchiveMetadataColumns = [
   "storage",
 ] as const;
 
-function createColdTranscriptQueries(db: DatabaseSync) {
+function createColdTranscriptQueries(db: EngineConnection) {
   const kysely = getNodeSqliteKysely<DB>(db);
   return {
     facts: new Map<string, SessionColdFact>(),
@@ -76,14 +75,14 @@ function createColdTranscriptQueries(db: DatabaseSync) {
 
 const getColdTranscriptQueries = createSqliteQueryCache(createColdTranscriptQueries);
 
-function retainColdFact(db: DatabaseSync, sessionId: string, fact: SessionColdFact): void {
+function retainColdFact(db: EngineConnection, sessionId: string, fact: SessionColdFact): void {
   const facts = getColdTranscriptQueries(db).facts;
   facts.delete(sessionId);
   facts.set(sessionId, fact);
   pruneMapToMaxSize(facts, 128);
 }
 
-function readSessionTranscriptCold(db: DatabaseSync, sessionId: string): boolean {
+function readSessionTranscriptCold(db: EngineConnection, sessionId: string): boolean {
   return runSqliteReadOperationSync(db, () => {
     const queries = getColdTranscriptQueries(db);
     const revision = getSqliteReadScopeRevision(db);
@@ -108,7 +107,7 @@ function readSessionTranscriptCold(db: DatabaseSync, sessionId: string): boolean
 }
 
 export function readSessionColdTranscript(
-  db: DatabaseSync,
+  db: EngineConnection,
   sessionId: string,
 ): Omit<SessionColdArchive, "archive_blob"> | undefined {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
@@ -128,7 +127,7 @@ export class SessionTranscriptColdError extends Error {
   }
 }
 
-export function assertSessionTranscriptHot(db: DatabaseSync, sessionId: string): void {
+export function assertSessionTranscriptHot(db: EngineConnection, sessionId: string): void {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
   if (actor) {
     if (actor.transcript.coldArchive) {
@@ -145,9 +144,9 @@ export function assertSessionTranscriptHot(db: DatabaseSync, sessionId: string):
   }
 }
 
-/** The snapshot owner carries committed cold facts between read-only pages. */
+/** The cold marker and transcript rows must belong to the same native snapshot. */
 export function readHotSessionTranscriptSnapshot<T>(
-  database: { db: DatabaseSync },
+  database: { db: EngineConnection },
   sessionId: string,
   purpose:
     | "identity"
@@ -172,28 +171,12 @@ export function readHotSessionTranscriptSnapshot<T>(
     assertTransactionUsable(db);
     return result;
   }
-  const token = hasUncommittedSqliteWrites(db)
-    ? undefined
-    : readSqliteDatabaseScopedWriteToken(db, [sqliteSessionIdWriteScope(sessionId)]);
-  const retained = getColdTranscriptQueries(db).facts.get(sessionId);
-  const result = runSqliteDeferredTransactionSync(
+  return runSqliteReadSnapshotSync(
     db,
     () => {
-      if (token !== undefined && retained?.token === token) {
-        if (retained.cold) {
-          throw new SessionTranscriptColdError(sessionId);
-        }
-      } else {
-        assertSessionTranscriptHot(db, sessionId);
-      }
+      assertSessionTranscriptHot(db, sessionId);
       return read();
     },
     { operationLabel: `session transcript ${purpose} read` },
   );
-  // Keep the pre-BEGIN receipt: a concurrent archive retires it even if this
-  // snapshot still read hot rows. Existing caller-owned snapshots never promote.
-  if (token !== undefined) {
-    retainColdFact(db, sessionId, { cold: false, token });
-  }
-  return result;
 }

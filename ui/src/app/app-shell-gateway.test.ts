@@ -120,29 +120,111 @@ describe("ShellGatewayOwner profile appearance integration", () => {
     },
   );
 
-  it("keeps bootstrap and deduplicated callers pending through actual profile hydration", async () => {
-    const { context, owner, snapshot, request } = createProfileAppearanceGateway("profile-owner");
+  it.each(["bootstrap", "invalidation"])(
+    "keeps %s and deduplicated callers pending through actual profile hydration",
+    async (entry) => {
+      const { context, owner, snapshot, request } = createProfileAppearanceGateway("profile-owner");
+      const readStarted = createDeferred();
+      const reply = createDeferred<{
+        status: string;
+        entries: { "ui.accent": string; "ui.railShortcuts": string[] };
+      }>();
+      request.mockImplementationOnce(() => {
+        readStarted.resolve();
+        return reply.promise;
+      });
+      if (entry === "invalidation") {
+        owner.handleGatewayEvent({
+          type: "event",
+          event: "users.prefs.changed",
+          payload: { profileId: "profile-owner", keys: ["ui.accent"] },
+        });
+        await readStarted.promise;
+      }
+      const ready =
+        entry === "bootstrap"
+          ? owner.ensureRuntimeConfig(snapshot, context.runtimeConfig)
+          : owner.reconcileServerUiPrefs(context.runtimeConfig);
+      if (entry === "bootstrap") {
+        expect(owner.ensureRuntimeConfig(snapshot, context.runtimeConfig)).toBe(ready);
+      }
+      let complete = false;
+      void ready.then(() => {
+        complete = true;
+      });
+      await readStarted.promise;
+      expect(complete).toBe(false);
+      reply.resolve({ status: "ok", entries: { "ui.accent": "#336699", "ui.railShortcuts": [] } });
+      await vi.dynamicImportSettled();
+      expect(request).toHaveBeenCalledOnce();
+      await ready;
+      expect(complete).toBe(true);
+      expect(loadSettings().accent).toBe("#336699");
+      await owner.reconcileServerUiPrefs(context.runtimeConfig);
+      expect(request).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("reconciles a profile read retired by a theme commit without reusing its pending source", async () => {
+    const { context, owner, snapshot } = createProfileAppearanceGateway("profile-owner");
+    const writeStarted = createDeferred();
+    const writeReply = createDeferred<unknown>();
     const readStarted = createDeferred();
-    const reply = createDeferred<{
-      status: string;
-      entries: { "ui.accent": string; "ui.railShortcuts": string[] };
-    }>();
-    request.mockImplementationOnce(() => {
-      readStarted.resolve();
-      return reply.promise;
+    const readReply = createDeferred<unknown>();
+    const commitStarted = createDeferred();
+    let reconciliation: Promise<void> | undefined;
+    let reads = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "themes.set") {
+        writeStarted.resolve();
+        return writeReply.promise;
+      }
+      expect(method).toBe("users.prefs.get");
+      reads += 1;
+      if (reads === 2) {
+        readStarted.resolve();
+        return readReply.promise;
+      }
+      return {
+        status: "ok",
+        entries: {
+          "ui.accent": reads === 1 ? "#336699" : "#22c55e",
+          "ui.themeMode": reads === 1 ? "dark" : "light",
+          "ui.railShortcuts": [],
+        },
+      };
     });
-    const ready = owner.ensureRuntimeConfig(snapshot, context.runtimeConfig);
-    expect(owner.ensureRuntimeConfig(snapshot, context.runtimeConfig)).toBe(ready);
-    let complete = false;
-    void ready.then(() => {
-      complete = true;
+    Object.assign(snapshot.client!, { request });
+    await owner.ensureRuntimeConfig(snapshot, context.runtimeConfig);
+    patchSettings({ themeMode: "light" });
+    pushServerUiPrefs(
+      context.runtimeConfig,
+      { themeMode: "light" },
+      {
+        profileId: "profile-owner",
+        canWrite: true,
+        afterCommit: () => {
+          reconciliation = owner.reconcileCommittedServerUiPrefs(context.runtimeConfig, false);
+          commitStarted.resolve();
+        },
+      },
+    );
+    await writeStarted.promise;
+    // themes.set publishes its committed invalidation before acknowledging the write.
+    owner.handleGatewayEvent({
+      type: "event",
+      event: "users.prefs.changed",
+      payload: { profileId: "profile-owner", keys: ["ui.themeMode"] },
     });
     await readStarted.promise;
-    expect(complete).toBe(false);
-    reply.resolve({ status: "ok", entries: { "ui.accent": "#336699", "ui.railShortcuts": [] } });
-    await ready;
-    expect(complete).toBe(true);
-    expect(loadSettings().accent).toBe("#336699");
+    writeReply.resolve({ application: "saved" });
+    await commitStarted.promise;
+    readReply.resolve({
+      status: "ok",
+      entries: { "ui.accent": "#ff0000", "ui.themeMode": "light", "ui.railShortcuts": [] },
+    });
+    await reconciliation;
+    expect(loadSettings()).toMatchObject({ accent: "#22c55e", themeMode: "light" });
   });
 
   it("reads fresh profile appearance after reconnecting with the same client", async () => {
@@ -170,7 +252,7 @@ describe("ShellGatewayOwner profile appearance integration", () => {
   });
 
   it("refuses profile hydration from a superseded config snapshot", async () => {
-    const { context, owner, snapshot, request, refreshTheme, requestUpdate } =
+    const { context, owner, snapshot, request, refreshTheme, invalidate } =
       createProfileAppearanceGateway("profile-owner");
     const readStarted = createDeferred();
     const reply = createDeferred<{
@@ -191,7 +273,7 @@ describe("ShellGatewayOwner profile appearance integration", () => {
     await ready;
     expect(loadSettings().accent).not.toBe("#336699");
     expect(refreshTheme).not.toHaveBeenCalled();
-    expect(requestUpdate).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it("loads current agent discovery when hello lands", async () => {
@@ -225,7 +307,7 @@ describe("ShellGatewayOwner profile appearance integration", () => {
         context,
         owner,
         refreshTheme,
-        requestUpdate,
+        invalidate,
         request,
         snapshot,
       } = createProfileAppearanceGateway(mirrored ? "profile-owner" : null);
@@ -247,7 +329,7 @@ describe("ShellGatewayOwner profile appearance integration", () => {
       await vi.dynamicImportSettled();
       // Adoption publishes navigation, then hydration publishes profile/readiness.
       expect(refreshTheme).toHaveBeenCalledTimes(2);
-      expect(requestUpdate).toHaveBeenCalledOnce();
+      expect(invalidate).toHaveBeenCalledOnce();
       expect(refreshTheme).toHaveBeenCalledWith({ notify: true });
       expect(loadSettings().accent).toBe("#336699");
       expect(request).toHaveBeenCalledExactlyOnceWith("users.prefs.get", {

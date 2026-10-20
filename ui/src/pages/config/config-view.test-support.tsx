@@ -12,7 +12,8 @@ import {
   createSolidApplicationContextProvider,
 } from "../../test-helpers/solid-application-context.tsx";
 import { flush } from "../../test-helpers/solid-settle.ts";
-import { Config, createConfigViewState, type ConfigProps } from "./view.tsx";
+import { createConfigViewState } from "./view-state.ts";
+import { Config, type ConfigProps } from "./view.tsx";
 
 const views = new WeakMap<HTMLElement, (props: ConfigProps) => void>();
 
@@ -24,7 +25,6 @@ function createViewContext() {
     settings: loadSettings(),
     mode: "system",
     resolvedMode: "light",
-    serverSelection: null,
     appliedPalette: null,
     recordServerSelection: () => undefined,
     setMode: () => undefined,
@@ -130,7 +130,6 @@ export const baseProps = () => ({
   customThemeImportBusy: false,
   customThemeImportMessage: null,
   customThemeImportExpanded: false,
-  customThemeImportFocusToken: 0,
   onCustomThemeImportUrlChange: vi.fn(),
   onImportCustomTheme: vi.fn(),
   onClearCustomTheme: vi.fn(),

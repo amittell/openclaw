@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expect, it } from "vitest";
 import type { WebSearchStatusResult } from "../../../packages/gateway-protocol/src/schema/web-search.ts";
+import type { ChannelsPairingListResult, ChannelsStatusSnapshot } from "../api/types.ts";
 import { pathForRoute, type RouteId } from "../app-route-paths.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
@@ -130,7 +131,13 @@ suite.define(() => {
         await waitForControlUiRoute(page, { routeId: "talk" });
         await page.locator(".native-embed-header__back").waitFor();
         await gateway.setOnline(false);
-        await page.locator("openclaw-router-outlet[inert]").waitFor({ state: "attached" });
+        await expect
+          .poll(() => page.evaluate(() => window.openclawControlUi?.snapshot().gatewayPhase))
+          .toBe("reconnecting");
+        expect(await page.locator("#control-ui-main").getAttribute("inert")).toBeNull();
+        const outlet = page.locator("openclaw-router-outlet");
+        expect(await outlet.getAttribute("inert")).toBeNull();
+        expect(await outlet.getAttribute("aria-disabled")).toBeNull();
         await page.locator(".native-embed-header__back").click();
         await waitForControlUiRoute(page, { routeId: "settings", pathname: "/settings" });
         await page
@@ -223,6 +230,20 @@ suite.define(() => {
             await installExistingNativeDeviceSettings(page);
             const methodResponses = {
               ...createNativeEmbedLayoutMethodResponses(),
+              "channels.status": {
+                ts: 0,
+                channels: {},
+                channelAccounts: {},
+                channelOrder: [],
+                channelLabels: {},
+                channelDefaultAccountId: {},
+              } satisfies ChannelsStatusSnapshot,
+              "channels.pairing.list": {
+                accounts: [],
+                requests: [],
+                commandOwnerConfigured: false,
+                limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+              } satisfies ChannelsPairingListResult,
               "webSearch.status": {
                 enabled: true,
                 provider: null,
@@ -256,6 +277,8 @@ suite.define(() => {
               } satisfies WebSearchStatusResult,
             };
             await installMockGateway(page, {
+              // Embedded layout waits for its route/content, not the absent sidebar roster.
+              awaitInitialRoster: false,
               methodResponses,
               featureMethods: [
                 ...defaultControlUiFeatureMethods,
@@ -279,7 +302,11 @@ suite.define(() => {
                     ? "/cron"
                     : pathForRoute(route);
               expect(
-                (await page.goto(new URL(pathname, suite.server.baseUrl).toString()))?.status(),
+                (
+                  await page.goto(new URL(pathname, suite.server.baseUrl).toString(), {
+                    waitUntil: "commit",
+                  })
+                )?.status(),
               ).toBe(200);
               await waitForControlUiRoute(page, { routeId: route });
               await page.locator("html.openclaw-native-embed .shell--embed").waitFor();
@@ -326,7 +353,7 @@ suite.define(() => {
                 ).toBe(true);
               } else {
                 await page.locator(".native-embed-header .page-title").waitFor();
-                await page.locator("openclaw-router-outlet > *").first().waitFor();
+                await page.locator("openclaw-router-outlet").waitFor();
               }
               if (route === "search") {
                 await page
@@ -358,18 +385,15 @@ suite.define(() => {
               if (route === "cron") {
                 await page.getByText("Healthy automation", { exact: true }).first().waitFor();
               }
-              expect(
-                await page.evaluate(
-                  () => document.documentElement.scrollWidth <= window.innerWidth,
-                ),
-                route,
-              ).toBe(true);
-              expect(
-                await page
-                  .locator("main.content")
-                  .evaluate((main) => main.scrollWidth <= main.clientWidth),
-                route,
-              ).toBe(true);
+              const overflow = await page.locator("main.content").evaluate(async (main) => {
+                await main.ownerDocument.fonts.ready;
+                return {
+                  documentFits: main.ownerDocument.documentElement.scrollWidth <= window.innerWidth,
+                  contentFits: main.scrollWidth <= main.clientWidth,
+                };
+              });
+              expect(overflow.documentFits, route).toBe(true);
+              expect(overflow.contentFits, route).toBe(true);
               if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
                 await page.screenshot({
                   animations: "disabled",
