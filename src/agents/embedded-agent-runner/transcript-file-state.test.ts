@@ -909,4 +909,3 @@ describe("readTranscriptState", () => {
     expect(branchText).toEqual(["before malformed row", "after malformed row"]);
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

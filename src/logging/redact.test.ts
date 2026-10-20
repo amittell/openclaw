@@ -1068,4 +1068,3 @@ describe("model-visible structured properties", () => {
     expect(shared.token).toBe("fixture-value");
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
