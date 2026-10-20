@@ -6,6 +6,7 @@ import {
   resolveWhatsAppQaMessageTargets,
   resolveWhatsAppQaScenarioTarget,
   type WhatsAppQaMessageScenarioContext,
+  type WhatsAppQaMessageScenarioRun,
   type WhatsAppQaScenarioRun,
 } from "./whatsapp-live.contracts.js";
 import {
@@ -52,7 +53,6 @@ async function runWhatsAppScenarioAttempt(params: {
     const approval = await runWhatsAppApprovalScenario({
       driver,
       gateway: params.environment.gateway as never,
-      observedMessages: params.environment.observedMessages,
       run: scenarioRun,
       scenario,
       sutAccountId: params.environment.sutAccountId,
@@ -64,20 +64,15 @@ async function runWhatsAppScenarioAttempt(params: {
       ...buildLiveTransportRttResult(approval, "approval-request-to-resolution"),
     };
   }
+  const send = (text: string, mode: WhatsAppQaMessageScenarioRun["sendMode"]) =>
+    mode?.kind === "media"
+      ? driver.sendMedia(target, text, mode.mediaBuffer, mode.mediaType, {
+          fileName: mode.fileName,
+        })
+      : driver.sendText(target, text);
   if (scenarioRun.quietInput !== undefined) {
     const quietStartedAt = new Date();
-    const quietSendMode = scenarioRun.quietSendMode ?? scenarioRun.sendMode;
-    if (quietSendMode?.kind === "media") {
-      await driver.sendMedia(
-        target,
-        scenarioRun.quietInput,
-        quietSendMode.mediaBuffer,
-        quietSendMode.mediaType,
-        { fileName: quietSendMode.fileName },
-      );
-    } else {
-      await driver.sendText(target, scenarioRun.quietInput);
-    }
+    await send(scenarioRun.quietInput, scenarioRun.quietSendMode ?? scenarioRun.sendMode);
     await waitForNoWhatsAppReply({
       ...(scenarioRun.quietMatchText
         ? {
@@ -100,33 +95,15 @@ async function runWhatsAppScenarioAttempt(params: {
     );
   }
   const requestStartedAt = new Date();
-  const sent =
-    scenarioRun.sendMode?.kind === "media"
-      ? await driver.sendMedia(
-          target,
-          scenarioRun.input,
-          scenarioRun.sendMode.mediaBuffer,
-          scenarioRun.sendMode.mediaType,
-          { fileName: scenarioRun.sendMode.fileName },
-        )
-      : await driver.sendText(target, scenarioRun.input);
+  const sent = await send(scenarioRun.input, scenarioRun.sendMode);
   const scenarioContext: WhatsAppQaMessageScenarioContext = {
     driver,
     driverPhoneE164: runtimeEnv.driverPhoneE164,
     gateway: params.environment.gateway as never,
     gatewayTarget: targets?.gatewayTarget ?? runtimeEnv.driverPhoneE164,
     gatewayWorkspaceDir: params.environment.gateway.workspaceDir,
-    recordObservedMessage: (message) => {
-      params.environment.observedMessages.push({
-        ...message,
-        matchedScenario: true,
-        scenarioId: scenario.id,
-        scenarioTitle: scenario.title,
-      });
-    },
     requestStartedAt,
     scenarioId: scenario.id,
-    scenarioTitle: scenario.title,
     sent,
     sutAccountId: params.environment.sutAccountId,
     sutPhoneE164: runtimeEnv.sutPhoneE164,
@@ -159,7 +136,6 @@ async function runWhatsAppScenarioAttempt(params: {
   scenarioRun.verify?.(reply, scenarioContext);
   const afterReplyDetails = await scenarioRun.afterReply?.(reply, scenarioContext);
   const batchDetails = await assertWhatsAppScenarioMessageBatch({
-    alreadyRecordedMessageIds: new Set(reply.messageId ? [reply.messageId] : []),
     context: scenarioContext,
     observedAfter: requestStartedAt,
     run: scenarioRun,

@@ -143,7 +143,7 @@ export async function waitForScenarioObservedMessage(
     timeoutMs?: number;
   },
 ) {
-  const message = await waitForWhatsAppObservedMessage(
+  return await waitForWhatsAppObservedMessage(
     context.driver,
     {
       observedAfter: params.observedAfter,
@@ -158,8 +158,35 @@ export async function waitForScenarioObservedMessage(
     },
     () => formatWhatsAppScenarioWaitDiagnostics(context, params),
   );
-  context.recordObservedMessage(message);
-  return message;
+}
+
+export async function waitForWhatsAppQuotedMessage(
+  context: WhatsAppQaMessageScenarioContext,
+  params: {
+    textMarker: string;
+    quotedMessageId: string | undefined;
+    diagnosticLabels: readonly [string, string];
+    distinctFrom?: WhatsAppQaDriverObservedMessage;
+    observedAfter: Date;
+    timeoutMs?: number;
+  },
+) {
+  const hasMarker = (message: WhatsAppQaDriverObservedMessage) =>
+    message.text.includes(params.textMarker);
+  const quotesMessage = (message: WhatsAppQaDriverObservedMessage) =>
+    message.quoted?.messageId === params.quotedMessageId;
+  return await waitForScenarioObservedMessage(context, {
+    observedAfter: params.observedAfter,
+    timeoutMs: params.timeoutMs,
+    diagnosticChecks: [
+      { label: params.diagnosticLabels[0], match: hasMarker },
+      { label: params.diagnosticLabels[1], match: quotesMessage },
+    ],
+    match: (message) =>
+      (!params.distinctFrom || message.messageId !== params.distinctFrom.messageId) &&
+      hasMarker(message) &&
+      quotesMessage(message),
+  });
 }
 
 export async function waitForWhatsAppObservedMessage(
@@ -267,7 +294,6 @@ export function isWhatsAppScenarioSutMessage(
 }
 
 export async function assertWhatsAppScenarioMessageBatch(params: {
-  alreadyRecordedMessageIds: Set<string>;
   context: WhatsAppQaMessageScenarioContext;
   observedAfter: Date;
   run: WhatsAppQaMessageScenarioRun;
@@ -300,13 +326,6 @@ export async function assertWhatsAppScenarioMessageBatch(params: {
     if (!joinedText.includes(expected)) {
       throw new Error(`expected joined WhatsApp SUT text to include ${expected}`);
     }
-  }
-  for (const message of uniqueMessages) {
-    if (!message.messageId || params.alreadyRecordedMessageIds.has(message.messageId)) {
-      continue;
-    }
-    params.context.recordObservedMessage(message);
-    params.alreadyRecordedMessageIds.add(message.messageId);
   }
   return `observed ${uniqueMessages.length} SUT message(s) after settle`;
 }

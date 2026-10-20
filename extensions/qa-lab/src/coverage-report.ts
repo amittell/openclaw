@@ -2,6 +2,7 @@ import {
   normalizeOptionalString as stringifyConfigValue,
   normalizeStringEntriesLower,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { shellEscape as shellQuote } from "openclaw/plugin-sdk/string-normalization-runtime";
 import { DEFAULT_QA_LIVE_PROVIDER_MODE } from "./providers/index.js";
 import { isRepoRootRelativeRef } from "./repo-path.js";
 import {
@@ -12,7 +13,6 @@ import {
   readQaScorecardTaxonomyReport,
   type QaScorecardTaxonomyReport,
 } from "./scorecard-taxonomy.js";
-import { shellQuote } from "./shell-quote.js";
 
 type QaCoverageScenarioSummary = ReturnType<typeof summarizeScenario>;
 type QaScenarioSearchMatch = ReturnType<typeof summarizeScenarioSearchMatch>;
@@ -29,27 +29,6 @@ type QaCoverageIdSummary = {
 };
 
 type QaCoverageInventory = ReturnType<typeof buildQaCoverageInventory>;
-
-function assertUniqueQaScenarioIds(
-  scenarios: readonly QaSeedScenarioWithSource[],
-  nonYamlScenarios: readonly { id: string; sourcePath: string }[],
-): void {
-  const sourcePathsById = new Map<string, string[]>();
-  for (const { id, sourcePath } of [...scenarios, ...nonYamlScenarios]) {
-    const sourcePaths = sourcePathsById.get(id) ?? [];
-    sourcePaths.push(sourcePath);
-    sourcePathsById.set(id, sourcePaths);
-  }
-  const duplicates = [...sourcePathsById.entries()]
-    .filter(([, sourcePaths]) => sourcePaths.length > 1)
-    .toSorted(([left], [right]) => left.localeCompare(right));
-  if (duplicates.length > 0) {
-    const details = duplicates
-      .map(([id, sourcePaths]) => `${id} (${sourcePaths.join(", ")})`)
-      .join("; ");
-    throw new Error(`duplicate qa scenario id(s): ${details}`);
-  }
-}
 
 function summarizeScenario(scenario: QaSeedScenarioWithSource) {
   return {
@@ -154,11 +133,24 @@ function sortCoverageIds(coverageIds: readonly QaCoverageIdSummary[]) {
   return coverageIds.toSorted((left, right) => left.id.localeCompare(right.id));
 }
 
-export function buildQaCoverageInventory(
-  scenarios: readonly QaSeedScenarioWithSource[],
-  params?: { nonYamlScenarios?: readonly { id: string; sourcePath: string }[] },
+function groupCoverageIds(
+  coverageIds: readonly QaCoverageIdSummary[],
+  dimension: (scenario: QaCoverageScenarioReference) => string[],
 ) {
-  assertUniqueQaScenarioIds(scenarios, params?.nonYamlScenarios ?? []);
+  const groups: Record<string, QaCoverageIdSummary[]> = {};
+  for (const coverage of coverageIds) {
+    for (const key of new Set(coverage.scenarios.flatMap(dimension))) {
+      groups[key] ??= [];
+      groups[key].push({
+        ...coverage,
+        scenarios: coverage.scenarios.filter((scenario) => dimension(scenario).includes(key)),
+      });
+    }
+  }
+  return groups;
+}
+
+export function buildQaCoverageInventory(scenarios: readonly QaSeedScenarioWithSource[]) {
   const byCoverageId = new Map<string, QaCoverageIdSummary>();
   const primaryCoverageIds = new Set<string>();
   const secondaryCoverageIds = new Set<string>();
@@ -185,27 +177,6 @@ export function buildQaCoverageInventory(
 
   const coverageIds = sortCoverageIds([...byCoverageId.values()]);
   const overlappingCoverage = coverageIds.filter((coverage) => coverage.scenarios.length > 1);
-  const byTheme: Record<string, QaCoverageIdSummary[]> = {};
-  const bySurface: Record<string, QaCoverageIdSummary[]> = {};
-
-  for (const coverage of coverageIds) {
-    const themes = new Set(coverage.scenarios.map((scenario) => scenario.theme));
-    for (const theme of themes) {
-      byTheme[theme] ??= [];
-      byTheme[theme].push({
-        ...coverage,
-        scenarios: coverage.scenarios.filter((scenario) => scenario.theme === theme),
-      });
-    }
-    const surfaces = new Set(coverage.scenarios.flatMap((scenario) => scenario.surfaces));
-    for (const surface of surfaces) {
-      bySurface[surface] ??= [];
-      bySurface[surface].push({
-        ...coverage,
-        scenarios: coverage.scenarios.filter((scenario) => scenario.surfaces.includes(surface)),
-      });
-    }
-  }
 
   return {
     scenarioCount: scenarios.length,
@@ -215,8 +186,8 @@ export function buildQaCoverageInventory(
     coverageIds,
     overlappingCoverage,
     missingCoverage,
-    byTheme,
-    bySurface,
+    byTheme: groupCoverageIds(coverageIds, (scenario) => [scenario.theme]),
+    bySurface: groupCoverageIds(coverageIds, (scenario) => scenario.surfaces),
     scorecardTaxonomy: readQaScorecardTaxonomyReport(scenarios),
   };
 }

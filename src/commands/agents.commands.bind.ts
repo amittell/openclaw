@@ -1,13 +1,13 @@
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { listAgentIds, resolveAgentOperationAgentId } from "../agents/agent-scope-config.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { ExpectedCliError } from "../cli/failure-output.js";
+import { throwExpectedCliError } from "../cli/failure-output.js";
 import { isRouteBinding, listRouteBindings } from "../config/bindings.js";
 import { replaceConfigFile } from "../config/config.js";
 import { logConfigUpdated } from "../config/logging.js";
 import type { AgentRouteBinding } from "../config/types.js";
 import { normalizeAgentId, normalizeAgentIdStrict } from "../routing/session-key.js";
-import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
+import { defaultRuntime as runtime, writeRuntimeJson } from "../runtime.js";
 import { describeBinding, describeBindingConflict } from "./agents.binding-format.js";
 import { requireValidConfig, requireValidConfigForWrite } from "./config-validation.js";
 
@@ -18,22 +18,12 @@ type AgentsBindingsListOptions = {
   json?: boolean;
 };
 
-type AgentsBindOptions = {
-  agent?: string;
-  bind?: string[];
-  json?: boolean;
-};
-
-type AgentsUnbindOptions = {
+type AgentsBindingsUpdateOptions = {
   agent?: string;
   bind?: string[];
   all?: boolean;
   json?: boolean;
 };
-
-function failAgentBinding(message: string): never {
-  throw new ExpectedCliError({ message, humanOutput: message, machineOutput: message });
-}
 
 function resolveTargetAgentId(params: {
   cfg: AgentConfig;
@@ -42,13 +32,13 @@ function resolveTargetAgentId(params: {
   const normalized =
     params.agentInput === undefined ? null : normalizeAgentIdStrict(params.agentInput);
   if (normalized && !normalized.ok) {
-    failAgentBinding(
+    throwExpectedCliError(
       `Agent "${params.agentInput}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
   }
   const agentId = normalized?.value ?? resolveAgentOperationAgentId(params.cfg);
   if (!listAgentIds(params.cfg).includes(agentId)) {
-    failAgentBinding(
+    throwExpectedCliError(
       `Agent "${agentId}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
   }
@@ -63,49 +53,18 @@ async function resolveParsedBindings(params: {
 }): Promise<AgentRouteBinding[]> {
   const specs = normalizeStringEntries(params.bindValues);
   if (specs.length === 0) {
-    failAgentBinding(params.emptyMessage);
+    throwExpectedCliError(params.emptyMessage);
   }
 
   const { parseBindingSpecs } = await import("./agents.bindings.js");
   const parsed = parseBindingSpecs({ agentId: params.agentId, specs, config: params.cfg });
   if (parsed.errors.length > 0) {
-    failAgentBinding(parsed.errors.join("\n"));
+    throwExpectedCliError(parsed.errors.join("\n"));
   }
   return parsed.bindings;
 }
 
-function emitJsonPayload(
-  runtime: RuntimeEnv,
-  json: boolean | undefined,
-  payload: { conflicts: string[] },
-): boolean {
-  if (!json) {
-    return false;
-  }
-  writeRuntimeJson(runtime, payload);
-  if (payload.conflicts.length > 0) {
-    runtime.exit(1);
-  }
-  return true;
-}
-
-async function resolveConfigAndTargetAgentId(params: {
-  runtime: RuntimeEnv;
-  agentInput: string | undefined;
-}) {
-  const writeSnapshot = await requireValidConfigForWrite(params.runtime);
-  if (!writeSnapshot) {
-    return null;
-  }
-  const cfg = writeSnapshot.snapshot.sourceConfig;
-  const agentId = resolveTargetAgentId({ cfg, agentInput: params.agentInput });
-  return { cfg, agentId, writeSnapshot };
-}
-
-export async function agentsBindingsCommand(
-  opts: AgentsBindingsListOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-) {
+export async function agentsBindingsCommand(opts: AgentsBindingsListOptions) {
   const cfg = await requireValidConfig(runtime, { skipPluginValidation: true });
   if (!cfg) {
     return;
@@ -118,8 +77,7 @@ export async function agentsBindingsCommand(
     (binding) => !filterAgentId || normalizeAgentId(binding.agentId) === filterAgentId,
   );
   if (opts.json) {
-    writeRuntimeJson(
-      runtime,
+    runtime.writeJson(
       filtered.map((binding) => ({
         agentId: normalizeAgentId(binding.agentId),
         match: binding.match,
@@ -146,18 +104,18 @@ export async function agentsBindingsCommand(
   );
 }
 
-async function mutateAgentBindings(
+export async function agentsUpdateBindingsCommand(
   operation: "bind" | "unbind",
-  opts: AgentsUnbindOptions,
-  runtime: RuntimeEnv,
+  opts: AgentsBindingsUpdateOptions,
 ) {
-  const resolved = await resolveConfigAndTargetAgentId({ runtime, agentInput: opts.agent });
-  if (!resolved) {
+  const writeSnapshot = await requireValidConfigForWrite(runtime);
+  if (!writeSnapshot) {
     return;
   }
-  const { cfg, agentId, writeSnapshot } = resolved;
+  const cfg = writeSnapshot.snapshot.sourceConfig;
+  const agentId = resolveTargetAgentId({ cfg, agentInput: opts.agent });
   if (operation === "unbind" && opts.all && (opts.bind?.length ?? 0) > 0) {
-    failAgentBinding("Use either --all or --bind, not both.");
+    throwExpectedCliError("Use either --all or --bind, not both.");
   }
 
   const removeAll = operation === "unbind" && opts.all;
@@ -216,7 +174,11 @@ async function mutateAgentBindings(
         }),
     conflicts: result.conflicts.map(describeBindingConflict),
   };
-  if (emitJsonPayload(runtime, opts.json, payload)) {
+  if (opts.json) {
+    writeRuntimeJson(runtime, payload);
+    if (payload.conflicts.length > 0) {
+      runtime.exit(1);
+    }
     return;
   }
   if (removeAll && "removed" in payload) {
@@ -260,18 +222,4 @@ async function mutateAgentBindings(
     }
     runtime.exit(1);
   }
-}
-
-export async function agentsBindCommand(
-  opts: AgentsBindOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-) {
-  await mutateAgentBindings("bind", opts, runtime);
-}
-
-export async function agentsUnbindCommand(
-  opts: AgentsUnbindOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-) {
-  await mutateAgentBindings("unbind", opts, runtime);
 }

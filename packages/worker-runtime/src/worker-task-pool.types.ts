@@ -22,10 +22,14 @@ export type WorkerTaskPoolOptions<Output> = {
   maxPendingTasks?: number;
   maxPendingBytes?: number;
   idleTimeoutMs?: number;
+  /** Retire workers beyond the first usable slot sooner, without extending its warm window. */
+  burstIdleTimeoutMs?: number;
   restartOnError?: boolean;
   validateResult?: (value: Output) => void;
   /** Reports failed stops synchronously; returned rejections never delay retirement. */
   onRetirementFailure?: (error: unknown) => void | Promise<void>;
+  /** Publish released native resources synchronously before rotation resumes queued inputs. */
+  onRotationComplete?: () => void;
 };
 
 export type WorkerTaskPoolOwnerOptions = {
@@ -106,6 +110,7 @@ type TaskOwner = {
 
 type WorkerHostExchange = {
   id: number;
+  name: string;
   pressure: AbortController;
   onConsumed?: () => void;
   sent: boolean;

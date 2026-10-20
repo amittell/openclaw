@@ -27,7 +27,7 @@ export type TelegramMediaRef = {
   fileUniqueId?: string;
   stickerMetadata?: StickerMetadata;
   sourceMessageId?: string;
-  unavailable?: { reason: "oversize"; limitMb: number } | { reason: "download-failed" };
+  unavailable?: { reason: "oversize"; limit: string } | { reason: "download-failed" };
 };
 
 export type TelegramChannelIngressResolver = (
@@ -68,9 +68,8 @@ type TelegramMessageContextRuntimeOverrides = Partial<
   typeof import("./bot-message-context.runtime.js")
 >;
 
-export type TelegramMessageContextSessionRuntimeOverrides = Partial<
-  typeof import("./bot-message-context.session.runtime.js")
->;
+export type TelegramMessageContextSessionRuntime =
+  typeof import("./bot-message-context.session.runtime.js");
 
 export type BuildTelegramMessageContextParams = {
   nativeCommandNames?: ReadonlyMap<string, string>;
@@ -82,6 +81,7 @@ export type BuildTelegramMessageContextParams = {
   storeAllowFrom: string[];
   options?: TelegramMessageContextOptions;
   bot: Bot;
+  resolveDirectAvatar?: (ctx: TelegramContext, cfg: OpenClawConfig) => string | undefined;
   cfg: OpenClawConfig;
   account: { accountId: string };
   ownerAgentId?: string;
@@ -96,7 +96,7 @@ export type BuildTelegramMessageContextParams = {
     agentId?: string;
     sessionKey: string;
     cfg: OpenClawConfig;
-  }) => boolean | undefined;
+  }) => boolean | undefined | Promise<boolean | undefined>;
   resolveGroupRequireMention: (chatId: string | number, cfg: OpenClawConfig) => boolean;
   resolveTelegramGroupConfig: (
     chatId: string | number,
@@ -107,7 +107,7 @@ export type BuildTelegramMessageContextParams = {
     topicConfig?: TelegramTopicConfig;
   };
   runtime?: TelegramMessageContextRuntimeOverrides;
-  sessionRuntime?: TelegramMessageContextSessionRuntimeOverrides;
+  sessionRuntime?: TelegramMessageContextSessionRuntime;
   upsertPairingRequest?: typeof import("openclaw/plugin-sdk/conversation-runtime").upsertChannelPairingRequest;
   /** Global (per-account) handler for sendChatAction 401 backoff (#27092). */
   sendChatActionHandler: TelegramSendChatActionHandler;
