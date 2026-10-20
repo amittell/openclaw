@@ -7,7 +7,9 @@ import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import { createEventWebPushDelivery } from "./event-web-push.js";
+import { projectHealthSummary } from "./health/presentation.js";
 import { omitRuntimeConfigHealthForClient } from "./health/runtime-config-cap.js";
+import type { HealthSummary } from "./health/types.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
@@ -135,9 +137,15 @@ export function createGatewayConnectionState(params: {
       // The broadcaster consults this per-recipient hook for every event family.
       if (event === "health") {
         return isRecord(payload) && payload.runtimeConfig !== undefined
-          ? (client) => ({
-              payload: omitRuntimeConfigHealthForClient(payload, client.connect.caps),
-            })
+          ? (client) => {
+              const projected = omitRuntimeConfigHealthForClient(payload, client.connect.caps);
+              // This replaces the broadcaster's source payload, including its summary projection.
+              return {
+                payload: client.connect.caps?.includes(GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY)
+                  ? projectHealthSummary(projected as HealthSummary) // SAFETY: Only internal health producers own this reserved event.
+                  : projected,
+              };
+            }
           : undefined;
       }
       const projection = sessionRowProjection;

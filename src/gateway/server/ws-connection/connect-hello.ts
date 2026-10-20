@@ -41,6 +41,7 @@ import {
   type SetupHandoff,
 } from "../../device-pair-setup-completion.js";
 import { canReadDetailedUpdateMetadata } from "../../events.js";
+import { projectHealthSummary } from "../../health/presentation.js";
 import { omitRuntimeConfigHealthForClient } from "../../health/runtime-config-cap.js";
 import { getRemoteControlUiIngressContext } from "../../ingress-attribution.js";
 import { ADMIN_SCOPE } from "../../method-scopes.js";
@@ -203,6 +204,7 @@ export async function sendGatewayHello(
         GATEWAY_SERVER_CAPS.CHANNELS_PAIRING_APPROVE_OWNER,
         GATEWAY_SERVER_CAPS.EXEC_APPROVALS_GET_OWNER,
         GATEWAY_SERVER_CAPS.EXEC_APPROVALS_SET_OWNER,
+        GATEWAY_SERVER_CAPS.EXEC_APPROVALS_NATIVE_COMMIT,
         GATEWAY_SERVER_CAPS.WORKTREES_REMOVE_OWNER,
         GATEWAY_SERVER_CAPS.WORKTREES_RESTORE_OWNER,
         GATEWAY_SERVER_CAPS.WORKTREES_GC_OWNER,
@@ -320,7 +322,10 @@ export async function sendGatewayHello(
   if (hasGatewayClientCap(connectParams.caps, GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND)) {
     snapshot.health = {};
   } else if (cachedHealth) {
-    snapshot.health = omitRuntimeConfigHealthForClient(cachedHealth, connectParams.caps);
+    const projectedHealth = omitRuntimeConfigHealthForClient(cachedHealth, connectParams.caps);
+    snapshot.health = hasGatewayClientCap(connectParams.caps, GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY)
+      ? projectHealthSummary(projectedHealth)
+      : projectedHealth;
   } else {
     snapshot.health = {};
     const runtimeConfig = hasGatewayClientCap(

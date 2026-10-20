@@ -1,4 +1,5 @@
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
+import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { Snapshot } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import { buildRuntimeConfigHealth } from "../../commands/health-runtime-config.js";
@@ -34,12 +35,17 @@ import type { GatewayEventLoopHealth } from "./event-loop-health.js";
 let presenceVersion = 1;
 let healthVersion = 1;
 let healthCache: HealthSummary | null = null;
-let healthCacheConfigKey: string | null = null;
+let healthCacheConfigKey: RuntimeConfigHealthKey | null = null;
 let healthDigest: string | undefined;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 
+type RuntimeConfigHealthKey = {
+  generation: number;
+  publication: ReturnType<typeof getRuntimeConfigSnapshotMetadata>;
+};
+
 type RuntimeConfigHealthContext = {
-  key: string;
+  key: RuntimeConfigHealthKey;
   observation: ConfigReloadObservation;
   liveSourceConfig: ReturnType<typeof getRuntimeConfigSourceSnapshot>;
   hasLiveSnapshot: boolean;
@@ -69,9 +75,13 @@ export function buildGatewaySnapshot(opts: {
   const scope = cfg.session?.scope ?? "per-sender";
   const mainSessionKey =
     scope === "global" ? "global" : resolveAgentMainSessionKey({ cfg, agentId: defaultAgentId });
+  const presenceRows = listSystemPresence({ includeConnectionId: opts.client?.connId });
   const presence = createPresenceRecipientProjection({
     cfg,
-    presence: listSystemPresence({ includeConnectionId: opts.client?.connId }),
+    // The presence stream delivers the roster; hello still owns profile bootstrap.
+    presence: opts.client?.connect.caps?.includes(GATEWAY_CLIENT_CAPS.HELLO_PRESENCE_SELF)
+      ? presenceRows.filter((row) => row.connectionId === opts.client?.connId)
+      : presenceRows,
     projection: opts.sessionRowProjection,
   })(opts.client);
   const uptimeMs = Math.round(process.uptime() * 1000);
@@ -115,17 +125,29 @@ export function buildGatewaySnapshot(opts: {
 export function getHealthCache(): HealthSummary | null {
   // Disk observations and live runtime publication invalidate the whole cache;
   // RPC callers refresh rather than mixing non-config health across revisions.
-  if (healthCache && healthCacheConfigKey !== readRuntimeConfigHealthContext().key) {
+  if (
+    healthCache &&
+    !sameRuntimeConfigHealthKey(healthCacheConfigKey, readRuntimeConfigHealthContext().key)
+  ) {
     return null;
   }
   return healthCache;
+}
+
+function sameRuntimeConfigHealthKey(
+  left: RuntimeConfigHealthKey | null,
+  right: RuntimeConfigHealthKey,
+): boolean {
+  return left?.generation === right.generation && left.publication === right.publication;
 }
 
 function readRuntimeConfigHealthContext(): RuntimeConfigHealthContext {
   const observation = getConfigReloadObservation();
   const metadata = getRuntimeConfigSnapshotMetadata();
   return {
-    key: `${observation.generation}:${metadata?.revision ?? -1}`,
+    // Revisions restart after runtime reset; the owner publishes a fresh metadata
+    // object each time, so publication identity also fences reset/republication.
+    key: { generation: observation.generation, publication: metadata },
     observation,
     liveSourceConfig: getRuntimeConfigSourceSnapshot(),
     hasLiveSnapshot: metadata !== null,
@@ -153,7 +175,7 @@ function preparePublishedHealthSnapshot(
   snapshot: HealthSummary,
   context: RuntimeConfigHealthContext,
 ): {
-  configKey: string;
+  configKey: RuntimeConfigHealthKey;
   snapshot: HealthSummary;
 } {
   // Snapshot-wide health is observable by read-scoped clients, hello, and
@@ -180,13 +202,16 @@ export function readCurrentRuntimeConfigHealth(): HealthSummary["runtimeConfig"]
     const summary = projectRuntimeConfigHealth(context);
     // Hello cannot await channel collection, but it can project the exact current
     // in-memory config facts and let the normal passive refresh publish the full snapshot.
-    if (context.key === readRuntimeConfigHealthContext().key) {
+    if (sameRuntimeConfigHealthKey(context.key, readRuntimeConfigHealthContext().key)) {
       return summary;
     }
   }
 }
 
-function publishPublicHealthSnapshot(snapshot: HealthSummary, configKey: string): HealthSummary {
+function publishPublicHealthSnapshot(
+  snapshot: HealthSummary,
+  configKey: RuntimeConfigHealthKey,
+): HealthSummary {
   healthCache = snapshot;
   healthCacheConfigKey = configKey;
   const digest = healthEventDigest(snapshot);
@@ -288,7 +313,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
           : {}),
       });
       const contextAfterCollection = readRuntimeConfigHealthContext();
-      if (contextBeforeCollection.key !== contextAfterCollection.key) {
+      if (!sameRuntimeConfigHealthKey(contextBeforeCollection.key, contextAfterCollection.key)) {
         continue;
       }
       const { configKey, snapshot: snap } = preparePublishedHealthSnapshot(
@@ -302,7 +327,7 @@ export async function refreshGatewayHealthSnapshot(opts?: {
         snap.eventLoop = eventLoop;
       }
       // Keep the final config check and publication in the same synchronous frame.
-      if (configKey !== readRuntimeConfigHealthContext().key) {
+      if (!sameRuntimeConfigHealthKey(configKey, readRuntimeConfigHealthContext().key)) {
         continue;
       }
       // Diagnostic snapshots publish in completion order; the next refresh replaces them.

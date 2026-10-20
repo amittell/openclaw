@@ -726,28 +726,57 @@ describe("gateway connection state", () => {
     expectConnection(false);
   });
 
-  it("broadcasts health runtimeConfig only to clients that advertise runtime-config-health", () => {
-    const state = createGatewayConnectionState({
-      scheduler: createTestGatewayScheduler(),
-      bootId: "health-runtime-config",
-      cfg: {} as OpenClawConfig,
-    });
-    onTestFinished(() => state.mentionInbox.dispose());
-    const reads = { count: 0 };
-    const legacy = makeClient("legacy", reads);
-    const advertised = makeClient("advertised", reads);
-    advertised.client.connect.caps = [GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH];
-    state.clients.add(legacy.client);
-    state.clients.add(advertised.client);
-    const runtimeConfig = { state: "drift", driftPaths: ["agents.defaults.model"] };
-    const payloadSentTo = (send: ReturnType<typeof vi.fn>) =>
-      (JSON.parse(String(send.mock.calls.at(0)?.at(0))) as { payload?: unknown }).payload;
+  it.each([false, true])(
+    "composes health summary and runtime-config capabilities with runtimeConfig=%s",
+    (includeRuntimeConfig) => {
+      const state = createGatewayConnectionState({
+        scheduler: createTestGatewayScheduler(),
+        bootId: "health-runtime-config",
+        cfg: {} as OpenClawConfig,
+      });
+      onTestFinished(() => state.mentionInbox.dispose());
+      const reads = { count: 0 };
+      const clients = [false, true].flatMap((summaryCap) =>
+        [false, true].map((runtimeConfigCap) => {
+          const client = makeClient(`health-${summaryCap}-${runtimeConfigCap}`, reads);
+          client.client.connect.caps = [
+            ...(summaryCap ? [GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY] : []),
+            ...(runtimeConfigCap ? [GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH] : []),
+          ];
+          state.clients.add(client.client);
+          return { send: client.send, summaryCap, runtimeConfigCap };
+        }),
+      );
+      const summary = { ok: true, ts: 1, channels: {} };
+      const details = {
+        agents: [{ agentId: "main", heartbeat: { prompt: "Synthetic heartbeat instructions" } }],
+        sessions: { path: "", count: 5000, recent: [] },
+      };
+      const runtimeConfig = { state: "drift", driftPaths: ["agents.defaults.model"] };
+      const health = {
+        ...summary,
+        ...details,
+        ...(includeRuntimeConfig ? { runtimeConfig } : {}),
+      };
 
-    state.broadcast("health", { ok: true, ts: 1, runtimeConfig });
+      state.broadcast("health", health);
 
-    expect(payloadSentTo(legacy.send)).toEqual({ ok: true, ts: 1 });
-    expect(payloadSentTo(advertised.send)).toEqual({ ok: true, ts: 1, runtimeConfig });
-  });
+      for (const { send, summaryCap, runtimeConfigCap } of clients) {
+        expect(send).toHaveBeenCalledOnce();
+        const receivedPayload = (
+          JSON.parse(String(send.mock.calls.at(0)?.at(0))) as { payload?: unknown }
+        ).payload;
+        expect(receivedPayload).toEqual({
+          ...summary,
+          ...(!summaryCap ? details : {}),
+          ...(includeRuntimeConfig && runtimeConfigCap ? { runtimeConfig } : {}),
+        });
+      }
+      expect(health.agents).toBe(details.agents);
+      expect(health.sessions).toBe(details.sessions);
+      expect(health.runtimeConfig).toBe(includeRuntimeConfig ? runtimeConfig : undefined);
+    },
+  );
 
   it("preserves connection insertion order for targeted fanout", () => {
     const state = makeState("ordered-delivery");

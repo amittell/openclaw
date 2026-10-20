@@ -1,7 +1,7 @@
 // Health-state tests cover probe coalescing, sensitive snapshots, and broadcast version behavior.
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -32,7 +32,9 @@ const {
     sourceConfig: null,
   })),
   getRuntimeConfigSourceSnapshotMock: vi.fn((): OpenClawConfig | null => null),
-  getRuntimeConfigSnapshotMetadataMock: vi.fn(() => ({ revision: 0 })),
+  getRuntimeConfigSnapshotMetadataMock: vi.fn<() => { revision: number } | null>(() => ({
+    revision: 0,
+  })),
   getRuntimeConfigMock: vi.fn(),
   getUpdateAvailableMock: vi.fn(),
   getUpdateScheduleMock: vi.fn(),
@@ -358,13 +360,13 @@ describe("refreshGatewayHealthSnapshot", () => {
     const currentSummary = createHealthSummary();
     const staleRuntime = { channels: {}, channelAccounts: { stale: {} } };
     const currentRuntime = { channels: {}, channelAccounts: { current: {} } };
-    let revision = 21;
-    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => ({ revision }));
+    let publication = { revision: 21 };
+    getRuntimeConfigSnapshotMetadataMock.mockImplementation(() => publication);
     // Advance the revision once collection has started: refresh first awaits the
     // lazy collector import, so a synchronous bump would precede the first read.
     collectGatewayHealthSnapshotMock
       .mockImplementationOnce(() => {
-        revision += 1;
+        publication = { revision: publication.revision + 1 };
         return firstCollection.promise;
       })
       .mockResolvedValueOnce(currentSummary);
@@ -386,6 +388,81 @@ describe("refreshGatewayHealthSnapshot", () => {
     expect(buildRuntimeConfigHealthMock).toHaveBeenCalledOnce();
     expect(healthState.getHealthCache()).toBe(currentSummary);
   });
+
+  it.each(["cached", "pending"] as const)(
+    "rejects %s health after runtime reset reuses a revision",
+    async (phase) => {
+      const healthState = await loadHealthState();
+      const runtime = await vi.importActual<typeof import("../../config/runtime-snapshot.js")>(
+        "../../config/runtime-snapshot.js",
+      );
+      const { buildRuntimeConfigHealth } = await vi.importActual<
+        typeof import("../../commands/health-runtime-config.js")
+      >("../../commands/health-runtime-config.js");
+      runtime.clearRuntimeConfigSnapshot();
+      const pending = createPendingHealthSnapshot();
+      const staleSummary = createHealthSummary();
+      const pendingRefresh: { promise?: Promise<HealthSummary> } = {};
+      onTestFinished(async () => {
+        pending.resolve(staleSummary);
+        try {
+          await pendingRefresh.promise?.catch(() => {});
+        } finally {
+          runtime.clearRuntimeConfigSnapshot();
+        }
+      });
+      const firstConfig = { agents: { defaults: { model: "provider/first" } } };
+      const currentConfig = { agents: { defaults: { model: "provider/current" } } };
+      runtime.setRuntimeConfigSnapshot(firstConfig, firstConfig);
+      const firstPublication = runtime.getRuntimeConfigSnapshotMetadata();
+      expect(firstPublication?.revision).toBe(1);
+      getRuntimeConfigSnapshotMetadataMock.mockImplementation(
+        runtime.getRuntimeConfigSnapshotMetadata,
+      );
+      getRuntimeConfigSourceSnapshotMock.mockImplementation(runtime.getRuntimeConfigSourceSnapshot);
+      getConfigReloadObservationMock.mockReturnValue({ generation: 7, sourceConfig: firstConfig });
+      buildRuntimeConfigHealthMock.mockImplementation(buildRuntimeConfigHealth);
+      const currentSummary = { ...createHealthSummary(), ts: staleSummary.ts + 1 };
+      const broadcast = vi.fn();
+      healthState.setBroadcastHealthUpdate(broadcast);
+      collectGatewayHealthSnapshotMock
+        .mockImplementationOnce(phase === "cached" ? async () => staleSummary : pending.collect)
+        .mockResolvedValueOnce(currentSummary);
+      const refresh = healthState.refreshGatewayHealthSnapshot({ probe: false });
+      pendingRefresh.promise = refresh;
+      if (phase === "cached") {
+        await expect(refresh).resolves.toBe(staleSummary);
+        expect(healthState.getHealthCache()).toBe(staleSummary);
+      } else {
+        await pending.started;
+      }
+
+      runtime.clearRuntimeConfigSnapshot();
+      runtime.setRuntimeConfigSnapshot(currentConfig, currentConfig);
+      const currentPublication = runtime.getRuntimeConfigSnapshotMetadata();
+      expect(currentPublication?.revision).toBe(firstPublication?.revision);
+      expect(currentPublication).not.toBe(firstPublication);
+      if (phase === "cached") {
+        expect(healthState.getHealthCache()).toBeNull();
+      }
+      pending.resolve(staleSummary);
+      const current =
+        phase === "cached"
+          ? await healthState.refreshGatewayHealthSnapshot({ probe: false })
+          : await refresh;
+
+      expect(current).toBe(currentSummary);
+      expect(current.runtimeConfig).toMatchObject({
+        state: "drift",
+        driftPaths: ["agents.defaults.model"],
+      });
+      expect(healthState.getHealthCache()).toBe(currentSummary);
+      expect(collectGatewayHealthSnapshotMock).toHaveBeenCalledTimes(2);
+      expect(broadcast.mock.calls.map(([snapshot]) => snapshot)).toEqual(
+        phase === "cached" ? [staleSummary, currentSummary] : [currentSummary],
+      );
+    },
+  );
 
   it("broadcasts config health only while its observation is current", async () => {
     const healthState = await loadHealthState();

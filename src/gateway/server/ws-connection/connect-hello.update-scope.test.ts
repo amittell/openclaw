@@ -3,9 +3,10 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { GATEWAY_CLIENT_CAPS } from "../../../../packages/gateway-protocol/src/client-info.js";
-import type { HelloOk } from "../../../../packages/gateway-protocol/src/index.js";
+import type { ConnectParams, HelloOk } from "../../../../packages/gateway-protocol/src/index.js";
 import { closedObject } from "../../../../packages/gateway-protocol/src/schema/closed-object.js";
 import { SnapshotSchema } from "../../../../packages/gateway-protocol/src/schema/snapshot.js";
+import { PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/version.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import * as systemPresence from "../../../infra/system-presence.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -154,6 +155,14 @@ function makeContext(
   } = {},
 ) {
   const { caps, client } = options;
+  const connectParams: ConnectParams = {
+    minProtocol: PROTOCOL_VERSION,
+    maxProtocol: PROTOCOL_VERSION,
+    client: { id: "gateway-client", version: "dev", platform: "test", mode: "backend" },
+    role,
+    scopes,
+    ...(caps ? { caps } : {}),
+  };
   return {
     handler: {
       socket: new EventEmitter(),
@@ -172,12 +181,7 @@ function makeContext(
       logHealth: { error: vi.fn() },
     },
     frame: { id: `hello-${role}` },
-    connectParams: {
-      client: { id: "gateway-client", version: "dev", platform: "test", mode: "backend" },
-      role,
-      scopes,
-      ...(caps ? { caps } : {}),
-    },
+    connectParams,
     configSnapshot: {},
     sendFrame: vi.fn(async () => undefined),
     onHelloDelivered: vi.fn(),
@@ -438,12 +442,14 @@ describe("sendGatewayHello update detail scope", () => {
   it.each(
     [false, true].flatMap((cached) =>
       [false, true].flatMap((runtimeConfigCap) =>
-        [false, true].map((onDemand) => ({ cached, runtimeConfigCap, onDemand })),
+        [false, true].flatMap((onDemand) =>
+          [false, true].map((summaryCap) => ({ cached, runtimeConfigCap, onDemand, summaryCap })),
+        ),
       ),
     ),
   )(
-    "projects hello health with cached=$cached runtimeConfigCap=$runtimeConfigCap onDemand=$onDemand",
-    async ({ cached, runtimeConfigCap, onDemand }) => {
+    "projects hello health with cached=$cached runtimeConfigCap=$runtimeConfigCap onDemand=$onDemand summaryCap=$summaryCap",
+    async ({ cached, runtimeConfigCap, onDemand, summaryCap }) => {
       const runtimeConfig = { state: "drift" as const, driftPaths: ["agents.defaults.model"] };
       const health: HealthSummary = {
         ok: true,
@@ -465,6 +471,7 @@ describe("sendGatewayHello update detail scope", () => {
         caps: [
           ...(onDemand ? [GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND] : []),
           ...(runtimeConfigCap ? RUNTIME_CONFIG_CAPS : []),
+          ...(summaryCap ? [GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY] : []),
         ],
       };
 
@@ -479,17 +486,14 @@ describe("sendGatewayHello update detail scope", () => {
         stateVersion: { presence: 1, health: 1 },
         uptimeMs: 1,
       });
-      const { runtimeConfig: _runtimeConfig, ...legacyHealth } = health;
+      const { runtimeConfig: _runtimeConfig, agents, sessions, ...summary } = health;
+      const expectedCachedHealth = {
+        ...summary,
+        ...(!summaryCap ? { agents, sessions } : {}),
+        ...(runtimeConfigCap ? { runtimeConfig } : {}),
+      };
       expect(helloSnapshot(context)?.health).toEqual(
-        onDemand
-          ? {}
-          : cached
-            ? runtimeConfigCap
-              ? health
-              : legacyHealth
-            : runtimeConfigCap
-              ? { runtimeConfig }
-              : {},
+        onDemand ? {} : cached ? expectedCachedHealth : runtimeConfigCap ? { runtimeConfig } : {},
       );
       expect(readCurrentRuntimeConfigHealthMock).toHaveBeenCalledTimes(
         !cached && !onDemand && runtimeConfigCap ? 1 : 0,
