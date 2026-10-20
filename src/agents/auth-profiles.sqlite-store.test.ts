@@ -55,6 +55,9 @@ import {
 vi.mock("./auth-profiles/external-cli-sync.js", () => ({
   listExternalCliSyncProviderIds: () => [],
   resolveExternalCliAuthProfiles: () => [],
+  // external-auth.ts reads this export on every resolve. vitest throws on a missing
+  // factory member even behind `?.`; identity is the real no-op result.
+  syncEnvBackedTokenCredentials: (store: unknown) => store,
 }));
 
 vi.mock("../plugins/provider-external-auth-core.js", () => ({

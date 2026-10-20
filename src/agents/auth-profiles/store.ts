@@ -101,6 +101,7 @@ import {
   type AuthProfileDatabase,
 } from "./sqlite.js";
 import { loadPersistedAuthProfileState } from "./state.js";
+import { withCredentialSources } from "./store-credential-sources.js";
 import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
 import { createAuthProfileStoreReadRuntime } from "./store-read.js";
 import {
@@ -113,23 +114,7 @@ import type {
   AuthProfileStore,
   AuthProfileStoreOwner,
   PreparedAuthProfileStoreOwner,
-  RuntimeAuthProfileStore,
 } from "./types.js";
-
-function withCredentialSources(
-  store: AuthProfileStore,
-  databasePath: string,
-): RuntimeAuthProfileStore {
-  return {
-    ...store,
-    runtimeCredentialSources: Object.fromEntries(
-      Object.entries(store.profiles).map(([profileId, credential]) => [
-        profileId,
-        { databasePath, provider: credential.provider },
-      ]),
-    ),
-  };
-}
 
 /** Run a bounded operation without persisted or external CLI auth profiles. */
 export function withEnvOnlyAuthProfileStore<T>(run: () => T): T {
@@ -879,7 +864,7 @@ export function createAuthProfileStoreRuntime(
     }
   }
 
-  const updateAuthProfileStoreWithLock = createAuthProfileStoreUpdater(
+  const updateAuthProfileStoreWithLockForOwner = createAuthProfileStoreUpdater(
     listRuntimeExternalAuthProfiles,
     {
       applyScopedAuthReadThrough,
@@ -900,6 +885,16 @@ export function createAuthProfileStoreRuntime(
       },
     },
   );
+
+  // `models auth clean` passes agentLocalOnly for a subagent. Both store-update.ts paths
+  // already reload only that agent's own rows (the worker reads its row; the native path
+  // uses loadAuthProfileStoreForAgent, which never inherits main profiles).
+  function updateAuthProfileStoreWithLock({
+    agentLocalOnly: _agentLocalOnly,
+    ...params
+  }: Parameters<typeof updateAuthProfileStoreWithLockForOwner>[0] & { agentLocalOnly?: boolean }) {
+    return updateAuthProfileStoreWithLockForOwner(params);
+  }
 
   /** Load the main auth profile store with runtime external profiles overlaid. */
   function loadAuthProfileStore(): AuthProfileStore {
@@ -1016,6 +1011,21 @@ export function createAuthProfileStoreRuntime(
       options: effectiveOptions,
     });
     return applyScopedAuthReadThrough(markRuntimePersistedProfiles(synced));
+  }
+
+  /**
+   * Load auth-profile store for a specific agent directory without inheriting
+   * from the main agent. Used by `models auth clean` to inspect per-agent
+   * credentials independently. Inheritance lives in
+   * loadAuthProfileStoreForRuntime, so the agent loader is already local; the
+   * skipInheritance flag documents that intent at the call site.
+   */
+  function loadAgentLocalAuthProfileStore(
+    agentDir?: string,
+    options?: LoadAuthProfileStoreOptions,
+    env?: NodeJS.ProcessEnv,
+  ): AuthProfileStore {
+    return loadAuthProfileStoreForAgent(agentDir, { ...options, skipInheritance: true }, env);
   }
 
   const captureScope: Parameters<
@@ -1587,6 +1597,7 @@ export function createAuthProfileStoreRuntime(
     createAuthProfileStoreReadScope,
     updateAuthProfileStoreWithLock,
     loadAuthProfileStore,
+    loadAgentLocalAuthProfileStore,
     loadAuthProfileStoreForRuntime,
     loadAuthProfileStoreForRuntimeAsync,
     loadAuthProfileStoreForSecretsRuntime,

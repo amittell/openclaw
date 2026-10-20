@@ -221,6 +221,8 @@ export type UserTurnTranscriptRecorder = {
     outcome: AgentRunTerminalOutcome,
   ) => Promise<AgentRunTerminalOutcome | undefined>;
   getPendingInputMessage?: () => PersistedUserTurnMessage | undefined;
+  /** Stage-time request identity for the admitted turn; undefined when nothing staged. */
+  getPendingInputRequestHash?: () => string | undefined;
   isPendingInputConsumed?: () => boolean;
   withPendingInput?: <T>(run: () => T) => T;
   withPendingInputCurrent?: <T>(run: () => T) => Promise<Awaited<T>>;

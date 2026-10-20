@@ -49,6 +49,11 @@ import {
   resolveEffectiveCurrentChannelContext,
   resolveMessageToolActionSchemaActions,
 } from "./message-tool-discovery.js";
+import { checkDuplicateSend, recordPollVote } from "./message-tool-execution.send-guards.js";
+import {
+  POLL_VOTE_ECHO_TTL_MS,
+  recentPollVoteBySession,
+} from "./message-tool-execution.send-suppression.js";
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
 import { prepareMessageToolGroupThread } from "./message-tool-group-thread.js";
@@ -76,15 +81,6 @@ import {
   type VisibleTextSuppressionReason,
 } from "./message-tool-visible-content.js";
 import { isPollVoteEchoText, resolvePollVoteEchoRoute } from "./poll-vote-echo.js";
-
-const POLL_VOTE_ECHO_TTL_MS = 30_000;
-
-// Share route-checked poll votes across runs in the same conversation: the poll
-// and its following comment can arrive at different tool instances.
-const recentPollVoteBySession = new Map<
-  string,
-  { option: string; route: string; recordedAt: number }
->();
 
 type MessageToolOptions = {
   agentAccountId?: string;
@@ -249,9 +245,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
     execute: async (toolCallId, args, signal) => {
       const assertCaller = turnAuthority.captureCaller(signal, captureGatewayToolCallerAssertion);
       // Shallow-copy so we don't mutate the original event args (used for logging/dedup).
+      // SAFETY: args is the tool-call payload; the shallow copy is only read through readToolStringParam/readToolParam helpers that validate each field.
       const params = { ...(args as Record<string, unknown>) };
       const action = readToolStringParam(params, "action", {
         required: true,
+        // SAFETY: readToolStringParam with required: true returns a non-empty string; the assertion only names the action union, and every use is an equality check or a by-name dispatch.
       }) as ChannelMessageActionName;
       const {
         authorization: trustedTurnContext,
@@ -480,6 +478,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         }
       }
 
+      const duplicateSend = checkDuplicateSend(action, params, options?.runId, pollVoteEchoRoute);
+      if (duplicateSend?.suppressed) {
+        return duplicateSend.suppressed;
+      }
+
       const hasCurrentMessageId =
         typeof options?.currentMessageId === "number" ||
         (typeof options?.currentMessageId === "string" &&
@@ -704,26 +707,13 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
             pollEchoSessionKey &&
             sourceReplySinkDeliveryMode === "message_tool_only"
           ) {
+            // SAFETY: details is provider-supplied and untyped; pollVotedOption stays unknown and is accepted only when typeof is string.
             const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
-            const option =
-              typeof details?.pollVotedOption === "string" ? details.pollVotedOption.trim() : "";
-            if (option) {
-              const recordedAt = Date.now();
-              // Prune expired entries on write so a session that votes but never
-              // sends a follow-up text can't leak a record forever in a long-lived
-              // gateway; the map stays bounded to sessions that voted within the TTL.
-              for (const [key, entry] of recentPollVoteBySession) {
-                if (recordedAt - entry.recordedAt >= POLL_VOTE_ECHO_TTL_MS) {
-                  recentPollVoteBySession.delete(key);
-                }
-              }
-              recentPollVoteBySession.set(pollEchoSessionKey, {
-                option,
-                route: pollVoteEchoRoute,
-                recordedAt,
-              });
-            }
+            recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
           }
+          // Record only after a non-throwing send so a failed delivery can still
+          // be retried with the same text.
+          duplicateSend?.recordDelivered();
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

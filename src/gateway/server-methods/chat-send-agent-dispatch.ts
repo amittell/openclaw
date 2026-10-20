@@ -33,6 +33,7 @@ import {
   scheduleChatDashboardSessionTitle,
 } from "./chat-send-background.js";
 import { readChatSendReplyPayload } from "./chat-send-command-replies.js";
+import { bindChatSendCompletedTurn } from "./chat-send-completed-turn.js";
 import {
   createChatSendDispatchErrorLifecycle,
   formatReturnedAgentErrors,
@@ -614,6 +615,12 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
+              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, {
+                agentId,
+                expectedSessionId: admittedSessionId,
+                sessionKey,
+                storePath,
+              }),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

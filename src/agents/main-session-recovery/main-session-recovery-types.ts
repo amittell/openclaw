@@ -1,4 +1,8 @@
-import type { MainRestartRecoveryState, RestartRecoveryRun } from "../../config/sessions.js";
+import type {
+  MainRestartRecoveryCause,
+  MainRestartRecoveryState,
+  RestartRecoveryRun,
+} from "../../config/sessions.js";
 
 type MainSessionRecoveryExecutionIdentity = NonNullable<
   MainRestartRecoveryState["executionIdentity"]
@@ -70,6 +74,8 @@ export type MainSessionRecoveryCommand =
       kind: "mark_interrupted";
       cycleId: string;
       now: number;
+      /** Restart marking passes "gateway_restart"; it overrides an existing cycle's cause. */
+      cause?: MainRestartRecoveryCause;
       runs?: RestartRecoveryRun[];
     }
   | {

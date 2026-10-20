@@ -22,6 +22,7 @@ import { writeSiblingTempFile } from "../infra/sibling-temp-file.js";
 import { captureChannelReadScope } from "../shared/channel-read-authority.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { resolveConfigDir } from "../utils.js";
+import { logInboundMediaSaved, sanitizeMediaScope } from "./store.scope-stamp.js";
 import { MEDIA_FILE_MODE, SaveMediaSourceError } from "./store.shared.js";
 
 /** Default per-file media-store byte cap used by store and plugin SDK callers. */
@@ -314,16 +315,18 @@ function buildSavedMediaId(params: {
   baseId: string;
   ext: string;
   originalFilename?: string;
+  scope?: string;
 }): string {
+  const scope = params.scope ? `${params.scope}---` : "";
   if (!params.originalFilename) {
-    return params.ext ? `${params.baseId}${params.ext}` : params.baseId;
+    return params.ext ? `${scope}${params.baseId}${params.ext}` : `${scope}${params.baseId}`;
   }
 
   const base = nameFromAnyPath(params.originalFilename);
   const sanitized = sanitizeFilename(base);
   return sanitized
-    ? `${sanitized}---${params.baseId}${params.ext}`
-    : `${params.baseId}${params.ext}`;
+    ? `${sanitized}---${scope}${params.baseId}${params.ext}`
+    : `${scope}${params.baseId}${params.ext}`;
 }
 
 function safeOriginalFilenameExtension(originalFilename?: string): string | undefined {
@@ -380,13 +383,14 @@ async function writeSavedMediaBuffer(params: {
   id: string;
   buffer: Buffer;
   assertCommitAllowed?: () => void;
+  scope?: string;
 }): Promise<string> {
   params.assertCommitAllowed?.();
   const readScope = captureChannelReadScope();
   readScope?.assertCurrent();
   const dir = resolveMediaScopedDir(params.subdir, "writeSavedMediaBuffer");
   const relativePath = resolveMediaRelativePath(params.id, params.subdir, "writeSavedMediaBuffer");
-  return await retryAfterRecreatingDir(dir, async () => {
+  const filePath = await retryAfterRecreatingDir(dir, async () => {
     if (readScope || params.assertCommitAllowed) {
       const { writeReadScopeMedia } = await import("./store.read-scope.js");
       await writeReadScopeMedia({
@@ -408,6 +412,13 @@ async function writeSavedMediaBuffer(params: {
       tempPrefix: `.${params.id}`,
     });
   });
+  logInboundMediaSaved({
+    id: params.id,
+    scope: params.scope,
+    size: params.buffer.byteLength,
+    subdir: params.subdir,
+  });
+  return filePath;
 }
 
 async function writeMediaStreamToFile(params: {
@@ -560,7 +571,7 @@ export async function saveMediaBuffer(
   maxBytes = MEDIA_MAX_BYTES,
   originalFilename?: string,
   detectionFilePathHint?: string,
-  options?: { assertCommitAllowed?: () => void },
+  options?: { assertCommitAllowed?: () => void; scope?: string },
 ): Promise<SavedMedia> {
   options?.assertCommitAllowed?.();
   if (buffer.byteLength > maxBytes) {
@@ -582,12 +593,14 @@ export async function saveMediaBuffer(
     originalFilename,
     detectionFilePathHint,
   });
-  const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename });
+  const safeScope = sanitizeMediaScope(options?.scope, "saveMediaBuffer");
+  const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename, scope: safeScope });
   await writeSavedMediaBuffer({
     subdir,
     id,
     buffer,
     assertCommitAllowed: options?.assertCommitAllowed,
+    scope: safeScope,
   });
   return { id, path: path.join(dir, id), size: buffer.byteLength, contentType: mime };
 }
@@ -600,7 +613,7 @@ export async function saveMediaStream(
   maxBytes = MEDIA_MAX_BYTES,
   originalFilename?: string,
   detectionFilePathHint?: string,
-  options?: { assertCommitAllowed?: () => void; durable?: boolean },
+  options?: { assertCommitAllowed?: () => void; durable?: boolean; scope?: string },
 ): Promise<SavedMedia> {
   options?.assertCommitAllowed?.();
   const readScope = captureChannelReadScope();
@@ -609,6 +622,7 @@ export async function saveMediaStream(
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const baseId = crypto.randomUUID();
   const headerExt = extensionForAuthoritativeHeaderMime(contentType);
+  const safeScope = sanitizeMediaScope(options?.scope, "saveMediaStream");
   // Directory setup may retry before iteration starts. A consumed stream cannot
   // be replayed after a write or publication failure.
   let consumptionStarted = false;
@@ -640,7 +654,7 @@ export async function saveMediaStream(
       originalFilename,
       detectionFilePathHint,
     });
-    const id = buildSavedMediaId({ baseId, ext, originalFilename });
+    const id = buildSavedMediaId({ baseId, ext, originalFilename, scope: safeScope });
     return { id, size, contentType: mime };
   };
   const result = await retryAfterRecreatingDir(
@@ -677,6 +691,7 @@ export async function saveMediaStream(
     },
     () => !consumptionStarted,
   );
+  logInboundMediaSaved({ id: result.id, scope: safeScope, size: result.size, subdir });
   return {
     id: result.id,
     path: path.join(dir, result.id),

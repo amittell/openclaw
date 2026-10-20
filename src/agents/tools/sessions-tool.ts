@@ -100,6 +100,7 @@ async function resolvePatchTarget(
   opts: SessionsToolOptions,
   sessionKey: string | undefined,
   callGateway: AgentToolGatewayRequestCaller,
+  nonOwnerAssignment = false,
 ): Promise<{
   agentId: string;
   cfg: OpenClawConfig;
@@ -159,7 +160,7 @@ async function resolvePatchTarget(
       agentId !== requesterAgentId && !parseAgentSessionKey(resolved.key)
         ? `agent:${agentId}:${resolved.key}`
         : resolved.key;
-    const access = await resolveSessionToolAccess({
+    const accessRequest = {
       action: "status",
       requesterSessionKey: context.effectiveRequesterKey,
       mainSessionKey: context.mainSessionKey,
@@ -168,9 +169,12 @@ async function resolvePatchTarget(
       targetAgentId: agentId,
       targetSessionKey: resolved.key,
       requesterOwned: resolved.requesterOwned,
-      visibility: context.sessionVisibility,
       a2aPolicy: context.a2aPolicy,
       callGateway,
+    } as const;
+    const access = await resolveSessionToolAccess({
+      ...accessRequest,
+      visibility: context.sessionVisibility,
     });
     if (!access.allowed) {
       throw new ToolAuthorizationError(
@@ -179,6 +183,19 @@ async function resolvePatchTarget(
           targetSessionKey: resolved.displayKey,
         }),
       );
+    }
+    // Fork rule (2026-10-12): an explicit non-owner turn may reassign its own session and the
+    // sessions it spawned, never wider than `tree`. #154239 let it reassign any visible session,
+    // and the default visibility (`all`) makes every session on the Gateway visible, other
+    // agents' included. Checked on the resolved target (the current session by key or id never
+    // reaches here) and before the owner write; `self` is already narrower.
+    if (nonOwnerAssignment && context.sessionVisibility !== "self") {
+      const treeAccess = await resolveSessionToolAccess({ ...accessRequest, visibility: "tree" });
+      if (!treeAccess.allowed) {
+        throw new ToolAuthorizationError(
+          "Non-owner callers can assign an owner only for the current session or a session it spawned",
+        );
+      }
     }
   }
   return {
@@ -210,11 +227,11 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
     description: sandboxRenameOnly
       ? "Rename a session created by the requesting operator with patch and label (empty string clears it). Default target: current session. Another session requires sessionKey and expectedSessionId from sessions_list. No other session actions or settings."
       : assignmentOnly
-        ? "Assign responsibility for a visible session to a human or agent with assign_owner, ownerType, and ownerId. Default target: current session. Does not change creator attribution or access."
+        ? "Assign responsibility for the current session or a session it spawned to a human or agent with assign_owner, ownerType, and ownerId. Default target: current session. Does not change creator attribution or access."
         : renameOnly
-          ? "Rename a session created by the requesting operator: use patch with label (empty string clears it). Default target: current session; another session requires sessionKey and expectedSessionId from sessions_list. assign_owner assigns responsibility for a visible session to a human or agent. No other settings or session controls."
+          ? "Rename a session created by the requesting operator: use patch with label (empty string clears it). Default target: current session; another session requires sessionKey and expectedSessionId from sessions_list. assign_owner assigns responsibility for the current session or a session it spawned to a human or agent. No other settings or session controls."
           : controlOnly
-            ? `Rename sessions created by the requesting operator with patch and label. Archive or restore sessions created by the requesting operator requires operator.write. Use patch with archived=true/false; self-archive waits until this run finishes. ${stopAllowed ? "Stop targets another session created by or assigned to the operator; runId optionally selects one active run. " : ""}assign_owner assigns responsibility for a visible session to a human or agent. No deletion, other settings, batch, or global group changes.`
+            ? `Rename sessions created by the requesting operator with patch and label. Archive or restore sessions created by the requesting operator requires operator.write. Use patch with archived=true/false; self-archive waits until this run finishes. ${stopAllowed ? "Stop targets another session created by or assigned to the operator; runId optionally selects one active run. " : ""}assign_owner assigns responsibility for the current session or a session it spawned to a human or agent. No deletion, other settings, batch, or global group changes.`
             : `cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, ${stopAllowed ? "stop, " : ""}reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.`,
     parameters: sandboxRenameOnly
       ? SessionRenameToolSchema
@@ -403,6 +420,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
           opts,
           readToolStringParam(params, "sessionKey"),
           gatewayRequest,
+          opts.senderIsOwner === false,
         );
         const result = await gatewayRequest<SessionsAssignOwnerResult>({
           method: "sessions.assignOwner",

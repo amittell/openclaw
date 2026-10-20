@@ -17,6 +17,7 @@ import { getOrCreateAccountThrottler, runAuthorizedTelegramRequest } from "./acc
 import { type ResolvedTelegramAccount, resolveTelegramAccount } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
+import { markTelegramVisibleReplyDelivered } from "./bot-processing-outcome.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
 import { resolveTelegramTransport, type TelegramTransport } from "./fetch.js";
 import { rethrowTelegramSendError, isSafeToRetrySendError } from "./network-errors.js";
@@ -26,6 +27,10 @@ import {
   bindTelegramRequestAuthority,
   findTelegramRequestAuthorityError,
 } from "./request-authority.js";
+import {
+  TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS,
+  telegramUploadTimeoutTransformer,
+} from "./request-timeouts.js";
 import type { TelegramRichMessageContextParams } from "./rich-message.js";
 import { maybePersistResolvedTelegramTarget } from "./target-writeback.js";
 import {
@@ -65,6 +70,12 @@ type TelegramOutboundSuccessLogParams = {
 };
 
 export function logTelegramOutboundSendOk(params: TelegramOutboundSuccessLogParams): void {
+  // The durable funnel's confirmation point records the "this attempt already
+  // spoke to the user" fact, which the ingress settlement reads to decide whether
+  // a retryable failure may replay. The streaming funnel records it through the
+  // acceptance ledger in `send-prepared.ts`, and finalized answer previews in
+  // `lane-delivery-text-deliverer.ts`.
+  markTelegramVisibleReplyDelivered();
   const parts = [
     "telegram outbound send ok",
     `accountId=${params.accountId}`,
@@ -185,6 +196,7 @@ function resolveTelegramClientOptions(
     activeLeases: 0,
     clientOptions: {
       fetch: asTelegramClientFetch(fetchImpl),
+      timeoutSeconds: TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS,
       ...(normalizedApiRoot ? { apiRoot: normalizedApiRoot } : {}),
     },
     closeStarted: false,
@@ -323,6 +335,7 @@ export async function withTelegramApiContext<T>(
   let api: TelegramApi;
   let client: CachedTelegramClientOptions | undefined;
   if (opts.api) {
+    // SAFETY: TelegramApiOverride is the caller-supplied injection seam; supplying one asserts it implements the surface used here.
     api = opts.api as TelegramApi;
   } else {
     client = resolveTelegramClientOptions(account);
@@ -337,6 +350,7 @@ export async function withTelegramApiContext<T>(
         }
       : client.clientOptions;
     const bot = new Bot(token, { client: clientOptions });
+    bot.api.config.use(telegramUploadTimeoutTransformer);
     if (opts.signal || opts.assertPlatformSendAuthorized) {
       // grammY wraps later transformers around earlier ones. Check authority
       // after the account queue drains, immediately before its HTTP client runs.

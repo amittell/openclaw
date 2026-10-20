@@ -26,12 +26,23 @@ import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.j
 import { settlesWithin } from "../shared/settle-within.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { withAgentDatabaseCloseFence } from "../state/openclaw-agent-db-resources.js";
+// Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers that
+// only need the running / shutting-down distinction (gateway startup, HTTP probe
+// handler) do not pull in this close module's dependency graph. Re-exported below
+// for source compatibility with prior in-tree callers.
+import {
+  isGatewayShuttingDown,
+  markGatewayShuttingDown,
+  resetGatewayShuttingDownForTest,
+  resetGatewayShuttingDownState,
+} from "./gateway-shutdown-state.js";
 import {
   collectGatewayProcessMemoryUsageMb,
   measureGatewayCloseStep,
   recordGatewayRestartTrace,
 } from "./restart-trace.js";
 import type { ChatRunState } from "./server-chat-state.js";
+import { armGatewayPostShutdownExitWatchdog } from "./server-close-exit-watchdog.js";
 import { WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import type { GatewayMaintenanceHandles } from "./server-maintenance-lifecycle.js";
 import {
@@ -54,6 +65,14 @@ const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;
 const HTTP_CLOSE_GRACE_MS = 1_000;
 const HTTP_CLOSE_FORCE_WAIT_MS = 5_000;
 const RUNTIME_CLOSE_GRACE_MS = 5_000;
+
+export {
+  isGatewayShuttingDown,
+  markGatewayShuttingDown,
+  resetGatewayShuttingDownForTest,
+  resetGatewayShuttingDownState,
+};
+
 type ShutdownResult = {
   durationMs: number;
   warnings: string[];
@@ -195,6 +214,18 @@ export type GatewayCloseParams = {
     totalTimeoutMs?: number;
   }) => Promise<{ emittedSessionIds: string[]; timedOut: boolean }>;
   chatRunState: ChatRunState;
+  // Test seam: vitest workers replace this with a no-op so the watchdog cannot
+  // exit the worker mid-suite. Production callers leave it undefined so the
+  // canonical `armGatewayPostShutdownExitWatchdog` runs.
+  armPostShutdownExitWatchdog?: (opts: {
+    reason: string;
+    shutdownDurationMs: number;
+    exitCode?: number;
+  }) => { cancel: () => void } | null;
+  // Process-ownership gate: only the terminal gateway CLI/daemon path may arm the
+  // post-shutdown force-exit. Embedded starts (onboarding session gateway, test
+  // harnesses) must stay process-neutral or a handled close would kill the host.
+  postShutdownExitWatchdogEnabled?: boolean;
 };
 
 export type GatewayClosePrepareParams = GatewayRunShutdownParams & {
@@ -207,6 +238,11 @@ export type GatewayClosePrepareParams = GatewayRunShutdownParams & {
 
 export type GatewayClosePreparation = {
   start: number;
+  // Terminal status the post-shutdown watchdog forces if the process wedges.
+  // Defaults to 0; startup-failure cleanup passes nonzero so a failure-only
+  // supervisor still relaunches a force-killed failed startup. Carried here
+  // because completeGatewayClose takes the preparation, not the close options.
+  postShutdownExitCode?: number;
   notice: ReturnType<typeof resolveGatewayShutdownNotice>;
   restart: boolean;
   warnings: string[];
@@ -224,6 +260,10 @@ export async function prepareGatewayClose(
   const restartExpectedMs = notice.restartExpectedMs ?? null;
   const restart = restartExpectedMs !== null;
   const { measureCloseStep, shutdownStep } = createCloseSteps(reason, warnings);
+  // Flip the shutdown flag before any await so /healthz starts returning 503
+  // immediately. Lock-recovery preflight uses that 503 to tell a live gateway
+  // from a zombie that still holds the port.
+  markGatewayShuttingDown();
   const cleanupWork = new AsyncWorkScope();
   // Fence async session-state writes before the first awaited shutdown step.
   fenceSessionSuspensionWritesForGatewayShutdown();
@@ -295,7 +335,14 @@ export async function prepareGatewayClose(
         await measureCloseStep("process-exit", opts.onProcessExitReady!);
       });
     }
-    return { start, notice, restart, warnings, cleanupWork };
+    return {
+      start,
+      notice,
+      restart,
+      warnings,
+      cleanupWork,
+      postShutdownExitCode: opts?.postShutdownExitCode,
+    };
   } catch (error) {
     await measureCloseStep("preparation-cleanup", () => cleanupWork.drain());
     throw error;
@@ -633,6 +680,23 @@ async function closeGatewayResources(
   }
   if (closeFailure) {
     throw closeFailure.error;
+  }
+  // Arm a process-wide watchdog so a stray handle cannot keep the node process
+  // (and its HTTP listener) alive after every owned subsystem has closed. The
+  // unref'd timer is a no-op when natural exit wins.
+  //
+  // Skipped for in-process restart reasons (the SIGUSR1 path closes and then
+  // immediately starts the next gateway iteration in the same node process):
+  // there the process is intentionally kept alive, so the timer would fire a
+  // few seconds later and exit the freshly restarted gateway.
+  const armWatchdog = params.armPostShutdownExitWatchdog ?? armGatewayPostShutdownExitWatchdog;
+  const isInProcessRestart = /\brestart(ing|ed)?\b/i.test(reason);
+  if (!isInProcessRestart && params.postShutdownExitWatchdogEnabled === true) {
+    armWatchdog({
+      reason,
+      shutdownDurationMs: durationMs,
+      exitCode: preparation.postShutdownExitCode ?? 0,
+    });
   }
   return { durationMs, warnings };
 }

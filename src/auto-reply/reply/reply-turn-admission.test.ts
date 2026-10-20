@@ -288,12 +288,18 @@ it("does not treat resetTriggered alone as restart-tombstone authority", async (
     message: expect.stringMatching(/ended during restart recovery/i),
   });
 });
+// FORK DIVERGENCE: upstream pins this with a "stale-generation" fence. The fork
+// retires a fence from a dead Gateway generation (see the queued-followup case
+// below), so the fence here belongs to the live generation, whose unfinished run
+// still needs terminal evidence before admission may retire it.
 it.each([true, false])(
   "requires terminal evidence before retiring recovery fences at visible admission: %s",
   async (terminal) => {
     const storePath = store({
       abortedLastRun: false,
-      restartRecoveryRuns: [{ runId: "stale-run", lifecycleGeneration: "stale-generation" }],
+      restartRecoveryRuns: [
+        { runId: "stale-run", lifecycleGeneration: getAgentEventLifecycleGeneration() },
+      ],
       ...(terminal ? { restartRecoveryTerminalRunIds: ["stale-run"] } : {}),
     });
     const before = loadSessionEntry({ storePath, sessionKey });
@@ -313,6 +319,43 @@ it.each([true, false])(
     admitted.complete();
   },
 );
+// FORK DIVERGENCE: upstream refuses this followup because the session still holds a
+// recovery fence. This fork retires a fence whose run carries a lifecycleGeneration
+// other than the live Gateway's on a row not marked interrupted - such a run died
+// with an earlier process and can never record a terminal fact, so the fence would
+// otherwise hold a healthy session at "changed while starting work" forever
+// (isMainRestartRecoveryTerminalOnly in main-session-recovery-state.ts; rh-bot: the
+// dead generation came from the 2026-09-02 restarts and surfaced 2026-09-04, 106
+// retries over 3.5h; upstream #118873). The fixture pins lifecycleGeneration
+// "generation-1" and the admission runs under the live one, so the fence is settled
+// and the followup is admitted.
+it("admits a queued followup whose recovery fence belongs to a dead Gateway generation", async () => {
+  const followupKey = "agent:main:telegram:topic:admitted-recovery";
+  const followupSessionId = "admitted-recovery-session";
+  const storePath = createSessionStore({
+    [followupKey]: {
+      sessionId: followupSessionId,
+      updatedAt: 100,
+      abortedLastRun: false,
+      restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration: "generation-1" }],
+      mainRestartRecovery: {
+        cycleId: "cycle-1",
+        revision: 3,
+        chargedAttempts: 1,
+      },
+    },
+  });
+
+  await expect(
+    admitTestReplyTurn({
+      sessionKey: followupKey,
+      sessionId: followupSessionId,
+      expectedSessionId: followupSessionId,
+      storePath,
+      kind: "queued_followup",
+    }),
+  ).resolves.toMatchObject({ status: "owned" });
+});
 it("schedules released recovery only after retained admission exits", async () => {
   const storePath = store(interruptedEntry());
   const blocker = operation();

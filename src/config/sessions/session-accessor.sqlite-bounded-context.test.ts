@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { expectedCompactionSummary } from "../../agents/test-helpers/compaction-checkpoint.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -373,11 +374,17 @@ it("keeps reset history closed across compaction with a warm history cache", asy
     await settle();
     expectHistory([freshUserId]);
 
-    manager.appendCompaction("fresh-only summary", freshUserId, 100);
+    const freshCompactionId = manager.appendCompaction("fresh-only summary", freshUserId, 100);
     await settle();
     expectHistory([freshUserId]);
     expect(manager.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "fresh-only summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("fresh-only summary", {
+          entryId: freshCompactionId,
+          shadowedEntryCount: 1,
+        }),
+      },
       { role: "user", content: "fresh user" },
     ]);
     expect(readActiveTranscriptStats(scope).eventCount).toBe(2);
@@ -398,12 +405,18 @@ it("keeps reset history closed across compaction with a warm history cache", asy
     ]);
     expect(readActiveTranscriptStats(scope).eventCount).toBe(2);
 
-    manager.appendCompaction("newest-only summary", newestUserId, 100);
+    const newestCompactionId = manager.appendCompaction("newest-only summary", newestUserId, 100);
     await settle();
     expectHistory([nextUserId, newestUserId]);
     const reopened = SessionManager.open(scope);
     expect(reopened.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "newest-only summary" },
+      {
+        role: "compactionSummary",
+        summary: expectedCompactionSummary("newest-only summary", {
+          entryId: newestCompactionId,
+          shadowedEntryCount: 2,
+        }),
+      },
       { role: "user", content: "after second reset" },
     ]);
     expect(readActiveTranscriptStats(scope).eventCount).toBe(2);

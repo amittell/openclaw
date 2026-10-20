@@ -1,3 +1,4 @@
+import "./server-close.mocks.test-support.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -12,7 +13,6 @@ import {
   createReplyOperation,
   type ReplyOperation,
 } from "../auto-reply/reply/reply-run-registry.js";
-import type { InternalHookEvent } from "../hooks/internal-hooks.js";
 import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { PluginInstance } from "../plugins/plugin-instance.js";
 import type { MemoryPluginRuntime } from "../plugins/registry-contribution-types.js";
@@ -45,25 +45,8 @@ import {
   type GatewayCloseParams,
   createTestChatRunState,
 } from "./server-close.test-support.js";
+const { mocks, resetServerCloseMocks } = await import("./server-close.mocks.test-support.js");
 
-type TriggerInternalHookMock = (event: InternalHookEvent) => Promise<void>;
-
-const mocks = vi.hoisted(() => ({
-  logInfo: vi.fn(),
-  logWarn: vi.fn(),
-  listChannelPlugins: vi.fn((): Array<{ id: "telegram" | "discord" }> => []),
-  disposeAllCodeModeRuns: vi.fn(),
-  disposeAgentHarnesses: vi.fn<() => Promise<void>>(async () => undefined),
-  closeProviderTransportDispatcherPool: vi.fn(async () => undefined),
-  disposeAllSessionMcpRuntimes: vi.fn<() => Promise<void>>(async () => undefined),
-  triggerInternalHook: vi.fn<TriggerInternalHookMock>(async (_eventValue) => undefined),
-  disposeAllBundleLspRuntimes: vi.fn<() => Promise<void>>(async () => undefined),
-  drainRetainedEmbeddingProviders: vi.fn<() => Promise<void>>(async () => undefined),
-  stopGmailWatcher: vi.fn(async () => undefined),
-  disposeAcpSessionManager: vi.fn(async (_reason: string) => undefined),
-  fenceSessionSuspensionWritesForGatewayShutdown: vi.fn(),
-  closePluginStateDatabaseAsync: vi.fn<() => Promise<void>>(async () => undefined),
-}));
 const WEBSOCKET_CLOSE_GRACE_MS = 1_000;
 const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;
 const HTTP_CLOSE_GRACE_MS = 1_000;
@@ -72,85 +55,16 @@ const GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS = 5_000;
 const GATEWAY_PRE_RESTART_HOOK_TIMEOUT_MS = 10_000;
 const AGENT_HARNESS_CLOSE_GRACE_MS = 5_000;
 
-vi.mock("../channels/plugins/index.js", async () => ({
-  ...(await vi.importActual<typeof import("../channels/plugins/index.js")>(
-    "../channels/plugins/index.js",
-  )),
-  listChannelPlugins: mocks.listChannelPlugins,
-}));
-
-vi.mock("../hooks/gmail-watcher.js", () => ({
-  stopGmailWatcher: mocks.stopGmailWatcher,
-}));
-
-vi.mock("../hooks/internal-hooks.js", async () => {
-  const actual = await vi.importActual<typeof import("../hooks/internal-hooks.js")>(
-    "../hooks/internal-hooks.js",
-  );
-  return {
-    ...actual,
-    triggerInternalHook: mocks.triggerInternalHook,
-  };
-});
-
-vi.mock("../agents/harness/registry.js", () => ({
-  disposeRegisteredAgentHarnesses: mocks.disposeAgentHarnesses,
-}));
-
-vi.mock("../agents/code-mode-state.js", () => ({
-  disposeAllCodeModeRuns: mocks.disposeAllCodeModeRuns,
-}));
-
-vi.mock("../agents/provider-transport-dispatcher-pool.js", () => ({
-  closeProviderTransportDispatcherPool: mocks.closeProviderTransportDispatcherPool,
-}));
-
-vi.mock("../agents/agent-bundle-mcp-tools.js", async () => ({
-  ...(await vi.importActual<typeof import("../agents/agent-bundle-mcp-tools.js")>(
-    "../agents/agent-bundle-mcp-tools.js",
-  )),
-  disposeAllSessionMcpRuntimes: mocks.disposeAllSessionMcpRuntimes,
-}));
-
-vi.mock("../agents/agent-bundle-lsp-runtime.js", async () => ({
-  ...(await vi.importActual<typeof import("../agents/agent-bundle-lsp-runtime.js")>(
-    "../agents/agent-bundle-lsp-runtime.js",
-  )),
-  disposeAllBundleLspRuntimes: mocks.disposeAllBundleLspRuntimes,
-}));
-
-vi.mock("./embeddings-provider-lifetime.js", () => ({
-  drainRetainedOpenAiEmbeddingProviders: mocks.drainRetainedEmbeddingProviders,
-}));
-
-vi.mock("../agents/session-suspension.js", () => ({
-  fenceSessionSuspensionWritesForGatewayShutdown:
-    mocks.fenceSessionSuspensionWritesForGatewayShutdown,
-}));
-
-vi.mock("../acp/control-plane/manager.js", () => ({
-  disposeAcpSessionManager: mocks.disposeAcpSessionManager,
-}));
-
-vi.mock("../plugin-state/plugin-state-store.js", async () => ({
-  ...(await vi.importActual<typeof import("../plugin-state/plugin-state-store.js")>(
-    "../plugin-state/plugin-state-store.js",
-  )),
-  closePluginStateDatabaseAsync: mocks.closePluginStateDatabaseAsync,
-}));
-
-vi.mock("../logging/subsystem.js", () => ({
-  createSubsystemLogger: vi.fn(() => ({
-    debug: vi.fn(),
-    info: mocks.logInfo,
-    warn: mocks.logWarn,
-  })),
-}));
-
-const closeGateway = createGatewayCloseTestHandlerFactory(await import("./server-close.js"));
+const serverClose = await import("./server-close.js");
+const { resetGatewayShuttingDownForTest } = serverClose;
+const closeGateway = createGatewayCloseTestHandlerFactory(serverClose);
 const { createChatRunState, isChatAbortMarkerCurrent } = await import("./server-chat-state.js");
-const { finishGatewayRestartTrace, formatGatewayPendingCloseSteps, startGatewayRestartTrace } =
-  await import("./restart-trace.js");
+const {
+  finishGatewayRestartTrace,
+  formatGatewayPendingCloseSteps,
+  resetGatewayRestartTraceForTest,
+  startGatewayRestartTrace,
+} = await import("./restart-trace.js");
 type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
 type MarkMainSessionsAbortedForRestart = NonNullable<
   GatewayCloseParams["markMainSessionsAbortedForRestart"]
@@ -335,32 +249,15 @@ describe("createGatewayCloseHandler", () => {
   beforeEach(() => {
     resetPluginRuntimeStateForTest();
     vi.useRealTimers();
-    mocks.logInfo.mockClear();
-    mocks.logWarn.mockClear();
-    mocks.listChannelPlugins.mockReset();
-    mocks.listChannelPlugins.mockReturnValue([]);
-    mocks.disposeAllCodeModeRuns.mockReset();
-    mocks.fenceSessionSuspensionWritesForGatewayShutdown.mockReset();
-    for (const mock of [
-      mocks.disposeAgentHarnesses,
-      mocks.disposeAllSessionMcpRuntimes,
-      mocks.triggerInternalHook,
-      mocks.disposeAllBundleLspRuntimes,
-      mocks.drainRetainedEmbeddingProviders,
-      mocks.stopGmailWatcher,
-      mocks.closeProviderTransportDispatcherPool,
-      mocks.disposeAcpSessionManager,
-      mocks.closePluginStateDatabaseAsync,
-    ]) {
-      mock.mockReset();
-      mock.mockResolvedValue(undefined);
-    }
+    resetServerCloseMocks();
   });
 
   afterEach(() => {
     finishGatewayRestartTrace("test.finish");
     resetPluginRuntimeStateForTest();
     vi.useRealTimers();
+    resetGatewayRestartTraceForTest();
+    resetGatewayShuttingDownForTest();
     if (originalRestartTraceEnv === undefined) {
       delete process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
     } else {

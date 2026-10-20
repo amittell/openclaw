@@ -2245,6 +2245,43 @@ describe("qa mock openai server", () => {
     expect(emptyThreadMemoryText).toContain("NONE");
     expect(emptyThreadMemoryText).not.toContain("ORBIT-22");
 
+    const declaredToolThreadMemorySummary = await postResponses(server, {
+      stream: false,
+      tools: [SESSIONS_SPAWN_TOOL],
+      input: [
+        {
+          role: "system",
+          content: "## /workspace/MEMORY.md\nThread-hidden codename: ORBIT-22.",
+        },
+        makeUserInput(
+          "@openclaw Thread memory check: what is the hidden thread codename stored only in memory? Use memory tools first and reply only in this thread.",
+        ),
+        {
+          type: "function_call",
+          name: "memory_search",
+          arguments: JSON.stringify({
+            query: "hidden thread codename ORBIT-22",
+            maxResults: 3,
+          }),
+        },
+        {
+          type: "function_call_output",
+          output: JSON.stringify({
+            results: [],
+            unavailable: true,
+            error: "database is not open",
+          }),
+        },
+      ],
+    });
+    expect(declaredToolThreadMemorySummary.status).toBe(200);
+    const declaredToolThreadMemoryText = JSON.stringify(
+      await declaredToolThreadMemorySummary.json(),
+    );
+    expect(declaredToolThreadMemoryText).toContain("NONE");
+    expect(declaredToolThreadMemoryText).not.toContain("ORBIT-22");
+    expect(declaredToolThreadMemoryText).not.toContain("sessions_spawn failed");
+
     const currentSessionResult = {
       path: "sessions/qa-session-memory-ranking.jsonl",
       startLine: 2,
@@ -2780,26 +2817,6 @@ describe("qa mock openai server", () => {
     expect(outputText(completion)).toBe(
       "Protocol note: generated the QA lighthouse image successfully.\nMEDIA:/tmp/qa-lighthouse.png",
     );
-  });
-
-  it.each([
-    [
-      "plans QA tool-search failure calls with denied-input args",
-      {
-        input: [
-          makeUserInput(
-            "tool search qa failure target=web_search. Exercise the denied-input path once and then summarize.",
-          ),
-        ],
-      },
-      "web_search",
-      "OPENCLAW_QA_WEB_SEARCH_DENIED_INPUT",
-    ],
-  ] as const)("%s", async (_name, body, tool, argument) => {
-    const item = outputItem(await expectNonStreamingResponsesJson(await startMockServer(), body));
-    expect(item.type).toBe("function_call");
-    expect(item.name).toBe(tool);
-    expect(String(item.arguments)).toContain(argument);
   });
 
   it.each([

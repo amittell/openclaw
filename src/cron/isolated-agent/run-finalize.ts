@@ -139,18 +139,31 @@ export async function finalizeCronRun(params: {
         ? prepared.cronSession.sessionEntry.contextTokensSource
         : "resolved";
 
+  // A fallback-served run is transient. Persisting its runtime model would
+  // prevent the configured primary from being retried after it recovers, and
+  // persisting its context window would desynchronize status and compaction.
+  // Read the executor's explicit signal rather than re-deriving it. The fallback
+  // path rewrites execution.liveSelection to the fallback tuple, so comparing
+  // modelUsed against it reports "not a fallback" for every fallback run and
+  // defeats the guard below.
+  const isFromFallback = execution.usedFallback;
   if (!params.isAborted()) {
-    setCronSessionRuntimeModel({
-      entry: prepared.cronSession.sessionEntry,
-      provider: providerUsed,
-      model: modelUsed,
-    });
     setCronSessionAgentHarnessId({
       entry: prepared.cronSession.sessionEntry,
       agentHarnessId,
     });
-    prepared.cronSession.sessionEntry.contextTokens = contextTokens;
-    prepared.cronSession.sessionEntry.contextTokensSource = contextTokensSource;
+    // A fallback model is a transient recovery choice, not the session's durable
+    // runtime model. Persisting it would pin the session to the fallback and its
+    // context budget after recovery, so only a non-fallback run writes them back.
+    if (!isFromFallback) {
+      setCronSessionRuntimeModel({
+        entry: prepared.cronSession.sessionEntry,
+        provider: providerUsed,
+        model: modelUsed,
+      });
+      prepared.cronSession.sessionEntry.contextTokens = contextTokens;
+      prepared.cronSession.sessionEntry.contextTokensSource = contextTokensSource;
+    }
   }
   if (hasNonzeroUsage(usage) || hasNonzeroUsage(finalRunResult.meta?.agentMeta?.usage)) {
     const totalTokens = deriveSessionTotalTokens({
@@ -166,6 +179,10 @@ export async function finalizeCronRun(params: {
       prepared.cronSession.sessionEntry.totalTokens = undefined;
       prepared.cronSession.sessionEntry.totalTokensFresh = false;
       prepared.cronSession.sessionEntry.totalTokensVersion = undefined;
+    }
+    // Per-call totals land on the base row only when the run uses it directly.
+    if (prepared.runSessionKey === prepared.agentSessionKey) {
+      prepared.cronSession.contextTotalsAccounted = true;
     }
   }
   const telemetry: CronRunTelemetry = {

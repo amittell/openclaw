@@ -494,6 +494,7 @@ const policyTestWatches: readonly PolicyTestWatch[] = [
     watchGlobs: [
       "src/agents/embedded-agent-runner/active-run-projections.ts",
       "src/agents/embedded-agent-runner/runs.ts",
+      "src/channels/message/ingress-drain-stall-settlement.ts",
       "src/channels/message/ingress-drain.ts",
       "src/channels/message/ingress-queue.ts",
       "src/cli/gateway-cli/run-loop.ts",

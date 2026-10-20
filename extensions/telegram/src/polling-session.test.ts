@@ -21,11 +21,19 @@ import type { TelegramBotOptions } from "./bot.types.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
 import { commitTelegramMessageDispatchReplay } from "./message-dispatch-dedupe.js";
 import {
+  createIdleIngressWorker,
+  createListeningIngressWorker,
+  type WorkerMessageListener,
+  type WorkerPollErrorListener,
+  type WorkerPollSuccessListener,
+} from "./polling-session-ingress-worker.test-support.js";
+import {
   directUpdate,
   failedUpdateIds,
   forumUpdate,
   openTelegramSpoolTestKysely,
   topicUpdate,
+  waitForTelegramTestState,
   type TestTelegramUpdate,
 } from "./polling-session-spool.test-support.js";
 import { installPollingStallWatchdogHarness } from "./polling-session-watchdog.test-support.js";
@@ -41,10 +49,6 @@ import {
 } from "./telegram-ingress-worker.js";
 import { createTestLifetime } from "./test-lifetime.test-support.js";
 import { createTelegramUpdateOffsetPersistence } from "./update-offset-persistence.js";
-
-async function waitForTelegramTestState<T>(assertion: () => T | Promise<T>): Promise<T> {
-  return await vi.waitFor(assertion, { interval: 1 });
-}
 
 const createTelegramBotMock = vi.hoisted(() => vi.fn());
 const isRecoverableTelegramNetworkErrorMock = vi.hoisted(() => vi.fn(() => true));
@@ -121,23 +125,6 @@ type DrainPendingDeliveriesCall = {
     now: number,
   ) => { match: boolean; bypassBackoff: boolean };
 };
-type WorkerPollSuccessListener = (message: {
-  type: "poll-success";
-  offset: null;
-  count: number;
-  finishedAt: number;
-}) => void;
-type WorkerPollErrorListener = (message: {
-  type: "poll-error";
-  message: string;
-  errorCode?: number;
-  finishedAt: number;
-}) => void;
-type WorkerMessageListener = (message: TelegramIngressWorkerMessage) => void;
-type TestWorkerMessage =
-  | TelegramIngressWorkerMessage
-  | { type: "poll-success"; finishedAt: number; count: number }
-  | { type: "poll-error"; finishedAt: number; message: string };
 type AsyncVoidFn = () => Promise<void>;
 type MockCallSource = { mock: { calls: Array<Array<unknown>> } };
 type IsolatedIngressOptions = NonNullable<
@@ -227,6 +214,7 @@ function createPollingSession(params: {
   createTelegramTransport?: () => ReturnType<typeof makeTelegramTransport>;
   getCommittedUpdateId?: () => number | null;
   persistUpdateId?: ConstructorParameters<typeof TelegramPollingSession>[0]["persistUpdateId"];
+  resetUpdateOffset?: ConstructorParameters<typeof TelegramPollingSession>[0]["resetUpdateOffset"];
   stallThresholdMs?: number;
   setStatus?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
   ingress: ConstructorParameters<typeof TelegramPollingSession>[0]["ingress"];
@@ -241,6 +229,7 @@ function createPollingSession(params: {
     abortSignal: params.abortSignal,
     getCommittedUpdateId: params.getCommittedUpdateId ?? (() => null),
     persistUpdateId: params.persistUpdateId ?? (async () => undefined),
+    resetUpdateOffset: params.resetUpdateOffset,
     log: params.log ?? (() => undefined),
     telegramTransport: params.telegramTransport,
     stallThresholdMs: params.stallThresholdMs,
@@ -286,58 +275,6 @@ async function withTempSpool<T>(fn: (stateDir: string) => Promise<T>): Promise<T
   }
 }
 
-function createIdleIngressWorker() {
-  let stopWorker: (() => void) | undefined;
-  const workerDone = new Promise<void>((resolve) => {
-    stopWorker = resolve;
-  });
-  const workerStop = vi.fn(async () => {
-    stopWorker?.();
-  });
-  const createWorker = vi.fn(() => ({
-    onMessage: vi.fn(() => () => undefined),
-    stop: workerStop,
-    task: vi.fn(async () => {
-      await workerDone;
-    }),
-  }));
-  return {
-    createWorker,
-    stop: () => stopWorker?.(),
-    workerStop,
-  };
-}
-
-function createListeningIngressWorker() {
-  let listener: WorkerMessageListener | undefined;
-  const listening = createDeferred<void>();
-  const firstAck = createDeferred<void>();
-  const idle = createIdleIngressWorker();
-  const ackSpooledUpdate = vi.fn(() => firstAck.resolve());
-  const createWorker = vi.fn(() => {
-    const worker = idle.createWorker();
-    return {
-      ...worker,
-      ackSpooledUpdate,
-      onMessage: vi.fn((nextListener: WorkerMessageListener) => {
-        listener = nextListener;
-        listening.resolve();
-        return () => undefined;
-      }),
-    };
-  });
-  return {
-    ackSpooledUpdate,
-    firstAck: firstAck.promise,
-    createWorker,
-    emit: (message: TestWorkerMessage) => listener?.(message as TelegramIngressWorkerMessage),
-    hasListener: () => listener !== undefined,
-    listening: listening.promise,
-    stop: idle.stop,
-    workerStop: idle.workerStop,
-  };
-}
-
 function startIsolatedIngressSession(params: {
   abort: AbortController;
   stateDir?: string;
@@ -348,6 +285,7 @@ function startIsolatedIngressSession(params: {
   init?: AsyncVoidFn;
   log?: (message: string) => void;
   persistUpdateId?: ConstructorParameters<typeof TelegramPollingSession>[0]["persistUpdateId"];
+  resetUpdateOffset?: ConstructorParameters<typeof TelegramPollingSession>[0]["resetUpdateOffset"];
   stop?: () => Promise<void>;
   spooledUpdateHandlerTimeoutMs?: number;
   stallThresholdMs?: number;
@@ -366,6 +304,7 @@ function startIsolatedIngressSession(params: {
     getCommittedUpdateId: params.getCommittedUpdateId,
     log: params.log,
     persistUpdateId: params.persistUpdateId,
+    resetUpdateOffset: params.resetUpdateOffset,
     stallThresholdMs: params.stallThresholdMs,
     setStatus: params.setStatus,
     ingress: {
@@ -437,6 +376,53 @@ describe("TelegramPollingSession", () => {
         expect(createWorker).not.toHaveBeenCalled();
       } finally {
         abort.abort();
+      }
+    });
+  });
+
+  it("drops the persisted offset when the worker reports a foreign offset", async () => {
+    await withTempSpool(async (tempDir) => {
+      const abort = new AbortController();
+      const handleUpdate = vi.fn(async () => undefined);
+      const worker = createListeningIngressWorker();
+      const resetUpdateOffset = vi.fn(async () => undefined);
+      const persistUpdateId = vi.fn(async () => undefined);
+      const log = vi.fn();
+      const { runPromise } = startIsolatedIngressSession({
+        abort,
+        stateDir: tempDir,
+        handleUpdate,
+        createWorker: worker.createWorker,
+        getCommittedUpdateId: () => 760_546_622,
+        persistUpdateId,
+        resetUpdateOffset,
+        log,
+      });
+      try {
+        await waitForTelegramTestState(() => expect(worker.hasListener()).toBe(true));
+        worker.emit({
+          type: "offset-rejected",
+          requestedOffset: 760_546_623,
+          adoptedUpdateId: 592_426_180,
+        });
+        // The reset must land before the adopted update's offset is persisted.
+        expect(resetUpdateOffset).toHaveBeenCalledTimes(1);
+        expect(persistUpdateId).not.toHaveBeenCalled();
+        worker.emit({
+          type: "update",
+          requestId: "foreign-1",
+          update: directUpdate(592_426_180, 123, "head"),
+          queued: 1,
+        });
+        await waitForTelegramTestState(() =>
+          expect(persistUpdateId).toHaveBeenCalledWith(592_426_180),
+        );
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining("ignored offset 760546623 and answered from update 592426180"),
+        );
+      } finally {
+        abort.abort();
+        await runPromise;
       }
     });
   });
@@ -1988,8 +1974,10 @@ describe("TelegramPollingSession", () => {
       handleUpdate: vi.fn(async (update: { update_id?: number }) => {
         events.push(`bot:${update.update_id}`);
         if (update.update_id === 42 && events.filter((event) => event === "bot:42").length === 1) {
-          // Hang until the core watchdog aborts the drain lifecycle.
-          await new Promise<void>(() => {});
+          // Let the watchdog fire, then finish the old handler before retry.
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 200);
+          });
         }
         if (update.update_id === 43) {
           abort.abort();

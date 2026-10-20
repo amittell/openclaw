@@ -1,3 +1,4 @@
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { createToolExecutionMatcher } from "./tool-policy-shared.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
@@ -67,6 +68,7 @@ export function finalizeAgentToolAvailability<T extends ToolDefinition>(
     [...winners].filter(
       ([, tool]) =>
         !availabilityBindings.get(tool)?.executionDenied &&
+        !isOwnerOnlyToolStub(tool) &&
         (!executionAllowed || executionAllowed(tool.name)),
     ),
   );

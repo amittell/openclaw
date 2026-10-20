@@ -249,7 +249,13 @@ it(
           updatedAt: Date.now() - 10_000,
           status: "interrupted",
           abortedLastRun: true,
-          mainRestartRecovery: { cycleId: "before-reset", revision: 1, chargedAttempts: 0 },
+          // Gateway close marked this row, so its cycle records the restart.
+          mainRestartRecovery: {
+            cycleId: "before-reset",
+            revision: 1,
+            chargedAttempts: 0,
+            cause: "gateway_restart",
+          },
         },
       );
       clearSessionStoreCacheForTest();
@@ -412,7 +418,13 @@ it(
         ...entry,
         status: "interrupted",
         abortedLastRun: true,
-        mainRestartRecovery: { cycleId: "after-reset", revision: 1, chargedAttempts: 0 },
+        // A second Gateway close marked the reset parent.
+        mainRestartRecovery: {
+          cycleId: "after-reset",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
         updatedAt: Date.now() - 10_000,
       }));
       await addRecoveryChild(currentChildMarker);

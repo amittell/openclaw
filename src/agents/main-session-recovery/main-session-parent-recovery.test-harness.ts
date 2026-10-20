@@ -109,6 +109,13 @@ export function registerParentRestartRecoveryCases(harness: ParentRestartRecover
         mainRestartRecovery: { cycleId: "parent-cycle", revision: 1, chargedAttempts: 0 },
         restartRecoveryRuns: fixture.restartRecoveryRuns,
         lifecycleRunId: fixture.lifecycleRunId,
+        // Gateway close marked this row, so its cycle records the restart.
+        mainRestartRecovery: {
+          cycleId: "marked-cycle",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
       },
     });
     await writeTranscript(sessionsDir, fixture.sessionId, [
