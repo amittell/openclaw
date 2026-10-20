@@ -563,7 +563,7 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       );
       const timeoutMs = parseStrictPositiveInteger(opts.timeout);
       if (opts.timeout !== undefined && timeoutMs === undefined) {
-        throwSessionsCliError("--timeout must be a positive integer (milliseconds).");
+        throwExpectedCliError("--timeout must be a positive integer (milliseconds).");
       }
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { sessionsAbortCommand } = await import("../../commands/sessions-abort.js");

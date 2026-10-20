@@ -12,7 +12,7 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import type { ExtensionAPI, ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { summarizeInStages } from "../compaction.js";
+import type { summarizeCompactionHistory } from "../compaction.js";
 import { castAgentMessages } from "../test-helpers/agent-message-fixtures.js";
 import {
   auditSummaryQuality,
@@ -102,15 +102,15 @@ function auditWorstCase(identifiers: string[]): { ok: boolean; reasons: string[]
   });
 }
 
-const mockSummarizeInStages = vi.fn<typeof summarizeInStages>();
+const mockSummarizeCompactionHistory = vi.fn<typeof summarizeCompactionHistory>();
 
 beforeEach(() => {
-  mockSummarizeInStages.mockReset();
-  testing.setSummarizeInStagesForTest(mockSummarizeInStages);
+  mockSummarizeCompactionHistory.mockReset();
+  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
 });
 
 afterEach(() => {
-  testing.setSummarizeInStagesForTest();
+  testing.setSummarizeCompactionHistoryForTest();
 });
 
 function stubSessionManager(): ExtensionContext["sessionManager"] {
@@ -202,7 +202,8 @@ async function runQualityGuardCompaction(params: {
 }
 
 function customInstructionsOfSummarizeCall(callIndex: number): string {
-  const instructions = mockSummarizeInStages.mock.calls[callIndex]?.[0]?.customInstructions;
+  const instructions =
+    mockSummarizeCompactionHistory.mock.calls[callIndex]?.[0]?.customInstructions;
   if (typeof instructions !== "string") {
     throw new Error(`expected summarize call ${callIndex + 1} to carry custom instructions`);
   }
@@ -266,7 +267,7 @@ describe("compaction-safeguard corrective quality feedback", () => {
       "## Pending user asks",
       LATEST_ASK,
     ].join("\n");
-    mockSummarizeInStages
+    mockSummarizeCompactionHistory
       .mockResolvedValueOnce(failingSummary)
       .mockResolvedValueOnce(
         structuredSummary({ pendingAsks: LATEST_ASK, identifiers: LONG_IDENTIFIERS.join("\n") }),
@@ -278,7 +279,7 @@ describe("compaction-safeguard corrective quality feedback", () => {
     });
 
     expect(result.cancel).not.toBe(true);
-    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
     expect(customInstructionsOfSummarizeCall(0)).not.toContain("Quality check feedback");
     const corrective = customInstructionsOfSummarizeCall(1);
     expect(corrective).toContain("Quality check feedback");

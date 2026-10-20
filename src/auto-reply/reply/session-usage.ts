@@ -3,16 +3,18 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { ModelRef } from "../../agents/model-ref-shared.js";
 import { hasBillableUsage, hasNonzeroUsage, type NormalizedUsage } from "../../agents/usage.js";
 import { getRuntimeConfig } from "../../config/config.js";
+import { accountSessionGoalUsage } from "../../config/sessions/goals-transitions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import {
   projectSessionEntryUsageUpdate,
   type SessionEntryUsageUpdate,
 } from "../../config/sessions/session-entry-usage.js";
-import type {
-  InternalSessionEntry,
-  SessionEntry,
-  SessionSystemPromptReport,
+import {
+  type InternalSessionEntry,
+  SESSION_TOTAL_TOKENS_VERSION,
+  type SessionEntry,
+  type SessionSystemPromptReport,
 } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
@@ -248,7 +250,7 @@ export async function persistSessionContextTotalTokens(params: {
           totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
           updatedAt,
         };
-        const accountedGoal = resolveSessionGoalDisplayState({ ...entry, ...patch }, updatedAt);
+        const accountedGoal = accountSessionGoalUsage({ ...entry, ...patch }, updatedAt);
         if (accountedGoal) {
           patch.goal = accountedGoal;
         }

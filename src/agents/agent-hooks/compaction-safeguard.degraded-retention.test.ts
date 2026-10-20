@@ -59,11 +59,11 @@ vi.mock("../compaction.js", async () => {
   const actual = await vi.importActual<typeof compactionModule>("../compaction.js");
   return {
     ...actual,
-    summarizeInStages: vi.fn(actual.summarizeInStages),
+    summarizeCompactionHistory: vi.fn(actual.summarizeCompactionHistory),
   };
 });
 
-const mockSummarizeInStages = vi.mocked(compactionModule.summarizeInStages);
+const mockSummarizeCompactionHistory = vi.mocked(compactionModule.summarizeCompactionHistory);
 const actualCompactionQualityModule = await vi.importActual<typeof compactionQualityModule>(
   "./compaction-safeguard-quality.js",
 );
@@ -72,15 +72,15 @@ const mockAuditSummaryQuality = vi.mocked(compactionQualityModule.auditSummaryQu
 const { MAX_COMPACTION_SUMMARY_CHARS, CONTEXT_TRUNCATED_MARKER } = testing;
 
 beforeEach(() => {
-  mockSummarizeInStages.mockReset();
-  testing.setSummarizeInStagesForTest(mockSummarizeInStages);
+  mockSummarizeCompactionHistory.mockReset();
+  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
   mockAuditSummaryQuality.mockImplementation(actualCompactionQualityModule.auditSummaryQuality);
   mockAuditSummaryQuality.mockClear();
   compactionLogger.warn.mockClear();
 });
 
 afterEach(() => {
-  testing.setSummarizeInStagesForTest();
+  testing.setSummarizeCompactionHistoryForTest();
   resetPluginRuntimeStateForTest();
 });
 
@@ -91,12 +91,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
   ])(
     "degrades with the $name when an identifier cannot fit the artifact cap",
     async ({ runOwnedRequest }) => {
-      mockSummarizeInStages.mockReset();
+      mockSummarizeCompactionHistory.mockReset();
       const latestAsk = "preserve the pending deployment status";
       const identifier = `https://example.com/${"a".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
       const fittingIdentifier = "/var/log/deploy-status.log";
       const oversizedRequiredTail = structuredSummary({ asks: latestAsk, identifiers: identifier });
-      mockSummarizeInStages.mockResolvedValue(oversizedRequiredTail);
+      mockSummarizeCompactionHistory.mockResolvedValue(oversizedRequiredTail);
 
       const sessionManager = createQualityGuardSessionManager({ qualityGuardMaxRetries: 0 });
       const event = createCompactionEvent({
@@ -129,18 +129,18 @@ describe("compaction-safeguard recent-turn preservation", () => {
       expect(compactionLogger.warn).toHaveBeenCalledWith(
         expect.stringMatching(/loss=.*identifier-retention/),
       );
-      expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+      expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
       expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
     },
   );
 
   it("carries the pending ask and identifiers into the degraded fallback", async () => {
-    mockSummarizeInStages.mockReset();
+    mockSummarizeCompactionHistory.mockReset();
     const latestAsk = "confirm the staging rollback finished";
     const identifier = "/tmp/degraded-retention.log";
     // A summary the audit rejects (no required headings) so the degrade fires, with facts
     // small enough to fit - unlike the infeasible case above, these CAN be retained.
-    mockSummarizeInStages.mockResolvedValue("Core summary without headings");
+    mockSummarizeCompactionHistory.mockResolvedValue("Core summary without headings");
 
     const sessionManager = createQualityGuardSessionManager({ qualityGuardMaxRetries: 0 });
     const event = createCompactionEvent({
@@ -162,11 +162,11 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("logs the greppable reasonCode when the terminal helper degrades the summary", async () => {
-    mockSummarizeInStages.mockReset();
+    mockSummarizeCompactionHistory.mockReset();
     const latestAsk = "confirm the staging rollback finished";
     // A summary the audit rejects (no required headings) so the terminal audit path degrades
     // rather than regenerating. qualityGuardMaxRetries: 0 makes the first audit failure final.
-    mockSummarizeInStages.mockResolvedValue("Core summary without headings");
+    mockSummarizeCompactionHistory.mockResolvedValue("Core summary without headings");
 
     const sessionManager = createQualityGuardSessionManager({ qualityGuardMaxRetries: 0 });
     const event = createCompactionEvent({
@@ -187,7 +187,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("keeps the generated split-turn context when a terminal audit failure trims the degraded suffix", async () => {
-    mockSummarizeInStages.mockReset();
+    mockSummarizeCompactionHistory.mockReset();
     const latestAsk = "roll back the api deployment and confirm health";
     const activeTurn = "Active turn: rolled back api-7 and is waiting on the health check.";
     // qualityGuardMaxRetries: 0 makes the audit rejection below terminal, so the degrade fires
@@ -200,7 +200,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
       userMessage(`turn ${turn} ${"u".repeat(700)}`, 2 * turn + 1),
       castAgentMessage(timestampedTextAssistant(`reply ${turn} ${"r".repeat(700)}`, 2 * turn + 2)),
     ]).flat();
-    mockSummarizeInStages
+    mockSummarizeCompactionHistory
       .mockResolvedValueOnce("Core summary without headings")
       .mockResolvedValueOnce(`${activeTurn} ${"z".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`);
 
@@ -235,6 +235,6 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).toContain(CONTEXT_TRUNCATED_MARKER.trim());
     expect(summary).toContain("reply 13 ");
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
-    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
   });
 });

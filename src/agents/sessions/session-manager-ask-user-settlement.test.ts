@@ -5,6 +5,7 @@ import {
   readTranscriptMutationAtSync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { QuestionManager } from "../../gateway/question-manager.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -181,11 +182,7 @@ for (const outcome of ["timeout", "answer"] as const) {
         expect(after).toBeGreaterThan(before);
         const events = await loadTranscriptEvents(target);
         if (mutation === "foreign") {
-          // 10.1 rehydrates the conflict across the metadata worker as a plain Error that
-          // carries only the name; upstream #165490 (after the cut) keeps the class identity.
-          expect(settled).toEqual({
-            error: expect.objectContaining({ name: "SqliteTranscriptMutationConflictError" }),
-          });
+          expect(settled).toEqual({ error: expect.any(SqliteTranscriptMutationConflictError) });
           expect(events).toEqual(foreignSnapshot);
         } else {
           expect(settled).toEqual({ entryId: expect.any(String) });

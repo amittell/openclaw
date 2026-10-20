@@ -27,13 +27,17 @@ type LevelDirectiveParseOptions = {
   strict?: boolean;
 };
 
+const compileDirectivePattern = (names: readonly string[]): RegExp => {
+  const namePattern = names.map(escapeRegExp).join("|");
+  return new RegExp(`(?<!\\S)\\/(?:${namePattern})(?=$|\\s|:)`, "i");
+};
+
 function createLevelDirectiveExtractor<T, Field extends string>(
   names: readonly string[],
   field: Field,
   normalize: (raw?: string) => T | undefined,
 ): (body?: string, options?: LevelDirectiveParseOptions) => NamedLevelDirective<T, Field> {
-  const namePattern = names.map(escapeRegExp).join("|");
-  const pattern = new RegExp(`(?<!\\S)\\/(?:${namePattern})(?=$|\\s|:)`, "i");
+  const pattern = compileDirectivePattern(names);
   return (body, options) => {
     if (!body) {
       return { cleaned: "", hasDirective: false } as NamedLevelDirective<T, Field>;

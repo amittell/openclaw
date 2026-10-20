@@ -82,7 +82,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
     } as SessionEntry);
     writeTranscript(fixture, [userTurn("run the check"), assistantText("check finished ok")]);
 
-    expect(resolve(fixture)).toEqual({
+    expect(await resolve(fixture)).toEqual({
       endedAt: 10_000,
       outcome: { status: "ok" },
       reason: "subagent-complete",
@@ -106,7 +106,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
       },
     ]);
 
-    expect(resolve(fixture)?.outcome).toEqual({ status: "ok" });
+    expect((await resolve(fixture))?.outcome).toEqual({ status: "ok" });
   });
 
   it("returns null when the latest assistant reply is still waiting on a tool call", async () => {
@@ -116,7 +116,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
     } as SessionEntry);
     writeTranscript(fixture, [userTurn("go"), assistantToolCall("call_2")]);
 
-    expect(resolve(fixture)).toBeNull();
+    expect(await resolve(fixture)).toBeNull();
   });
 
   it("returns null when the latest assistant reply ended in an error stop reason", async () => {
@@ -128,7 +128,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
       { message: { role: "assistant", content: "partial", stopReason: "error" } },
     ]);
 
-    expect(resolve(fixture)).toBeNull();
+    expect(await resolve(fixture)).toBeNull();
   });
 
   it("returns null when a newer user turn started after the last assistant reply", async () => {
@@ -138,7 +138,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
     } as SessionEntry);
     writeTranscript(fixture, [assistantText("first reply"), userTurn("next question")]);
 
-    expect(resolve(fixture)).toBeNull();
+    expect(await resolve(fixture)).toBeNull();
   });
 
   it("prefers the persisted entry completion over the transcript fallback", async () => {
@@ -152,7 +152,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
     // Transcript would also prove completion; the entry path must win.
     writeTranscript(fixture, [assistantText("unused")]);
 
-    expect(resolve(fixture)).toEqual({
+    expect(await resolve(fixture)).toEqual({
       startedAt: 2_000,
       endedAt: 9_000,
       outcome: { status: "ok" },
@@ -166,7 +166,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
       updatedAt: 9_000,
     } as SessionEntry);
 
-    expect(resolve(fixture)).toBeNull();
+    expect(await resolve(fixture)).toBeNull();
   });
 
   it("returns null when the child session entry is missing from the store", async () => {
@@ -180,7 +180,7 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
     fs.writeFileSync(orphanPath, `${JSON.stringify(assistantText("orphan reply"))}\n`);
 
     expect(
-      resolveSubagentRecoveryCompletion({
+      await resolveSubagentRecoveryCompletion({
         childSessionKey: CHILD_SESSION_KEY,
         fallbackEndedAt: 10_000,
         notBeforeMs: 1_000,
@@ -196,6 +196,6 @@ describe("resolveSubagentRecoveryCompletion transcript fallback", () => {
       updatedAt: 9_000,
     } as SessionEntry);
 
-    expect(resolve(fixture)).toBeNull();
+    expect(await resolve(fixture)).toBeNull();
   });
 });

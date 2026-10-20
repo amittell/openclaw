@@ -1,7 +1,7 @@
 import { vi } from "vitest";
-import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CronRunRecord } from "../../cron/store/run-history.types.js";
+import type { CronCreatorSessionLookup } from "./cron-creator-session.test-support.js";
 
 // Module mocks shared by the cron method validation suites; import this file first so
 // the mocks register before the cron handlers load.
@@ -9,19 +9,10 @@ const getRuntimeConfig = vi.hoisted(() =>
   vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
 );
 const loadGatewaySessionEntry = vi.hoisted(() =>
-  vi.fn(
-    (
-      sessionKey: string,
-    ): {
-      canonicalKey: string;
-      entry?: {
-        agentHarnessId?: unknown;
-        createdActor?: SessionCreatedActor;
-        modelSelectionLocked?: unknown;
-        sessionId?: unknown;
-      };
-    } => ({ canonicalKey: sessionKey, entry: undefined }),
-  ),
+  vi.fn((sessionKey: string): CronCreatorSessionLookup => ({
+    canonicalKey: sessionKey,
+    entry: undefined,
+  })),
 );
 const cronRunRecordsOverride = vi.hoisted(() =>
   vi.fn<
@@ -61,12 +52,15 @@ vi.mock("../../config/config.js", async () => {
   };
 });
 
+// mock-isolation: Validation fixtures supply session rows; real session stores stay unread.
 vi.mock("../session-utils.js", () => ({
   loadSessionEntry: loadGatewaySessionEntry,
   loadGatewaySessionEntryReadOnly: loadGatewaySessionEntry,
 }));
 
+// mock-isolation: Validation fixtures do not read live session delivery metadata.
 vi.mock("../../cron/delivery-preview.js", () => ({
+  resolveCronDeliveryFailurePreview: async () => undefined,
   resolveCronDeliveryPreview,
   resolveCronDeliveryPreviews,
 }));

@@ -24,18 +24,19 @@ describe("resolveGatewayScopedTools owner-only plugin tools", () => {
 
   it.each(["loopback", "http"] as const)(
     "omits owner-only stubs from the %s surface",
-    (surface) => {
+    async (surface) => {
       vi.spyOn(pluginTools, "resolveOpenClawPluginToolsForOptions").mockReturnValue([
         createOwnerOnlyToolStub(pluginTool("owner_probe")),
         pluginTool("probe"),
       ]);
 
-      const names = resolveGatewayScopedTools({
+      const { tools } = await resolveGatewayScopedTools({
         cfg: { tools: { allow: ["owner_probe", "probe"] } } as OpenClawConfig,
         sessionKey: "agent:main:main",
         senderIsOwner: false,
         surface,
-      }).tools.map((tool) => tool.name);
+      });
+      const names = tools.map((tool) => tool.name);
 
       expect(names).toContain("probe");
       expect(names).not.toContain("owner_probe");

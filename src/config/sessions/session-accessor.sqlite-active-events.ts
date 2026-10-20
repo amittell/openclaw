@@ -37,6 +37,7 @@ import {
 } from "./session-accessor.sqlite-reset-window.js";
 import {
   createVisibleMessageCursor,
+  DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES,
   encodeVisibleMessageCursor,
   MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
   normalizeVisibleDeltaLimits,

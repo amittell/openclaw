@@ -355,33 +355,29 @@ describe("main session recovery terminal-only residue", () => {
 
   // The scan runs under the real process generation; "dead-generation" is not it.
   it("retires a dead-generation fence through the persisted startup scan", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-dead-generation-"));
+    const tempDir = tempDirs.make("openclaw-dead-generation-");
     const storePath = path.join(tempDir, "sessions.json");
-    try {
-      await replaceSessionEntry(
-        { sessionKey, storePath },
-        settledEntry({
-          restartRecoveryRuns: [{ runId: "orphan-run", lifecycleGeneration: "dead-generation" }],
-          restartRecoveryTerminalRunIds: [],
-        }),
-      );
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      settledEntry({
+        restartRecoveryRuns: [{ runId: "orphan-run", lifecycleGeneration: "dead-generation" }],
+        restartRecoveryTerminalRunIds: [],
+      }),
+    );
 
-      await expect(
-        recoverStore({
-          activeSessionIds: [],
-          activeSessionKeys: [],
-          gatewayRuntime: unusedGatewayRuntime,
-          handledSessionKeys: new Set(),
-          storePath,
-        }),
-      ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
+    await expect(
+      recoverStore({
+        activeSessionIds: [],
+        activeSessionKeys: [],
+        gatewayRuntime: unusedGatewayRuntime,
+        handledSessionKeys: new Set(),
+        storePath,
+      }),
+    ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
 
-      const entry = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
-      expect(entry?.mainRestartRecovery).toBeUndefined();
-      expect(entry?.restartRecoveryRuns).toBeUndefined();
-    } finally {
-      await fs.rm(tempDir, { force: true, recursive: true });
-    }
+    const entry = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
+    expect(entry?.mainRestartRecovery).toBeUndefined();
+    expect(entry?.restartRecoveryRuns).toBeUndefined();
   });
 
   it("keeps blocking standalone inspect admission on a dead-generation fence", () => {

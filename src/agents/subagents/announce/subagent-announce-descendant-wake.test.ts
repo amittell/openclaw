@@ -34,7 +34,6 @@ describe("runDescendantWake", () => {
         announceId: "announce-parent",
         prepareCurrent: async () => true,
         isChildSessionEffectsAllowed: () => true,
-        hasUsableSessionEntry: (entry): entry is Record<string, unknown> => Boolean(entry),
         deps: {
           callGateway: vi.fn(),
           dispatchGatewayMethodInProcess,

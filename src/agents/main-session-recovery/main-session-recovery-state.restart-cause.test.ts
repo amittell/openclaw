@@ -13,7 +13,7 @@ function cycle(overrides: Partial<MainRestartRecoveryState> = {}): MainRestartRe
 }
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
-  return { sessionId: "session-1", updatedAt: 100, status: "running", ...overrides };
+  return { sessionId: "session-1", updatedAt: 100, ...overrides };
 }
 
 function mark(target: SessionEntry, cause?: "gateway_restart") {

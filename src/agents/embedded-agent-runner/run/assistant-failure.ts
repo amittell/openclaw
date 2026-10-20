@@ -248,7 +248,7 @@ export async function handleEmbeddedAssistantFailure(input: {
   // `incomplete-turn-recovery.ts` uses to recognise the category, so the two stay
   // in agreement rather than drifting apart on separate wording lists.
   if (
-    !input.fallbackConfigured &&
+    !runInput.fallbackConfigured &&
     assistantFailoverReason === null &&
     assistantProfileFailureReason === null &&
     !isPreDispatchToolCallRejectionMessage(failedAssistant?.errorMessage) &&

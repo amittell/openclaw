@@ -241,7 +241,7 @@ it("records a restart cause for boot marking but not for operator recovery", asy
     const booted = "agent:main:main";
     await replaceSessionEntry(
       { sessionKey: booted },
-      { sessionId: "booted-session", updatedAt: 1, status: "running" },
+      { sessionId: "booted-session", updatedAt: 1, restartRecoveryDeliveryRunId: "booted-run" },
     );
     await expect(
       markStartupOrphanedMainSessionsForRecovery({ stateDir: state.stateDir }),
@@ -254,7 +254,11 @@ it("records a restart cause for boot marking but not for operator recovery", asy
     const operator = "agent:main:operator";
     await replaceSessionEntry(
       { sessionKey: operator },
-      { sessionId: "operator-session", updatedAt: 1, status: "running" },
+      {
+        sessionId: "operator-session",
+        updatedAt: 1,
+        restartRecoveryDeliveryRunId: "operator-run",
+      },
     );
     const [target] = await discoverRestartRecoveryStoreTargets({ stateDir: state.stateDir });
     if (!target) {

@@ -57,10 +57,10 @@ vi.mock("./compaction-safeguard-quality.js", async () => {
 
 vi.mock("../compaction.js", async () => {
   const actual = await vi.importActual<typeof compactionModule>("../compaction.js");
-  return { ...actual, summarizeInStages: vi.fn(actual.summarizeInStages) };
+  return { ...actual, summarizeCompactionHistory: vi.fn(actual.summarizeCompactionHistory) };
 });
 
-const mockSummarizeInStages = vi.mocked(compactionModule.summarizeInStages);
+const mockSummarizeCompactionHistory = vi.mocked(compactionModule.summarizeCompactionHistory);
 const mockAuditSummaryQuality = vi.mocked(compactionQualityModule.auditSummaryQuality);
 const actualCompactionQualityModule = await vi.importActual<typeof compactionQualityModule>(
   "./compaction-safeguard-quality.js",
@@ -73,15 +73,15 @@ const PRIOR_SUMMARY = "PRIOR_SUMMARY_MARKER earlier session work";
 const QUALITY_REASONS = ["missing_section:## Decisions", "missing_identifiers:ABC-123"];
 
 beforeEach(() => {
-  testing.setSummarizeInStagesForTest(mockSummarizeInStages);
-  mockSummarizeInStages.mockReset();
-  mockSummarizeInStages.mockResolvedValue(REJECTED_SUMMARY);
+  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
+  mockSummarizeCompactionHistory.mockReset();
+  mockSummarizeCompactionHistory.mockResolvedValue(REJECTED_SUMMARY);
   mockAuditSummaryQuality.mockReset();
   compactionLogger.warn.mockClear();
 });
 
 afterEach(() => {
-  testing.setSummarizeInStagesForTest();
+  testing.setSummarizeCompactionHistoryForTest();
   resetPluginRuntimeStateForTest();
 });
 
@@ -242,13 +242,13 @@ describe("compaction-safeguard quality-guard exhaustion", () => {
   it("exhausts the retry budget before degrading", async () => {
     await runUntilQualityGuardExhausted();
 
-    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
     expect(mockAuditSummaryQuality).toHaveBeenCalledTimes(2);
   });
 
   it("still returns a passing summary untouched when the quality audit accepts it", async () => {
     mockAuditSummaryQuality.mockImplementation(actualCompactionQualityModule.auditSummaryQuality);
-    mockSummarizeInStages.mockResolvedValue(
+    mockSummarizeCompactionHistory.mockResolvedValue(
       ["## Decisions", "d", "## Open TODOs", "None.", "## Constraints/Rules", "None."].join("\n"),
     );
     const sessionManager = stubSessionManager();

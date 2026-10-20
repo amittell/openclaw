@@ -69,7 +69,7 @@ describe("restart recovery wording", () => {
         sessionId: "main-session",
         permissionMode: "guarded",
         updatedAt: Date.now() - 10_000,
-        status: "running",
+        status: "interrupted",
         abortedLastRun: true,
         deliveryContext: {
           channel: "telegram",

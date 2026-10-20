@@ -16,7 +16,7 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import type { ExtensionAPI, ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { summarizeInStages } from "../compaction.js";
+import type { summarizeCompactionHistory } from "../compaction.js";
 import { castAgentMessages } from "../test-helpers/agent-message-fixtures.js";
 import {
   consumeCompactionSafeguardCancellation,
@@ -36,15 +36,15 @@ const REQUIRED_ASK = `confirm the rollout status for ${Array.from(
   (_, index) => `region-${index}`,
 ).join(", ")}`;
 
-const mockSummarizeInStages = vi.fn<typeof summarizeInStages>();
+const mockSummarizeCompactionHistory = vi.fn<typeof summarizeCompactionHistory>();
 
 beforeEach(() => {
-  mockSummarizeInStages.mockReset();
-  testing.setSummarizeInStagesForTest(mockSummarizeInStages);
+  mockSummarizeCompactionHistory.mockReset();
+  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
 });
 
 afterEach(() => {
-  testing.setSummarizeInStagesForTest();
+  testing.setSummarizeCompactionHistoryForTest();
 });
 
 function stubSessionManager(): ExtensionContext["sessionManager"] {
@@ -139,7 +139,7 @@ describe("compaction-safeguard mixed-script summary budget", () => {
     // The generated prose alone costs 24,000 estimated chars and the summary omits the
     // request, so finalization has to add ~1,850 ASCII chars of required ask context and
     // cut the CJK prose, not settle on a smaller head cut that drops the ask.
-    mockSummarizeInStages.mockResolvedValue(
+    mockSummarizeCompactionHistory.mockResolvedValue(
       [
         "## Decisions",
         DENSE_CJK.repeat(2_000),
@@ -171,7 +171,7 @@ describe("compaction-safeguard mixed-script summary budget", () => {
   });
 
   it("still cancels when the required facts alone overrun the budget", async () => {
-    mockSummarizeInStages.mockResolvedValue(
+    mockSummarizeCompactionHistory.mockResolvedValue(
       [
         "## Decisions",
         DENSE_CJK.repeat(2_000),
@@ -205,7 +205,7 @@ describe("compaction-safeguard mixed-script summary budget", () => {
     // text must not be treated as fitting.
     const overBudget = DENSE_CJK.repeat(1_334);
     expect(estimateStringChars(overBudget)).toBe(16_008);
-    mockSummarizeInStages.mockResolvedValue(overBudget);
+    mockSummarizeCompactionHistory.mockResolvedValue(overBudget);
 
     const { result } = await runCompaction({
       qualityGuardEnabled: false,

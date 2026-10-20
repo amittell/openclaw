@@ -21,24 +21,30 @@ import { resolveOverloadFailoverBackoffPolicy } from "./helpers.js";
 
 type ControllerInput = Parameters<typeof createEmbeddedRunFailoverRetryController>[0];
 
-function createController(cfg: ControllerInput["runParams"]["config"]) {
+function createController(cfg: ControllerInput["runInput"]["runParams"]["config"]) {
   return createEmbeddedRunFailoverRetryController({
-    runParams: {
-      runId: "run:overload-backoff-test",
-      config: cfg,
-    } as ControllerInput["runParams"],
-    provider: "openai",
-    modelId: "gpt-5.6-luna",
-    globalLane: "test",
-    agentDir: "/tmp/openclaw-overload-backoff-test",
-    fallbackConfigured: false,
-    profileFailureStore: { version: 1, profiles: {} },
-    getLastProfileId: () => "openai:p1",
+    runInput: {
+      runParams: {
+        runId: "run:overload-backoff-test",
+        config: cfg,
+      } as ControllerInput["runInput"]["runParams"],
+      globalLane: "test",
+      agentDir: "/tmp/openclaw-overload-backoff-test",
+      fallbackConfigured: false,
+    },
+    preparedRuntime: {
+      provider: "openai",
+      modelId: "gpt-5.6-luna",
+      profileFailureStore: { version: 1, profiles: {} },
+      getApiKeyInfo: () => null,
+      advanceAttemptAuthProfile: vi.fn(async () => false),
+      snapshot: () => ({
+        lastProfileId: "openai:p1",
+        pluginHarnessOwnsTransport: false,
+        agentHarness: { id: "embedded" },
+      }),
+    },
     getSessionId: () => "session:overload-backoff-test",
-    harnessOwnsTransport: () => false,
-    getRuntimeAuthOwnerId: () => "embedded",
-    getApiKeyInfo: () => null,
-    advanceAuthProfile: vi.fn(async () => false),
   });
 }
 

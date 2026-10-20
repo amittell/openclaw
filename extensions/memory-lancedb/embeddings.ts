@@ -162,7 +162,7 @@ class OpenAiCompatibleEmbeddings {
 
     // Single endpoint: identical behavior to before, no failover bookkeeping.
     if (this.baseUrls.length === 1) {
-      return await this.postVia(this.baseUrls[0], params, request.options?.timeoutMs);
+      return await this.postVia(this.baseUrls[0], params, timeoutMs);
     }
 
     // Failover: prefer endpoints not in cooldown (primary order); if all are
@@ -174,11 +174,8 @@ class OpenAiCompatibleEmbeddings {
       (url) => (this.endpointDownUntil.get(url ?? "") ?? 0) <= now,
     );
     const candidates = healthy.length > 0 ? healthy : this.baseUrls;
-    const perAttempt = request.options?.timeoutMs
-      ? Math.max(
-          MIN_EMBEDDING_ATTEMPT_TIMEOUT_MS,
-          Math.floor(request.options.timeoutMs / candidates.length),
-        )
+    const perAttempt = timeoutMs
+      ? Math.max(MIN_EMBEDDING_ATTEMPT_TIMEOUT_MS, Math.floor(timeoutMs / candidates.length))
       : undefined;
 
     let lastError: unknown;

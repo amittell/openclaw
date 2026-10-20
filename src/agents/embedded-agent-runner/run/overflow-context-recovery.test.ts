@@ -104,7 +104,7 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
         sessionKey: `agent:main:${sessionId}`,
         storePath: path.join(tempDirs.make("openclaw-overflow-recovery-"), "sessions.json"),
       };
-      await replaceSessionEntry(target, { sessionId, updatedAt: 1, status: "running" });
+      await replaceSessionEntry(target, { sessionId, updatedAt: 1 });
       const admission = prepareSystemAgentRunAdmission(
         {},
         `run-${mode}`,
@@ -209,7 +209,8 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
             ?.content,
         ).toEqual(expectedContent);
         const stored = loadSessionEntry(target);
-        expect(stored).toMatchObject({ sessionId, status: "running" });
+        expect(stored).toMatchObject({ sessionId });
+        expect(stored).not.toHaveProperty("status", "interrupted");
         expect(stored).not.toHaveProperty("abortedLastRun", true);
         expect(stored).not.toHaveProperty("mainRestartRecovery");
         expect(stored).not.toHaveProperty("restartRecoveryRuns");

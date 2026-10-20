@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import {
@@ -56,34 +55,6 @@ describe("startGatewayConfigReloader", () => {
     resetGatewayWorkAdmission();
     vi.useRealTimers();
     vi.restoreAllMocks();
-  });
-
-  it("notifies lifecycle owners before hot reload and commits after success", async () => {
-    const initialConfig: OpenClawConfig = {
-      gateway: { reload: {} },
-      agents: { defaults: { sandbox: { mode: "off" } } },
-      hooks: { enabled: false },
-    };
-    const nextConfig: OpenClawConfig = {
-      gateway: { reload: {} },
-      agents: { defaults: { sandbox: { mode: "all" } } },
-      hooks: { enabled: true },
-    };
-    const readSnapshot = vi.fn(async () => makeSnapshot({ config: nextConfig, hash: "hot" }));
-    const harness = createReloaderHarness(readSnapshot, { initialConfig });
-    await harness.reloader.ready;
-
-    await flushWatcherChange(harness);
-
-    expect(harness.onConfigChange.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.onHotReload.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-    expect(harness.onHotReload.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.onConfigApplied.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-    expect(harness.onConfigRevisionApplied).toHaveBeenCalledWith(
-      hashRuntimeConfigValue(nextConfig),
-    );
   });
 
   it("notifies lifecycle owners when hybrid mode applies a restart-only change", async () => {

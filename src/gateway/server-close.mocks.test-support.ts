@@ -105,23 +105,20 @@ export function resetServerCloseMocks(): void {
   mocks.listChannelPlugins.mockReset();
   mocks.listChannelPlugins.mockReturnValue([]);
   mocks.disposeAllCodeModeRuns.mockReset();
-  mocks.disposeAgentHarnesses.mockClear();
-  mocks.disposeAgentHarnesses.mockResolvedValue(undefined);
-  mocks.disposeAllSessionMcpRuntimes.mockClear();
-  mocks.disposeAllSessionMcpRuntimes.mockResolvedValue(undefined);
-  mocks.triggerInternalHook.mockReset();
-  mocks.triggerInternalHook.mockResolvedValue(undefined);
-  mocks.disposeAllBundleLspRuntimes.mockClear();
-  mocks.disposeAllBundleLspRuntimes.mockResolvedValue(undefined);
-  mocks.drainRetainedEmbeddingProviders.mockClear();
-  mocks.drainRetainedEmbeddingProviders.mockResolvedValue(undefined);
-  mocks.stopGmailWatcher.mockClear();
-  mocks.stopGmailWatcher.mockResolvedValue(undefined);
-  mocks.closeProviderTransportDispatcherPool.mockClear();
-  mocks.closeProviderTransportDispatcherPool.mockResolvedValue(undefined);
-  mocks.disposeAcpSessionManager.mockReset();
-  mocks.disposeAcpSessionManager.mockResolvedValue(undefined);
   mocks.fenceSessionSuspensionWritesForGatewayShutdown.mockReset();
-  mocks.closePluginStateDatabaseAsync.mockReset();
-  mocks.closePluginStateDatabaseAsync.mockResolvedValue(undefined);
+  // A reset, not a clear: leftover once-implementations must not leak between tests (#166014).
+  for (const mock of [
+    mocks.disposeAgentHarnesses,
+    mocks.disposeAllSessionMcpRuntimes,
+    mocks.triggerInternalHook,
+    mocks.disposeAllBundleLspRuntimes,
+    mocks.drainRetainedEmbeddingProviders,
+    mocks.stopGmailWatcher,
+    mocks.closeProviderTransportDispatcherPool,
+    mocks.disposeAcpSessionManager,
+    mocks.closePluginStateDatabaseAsync,
+  ]) {
+    mock.mockReset();
+    mock.mockResolvedValue(undefined);
+  }
 }

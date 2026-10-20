@@ -240,21 +240,23 @@ function readTranscriptTailLines(filePath: string, maxBytes: number): string[] {
  */
 function resolveTranscriptCompletion(params: {
   childSessionKey: string;
+  childAgentId?: string;
+  sessionEntry: SessionEntry | undefined;
   fallbackEndedAt: number;
   cfg?: OpenClawConfig;
 }): SubagentSessionCompletion | null {
   try {
-    const sessionEntry = loadSubagentSessionEntry({
-      childSessionKey: params.childSessionKey,
-      cfg: params.cfg,
-    });
+    const { sessionEntry } = params;
     const sessionId =
       typeof sessionEntry?.sessionId === "string" ? sessionEntry.sessionId.trim() : "";
     if (!sessionId) {
       return null;
     }
     const cfg = params.cfg ?? getRuntimeConfig();
-    const agentId = resolveAgentIdFromSessionKey(params.childSessionKey.trim());
+    const agentId = resolveAgentIdFromSessionKey(
+      params.childSessionKey.trim(),
+      params.childAgentId,
+    );
     const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
     const transcriptPath = resolveSessionFilePathCore(
       sessionId,
@@ -328,15 +330,20 @@ function resolveTranscriptCompletion(params: {
  * persisted session entry first, then the transcript tail (a gateway restart
  * mid-flush can leave the entry unended while the run actually finished).
  */
-export function resolveSubagentRecoveryCompletion(params: {
+export async function resolveSubagentRecoveryCompletion(params: {
   childSessionKey: string;
+  childAgentId?: string;
   fallbackEndedAt: number;
   notBeforeMs?: number;
   cfg?: OpenClawConfig;
-}): SubagentSessionCompletion | null {
-  const sessionEntry = loadSubagentSessionEntry({
+  assertCurrent?: () => void;
+}): Promise<SubagentSessionCompletion | null> {
+  // One worker read serves both paths; a retired read throws through to the caller.
+  const sessionEntry = await loadSubagentSessionEntry({
     childSessionKey: params.childSessionKey,
+    childAgentId: params.childAgentId,
     cfg: params.cfg,
+    assertCurrent: params.assertCurrent,
   });
   const entryCompletion = resolveCompletionFromSessionEntry(sessionEntry, params.fallbackEndedAt, {
     notBeforeMs: params.notBeforeMs,
@@ -346,6 +353,8 @@ export function resolveSubagentRecoveryCompletion(params: {
   }
   return resolveTranscriptCompletion({
     childSessionKey: params.childSessionKey,
+    childAgentId: params.childAgentId,
+    sessionEntry,
     fallbackEndedAt: params.fallbackEndedAt,
     cfg: params.cfg,
   });
