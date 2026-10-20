@@ -19,10 +19,11 @@ import {
   expectCompactionResult,
   runCompactionScenario,
   structuredSummary,
+  testing,
   userMessage,
-  type CompactionEvent,
-} from "./compaction-safeguard.scenario.test-support.js";
-import { testing } from "./compaction-safeguard.test-support.js";
+} from "./compaction-safeguard.test-support.js";
+
+type CompactionEvent = ReturnType<typeof createCompactionEvent>;
 
 const { compactionLogger } = vi.hoisted(() => {
   const logger = {
