@@ -1,7 +1,6 @@
 // The Telegram "Current message:" block. It has two projections: the inline one
-// inside the inbound user-context prefix, and the self-contained carrier one.
-// It lives beside inbound-meta.ts so prompt-prelude.ts can project the carrier
-// without importing the prefix builder.
+// inside the inbound user-context prefix, and the self-contained carrier one that
+// get-reply-run-context.ts applies to the runtime-context conversation-data fragment.
 import type { TemplateContext } from "../templating.js";
 import { normalizePromptMetadataString, sanitizeTranscriptText } from "./inbound-meta.text.js";
 

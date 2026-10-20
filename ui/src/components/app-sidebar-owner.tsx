@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, Show, untrack } from "solid-js";
+import { createMemo, createRoot, onSettled, runWithOwner, Show } from "solid-js";
 import type {
   FsListDirResult,
   WorktreeRepositoryStatus,
@@ -16,18 +16,16 @@ import {
   catalogSessionKeyFromSearch,
 } from "../lib/sessions/catalog-key.ts";
 import type { CatalogProjectGrouping } from "../lib/sessions/catalog-project-grouping.ts";
-import "./mcp-app-catalog.tsx";
 import "./sidebar-agent-card.tsx";
 import "./sidebar-attention.tsx";
-import { SubscriptionsController } from "../lib/subscriptions-controller.ts";
 import "./theme-mode-toggle.ts";
 import "./tooltip.ts";
 import { renderAppSidebarOnline, sidebarOnlineOrder } from "./app-sidebar-online.tsx";
 import { hidePersonalSidebarCatalog } from "./app-sidebar-personal-navigation.ts";
 import { renderSidebarRail, renderSidebarPages } from "./app-sidebar-rail.tsx";
-import type { SessionCatalogGroupsRenderer } from "./app-sidebar-session-catalog-render.tsx";
 import "../styles/app-sidebar.css";
 import "../styles/sidebar-rail.css";
+import type { SessionCatalogGroupsRenderer } from "./app-sidebar-session-catalog-render.tsx";
 import type { CatalogSessionMenuRequest } from "./app-sidebar-session-catalogs.ts";
 import { renderSessionListToolbar } from "./app-sidebar-session-filter-summary.tsx";
 import { renderSessionList as SessionList } from "./app-sidebar-session-list-render.tsx";
@@ -45,11 +43,10 @@ import {
   type SidebarRecentSession,
   type SidebarToolActivity,
 } from "./app-sidebar-session-types.ts";
-import { SessionOrganizerController } from "./session-organizer-controller.ts";
+import { SessionOrganizer } from "./session-organizer.ts";
 import { SidebarAgentRoster, renderSidebarPinnedSession } from "./sidebar-agent-roster.tsx";
 import type { createSidebarScroll } from "./sidebar-context-controller.ts";
-import { equalSidebarContext, selectSidebarContext } from "./sidebar-context-state.ts";
-import { SidebarMenusController } from "./sidebar-menus-controller.tsx";
+import { createSidebarMenus } from "./sidebar-menus.tsx";
 import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
 import { createSidebarPeople, SidebarPeoplePreferences } from "./sidebar-people.ts";
 import {
@@ -58,28 +55,42 @@ import {
 } from "./sidebar-snapshot-capture.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
 import { createSidebarSnapshot } from "./sidebar-snapshot.ts";
+import { GatewayStatus } from "./solid/gateway-status.tsx";
 import { Icon } from "./solid/icon.tsx";
 import { PanelRefreshStatus } from "./solid/panel-refresh-status.tsx";
-import { SidebarCommunityInvite } from "./solid/sidebar-community-invite.tsx";
 
 export class AppSidebarOwner extends AppSidebarSessionNavigationElement implements SessionListHost {
-  readNarration: () => ReturnType<SidebarNarration["read"]> | undefined = () => undefined;
   private readonly emptyNarrationLines = new Map<string, string>();
   private readonly emptyNarrationTools = new Map<string, SidebarToolActivity>();
   private readonly emptyObserverDigests = new Map<string, SessionObserverDigest>();
   override get sidebarNarrationLines() {
-    return this.readNarration()?.lines ?? this.emptyNarrationLines;
+    return this.narration?.read().lines ?? this.emptyNarrationLines;
   }
   override get sidebarTools() {
-    return this.readNarration()?.tools ?? this.emptyNarrationTools;
+    return this.narration?.read().tools ?? this.emptyNarrationTools;
   }
   override get sidebarObserverDigests() {
-    return this.readNarration()?.observerDigests ?? this.emptyObserverDigests;
+    return this.narration?.read().observerDigests ?? this.emptyObserverDigests;
   }
 
-  override readonly sessionOrganizer = new SessionOrganizerController(this);
-  override readonly sidebarMenus = new SidebarMenusController(this);
-  readonly people = new SidebarPeoplePreferences(() => this.requestUpdate());
+  override readonly sessionOrganizer = new SessionOrganizer(this, () => this.invalidate());
+  // Native sidebar custody outlives provider/view roots.
+  private readonly menuRoot = runWithOwner(null, () =>
+    createRoot((dispose) => ({
+      menus: createSidebarMenus({
+        host: this,
+        element: this.hostElement,
+        commit: () => {
+          this.invalidate();
+          return this.updateComplete;
+        },
+      }),
+      dispose,
+    })),
+  );
+  override readonly sidebarMenus = this.menuRoot.menus;
+  readonly disposeMenus = this.menuRoot.dispose;
+  readonly people = new SidebarPeoplePreferences(() => this.invalidate());
   peopleView?: ReturnType<typeof createSidebarPeople>;
   // A connected host retains its pending boot read when Solid recreates the view.
   readonly snapshot = createSidebarSnapshot(this);
@@ -196,34 +207,6 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     ...args: ConstructorParameters<typeof AppSidebarSessionNavigationElement>
   ) {
     super(...args);
-    new SubscriptionsController(this)
-      .watch(
-        () => this.router,
-        (router, notify) => {
-          const stop = router.subscribeSelector(selectSidebarContext, notify, equalSidebarContext);
-          return () => {
-            stop();
-            this.contextualSidebar = undefined;
-          };
-        },
-        (router) => {
-          this.contextualSidebar = selectSidebarContext(router.getState());
-        },
-      )
-      .effect(
-        () => this.context?.chatSubmissions,
-        (submissions) => submissions.subscribeCreate(() => this.requestUpdate()),
-      )
-      .effect(
-        () => this.context?.agentIdentity,
-        (identity) => identity.subscribe(this.sessionData.requestSessionDataUpdate),
-      )
-      .watchStore(() => this.context?.theme)
-      .watchStore(() => this.context?.config)
-      .effect(
-        () => this.context?.plugins,
-        (plugins) => plugins.subscribe(this.sessionData.requestSessionDataUpdate),
-      );
   }
   get nativeGatewaySnapshot(): NativeGatewaysSnapshot | null {
     // SAFETY: The macOS dashboard injects its encoded gateway snapshot at this key; browsers leave it unset.
@@ -241,7 +224,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     (module) => {
       this.catalogRenderer = module.renderSessionCatalogGroups;
       if (this.isConnected) {
-        this.requestUpdate();
+        this.invalidate();
       }
     },
   );
@@ -253,6 +236,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   }
 
   override disconnectedCallback() {
+    this.sidebarMenus.disconnect();
     this.sessionData.disconnect();
     this.peopleView?.dismiss();
     this.narration?.disconnect();
@@ -306,6 +290,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   }
 
   override connectedCallback() {
+    this.sidebarMenus.connect();
     this.sessionData.connect();
     this.snapshot.connect();
     super.connectedCallback();
@@ -361,20 +346,16 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
         sectionId,
         limit,
       );
-      this.requestUpdate();
+      this.invalidate();
     } else {
       this.sessionData.setVisibleSessionLimit(sectionId, limit);
     }
   }
 
-  preloadCatalogRenderer() {
-    return this.catalogRendererImport.load();
-  }
-
   setCatalogProjectGrouping(next: CatalogProjectGrouping): void {
     storeSidebarCatalogGrouping(next);
     this.catalogProjectGrouping = next;
-    this.requestUpdate();
+    this.invalidate();
   }
 
   hideSessionCatalog(catalogId: string): void {
@@ -410,20 +391,12 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
           ? host().getRouteSessionKey()
           : "";
     });
-    createEffect(
-      () => ({
-        catalog:
-          !host().catalogRenderer &&
-          (catalogs().length > 0 || host().sessionData.sessionCatalogRefreshStatus.error !== null)
-            ? host().catalogRendererImport
-            : null,
-      }),
-      ({ catalog }) => {
-        if (catalog) {
-          void catalog.load().catch(() => undefined);
-        }
-      },
-    );
+    const LoadCatalogRenderer = () => {
+      onSettled(() => {
+        void this.catalogRendererImport.load().catch(() => undefined);
+      });
+      return null;
+    };
     const nativeList = (
       <SessionList
         host={host()}
@@ -448,19 +421,27 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
       />
     );
     return (
-      <Show when={host().sidebarAgentsMode === "roster"} fallback={nativeList}>
-        <SidebarAgentRoster
-          host={host()}
-          active={
-            host().navigationVisible &&
-            host().navigationView === "sessions" &&
-            !host().contextualSidebar
+      <>
+        <Show
+          when={
+            !host().catalogRenderer &&
+            (catalogs().length > 0 || host().sessionData.sessionCatalogRefreshStatus.error !== null)
           }
-          sections={sections()}
-          empty={visibleSessions().length === 0}
-          involvingMe={host().sessionInvolvingMeFilterActive}
-        />
-      </Show>
+        >
+          <LoadCatalogRenderer />
+        </Show>
+        <Show when={host().sidebarAgentsMode === "roster"} fallback={nativeList}>
+          <SidebarAgentRoster
+            host={host()}
+            active={
+              host().navigationVisible &&
+              host().navigationView === "sessions" &&
+              !host().contextualSidebar
+            }
+            sections={sections()}
+          />
+        </Show>
+      </>
     );
   }
 
@@ -472,10 +453,13 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     const SidebarFrame = () => {
       const scrollRef = scroll.createRef();
       const rail = renderSidebarRail(this);
-      const pages = renderSidebarPages(this);
+      const Pages = () => renderSidebarPages(this);
       const toolbar = renderSessionListToolbar(this);
       const online = renderAppSidebarOnline(this);
-      const menus = untrack(() => this.sidebarMenus).render();
+      const menus = this.sidebarMenus.render(this);
+      const statusVisible = () =>
+        this.gatewayStatus?.kind &&
+        (this.gatewayStatus.kind !== "connected" || this.connectionRecovery);
       return (
         <aside
           class="sidebar sidebar--rail"
@@ -524,7 +508,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
                     </Show>
                   }
                 >
-                  {pages}
+                  <Pages />
                 </Show>
               </div>
               <Show when={!this.contextualSidebar && this.sessionsStatusFilter !== "archived"}>
@@ -534,26 +518,21 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
                 />
               </Show>
             </div>
-            <div class="sidebar-shell__invite">
-              <Show
-                when={
-                  this.context.theme.branding.communityLinks &&
-                  this.context.config.current.communityInvite
-                }
-              >
-                <SidebarCommunityInvite />
-              </Show>
-            </div>
-            <Show when={this.devGitBranch}>
+            <Show when={statusVisible() || this.devGitBranch}>
               <div class="sidebar-shell__footer">
-                <openclaw-tooltip prop:content={this.devGitBranch ?? undefined}>
-                  <div class="sidebar-footer-branch">
-                    <span class="sidebar-footer-branch__icon" aria-hidden="true">
-                      <Icon name="gitBranch" />
-                    </span>
-                    <span class="sidebar-footer-branch__name">{this.devGitBranch}</span>
-                  </div>
-                </openclaw-tooltip>
+                <Show when={statusVisible()}>
+                  <GatewayStatus {...this.gatewayStatus!} row />
+                </Show>
+                <Show when={this.devGitBranch}>
+                  <openclaw-tooltip prop:content={this.devGitBranch ?? undefined}>
+                    <div class="sidebar-footer-branch">
+                      <span class="sidebar-footer-branch__icon" aria-hidden="true">
+                        <Icon name="gitBranch" />
+                      </span>
+                      <span class="sidebar-footer-branch__name">{this.devGitBranch}</span>
+                    </div>
+                  </openclaw-tooltip>
+                </Show>
               </div>
             </Show>
           </div>
