@@ -345,6 +345,45 @@ describe("refreshGatewayHealthSnapshot", () => {
     ]);
   });
 
+  it("broadcasts config health only while its observation is current", async () => {
+    const healthState = await loadHealthState();
+    const { buildRuntimeConfigHealth } = await vi.importActual<
+      typeof import("../../commands/health-runtime-config.js")
+    >("../../commands/health-runtime-config.js");
+    const liveSourceConfig = { agents: { defaults: { model: "provider/live" } } };
+    const changedSourceConfig = { agents: { defaults: { model: "provider/changed" } } };
+    let observation = { generation: 7, sourceConfig: liveSourceConfig };
+    getRuntimeConfigSourceSnapshotMock.mockReturnValue(liveSourceConfig);
+    getConfigReloadObservationMock.mockImplementation(() => observation);
+    let queuedObservation = false;
+    buildRuntimeConfigHealthMock.mockImplementation((params) => {
+      if (!queuedObservation) {
+        queuedObservation = true;
+        queueMicrotask(() => {
+          observation = { generation: 8, sourceConfig: changedSourceConfig };
+        });
+      }
+      return buildRuntimeConfigHealth(params);
+    });
+    const publications: Array<{ state: string | undefined; generation: number }> = [];
+    healthState.setBroadcastHealthUpdate((snapshot) => {
+      publications.push({
+        state: snapshot.runtimeConfig?.state,
+        generation: observation.generation,
+      });
+    });
+
+    await healthState.refreshGatewayHealthSnapshot({ probe: false });
+
+    expect(publications).toEqual([{ state: "ok", generation: 7 }]);
+    expect(healthState.getHealthCache()).toBeNull();
+    await healthState.refreshGatewayHealthSnapshot({ probe: false });
+    expect(publications).toEqual([
+      { state: "ok", generation: 7 },
+      { state: "drift", generation: 8 },
+    ]);
+  });
+
   it("recollects the whole snapshot when the runtime revision advances", async () => {
     const healthState = await loadHealthState();
     const firstCollection = createDeferred<HealthSummary>();

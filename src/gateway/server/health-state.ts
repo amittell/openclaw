@@ -234,62 +234,59 @@ export async function refreshGatewayHealthSnapshot(opts?: {
   state.nextGeneration = generation;
   const promise = (async () => {
     const { collectGatewayHealthSnapshot } = await import("../health/collector.js");
-    const collectPublishedSnapshot = async () => {
-      while (true) {
-        const contextBeforeCollection = readRuntimeConfigHealthContext();
-        let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
-        try {
-          runtimeSnapshot = opts?.getRuntimeSnapshot?.();
-        } catch {
-          runtimeSnapshot = undefined;
-        }
-        const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
-        const collected = await collectGatewayHealthSnapshot({
-          audience,
-          probe: strength === "probe",
-          runtimeSnapshot,
-          ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
-          ...(opts?.getSessionRowProjection
-            ? { sessionRowProjection: opts.getSessionRowProjection() }
-            : {}),
-        });
-        const contextAfterCollection = readRuntimeConfigHealthContext();
-        if (contextBeforeCollection.key !== contextAfterCollection.key) {
-          continue;
-        }
-        const prepared = preparePublishedHealthSnapshot(collected, contextAfterCollection);
-        if (
-          prepared.configKey === contextBeforeCollection.key &&
-          contextBeforeCollection.key === readRuntimeConfigHealthContext().key
-        ) {
-          return prepared;
-        }
+    while (true) {
+      const contextBeforeCollection = readRuntimeConfigHealthContext();
+      let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
+      try {
+        runtimeSnapshot = opts?.getRuntimeSnapshot?.();
+      } catch {
+        runtimeSnapshot = undefined;
       }
-    };
-    const prepared = await collectPublishedSnapshot();
-    const { configKey, snapshot: snap } = prepared;
-    // Channel collection can outlive several sampling windows. Read diagnostics
-    // only when this new snapshot is ready to return, cache, or broadcast.
-    const eventLoop = opts?.getEventLoopHealth?.();
-    if (eventLoop) {
-      snap.eventLoop = eventLoop;
+      const configReloadHotReloadStatus = opts?.getConfigReloaderHotReloadStatus?.();
+      const collected = await collectGatewayHealthSnapshot({
+        audience,
+        probe: strength === "probe",
+        runtimeSnapshot,
+        ...(configReloadHotReloadStatus ? { configReloadHotReloadStatus } : {}),
+        ...(opts?.getSessionRowProjection
+          ? { sessionRowProjection: opts.getSessionRowProjection() }
+          : {}),
+      });
+      const contextAfterCollection = readRuntimeConfigHealthContext();
+      if (contextBeforeCollection.key !== contextAfterCollection.key) {
+        continue;
+      }
+      const { configKey, snapshot: snap } = preparePublishedHealthSnapshot(
+        collected,
+        contextAfterCollection,
+      );
+      // Channel collection can outlive several sampling windows. Read diagnostics
+      // only when this new snapshot is ready to return, cache, or broadcast.
+      const eventLoop = opts?.getEventLoopHealth?.();
+      if (eventLoop) {
+        snap.eventLoop = eventLoop;
+      }
+      // Keep the final config check and publication in the same synchronous frame.
+      if (configKey !== readRuntimeConfigHealthContext().key) {
+        continue;
+      }
+      if (
+        strength === "probe" &&
+        state.inFlight.passive &&
+        state.inFlight.passive.generation < generation
+      ) {
+        // Existing passive waiters may finish, but new callers must not join
+        // weaker work after this newer live probe has succeeded.
+        state.inFlight.passive = null;
+      }
+      // Concurrent passive/probe refreshes can finish out of order. Only a
+      // generation newer than the published cache may advance version/broadcast.
+      if (!includeSensitive && generation > state.committedGeneration) {
+        state.committedGeneration = generation;
+        publishPublicHealthSnapshot(snap, configKey);
+      }
+      return snap;
     }
-    if (
-      strength === "probe" &&
-      state.inFlight.passive &&
-      state.inFlight.passive.generation < generation
-    ) {
-      // Existing passive waiters may finish, but new callers must not join
-      // weaker work after this newer live probe has succeeded.
-      state.inFlight.passive = null;
-    }
-    // Concurrent passive/probe refreshes can finish out of order. Only a
-    // generation newer than the published cache may advance version/broadcast.
-    if (!includeSensitive && generation > state.committedGeneration) {
-      state.committedGeneration = generation;
-      publishPublicHealthSnapshot(snap, configKey);
-    }
-    return snap;
   })().finally(() => {
     if (state.inFlight[strength]?.generation === generation) {
       state.inFlight[strength] = null;
