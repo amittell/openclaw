@@ -70,14 +70,15 @@ const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
 
 // Used whenever no restart is on record: an explicit operator recovery, a pre-upgrade
 // cycle, or any cycle without the "gateway_restart" cause. It never claims a restart.
+// Mirrors RESTART_RECOVERY_INTERRUPTION_NOTE (restart-recovery-prompt.ts) without the restart.
 const INTERRUPT_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
-  "Your previous turn was interrupted while " +
-    "OpenClaw was waiting on tool/model work. The interruption did not cancel the user's task. " +
+  "Your previous turn was interrupted while OpenClaw was waiting on tool/model work. " +
+    "Treat tool results marked interrupted, missing, or aborted as having an unknown outcome, " +
+    "not proof of tool failure. Verify what happened before repeating an action. " +
+    "The interruption did not cancel the user's task. " +
     "Continue from the existing transcript: check the current state, recover interrupted work, " +
     "and finish the task without asking the user to repeat the request. " +
-    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} Treat a tool result ` +
-    "marked interrupted or missing as having an unknown outcome; verify what happened before " +
-    `repeating an action. ${TOOL_FAILURE_INSTRUCTION}`,
+    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
 );
 
 const RESTART_SAFE_TOOLS_NOTICE =
