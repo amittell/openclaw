@@ -54,6 +54,11 @@ does not expose their questions or make them answerable. Secret, administrative,
 and sessionless questions keep their existing privileged access requirements.
 Answering a question does not grant the agent additional permissions.
 
+An accepted answer belongs to the waiting agent turn, which can save its tool
+result and continue after the answer enters conversation history. An unrelated
+new user turn, a changed transcript branch, or revoked run authority still
+prevents that older turn from appending a response.
+
 OpenClaw always enables a free-text **Other** answer. The agent must not add an
 `Other` option to the authored option list.
 
