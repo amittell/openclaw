@@ -3587,3 +3587,116 @@ batch and fails closed when nothing reaches the chat; it simply logs no `outboun
 `announce:requester-settle` run with no verified user, which is upstream behavior (same code in 10.1).
 
 Neither bot is redeployed by this section; both still run `1ecf113bef64`.
+
+# Carrying onto v2026.10.5 (10.3 -> 10.5), 2026-10-20/21
+
+Measured on the M4 Pro (`Mac16,7`, user alex), node v26.12.0, pnpm 12.9.0 (store on `/Volumes/m4-store`).
+Alex chose stable `v2026.10.5` over `v2026.10.10-beta.2` on 2026-10-20 (~04:50Z). Branch `upgrade-v2026.10.5`.
+The per-PR carry table and the pull-forwards (#174884, #170063, #158145's `807dd9438c3d`, #89526's
+10-19 fix, #169306) stack on this base separately.
+
+## Refs
+
+| what                                                                      | sha            |
+| ------------------------------------------------------------------------- | -------------- |
+| v2026.10.3^{commit}                                                       | `59cb44796b0f` |
+| v2026.10.5^{commit} (release branch cut from main `3dac10b9586`, 10-09)   | `1b58cb9a1b4f` |
+| merge-base of the two tags (10.3 is not an ancestor of 10.5)              | `8ea8bb11a5bd` |
+| fork tip carried: `port/10.3-pr11-pr13` = `upgrade-v2026.10.3` + #11, #13 | `df17201d84c0` |
+| 1. carry                                                                  | `e64208a3bc2`  |
+| 2. adapt fork code and tests to 10.5 APIs                                 | `16968365e8f`  |
+| 3. regenerate assertion baseline and prompt snapshots                     | `8e1bb6a3d7c`  |
+| 4. line-cap and mock-export ratchets                                      | `4a1549fee98`  |
+| 5. two unused max-lines suppressions                                      | `b81c92dd9e8`  |
+| 6. degraded-retention test on 10.5's safeguard helpers                    | `690039aceec`  |
+| 7. carry defect: probe-clear closure read a 10.5 TDZ binding              | `9d78a83338f`  |
+| 8. no-restart resume prompt takes 10.5's tool-outcome wording             | `f6935653915`  |
+| 9. fork tests adapted, dead-generation fence divergence pinned            | `400ad965120`  |
+
+## Method
+
+Fork delta `v2026.10.3..df17201d84c0`: 37 commits, 578 paths. Per path, three blobs (10.3, fork, 10.5):
+158 added by the fork, 99 that 10.5 did not touch (fork taken), 1 already equal to 10.5, 6 generated
+(10.5's, regenerated in commit 3), 2 deleted by 10.5, 312 merged with `git merge-file --diff3`
+(197 clean, 2 dropped, 113 conflicted with 186 hunks). Seven resolver lanes edited only their files.
+
+## Drops (10.5 already has them)
+
+- **#151921** landed as `9faffc888ef6` (cherry-pick of main `07c5ac29475`). The fork's 10.1 port
+  `dcc2909d7a0` scored 21/41 added lines in 10.5; upstream `9faffc888ef6` scored 30/33 in the fork.
+  `messaging-dedupe.ts`, its sanitize test and the lifecycle test are byte-identical to 10.5.
+- **#161480** and **#167309**: in 10.3 already (patch-ids equal `39b4bdbb6427`, `2b51bb8fc61d`). Of
+  #161480's 31 added lines not in 10.3, 0 are in the fork tip. Its four files that still differ from
+  10.5 carry #158145's `OPEN_MATCH_CLOSINGS` adapter, not #161480.
+- **#165490** was never carried; all 20 of its files equal 10.5. The #168155 ask_user guard is back
+  on `expect.any(SqliteTranscriptMutationConflictError)`.
+- Instruments: 109 PR numbers from this ledger and the fork commits searched in subjects and bodies of
+  the 2,704 commits `v2026.10.3..v2026.10.5`; patch-ids of the 36 fork commits against 2,681 upstream;
+  a forward line score per fork commit and a reverse score over the 670 upstream commits touching
+  fork paths (only #151921, 90.9%, and #165565's deslop, 45%, over 30%).
+- Still carried (not in 10.5): #158145, #101866, #89526, #164551 variant, #169237's absence keeps
+  `bf7bf9a2287`, #168326, #170110, and the rest of the Air seat's keep list.
+
+## Deleted by 10.5
+
+- `embedded-agent-subscribe.tools.media.test.ts` (#166619): recreated with only the fork's tests
+  (bounded media scan, `acceptMediaUrl` on the legacy `details.path`, local-media replay authority).
+- `ingress-monitor.inspection.test.ts` (#166566): deleted with upstream; the fork had only adapted one
+  upstream test to the #132409 watchdog fence, which `ingress-drain.watchdog.test.ts` covers.
+- Orphans removed: `bot-message-context.media-kind.ts`, `cron-tools-allow-policy.ts`, and the fork's
+  `compaction-safeguard.scenario.test-support.ts` (10.5 exports the same helpers).
+
+## Divergences kept
+
+- **Dead-generation fences** (rh-bot 2026-09-03): on a row not marked interrupted, the live Gateway
+  settles fences from dead generations. 10.5's new "clears only fences with terminal evidence
+  (terminal=false)" expects them kept; that case is pinned to the fork outcome. Open for Alex.
+- Fork #13: a resume claims a restart only for a cycle with cause `gateway_restart`; the no-restart
+  prompt now carries 10.5's interrupted/missing/aborted tool-outcome guidance.
+- Earlier rulings unchanged (5xx copy, `sessions` owner rule with option B, heartbeat
+  `metadataOnlySignalKill`). A completed no-output command reaches the agent since 10.5 (#166123).
+
+## Generated files
+
+- `config/assertion-safety-baseline.txt`: `--prune` removed 16 entries, raised none; all 16 files carry
+  fork SAFETY comments.
+- `config/test-mock-exports-baseline.txt`: 21 stale entries removed. 58 fork mock factories trip
+  10.5's new mock export ratchet: 20 now spread the real module, 38 carry `// mock-isolation:`.
+- `config/max-lines-baseline.txt`: 2 entries removed with their unused suppressions.
+- Four Codex prompt snapshots: same size delta as on 10.3 (compactionId, message-tool guidance).
+
+## Guards (final head)
+
+- tsgo core, extensions, scripts, ui, extensions:test, test:packages, test:root, test:ui, and all 21
+  test:src shards: 0 errors. Control: an injected type error gives rc=2, 1 error.
+- Build rc=0 (2m17s), `build-info` names `400ad965120`.
+- Ratchets with `--base v2026.10.5^{commit}`: line-cap, assertion SAFETY, mock export, SQLite worker,
+  test timeout race OK. Six fork growths fixed by moving code (commit 4).
+- Inherited, identical on bare v2026.10.5: max-lines ratchet (`doctor-memory-search.test.ts`), env-var
+  budget 456/455, 22 `max-lines` oxlint errors. Carry lint otherwise clean (control: a planted file
+  gives rc=1). oxfmt check clean on 47,860 files. Prompt snapshots current.
+- `dup:check` rc=0; 3 clone pairs are fork test files.
+
+## Tests
+
+`test-projects.mts --changed 1b58cb9a1b4f` with `OPENCLAW_TEST_PROJECTS_PARALLEL=2`,
+`OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE=1`, `OPENCLAW_VITEST_MAX_WORKERS=4`: 49 shards, no stall.
+
+- **Run A** (`690039aceec`, 41 min): 150 failing tests in 17 files. Each file was rerun alone on the
+  carry and on bare v2026.10.5.
+  - ENV: 125, the same files and counts at bare 10.5. `ci-workflow-planning` (97),
+    `ci-workflow-guards` (6) and `release-workflow-matrix-plan` (1) need Bash 5+; `crabbox-staging`
+    (21) fails identically at 10.5.
+  - FLAKY: 5, `gateway-backed-exit.process` (33/33 alone on both trees). The alone run added one
+    planning case (a SIGILL in its source-scan child) that passed alone 2/2.
+  - CARRY-DEFECT: 10 tests, one cause (commit 7). The fork's probe-clear closure read
+    `fallbackAttempts`, which 10.5 declares as a `const` after the run loop: a TDZ that tsgo cannot
+    see. 4 upstream execution-probe tests, 4 prepared-harness delivery tests and the startup WebChat
+    recovery test pass alone at 10.5, fail on the carry, and pass after the fix; the fork's own
+    probe-pin test fails with the fork hunk reverted.
+  - Carry gap: 1 (commit 8), the 10.5 restart-prompt case.
+  - TEST-DRIFT: 9 tests in 8 files (commit 9), each with a revert control.
+- **Run B** (`400ad965120`, 40 min): 125 failing tests in 4 tooling files, the same set bare v2026.10.5
+  fails alone (97, 21, 6, 1). Every other shard green.
+
+Not run: the full suite, live proof, deploy. Neither bot changes with this section.
