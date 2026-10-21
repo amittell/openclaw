@@ -323,8 +323,9 @@ describe("signal-killed exec completions (producer shape)", () => {
     expect(withGuidance).toBe(`${plain}\n\n${EXEC_TIMEOUT_RETRY_GUIDANCE}`);
     expect(isRelayableExecCompletionEvent(plain)).toBe(false);
     expect(isRelayableExecCompletionEvent(withGuidance)).toBe(false);
+    // 10.5 (#166123) shows a completed no-output command to the agent; it still never relays.
     const prompt = buildExecEventPrompt([plain, withGuidance]);
-    expect(prompt).not.toContain("code 0");
+    expect(prompt).toContain(plain);
   });
 });
 

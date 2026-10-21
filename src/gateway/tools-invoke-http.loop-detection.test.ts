@@ -36,7 +36,7 @@ vi.mock("../config/sessions.js", async (importOriginal) => ({
 vi.mock("./auth.js", () => ({ authorizeHttpGatewayConnect: async () => ({ ok: true }) }));
 // mock-isolation: Exercise loop detection with one inert tool instead of the real tool catalog.
 vi.mock("../agents/openclaw-tools.js", () => ({
-  createOpenClawTools: () => [
+  createOpenClawToolsAsync: async () => [
     {
       name: "sessions_list",
       parameters: { type: "object", properties: {} },

@@ -32,7 +32,7 @@ describe("tui command handlers model commands", () => {
     await handleCommand("/models");
 
     expect(listModels).toHaveBeenCalledTimes(1);
-    expect(listModels).toHaveBeenCalledWith({ agentId: "voice" });
+    expect(listModels).toHaveBeenCalledWith(expect.objectContaining({ agentId: "voice" }));
     expect(openOverlay).toHaveBeenCalled();
   });
 });

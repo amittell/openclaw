@@ -266,7 +266,7 @@ describe("resolveGatewayProbeSnapshot", () => {
 
   it("keeps unresolved local SecretRef probes eligible for the status RPC fallback", async () => {
     const warning =
-      "gateway.auth.token SecretRef is unresolved in this command path; probing without configured auth credentials.";
+      "gateway.auth.token SecretRef is unresolved in this command path; checking without configured auth credentials.";
     mocks.resolveGatewayProbeTarget.mockReturnValue({
       mode: "local",
       gatewayMode: "local",
@@ -479,7 +479,7 @@ describe("resolveGatewayProbeSnapshot", () => {
 
   it("keeps unresolved local SecretRefs eligible for the status RPC fallback", async () => {
     const warning =
-      "gateway.auth.token SecretRef is unresolved in this command path; probing without configured auth credentials.";
+      "gateway.auth.token SecretRef is unresolved in this command path; checking without configured auth credentials.";
     const missingSecretEnv = "OPENCLAW_TEST_MISSING_GATEWAY_TOKEN";
     const stateDir = makeTempDir(tempDirs, "openclaw-status-secret-ref-");
     const cfg = {

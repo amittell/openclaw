@@ -1,11 +1,9 @@
 // Gateway tool surfaces omit owner-only tools for non-owners; the refusing stubs that
 // keep an agent turn's prompt owner-shaped never reach MCP loopback or HTTP invoke.
-import { afterEach, describe, expect, it, vi } from "vitest";
-import * as pluginTools from "../agents/openclaw-plugin-tools.js";
+import { describe, expect, it, vi } from "vitest";
 import { createOwnerOnlyToolStub } from "../agents/owner-only-tool-stubs.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 function pluginTool(name: string): AnyAgentTool {
   return {
@@ -17,19 +15,26 @@ function pluginTool(name: string): AnyAgentTool {
   };
 }
 
-describe("resolveGatewayScopedTools owner-only plugin tools", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+// 10.5 builds the surface through the async tool factory, as its own
+// tool-resolution tests do; the stub stands in for the plugin layer's output.
+// mock-isolation: Real tool construction opens the shared-state store; this test checks only the surface filter.
+vi.mock("../agents/openclaw-tools.js", () => ({
+  createOpenClawToolsAsync: async () => [
+    createOwnerOnlyToolStub(pluginTool("owner_probe")),
+    pluginTool("probe"),
+  ],
+}));
+// mock-isolation: No coding tools are needed to check the owner-only filter.
+vi.mock("../agents/agent-tools.js", () => ({
+  createOpenClawCodingToolsInternalAsync: async () => [],
+}));
 
+const { resolveGatewayScopedTools } = await import("./tool-resolution.js");
+
+describe("resolveGatewayScopedTools owner-only plugin tools", () => {
   it.each(["loopback", "http"] as const)(
     "omits owner-only stubs from the %s surface",
     async (surface) => {
-      vi.spyOn(pluginTools, "resolveOpenClawPluginToolsForOptions").mockReturnValue([
-        createOwnerOnlyToolStub(pluginTool("owner_probe")),
-        pluginTool("probe"),
-      ]);
-
       const { tools } = await resolveGatewayScopedTools({
         cfg: { tools: { allow: ["owner_probe", "probe"] } } as OpenClawConfig,
         sessionKey: "agent:main:main",

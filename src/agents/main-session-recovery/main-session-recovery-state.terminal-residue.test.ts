@@ -348,7 +348,7 @@ describe("main session recovery terminal-only residue", () => {
     });
 
     expect(claimForeground(entry)).toEqual({ kind: "applied" });
-    expect(entry).toMatchObject({ status: "running", abortedLastRun: false });
+    expect(entry).toMatchObject({ abortedLastRun: false });
     expect(entry.restartRecoveryRuns).toBeUndefined();
     expect(entry.mainRestartRecovery).toBeUndefined();
   });

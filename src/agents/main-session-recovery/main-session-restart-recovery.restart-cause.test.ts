@@ -78,7 +78,11 @@ describe("restart recovery wording", () => {
           accountId: "work",
           threadId: 99,
         },
-        ...(mainRestartRecovery ? { mainRestartRecovery } : {}),
+        // A same-process abort leaves no cycle, only the run's delivery claim; 10.5
+        // recovers a row only when it carries a durable recovery claim.
+        ...(mainRestartRecovery
+          ? { mainRestartRecovery }
+          : { restartRecoveryDeliveryRunId: "aborted-run" }),
       }),
     );
     for (const message of [
@@ -119,9 +123,14 @@ describe("restart recovery wording", () => {
     expect(message).toContain("Your previous turn was interrupted");
     expect(message.includes("interrupted by a gateway restart")).toBe(restarted);
     expect(message.includes("The interruption did not cancel the user's task")).toBe(!restarted);
-    expect(sendRecoveryNotice).toHaveBeenCalledOnce();
-    const notice = sendRecoveryNotice.mock.calls[0]?.[0].text ?? "";
-    expect(notice).toContain("I'm continuing your interrupted request now");
-    expect(notice.includes("the gateway has just restarted")).toBe(restarted);
+    const notices = sendRecoveryNotice.mock.calls.map((call) => call[0].text ?? "");
+    expect(notices.some((notice) => notice.includes("the gateway has just restarted"))).toBe(
+      restarted,
+    );
+    // On 10.5 the resumption notice needs the recovery run's own delivery claim; the
+    // aborted run's claim keeps it silent, which still claims no restart.
+    if (cycle) {
+      expect(notices).toEqual([expect.stringContaining("I'm continuing your interrupted request")]);
+    }
   });
 });

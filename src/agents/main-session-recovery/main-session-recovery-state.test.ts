@@ -222,10 +222,11 @@ describe("main session recovery state", () => {
       ],
       restartRecoveryTerminalRunIds: terminal ? ["stale-run-1", "stale-run-2"] : undefined,
     });
-    const fences = entry.restartRecoveryRuns;
-
-    expect(claimForeground(entry)).toEqual({ kind: terminal ? "applied" : "no_change" });
-    expect(entry.restartRecoveryRuns).toEqual(terminal ? undefined : fences);
+    // FORK DIVERGENCE (rh-bot 2026-09-03, isMainRestartRecoveryTerminalOnly): on a row not
+    // marked interrupted, the live Gateway settles fences from dead generations, so the
+    // unproven fences clear too. 10.5 keeps them (no_change) when terminal is false.
+    expect(claimForeground(entry)).toEqual({ kind: "applied" });
+    expect(entry.restartRecoveryRuns).toBeUndefined();
     expect(entry.mainRestartRecovery).toBeUndefined();
     expect(entry.abortedLastRun).toBe(false);
   });
