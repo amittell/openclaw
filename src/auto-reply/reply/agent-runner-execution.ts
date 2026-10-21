@@ -59,6 +59,7 @@ import type {
   AgentTurnInternalResult,
   AgentTurnParams,
   InternalFollowupRun,
+  RuntimeFallbackAttempt,
 } from "./agent-runner-execution.types.js";
 import {
   buildTerminalAgentRunFailureReplyPayload,
@@ -355,6 +356,9 @@ async function executeAgentTurnInternalLoop(
       params.getActiveSessionEntry()?.systemPromptReport,
     ),
   };
+  // Fork: probe-clear evidence comes from the last settled cycle. The reconcile runs
+  // inside the first cycle, before its attempts exist, so it sees none there (as on 10.3).
+  let settledFallbackAttempts: RuntimeFallbackAttempt[] = [];
   const clearRecoveredAutoFallbackPrimaryProbe = async (paramsForClear: {
     provider: string;
     model: string;
@@ -364,7 +368,7 @@ async function executeAgentTurnInternalLoop(
       ...resolveAutoFallbackPrimaryProbeClearSelection({
         activeProbe: effectiveRun.autoFallbackPrimaryProbe,
         settled: paramsForClear,
-        attempts: fallbackAttempts,
+        attempts: settledFallbackAttempts,
       }),
       sessionKey: params.sessionKey,
       activeSessionStore: params.activeSessionStore,
@@ -408,6 +412,7 @@ async function executeAgentTurnInternalLoop(
         outcome: "completed",
       });
       cycle = await settleAgentFallbackCycle({ cycle: cycleParams, fallbackResult });
+      settledFallbackAttempts = cycle.kind === "completed" ? cycle.fallbackAttempts : [];
     } catch (err) {
       if (err instanceof LiveSessionModelSwitchError) {
         liveModelSwitchRetries += 1;
