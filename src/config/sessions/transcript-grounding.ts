@@ -3,8 +3,8 @@ import type { ManagedMediaGrounding } from "../../media/media-reference.js";
 
 const UNGROUNDED_MEDIA_PLACEHOLDER = "[unverified media reference removed]";
 
-const TOKEN_BOUNDARY = /[\s"'`<>{}()[\]]/u;
-const PUNCTUATION = /[.,;:!?\u2012-\u2015\u2026]/u;
+export const TOKEN_BOUNDARY = /[\s"'`<>{}()[\]]/u;
+export const PUNCTUATION = /[.,;:!?\u2012-\u2015\u2026]/u;
 const REMOTE_URI = /[a-z][a-z0-9+.-]*:\/\/[^/?#\s]+/iu;
 // A URI scheme and authority are case-insensitive: FILE:///x, file://LOCALHOST/x and
 // MEDIA://inbound/x all resolve. Only the path bytes after them follow the owner's rules.
@@ -13,7 +13,7 @@ const REMOTE_URI = /[a-z][a-z0-9+.-]*:\/\/[^/?#\s]+/iu;
 const MAX_NORMALIZED_SEGMENTS = 64;
 // Bounds the phase-2 token scan; longer than any real managed path, short enough that a
 // crafted run of non-boundary bytes cannot make the walk expensive.
-const MAX_GROUNDING_TOKEN_CHARS = 4096;
+export const MAX_GROUNDING_TOKEN_CHARS = 4096;
 // A token that begins at a managed root but exhausts the normalization budget is redacted
 // rather than replayed. A real managed path never needs this many segments; an adversarial
 // one does, and failing open here is what the budget itself would otherwise enable.
@@ -49,8 +49,18 @@ const DRIVELESS_ROOTED = /^[\\/](?![\\/])/u;
  * `ok.png<TAB>.fake` opens another file depends on the store, so the media owner decides it: a
  * scan records each spelling in `found`, and a rescan refuses an alias whose spelling is in
  * `unverified`.
+ *
+ * A name also runs on across characters the resolver keeps in it, such as a space or a quote
+ * (`ok.png .fake`). A scan records where each authorized alias it keeps starts in `kept`, with
+ * the alias's length, and a rescan refuses the alias starting at an offset in
+ * `refusedContinuations`; see continuedMediaSpellings in transcript-recent-grounding.ts.
  */
-export type JoinedMediaSpellings = { found: Set<string>; unverified?: ReadonlySet<string> };
+export type JoinedMediaSpellings = {
+  found: Set<string>;
+  unverified?: ReadonlySet<string>;
+  kept?: Map<number, number>;
+  refusedContinuations?: ReadonlySet<number>;
+};
 
 /**
  * Raw slices from `at` that carry the alias ending at `aliasEnd` across tab, LF or CR into more
@@ -844,15 +854,22 @@ function ungroundedRanges(
       allowed && !pathRunsPast(cursor, cursor + allowed.length)
         ? joinedSpellings(text, cursor, cursor + allowed.length)
         : undefined;
-    if (allowed && joined && joined.every((spelling) => !joins?.unverified?.has(spelling))) {
+    if (
+      allowed &&
+      joined &&
+      joined.every((spelling) => !joins?.unverified?.has(spelling)) &&
+      !joins?.refusedContinuations?.has(cursor)
+    ) {
       joined.forEach((spelling) => joins?.found.add(spelling));
+      joins?.kept?.set(cursor, allowed.length);
       cursor += allowed.length;
     } else {
       // A dot-segment spelling of an AUTHORIZED reference is redacted too: authorized
       // aliases are the exact spellings the resolver verified, and re-deriving
       // equivalence for them would decide authorization from prompt text. Failing closed
       // costs a visible placeholder on an exotic spelling; failing open replays an
-      // unverified path. So is an alias the media owner found joined onto another file.
+      // unverified path. So is an alias the media owner found joined or continued onto
+      // another file.
       ranges.push([cursor, cursor + rootLength]);
       cursor += rootLength;
     }

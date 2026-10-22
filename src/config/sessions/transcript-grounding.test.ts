@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveInboundMediaReference } from "../../media/media-reference.js";
+import { resolveMediaBufferPath } from "../../media/store.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
@@ -242,6 +243,83 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
         granted,
       ].join(" | "),
     );
+  });
+
+  it("refuses an authorized reference a space continues onto another stored file", async () => {
+    const stateDir = tempDirs.make("grounding-continued-");
+    const inbound = path.join(stateDir, "media", "inbound");
+    fs.mkdirSync(inbound, { recursive: true });
+    const plain = path.join(inbound, "ok.png");
+    const neighbour = path.join(inbound, "ok.png .fake");
+    // A path keeps the tab the URL parser deletes, so `ok.png<TAB>/x.png` names a file in here.
+    const nestedDir = path.join(inbound, "ok.png\t");
+    fs.writeFileSync(plain, "granted");
+    fs.writeFileSync(neighbour, "never granted");
+    fs.mkdirSync(nestedDir);
+    fs.writeFileSync(path.join(nestedDir, "x.png"), "never granted");
+    const granted = pathToFileURL(plain).href;
+    const continued = [`${granted} .fake`, `${plain} .fake`, "media://inbound/ok.png .fake"];
+    const nested = `${plain}\t/x.png`;
+    // Neither of these names a stored file however far a reader takes it.
+    const prose = [`${granted} and then`, `"${plain}" is the photo.`];
+    const { sessionKey, storePath } = await createSession(
+      "continued",
+      [
+        { message: { role: "user", timestamp: 1, content: "send it" } },
+        {
+          message: {
+            role: "toolResult",
+            toolCallId: "image-1",
+            toolName: "view_image",
+            isError: false,
+            timestamp: 2,
+            content: [{ type: "text", text: "Loaded image." }],
+            details: { media: { mediaUrls: [granted, "media://inbound/ok.png"] } },
+          },
+        },
+        {
+          message: {
+            role: "assistant",
+            timestamp: 3,
+            content: [{ type: "text", text: [...continued, nested, ...prose].join("\n") }],
+          },
+        },
+      ],
+      stateDir,
+    );
+    const other = await resolveInboundMediaReference(neighbour);
+    for (const spelling of continued) {
+      // The replayed text is only unsafe because the resolver really opens the other file.
+      expect((await resolveInboundMediaReference(spelling))?.physicalPath).toBe(
+        other?.physicalPath,
+      );
+    }
+    await expect(resolveMediaBufferPath("x.png", "inbound/ok.png\t")).resolves.toBe(
+      fs.realpathSync(path.join(nestedDir, "x.png")),
+    );
+    const replay = async () =>
+      (
+        await readRecentUserAssistantTextForSession({
+          agentId: "main",
+          sessionKey,
+          storePath,
+          limit: 10,
+        })
+      ).at(-1)?.text;
+
+    expect(await replay()).toBe(
+      [
+        `${REDACTED}/inbound/ok.png .fake`,
+        `${REDACTED}/inbound/ok.png .fake`,
+        `${REDACTED}/ok.png .fake`,
+        `${REDACTED}/inbound/ok.png\t/x.png`,
+        ...prose,
+      ].join("\n"),
+    );
+    // With no other stored file to open, the same text is prose and replays as written.
+    fs.rmSync(neighbour);
+    fs.rmSync(nestedDir, { recursive: true });
+    expect(await replay()).toBe([...continued, nested, ...prose].join("\n"));
   });
 
   it("grounds home-relative paths the media resolver expands", async () => {

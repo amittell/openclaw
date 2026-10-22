@@ -4,11 +4,13 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
+  findRefusedMediaContinuations,
   prepareManagedMediaGrounding,
   prepareManagedMediaGroundingRoot,
   type ManagedMediaGrounding,
 } from "../../media/media-reference.js";
 import { invalidateUngroundedMediaPrefixes } from "./transcript-grounding.js";
+import { groundRecentConversationRows } from "./transcript-recent-grounding.js";
 
 const REDACTED = "[unverified media reference removed]";
 
@@ -806,6 +808,25 @@ describe("invalidateUngroundedMediaPrefixes", () => {
       );
     }
   });
+
+  it("records the authorized references it keeps and refuses the offsets it is handed", () => {
+    const granted = `${root}/inbound/ok.png`;
+    const g = grounding([root], [granted], false, []);
+    const text = `${granted} .fake, then ${granted}.  `;
+    const later = text.lastIndexOf(granted);
+    const joins = { found: new Set<string>(), kept: new Map<number, number>() };
+    expect(invalidateUngroundedMediaPrefixes(text, g, joins)).toBe(text);
+    expect([...joins.kept]).toEqual([
+      [0, granted.length],
+      [later, granted.length],
+    ]);
+    expect(
+      invalidateUngroundedMediaPrefixes(text, g, {
+        found: new Set(),
+        refusedContinuations: new Set([0]),
+      }),
+    ).toBe(`${REDACTED}/inbound/ok.png .fake, then ${granted}.  `);
+  });
 });
 
 describe("prepareManagedMediaGrounding", () => {
@@ -964,5 +985,66 @@ describe("prepareManagedMediaGrounding", () => {
     const prepared = await prepareManagedMediaGrounding(root, paths);
 
     expect(prepared.authorizedAliases).toEqual(expect.arrayContaining(paths));
+  });
+
+  it("reads continuations only when a stored name extends the alias, and refuses unread text", async () => {
+    const stateDir = tempDirs.make("grounding-continuation-");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    const inbound = path.join(stateDir, "media", "inbound");
+    fs.mkdirSync(inbound, { recursive: true });
+    const granted = path.join(inbound, "ok.png");
+    fs.writeFileSync(granted, "granted");
+    fs.writeFileSync(path.join(inbound, "other.png"), "unrelated");
+    const root = await prepareManagedMediaGroundingRoot();
+    const prepared = await prepareManagedMediaGrounding(root, [granted]);
+    const continuation = (key: string, spellings?: string[]) => ({
+      key,
+      alias: granted,
+      spellings: () => spellings,
+    });
+    const refused = () =>
+      findRefusedMediaContinuations(root, prepared, [
+        continuation("unread"),
+        continuation("prose", [`${granted} and`, `${granted} and then`]),
+        continuation("named", [`${granted} .fake`]),
+      ]);
+
+    // Nothing stored extends ok.png, so no reading of the text after it opens another file.
+    expect(await refused()).toEqual(new Set());
+    fs.writeFileSync(path.join(inbound, "ok.png .fake"), "never granted");
+    expect(await refused()).toEqual(new Set(["unread", "named"]));
+  });
+
+  it("refuses an authorized path wherever a reader could end a stored name it runs into", async () => {
+    const stateDir = tempDirs.make("grounding-continuation-stops-");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    const inbound = path.join(stateDir, "media", "inbound");
+    fs.mkdirSync(inbound, { recursive: true });
+    const granted = path.join(inbound, "ok.png");
+    fs.writeFileSync(granted, "granted");
+    const ground = async (text: string) =>
+      (
+        await groundRecentConversationRows(
+          [{ role: "assistant", text, turnMediaReferences: [granted] }],
+          { boundReplayBytes: false },
+        )
+      )[0]?.text;
+    const text = `${granted} .fake, then more.`;
+    const redacted = `${REDACTED}${text.slice(path.join(stateDir, "media").length)}`;
+    // Each stop: before trailing punctuation, through it, and across later words.
+    for (const name of ["ok.png .fake", "ok.png .fake,", "ok.png .fake, then more"]) {
+      fs.writeFileSync(path.join(inbound, name), "never granted");
+      expect(await ground(text)).toBe(redacted);
+      fs.rmSync(path.join(inbound, name));
+    }
+    fs.writeFileSync(path.join(inbound, "ok.png .other"), "never granted");
+    expect(await ground(text)).toBe(text);
+    // Past the token budget the text is never read, so a name stored beside it refuses it.
+    const long = `${granted} ${"word ".repeat(1000)}`;
+    expect(await ground(long)).toBe(
+      `${REDACTED}${long.slice(path.join(stateDir, "media").length)}`,
+    );
+    fs.rmSync(path.join(inbound, "ok.png .other"));
+    expect(await ground(long)).toBe(long);
   });
 });
