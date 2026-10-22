@@ -3700,3 +3700,31 @@ Fork delta `v2026.10.3..df17201d84c0`: 37 commits, 578 paths. Per path, three bl
   fails alone (97, 21, 6, 1). Every other shard green.
 
 Not run: the full suite, live proof, deploy. Neither bot changes with this section.
+
+## Pull-forwards and the PR audit (2026-10-21/22)
+
+Stacked on `a1ccb69867e2` (Air seat, validated on the M4):
+
+| upstream                                      | commit         | note                                                                 |
+| --------------------------------------------- | -------------- | -------------------------------------------------------------------- |
+| #174884 at `fbe01bba4ae8`                     | `0a5f8c14ed9`  |                                                                      |
+| #170063 at `c0b41f36fd6f`                     | `0d8d45afd93`  |                                                                      |
+| #158145 at `807dd9438c3d`                     | `d366bab4bcf`  |                                                                      |
+| #169306 at `e353566c506d`                     | `61eef3678d1`  | the kernel's `view.questionAnswers` hunk lands in the metadata worker |
+| #89526's same-frame fix (`832a0c2cffae`)      | `93fae7b1dbe`  | regression fails with the fix reverted                               |
+| #178677 at `2ef2ffabe40`                      | `103a17976a1`  | on `88b53f0df609`; resolution in the commit body                     |
+
+**PR audit, all 95 of Alex's openclaw PRs against `93fae7b1dbe1`** (this ledger plus a score of each PR's
+distinctive added lines present in the candidate; control: 9 PRs merged inside the 10.5 tag score only
+0.33-0.80, so a score is evidence, not proof):
+
+- Merged (16): all present, in the tag, carried or pulled forward.
+- Closed (64): the 09-10 audit covers those closed before it; the rest are ruled on in this ledger, except
+  #112932 (Codex OAuth), which the local-only bots do not use.
+- Open (15): every runtime change is carried, as the PR or as the fork's variant (#93952, #138415,
+  #151924, #164551). The one gap was **#178677**, carried above: on mac-mini, 11 scheduled runs for the
+  configured `ratbot` and `ailybot` accounts failed closed with `Scheduled account ... is unavailable`.
+- **Not a gap: #101866's 10-16 commit `0ff83d79b6c`.** It rebuilds #101866 on upstream #169619's
+  single-snapshot reader (10-11, after the 10.5 cut). At 10.5 the fork's selector reads one snapshot for
+  any limit up to 1,000 rows (default 10).
+- Test-only, not carried: #176070, #175029, #168611, and #164551's 10-19 fixture.
