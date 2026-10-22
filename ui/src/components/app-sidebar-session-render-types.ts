@@ -93,7 +93,6 @@ export interface SessionListHost {
     | "archiveSessionWithUndo"
     | "patchSession"
     | "isPersonalSessionPin"
-    | "reorderSidebarSection"
     | "sectionHeaders"
   >;
   readonly sidebarMenus: Pick<
@@ -143,7 +142,11 @@ export interface SessionListHost {
   expandedAgentId(): string;
   /** Unadmitted New session handoff; presentation only, never a saved selection. */
   pendingSessionCreate():
-    | Readonly<{ creation: Readonly<{ sessionKey: string }>; displayName?: string }>
+    | Readonly<{
+        creation: Readonly<{ sessionKey: string }>;
+        displayName?: string;
+        category?: string;
+      }>
     | undefined;
   readNewSessionAccess(): SessionMethodAccess;
   readSessionMutationAccess(request: SessionMethodAccessRequest): SessionMethodAccess;
@@ -218,13 +221,6 @@ declare module "@solidjs/web" {
         Properties<ContributionsElement> & {
           "prop:agentId"?: ContributionsElement["agentId"];
           "prop:navigationMenus"?: ContributionsElement["navigationMenus"];
-        };
-      "openclaw-theme-mode-toggle": HTMLAttributes<
-        HTMLElementTagNameMap["openclaw-theme-mode-toggle"]
-      > &
-        Properties<HTMLElementTagNameMap["openclaw-theme-mode-toggle"]> & {
-          "prop:menuAttributes"?: HTMLElementTagNameMap["openclaw-theme-mode-toggle"]["menuAttributes"];
-          "prop:onChange"?: HTMLElementTagNameMap["openclaw-theme-mode-toggle"]["onChange"];
         };
     }
   }
