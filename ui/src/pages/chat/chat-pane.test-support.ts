@@ -124,6 +124,7 @@ export function mountBoardPanel(
 export interface TestChatPane extends HTMLElement, PaneTestLifecycle {
   readonly updateComplete: Promise<boolean>;
   readonly element: HTMLElement;
+  readonly headerElement: HTMLElement | null;
   render: ChatPaneRuntime["render"];
   readonly transcript: ChatTranscript;
   readonly history: ChatPaneRuntime["history"];
@@ -146,6 +147,8 @@ export interface TestChatPane extends HTMLElement, PaneTestLifecycle {
   context: ApplicationContext;
   state: ChatPageHost;
   connectedClient: GatewayBrowserClient | null;
+  routeResolutionPending: boolean;
+  synchronizeInputs: ChatPaneRuntime["synchronizeInputs"];
   applyGatewaySnapshot: (snapshot: ApplicationContext["gateway"]["snapshot"]) => void;
   connectedCallback: () => void;
   connectionGeneration: number;
