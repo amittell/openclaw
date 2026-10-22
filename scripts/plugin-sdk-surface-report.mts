@@ -232,7 +232,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: owner-approved service-bound remote Control UI ingress.
       // +2: shared database-engine host and worker adapters.
       // +1: maintainer-requested context-engine-transcript-runtime watermark subpath (2026-10-08).
-      156,
+      // +1: approved shared OpenAI Decisions codec used by OpenAI and ClawRouter.
+      157,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -290,8 +291,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // ControlUiChannelSettingsView for plugin-owned channel Settings presentations.
       // +1: the shared message-tool source-reply finality resolver.
       // +1: awaited web_search policy preparation for harnesses; the sync resolver stays.
+      // +3: shared Decisions support/evaluation functions and the canonical capability schema.
+      // +2: openRecord and ToolArgumentValidationError on the existing tool-plugin facade.
       // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
-      3813,
+      3818,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -334,8 +337,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: maintainer-requested context-engine transcript watermark reader.
       // +1: the shared message-tool source-reply finality resolver, so harnesses apply a run's default.
       // +1: the same awaited web_search policy preparation.
+      // +2: the same shared Decisions support predicate and evaluator.
+      // +1: the same openRecord helper; ToolArgumentValidationError is construct-only.
       // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
-      2211,
+      2214,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
