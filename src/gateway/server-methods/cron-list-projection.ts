@@ -2,9 +2,9 @@ import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coer
 import type { CronCompactJob } from "../../../packages/gateway-protocol/src/index.js";
 import { tryResolveCronJobEffectiveAgentId } from "../../cron/agent-id.js";
 import { cronJobReadView } from "../../cron/job-read-view.js";
-import { cronJobNeedsCreatorReauthorization } from "../../cron/scheduled-tool-policy.js";
 import type { CronServiceContract } from "../../cron/service-contract.js";
 import type { CronListPageResult } from "../../cron/service/list-page-types.js";
+import { cronJobNeedsCreatorReauthorization } from "../../cron/tools-allow.js";
 import type { CronJob } from "../../cron/types.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { registerSerializedJsonArray } from "../serialized-json.js";
