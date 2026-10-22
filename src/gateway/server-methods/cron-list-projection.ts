@@ -3,10 +3,9 @@ import type { CronCompactJob } from "../../../packages/gateway-protocol/src/inde
 import { tryResolveCronJobEffectiveAgentId } from "../../cron/agent-id.js";
 import { cronJobReadView } from "../../cron/job-read-view.js";
 import { toPublicCronJob } from "../../cron/public-job.js";
-import { cronJobNeedsCreatorReauthorization } from "../../cron/scheduled-tool-policy.js";
 import type { CronServiceContract } from "../../cron/service-contract.js";
 import type { CronListPageResult } from "../../cron/service/list-page-types.js";
-import type { CronToolsAllowProvenance } from "../../cron/types.js";
+import { cronJobNeedsCreatorReauthorization } from "../../cron/tools-allow.js";
 import type { CronJob } from "../../cron/types.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { registerSerializedJsonArray } from "../serialized-json.js";
@@ -35,17 +34,16 @@ export function projectCronListJobs(
 }
 
 function prepareJobs(jobs: CronJob[], defaultAgentId: string | undefined, compact: boolean) {
-  const rows = jobs.map((job) => {
-    const stored = job as CronJob & { toolsAllowProvenance?: CronToolsAllowProvenance };
-    return freezeJsonSnapshot({
-      ...(compact ? compactCronListJob(toPublicCronJob(job)) : cronJobReadView(stored)),
+  const rows = jobs.map((job) =>
+    freezeJsonSnapshot({
+      ...(compact ? compactCronListJob(toPublicCronJob(job)) : cronJobReadView(job)),
       effectiveAgentId: tryResolveCronJobEffectiveAgentId(job, defaultAgentId) ?? null,
       // Compact rows omit absent metadata; the flag is present only when the job is blocked.
-      ...(compact && cronJobNeedsCreatorReauthorization({ job: stored })
+      ...(compact && cronJobNeedsCreatorReauthorization({ job })
         ? { reauthorizationRequired: true }
         : {}),
-    });
-  });
+    }),
+  );
   return registerSerializedJsonArray(
     Object.freeze(rows),
     rows.map((row) => JSON.stringify(row)),

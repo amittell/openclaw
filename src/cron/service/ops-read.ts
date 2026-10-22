@@ -6,11 +6,11 @@ import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.pa
 import { tryResolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { resolveCronListSnapshotRevision } from "../list-snapshot-revision.js";
-import { cronJobNeedsCreatorReauthorization } from "../scheduled-tool-policy.js";
 import { readCronScratchSnapshot } from "../scratch-read.js";
 import { writeCronJobScratch } from "../scratch-store.js";
 import { getCronJobsStoreRevision, noteCronJobsStoreCommit } from "../store.js";
 import { CronJobsStoreChangedError } from "../store/save-error.js";
+import { cronJobNeedsCreatorReauthorization } from "../tools-allow.js";
 import type { CronJob } from "../types.js";
 import {
   findJobOrThrow,
