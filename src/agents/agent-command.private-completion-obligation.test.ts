@@ -236,7 +236,6 @@ async function runTranscriptOnlyPrivateCompletion(
           inputProvenance,
           trustedInternalHandoff,
           onActiveModelSelected: createAgentRunModelSelectionHandler({
-            context: { chatAbortControllers: new Map() },
             runId,
             cfg: state.cfg ?? {},
             lifecycleStorePath: requireCompactionStorePath(),
