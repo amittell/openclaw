@@ -23,6 +23,7 @@ import type { SpeechProviderConfig } from "./provider-types.js";
 import { withSpeakerSelectionCompat } from "./speaker.js";
 import { normalizeTtsAutoMode } from "./tts-auto-mode.js";
 import {
+  isTtsConfigReservedKey,
   readTtsPrefs,
   resolveEffectiveTtsConfig,
   resolveTtsAutoModeFromPrefs,
@@ -120,25 +121,6 @@ function collectTtsPersonas(raw: TtsConfig): Record<string, ResolvedTtsPersona> 
     };
   }
   return personas;
-}
-
-const TTS_CONFIG_RESERVED_KEYS = new Set([
-  "auto",
-  "enabled",
-  "maxTextLength",
-  "mode",
-  "modelOverrides",
-  "persona",
-  "personas",
-  "prefsPath",
-  "provider",
-  "providers",
-  "summaryModel",
-  "timeoutMs",
-]);
-
-export function isTtsConfigReservedKey(key: string): boolean {
-  return TTS_CONFIG_RESERVED_KEYS.has(key);
 }
 
 function collectDirectProviderConfigEntries(raw: TtsConfig): Record<string, SpeechProviderConfig> {

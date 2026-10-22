@@ -86,6 +86,23 @@ recorded predecessor, allowing retirement of a binding not yet transferred after
 compaction without adopting it during preparation. Ordinary compaction does not
 invoke this hook and continues to preserve native thread continuity.
 
+### Fresh native thread seeds
+
+The optional `hostCapabilities.prepareBoundedSeed({ assertCurrent, signal, tokenBudget })`
+returns a readonly `AgentMessage[]`. Call it after native reuse fails, before
+injecting history; older version-1 hosts keep their bounded selection.
+The host captures the target, configuration, source authority, and atomic
+summary persistence. It attempts one compaction for uncovered omitted history.
+Pass the final history allowance as `tokenBudget`: valid smaller values narrow
+the captured budget; larger, invalid, or non-finite values cannot widen it.
+Restored text and image costs count toward the bound. Reuse returned message
+instances with `prepareContextMedia` to avoid rereading their prepared snapshots.
+Active requests and refresh handoffs reserve delivery tokens but are not trimmed
+by the historical byte cap; preparation rejects if they alone exceed the allowance.
+Pass the native binding's current-authority assertion and cancellation signal.
+A retired capability rejects and cannot target another session. Explicit
+context engines retain their own projections.
+
 ## Shared native binding lifecycle
 
 Official harnesses use the JavaScript-only private
@@ -256,7 +273,7 @@ successful tools and clears it only after the matching action succeeds.
 The callback remains optional for source compatibility with older experimental
 harnesses. Optional does not mean ignorable for a harness that executes tools:
 without terminal reports, OpenClaw cannot preserve mutating-tool failure truth
-across later tool calls, including quiet heartbeat completion.
+across later tool calls, including intentionally silent automation completion.
 
 ## Settled tool finalization
 
@@ -282,6 +299,12 @@ auth/profile rotation, model fallback, context recovery, compaction
 continuation, or hook-requested revision paths. Finalization also skips plugin
 prompt mutation, `before_agent_run`, LLM input/output, terminal revision, and
 `agent_end` hooks. Core diagnostics still record the operation and its failure.
+
+When the settled turn stopped at the model's output token limit, the
+finalization prompt tells the model it was cut off and must say what was not
+finished. OpenClaw also adds a host notice under the recovered answer saying
+that the turn was cut off and some work may be unfinished, because a tool-free
+summary cannot show that the interrupted work completed.
 
 The callback returns `AgentHarnessSettledTurnFinalizationResult`, not an
 ordinary attempt result. Its public fields are limited to the completed
