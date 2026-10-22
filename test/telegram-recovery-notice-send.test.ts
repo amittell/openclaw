@@ -175,6 +175,9 @@ describe("recovery notice final transport fence", () => {
         const operation = productionPredicate
           ? announceRestartRecoveryResumption({
               ...scope,
+              // FORK DIVERGENCE (fork #13): the notice claims a restart only for a recovery
+              // cycle recorded with cause gateway_restart, which Gateway close marking records.
+              cause: "gateway_restart",
               cfg,
               gatewayRuntime: { ...runtime.recovery, sendRecoveryNotice: observedSend },
             })

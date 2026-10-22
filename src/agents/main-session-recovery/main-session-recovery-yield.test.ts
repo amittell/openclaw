@@ -117,13 +117,25 @@ describe("yielded requester admission", () => {
   it.each([
     { mainRestartRecovery: { cycleId: "debt", revision: 1, chargedAttempts: 0 } },
     { restartRecoveryDeliveryRunId: "delivery-run" },
-    { restartRecoveryRuns: [{ runId: "other-run", lifecycleGeneration: "other-generation" }] },
     { lifecycleRunId: "other-run" },
   ] satisfies Partial<SessionEntry>[])("preserves separate custody: %j", async (debt) => {
     await write({ ...read(), ...debt });
     const before = read();
     await expect(claimRecovery()).resolves.toMatchObject({ kind: "invalidated" });
     expect(read()).toEqual(before);
+  });
+
+  // FORK DIVERGENCE (rh-bot 2026-09-03, isMainRestartRecoveryTerminalOnly): on a row not
+  // marked interrupted, the live Gateway settles a fence from a dead generation, so this
+  // row's only fence clears and the claim needs no recovery. 10.5 preserves it as separate
+  // custody (invalidated, row unchanged).
+  it("settles a dead-generation fence instead of preserving it as separate custody", async () => {
+    await write({
+      ...read(),
+      restartRecoveryRuns: [{ runId: "other-run", lifecycleGeneration: "other-generation" }],
+    });
+    await expect(claimRecovery()).resolves.toMatchObject({ kind: "not_required" });
+    expect(read().restartRecoveryRuns).toBeUndefined();
   });
 
   it("rejects a handoff if the child batch is adopted before commit", async () => {
