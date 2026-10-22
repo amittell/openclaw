@@ -11,6 +11,7 @@ import {
   OAUTH_REFRESH_LOCK_OPTIONS,
 } from "../../auth-profiles/constants.js";
 import { createOAuthManager } from "../../auth-profiles/oauth-manager.js";
+import { mockOAuthProviderOperations } from "../../auth-profiles/oauth-native-provider.test-support.js";
 import { isPendingOAuthRefreshFence } from "../../auth-profiles/oauth-refresh-marker.js";
 import { loadPersistedAuthProfileStore } from "../../auth-profiles/persisted.js";
 import { ensureAuthProfileStoreWithoutExternalProfiles } from "../../auth-profiles/store-runtime.js";
@@ -121,6 +122,7 @@ describe("embedded run auth hard deadline", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("keeps the hard deadline above two OAuth manager attempts", () => {
@@ -256,12 +258,8 @@ describe("embedded run auth hard deadline", () => {
           providerStarted.resolve();
           return await providerResult.promise;
         });
-        const manager = createOAuthManager({
-          buildApiKey: async (_provider, credential) => credential.access,
-          canRefreshCredential: async () => true,
-          refreshCredential,
-          readBootstrapCredential: () => null,
-        });
+        mockOAuthProviderOperations({ refreshCredential });
+        const manager = createOAuthManager();
         mocks.getApiKeyForModelCore.mockImplementation(async () => {
           const store = ensureAuthProfileStoreWithoutExternalProfiles(agentDir);
           const credential = store.profiles[profileId];
@@ -300,9 +298,16 @@ describe("embedded run auth hard deadline", () => {
         // The scope owns the OAuth settlement the caller stops observing, so the
         // test can join it instead of polling the row.
         const work = new AsyncWorkScope();
-        const init = track(work.track(() => controller.initializeAuthProfile()));
+        const initRun = work.track(() => controller.initializeAuthProfile());
+        const init = track(initRun);
         try {
-          await providerStarted.promise;
+          // A run that settles before the provider starts reports its own error, not a test timeout.
+          await Promise.race([
+            providerStarted.promise,
+            initRun.then(() => {
+              throw new Error("auth settled before the OAuth provider refresh started");
+            }),
+          ]);
           expect(rowIsPendingFence()).toBe(true);
 
           // The owner's observation deadline releases the caller first; the backstop sits above it.
