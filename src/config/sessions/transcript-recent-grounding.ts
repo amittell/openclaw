@@ -13,12 +13,11 @@ import {
   type ManagedMediaGroundingRoot,
 } from "../../media/media-reference.js";
 import { truncateUtf8Prefix } from "../../utils/utf8-truncate.js";
-import {
-  readSessionTranscriptConversationSnapshot,
-  type SessionTranscriptReadScope,
-  type TranscriptEvent,
+import type {
+  SessionTranscriptBoundedMessageTailPage,
+  SessionTranscriptMessageEvent,
+  TranscriptEvent,
 } from "./session-accessor.js";
-import { DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES } from "./session-accessor.sqlite-visible-cursor.js";
 import {
   invalidateUngroundedMediaPrefixes,
   type JoinedMediaSpellings,
@@ -59,54 +58,112 @@ function readTurnGroundedMediaPaths(
   );
 }
 
+/** One tail page of visible messages, `offset` messages back from the newest. */
+export type RecentConversationPageReader = (
+  offset: number,
+  maxMessages: number,
+) => Promise<SessionTranscriptBoundedMessageTailPage>;
+
+const RECENT_CONVERSATION_PAGE_SIZE = 250,
+  MAX_PRECEDING_SAME_TURN_ROWS = 1_000,
+  MAX_RECENT_CONVERSATION_READ_ATTEMPTS = 3;
+
+type PageSnapshot = Pick<SessionTranscriptBoundedMessageTailPage, "snapshot" | "totalMessages">;
+
+function isSameProjection(left: PageSnapshot, right: PageSnapshot): boolean {
+  return (
+    left.totalMessages === right.totalMessages &&
+    left.snapshot.generation === right.snapshot.generation &&
+    left.snapshot.boundarySeq === right.snapshot.boundarySeq &&
+    left.snapshot.indexedSeq === right.snapshot.indexedSeq
+  );
+}
+
 /**
- * The newest `limit` entries `select` accepts, newest first, each assistant entry with the media
- * its own turn's tool results carried. Synchronous, so a cold-storage restore can retry it.
+ * One selection over consecutive tail pages; undefined when the projection moved between pages,
+ * because offsets and same-turn provenance are only meaningful within one projection.
  */
-export function selectRecentConversationRows<T extends ConversationEntry>(
-  scope: SessionTranscriptReadScope,
+async function selectFromOneProjection<T extends ConversationEntry>(
+  readPage: RecentConversationPageReader,
   limit: number,
   select: (event: TranscriptEvent) => T | undefined,
-): RecentConversationRow<T>[] {
-  const rows: RecentConversationRow<T>[] = [];
-  let offset = 0;
-  while (rows.length < limit) {
-    const maxResults = Math.min(DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES, limit - rows.length);
-    const page = readSessionTranscriptConversationSnapshot(scope, {
-      offset,
-      select: (event) => select(event) !== undefined,
-      maxResults,
-    });
-    for (const row of page.toReversed()) {
-      const entry = select(row.event);
-      if (!entry) {
-        continue;
-      }
-      const references: string[] = [];
-      if (entry.role === "assistant") {
-        for (const preceding of row.precedingSameTurn) {
-          if (references.length >= MAX_GROUNDING_PATHS) {
-            break;
-          }
-          const message = readTranscriptEventMessage(preceding.event);
-          if (message) {
-            references.push(
-              ...readTurnGroundedMediaPaths(message, MAX_GROUNDING_PATHS - references.length),
-            );
-          }
-        }
-      }
-      rows.push({ entry, references });
-      if (rows.length >= limit) {
-        break;
-      }
+): Promise<RecentConversationRow<T>[] | undefined> {
+  const selected: Array<{ entry: T; preceding: SessionTranscriptMessageEvent[] }> = [];
+  let pending: typeof selected = [];
+  let first: PageSnapshot | undefined;
+  for (let offset = 0; selected.length < limit || pending.length > 0;) {
+    const page = await readPage(offset, RECENT_CONVERSATION_PAGE_SIZE);
+    first ??= page;
+    if (!isSameProjection(first, page)) {
+      return undefined;
     }
-    if (page.length < maxResults) {
+    if (page.events.length === 0) {
       break;
     }
-    offset += page.length;
+    offset += RECENT_CONVERSATION_PAGE_SIZE;
+    for (const row of page.events.toReversed()) {
+      if (selected.length >= limit && pending.length === 0) {
+        break;
+      }
+      // SAFETY: Indexed rows retain message envelopes; losing one could cross turn provenance.
+      const role = (row.event as { message?: { role?: unknown } })?.message?.role;
+      if (role === "user") {
+        pending = [];
+      } else {
+        for (const assistant of pending) {
+          assistant.preceding.push(row);
+        }
+        pending = pending.filter(
+          ({ preceding }) => preceding.length < MAX_PRECEDING_SAME_TURN_ROWS,
+        );
+      }
+      const entry = selected.length < limit ? select(row.event) : undefined;
+      if (entry) {
+        const result: (typeof selected)[number] = { entry, preceding: [] };
+        selected.push(result);
+        if (entry.role === "assistant") {
+          pending.push(result);
+        }
+      }
+    }
   }
-  return rows;
+  return selected.map(({ entry, preceding }) => {
+    const references: string[] = [];
+    // Oldest first, as the turn wrote them, until the grounding budget is spent.
+    for (const row of preceding.toReversed()) {
+      if (references.length >= MAX_GROUNDING_PATHS) {
+        break;
+      }
+      const message = readTranscriptEventMessage(row.event);
+      if (message) {
+        references.push(
+          ...readTurnGroundedMediaPaths(message, MAX_GROUNDING_PATHS - references.length),
+        );
+      }
+    }
+    return { entry, references };
+  });
+}
+
+/**
+ * The newest `limit` entries `select` accepts, newest first, each assistant entry with the media
+ * its own turn's tool results carried. Pages come from 10.5's tail reader (history worker, or the
+ * captured incognito actor), and every page of one selection must come from the same projection.
+ */
+export async function selectRecentConversationRows<T extends ConversationEntry>(
+  readPage: RecentConversationPageReader,
+  limit: number,
+  select: (event: TranscriptEvent) => T | undefined,
+): Promise<RecentConversationRow<T>[]> {
+  for (let attempt = 1; ; attempt += 1) {
+    const rows = await selectFromOneProjection(readPage, limit, select);
+    if (rows) {
+      return rows;
+    }
+    if (attempt >= MAX_RECENT_CONVERSATION_READ_ATTEMPTS) {
+      throw new Error("Recent conversation transcript changed during every read attempt");
+    }
+  }
 }
 
 /**

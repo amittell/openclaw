@@ -377,12 +377,15 @@ export function createSubagentRegistrySweeper(params: {
               // Entry status can lag the run's real completion (restart mid-flush);
               // the recovery seam reads the session entry, then falls back to a
               // transcript tail scan before the run is error-finalized as lost context.
+              // A worker classification already read that entry: completion reuses the
+              // same snapshot instead of reading a second, possibly rewritten, row.
               completion = await resolveSubagentRecoveryCompletion({
                 childSessionKey: entry.childSessionKey,
                 childAgentId: entry.childAgentId,
                 fallbackEndedAt: now,
                 notBeforeMs: entry.execution.startedAt ?? entry.createdAt,
                 assertCurrent: assertActiveReadCurrent,
+                snapshot: "sessionEntry" in observation ? observation : undefined,
               });
               assertActiveReadCurrent();
             } catch (error) {

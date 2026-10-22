@@ -65,6 +65,7 @@ import { readPendingInputSource } from "./session-pending-input-source.js";
 import { preparePendingInputStore, type PendingInputScope } from "./session-pending-input-store.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
+import type { SessionEntry } from "./types.js";
 
 export { withSessionPendingInputRelocation };
 export type { SessionPendingInput, SessionPendingInputPage };
@@ -248,6 +249,34 @@ export async function recordSessionPendingInputCompletedTurn(
         : null,
     { preserveActivity: true },
   );
+}
+
+/**
+ * The session row the committed-turn terminal test reads after the stage snapshot. A captured
+ * incognito actor owns its namespace, so its row is read through that actor; the host must not
+ * open the private database itself.
+ */
+async function readCommittedTurnSessionEntry(
+  scope: PendingInputScope,
+  sessionKey: string,
+  assertCurrent: () => void,
+): Promise<SessionEntry | undefined> {
+  const incognito = scope.incognito;
+  if (!incognito) {
+    return loadSessionEntryReadOnly({ ...scope, readConsistency: "latest" });
+  }
+  const read = await incognito.actor.sessions.read(
+    {
+      assertCurrent: () => {
+        assertCurrent();
+        incognito.authority.assertCurrent();
+      },
+    },
+    { sessionKey },
+    incognito.admissionSignal,
+  );
+  read.snapshot.assertCurrent();
+  return read.entry;
 }
 
 type PendingInputStageOptions = PendingInputRequest & {
@@ -550,7 +579,7 @@ async function stagePreparedPendingInput(
       // the snapshot. trackCompletion retries are always admitted below and never need it.
       const sessionEntry = options.trackCompletion
         ? undefined
-        : loadSessionEntryReadOnly({ ...scope, readConsistency: "latest" });
+        : await readCommittedTurnSessionEntry(scope, store.sessionKey, store.assertCurrent);
       // A row that no longer names this session rotated after the snapshot, by a writer outside
       // this admission (another process). Deciding on its absent evidence re-ran answered
       // turns and consumed owed re-drives; like 9.9's single read, it is no longer current.

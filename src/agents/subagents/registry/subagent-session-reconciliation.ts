@@ -337,14 +337,18 @@ export async function resolveSubagentRecoveryCompletion(params: {
   notBeforeMs?: number;
   cfg?: OpenClawConfig;
   assertCurrent?: () => void;
+  /** The entry the caller's orphan classification already read; reusing it keeps one snapshot. */
+  snapshot?: { sessionEntry: SessionEntry | undefined };
 }): Promise<SubagentSessionCompletion | null> {
   // One worker read serves both paths; a retired read throws through to the caller.
-  const sessionEntry = await loadSubagentSessionEntry({
-    childSessionKey: params.childSessionKey,
-    childAgentId: params.childAgentId,
-    cfg: params.cfg,
-    assertCurrent: params.assertCurrent,
-  });
+  const sessionEntry = params.snapshot
+    ? params.snapshot.sessionEntry
+    : await loadSubagentSessionEntry({
+        childSessionKey: params.childSessionKey,
+        childAgentId: params.childAgentId,
+        cfg: params.cfg,
+        assertCurrent: params.assertCurrent,
+      });
   const entryCompletion = resolveCompletionFromSessionEntry(sessionEntry, params.fallbackEndedAt, {
     notBeforeMs: params.notBeforeMs,
   });

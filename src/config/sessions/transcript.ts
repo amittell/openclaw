@@ -249,16 +249,29 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
 ): Promise<SessionRecentConversationText[]> {
   const limit = normalizeRecentTranscriptLimit(options.limit);
   try {
+    const { readSessionTranscriptBoundedMessageTailPageAsync } =
+      await import("../../gateway/session-transcript-readers.js");
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
-    // Selection stays synchronous so a cold-storage restore can retry it; grounding is async
-    // and runs after, on the rows plus the same-turn provenance gathered with them.
+    // Pages go through 10.5's reader (history worker, or the captured incognito actor); a
+    // cold-storage restore retries the selection, and grounding runs after it on the rows plus
+    // the same-turn provenance gathered with them.
     const rows = await readRestoredSessionTranscript(
       scope,
       () =>
-        selectRecentConversationRows(scope, limit, (event) => {
-          const entry = extractRecentConversationText(event, options);
-          return entry && isWithinTranscriptWindow(entry.timestamp, options) ? entry : undefined;
-        }),
+        selectRecentConversationRows(
+          (offset, maxMessages) =>
+            readSessionTranscriptBoundedMessageTailPageAsync(scope, {
+              maxMessages,
+              // Preserve the existing message-count-only bound for this text projection.
+              maxBytes: Number.MAX_SAFE_INTEGER,
+              offset,
+            }),
+          limit,
+          (event) => {
+            const entry = extractRecentConversationText(event, options);
+            return entry && isWithinTranscriptWindow(entry.timestamp, options) ? entry : undefined;
+          },
+        ),
       { assertCurrent },
     );
     return await groundRecentConversationRows(rows, {
