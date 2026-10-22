@@ -1,12 +1,14 @@
-// Reproduction for openclaw issue #173650: a `completionTarget: "parent"` private
-// completion turn composes the owed relay as its final assistant text, commits it to
-// the transcript, and ends without sending through the message tool, so the user
-// never receives it. This test drives the real announce owner
-// (runSubagentAnnounceFlow), the real requester completion path
-// (agentCommandFromGatewayIngress) and the real attempt tool policy (runAgentAttempt)
-// with an outstanding user-reply obligation (pendingFinalDelivery), and captures the
-// four boundary states that prove the obligation is retained by construction: the
-// shipped failure was model follow-through, not lost boundary state.
+// Coverage for openclaw issue #173650, in a constructed scenario: the requester
+// session already holds an outstanding user-reply obligation (a seeded
+// pendingFinalDelivery), and a `completionTarget: "parent"` private completion turn
+// ends with a transcript-only final and no message-tool send (a scripted model
+// result). This test drives the real announce owner (runSubagentAnnounceFlow), the
+// real requester completion path (agentCommandFromGatewayIngress) and the real attempt
+// tool policy (runAgentAttempt), and captures four boundary states: the private
+// instruction, the bound message tool, the seeded obligation before and after, and
+// the absent requester-visible final. It shows that this seeded marker is retained;
+// it does not show how the reported incident's obligation was created or settled, or
+// why its update went unsent.
 //
 // Stand-ins, and only these: the Gateway `agent` method is an adapter that does what
 // the Gateway does for an in-process private completion (register and consume the

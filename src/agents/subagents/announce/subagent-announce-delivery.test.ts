@@ -1085,8 +1085,8 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
   // expectGatewayAgentParams), so the post-run marker owner neither creates nor
   // clears a pre-existing `pendingFinalDelivery` obligation. The "private text"
   // case (transcript-only final, no messaging-tool send) is the boundary evidence
-  // that `requesterVisibleFinalDelivered` stays undefined; the production-boundary
-  // retention proof is agent-command.private-completion-obligation.test.ts.
+  // that `requesterVisibleFinalDelivered` stays undefined; the seeded-marker
+  // retention case is agent-command.private-completion-obligation.test.ts.
   it.each(privateCompletionCases)(
     "preserves private parent consumption and final evidence: $name",
     async (testCase) => {
