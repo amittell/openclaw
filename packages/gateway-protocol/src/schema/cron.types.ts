@@ -25,7 +25,15 @@ export type CronJob = Static<typeof CronJobSchema>;
 /** Definition-free row returned by cron.list when compact is true. */
 export type CronCompactJob = Pick<
   CronJob,
-  "id" | "name" | "declarationKey" | "displayName" | "owner" | "agentId" | "enabled" | "updatedAtMs"
+  | "id"
+  | "name"
+  | "declarationKey"
+  | "displayName"
+  | "owner"
+  | "agentId"
+  | "enabled"
+  | "updatedAtMs"
+  | "reauthorizationRequired"
 > &
   Pick<
     CronJob["state"],
@@ -48,8 +56,6 @@ export type CronCompactJob = Pick<
     lastRunAtMs: number | null;
     lastRunStatus: NonNullable<CronJob["state"]["lastRunStatus"]> | null;
     lastRunError: string | null;
-    /** Present when the job's account-scoped cap cannot resolve a creator channel and fails closed. */
-    reauthorizationRequired?: boolean;
   };
 export type CronListParams = Static<typeof CronListParamsSchema>;
 export type CronStatusParams = Static<typeof CronStatusParamsSchema>;
