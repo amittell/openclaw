@@ -243,6 +243,29 @@ describe("sendGatewayHello update detail scope", () => {
     redeemDeviceBootstrapTokenProfileMock.mockResolvedValue({ fullyRedeemed: false });
   });
 
+  it.each([
+    { origin: "https://gateway.example.test", local: false, expected: true },
+    { origin: "http://127.0.0.1:18789", local: true, expected: true },
+    { origin: "http://127.0.0.1:18789", local: false, expected: false },
+  ])(
+    "advertises browser sign-in only for a secure served return: %j",
+    async ({ origin, local, expected }) => {
+      const context = {
+        ...makeContext("operator", ["operator.read"]),
+        browserOrigin: { origin, requestHost: new URL(origin).host, isLocalClient: local },
+      };
+      const gatewayMethods = ["health", "mcp.authLogin"];
+      await sendGatewayHello(
+        { ...context, handler: { ...context.handler, gatewayMethods } } as never,
+        makeState("operator", ["operator.read"]) as never,
+        {},
+      );
+      expect(helloPayload(context)?.features.methods).toEqual(
+        expected ? gatewayMethods : ["health"],
+      );
+    },
+  );
+
   it("includes the synchronously current shared health publication before passive refresh", async () => {
     getHealthCacheMock.mockReturnValue({
       ok: true,

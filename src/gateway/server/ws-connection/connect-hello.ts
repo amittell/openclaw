@@ -182,7 +182,7 @@ export async function sendGatewayHello(
       connId,
     },
     features: {
-      methods: resolveBrowserAuthOrigin(context.browserOrigin, new AbortController().signal)
+      methods: resolveBrowserAuthOrigin(context.browserOrigin)
         ? gatewayMethods
         : gatewayMethods.filter((method) => method !== "mcp.authLogin"),
       events,
