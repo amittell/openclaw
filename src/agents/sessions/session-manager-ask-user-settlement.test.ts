@@ -270,10 +270,6 @@ it.each(["answer", "unrelated-user"] as const)(
     const questions = new QuestionManager(scheduler);
     const waiting = createDeferredCore();
     let questionId = "";
-    type GatewayCall = Extract<
-      NonNullable<Parameters<typeof createAskUserTool>[0]["gatewayCall"]>,
-      (...args: never[]) => unknown
-    >;
     const gatewayCall = (async (
       method: string,
       _options: unknown,
@@ -299,6 +295,11 @@ it.each(["answer", "unrelated-user"] as const)(
       }
       throw new Error(`Unexpected question method: ${method}`);
     }) as GatewayCall;
+    const dispatch = questionDispatch.resolveAgentQuestionGatewayCall(gatewayCall);
+    const gatewaySpy = vi
+      .spyOn(questionDispatch, "resolveAgentQuestionGatewayCall")
+      .mockReturnValue(dispatch);
+    onTestFinished(() => gatewaySpy.mockRestore());
     const attempt = {
       agentId: target.agentId,
       sessionId,
@@ -325,7 +326,6 @@ it.each(["answer", "unrelated-user"] as const)(
           agentId: target.agentId,
           runId: attempt.runId,
           sessionKey: target.sessionKey,
-          gatewayCall,
         }).execute("ask", args);
         await releaseSettlement.promise;
         expect(result.details).toEqual(details);
