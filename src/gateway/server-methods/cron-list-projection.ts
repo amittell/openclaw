@@ -2,6 +2,7 @@ import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coer
 import type { CronCompactJob } from "../../../packages/gateway-protocol/src/index.js";
 import { tryResolveCronJobEffectiveAgentId } from "../../cron/agent-id.js";
 import { cronJobReadView } from "../../cron/job-read-view.js";
+import { cronJobNeedsCreatorReauthorization } from "../../cron/scheduled-tool-policy.js";
 import type { CronServiceContract } from "../../cron/service-contract.js";
 import type { CronListPageResult } from "../../cron/service/list-page-types.js";
 import type { CronJob } from "../../cron/types.js";
@@ -32,10 +33,15 @@ export function projectCronListJobs(
 }
 
 function prepareJobs(jobs: CronJob[], defaultAgentId: string | undefined, compact: boolean) {
+  // Stored jobs carry the store-private toolsAllowProvenance the reauthorization flag reads.
   const rows = jobs.map((job) =>
     freezeJsonSnapshot({
       ...(compact ? compactCronListJob(job) : cronJobReadView(job)),
       effectiveAgentId: tryResolveCronJobEffectiveAgentId(job, defaultAgentId) ?? null,
+      // Compact rows omit absent metadata; the flag is present only when the job is blocked.
+      ...(compact && cronJobNeedsCreatorReauthorization({ job })
+        ? { reauthorizationRequired: true }
+        : {}),
     }),
   );
   return registerSerializedJsonArray(

@@ -6,6 +6,7 @@ import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.pa
 import { tryResolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { resolveCronListSnapshotRevision } from "../list-snapshot-revision.js";
+import { cronJobNeedsCreatorReauthorization } from "../scheduled-tool-policy.js";
 import { readCronScratchSnapshot } from "../scratch-read.js";
 import { writeCronJobScratch } from "../scratch-store.js";
 import { getCronJobsStoreRevision, noteCronJobsStoreCommit } from "../store.js";
@@ -37,6 +38,7 @@ async function readSnapshot(
     return cached;
   }
   const sqlitePath = resolveOpenClawStateSqlitePath();
+  const storedJobs = state.store?.jobs ?? [];
   return (state.readSnapshot = {
     storeRevision,
     source,
@@ -47,7 +49,10 @@ async function readSnapshot(
       storePath: sqlitePath,
       storage: "sqlite" as const,
       sqlitePath,
-      jobs: state.store?.jobs.length ?? 0,
+      jobs: storedJobs.length,
+      reauthorizationRequired: storedJobs.filter((job) =>
+        cronJobNeedsCreatorReauthorization({ job }),
+      ).length,
       nextWakeAtMs: state.deps.cronEnabled ? (nextWakeAtMs(state) ?? null) : null,
     }),
   });
