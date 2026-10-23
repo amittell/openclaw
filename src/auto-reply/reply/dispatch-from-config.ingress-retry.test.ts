@@ -218,3 +218,156 @@ describe("dispatch retry after queued ingress abandonment", () => {
     },
   );
 });
+
+// Fork #11 asked for a re-dispatched or re-steered inbound to be suppressed once its reply
+// landed. On this base the inbound dedupe claim, the durable ingress row and turn
+// admission provide that; these cases pin the behaviour #11 relied on.
+describe("re-presented inbound after its reply landed", () => {
+  const ctxFor = (key: string, messageId: string | undefined, timestamp?: number) =>
+    buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      ChatType: "direct",
+      From: "user:redispatch-fixture",
+      To: "channel:redispatch-fixture",
+      SessionKey: key,
+      MessageSid: messageId,
+      Timestamp: timestamp,
+      BodyForAgent: "Please answer once",
+    });
+
+  it("does not re-run an ingress retry of a turn whose reply already landed", async () => {
+    await withTempState(async (stateDir) => {
+      let clock = Date.now();
+      const key = "agent:main:discord:direct:redispatch-after-reply";
+      const messageId = "redispatch-after-reply";
+      const ctx = ctxFor(key, messageId);
+      const queue = createTestIngressQueue(stateDir, { now: () => clock });
+      const released = observeChannelIngressQueueWrite(queue, "release");
+      await queue.enqueue(messageId, { text: "Please answer once" }, { laneKey: key });
+      const dispatchers: Array<ReturnType<typeof createDispatcher>> = [];
+      const outcomes: Array<DispatchProcessedNote | undefined> = [];
+      const resolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+        await options?.onBlockReply?.({ text: "Already answered" });
+        throw new Error("provider failed after the reply landed");
+      });
+      const drain = createChannelIngressDrain({
+        queue,
+        now: () => clock,
+        adoptionStallTimeoutMs: 1_000,
+        retryPolicy: { baseMs: 1, maxMs: 1 },
+        dispatchClaimedEvent: async (_event, lifecycle) => {
+          const dispatcher = createDispatcher();
+          dispatchers.push(dispatcher);
+          const { processedOutcome } = await withDispatchProcessedOutcomeSink(() =>
+            dispatchReplyFromConfig({
+              ctx,
+              cfg: automaticDirectReplyConfig,
+              dispatcher,
+              replyOptions: bindIngressLifecycleToReplyOptions(lifecycle),
+              replyResolver: resolver,
+            }),
+          );
+          outcomes.push(processedOutcome);
+        },
+      });
+      try {
+        await drain.drainOnce();
+        await drain.waitForIdle();
+        expect(resolver).toHaveBeenCalledOnce();
+        expect(dispatchers[0]?.sendBlockReply).toHaveBeenCalledWith({ text: "Already answered" });
+        // The failed turn goes back to the durable queue for a retry.
+        await expect(released).resolves.toBe(true);
+        expect(await queue.listPending()).toMatchObject([{ id: messageId, attempts: 1 }]);
+
+        clock += 1_000;
+        expect(await drain.drainOnce()).toEqual({ started: 1 });
+        await drain.waitForIdle();
+        // The retry is the re-dispatch #11 suppressed: the turn must not run or speak again.
+        expect(resolver).toHaveBeenCalledOnce();
+        expect(dispatchers).toHaveLength(2);
+        expect(dispatchers[1]?.sendBlockReply).not.toHaveBeenCalled();
+        expect(dispatchers[1]?.sendFinalReply).not.toHaveBeenCalled();
+        expect(outcomes.at(-1)).toEqual({ outcome: "skipped", reason: "duplicate" });
+        expect(await queue.listPending()).toEqual([]);
+        expect(await queue.listClaims()).toEqual([]);
+        expect((await queue.enqueue(messageId, { text: "Please answer once" })).kind).toBe(
+          "completed",
+        );
+      } finally {
+        drain.dispose();
+      }
+    });
+  });
+
+  it("does not steer the same inbound into the running turn a second time", async () => {
+    const key = "agent:main:discord:direct:redispatch-steer";
+    const resolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+      const runState = resolveReplyOperationRunState(options);
+      if (!runState) {
+        throw new Error("dispatch did not bind its run state");
+      }
+      runState.admission = { status: "accepted", mode: "steer" };
+      return undefined;
+    });
+    const dispatch = (messageId: string) =>
+      withDispatchProcessedOutcomeSink(() =>
+        dispatchReplyFromConfig({
+          ctx: ctxFor(key, messageId),
+          cfg: automaticDirectReplyConfig,
+          dispatcher: createDispatcher(),
+          replyResolver: resolver,
+        }),
+      );
+
+    await dispatch("steered-once");
+    expect(resolver).toHaveBeenCalledOnce();
+    const again = await dispatch("steered-once");
+    expect(again.processedOutcome).toEqual({ outcome: "skipped", reason: "duplicate" });
+    expect(resolver).toHaveBeenCalledOnce();
+    // A different message still reaches the running turn.
+    await dispatch("steered-next");
+    expect(resolver).toHaveBeenCalledTimes(2);
+  });
+
+  it("still runs a new message id whose provider timestamp is older than the landed reply", async () => {
+    const key = "agent:main:discord:direct:redispatch-identity";
+    const resolver = vi.fn(async () => ({ text: "Answer" }));
+    const landedAt = Date.now();
+    await dispatchReplyFromConfig({
+      ctx: ctxFor(key, "identity-first", landedAt),
+      cfg: automaticDirectReplyConfig,
+      dispatcher: createDispatcher(),
+      replyResolver: resolver,
+    });
+    // Provider timestamps are coarse (Telegram's are whole seconds), so only the id proves
+    // a re-presentation.
+    const dispatcher = createDispatcher();
+    const later = await withDispatchProcessedOutcomeSink(() =>
+      dispatchReplyFromConfig({
+        ctx: ctxFor(key, "identity-second", landedAt - 5_000),
+        cfg: automaticDirectReplyConfig,
+        dispatcher,
+        replyResolver: resolver,
+      }),
+    );
+    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(later.processedOutcome).toMatchObject({ outcome: "completed" });
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "Answer" });
+  });
+
+  it("does not suppress an inbound that carries no message id", async () => {
+    const key = "agent:main:discord:direct:redispatch-no-id";
+    const resolver = vi.fn(async () => ({ text: "Answer" }));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await dispatchReplyFromConfig({
+        ctx: ctxFor(key, undefined),
+        cfg: automaticDirectReplyConfig,
+        dispatcher: createDispatcher(),
+        replyResolver: resolver,
+      });
+    }
+    // Without an identity nothing proves a re-presentation, so both turns run.
+    expect(resolver).toHaveBeenCalledTimes(2);
+  });
+});

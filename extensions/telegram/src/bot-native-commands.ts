@@ -84,10 +84,19 @@ export const registerTelegramNativeCommands = ({
         includeBundledChannelFallback: false,
       })
     : [];
+  // The core /dashboard command routes through the text-pipeline control-ui skill and
+  // collides with the Telegram Mini App plugin's channel-owned /dashboard. Yield the
+  // Telegram native surface to the plugin: drop the core spec from both the handler
+  // list and the collision-reservation set so the Mini App command registers cleanly.
+  // The core /dashboard text handler remains reachable on every other surface.
+  const DASHBOARD_COMMAND_NAME = "dashboard";
+  const channelOwnedNativeCommands = nativeCommands.filter(
+    (command) => normalizeTelegramCommandName(command.name) !== DASHBOARD_COMMAND_NAME,
+  );
   const reservedCommands = new Set(
-    listNativeCommandSpecs({ provider: "telegram", includeBundledChannelFallback: false }).map(
-      (command) => normalizeTelegramCommandName(command.name),
-    ),
+    listNativeCommandSpecs({ provider: "telegram", includeBundledChannelFallback: false })
+      .filter((command) => normalizeTelegramCommandName(command.name) !== DASHBOARD_COMMAND_NAME)
+      .map((command) => normalizeTelegramCommandName(command.name)),
   );
   for (const command of skillCommands) {
     reservedCommands.add(normalizeTelegramCommandName(command.name));
@@ -111,8 +120,8 @@ export const registerTelegramNativeCommands = ({
     provider: "telegram",
     includeBundledChannelFallback: false,
   });
-  const firstSkillCommandIndex = nativeEnabled ? builtinCommands.length : 0;
-  const nativeMenuCommands = nativeCommands
+  const firstSkillCommandIndex = channelOwnedNativeCommands.length - skillCommands.length;
+  const nativeMenuCommands = channelOwnedNativeCommands
     .map((command, index): TelegramMenuCommand | null => {
       const normalized = normalizeTelegramCommandName(command.name);
       if (!TELEGRAM_COMMAND_NAME_PATTERN.test(normalized)) {
@@ -154,7 +163,10 @@ export const registerTelegramNativeCommands = ({
         ?.key === "login",
   );
   const nativeCommandNames = new Map<string, string>(
-    nativeCommands.map((command) => [normalizeTelegramCommandName(command.name), command.name]),
+    channelOwnedNativeCommands.map((command) => [
+      normalizeTelegramCommandName(command.name),
+      command.name,
+    ]),
   );
   const {
     commandsToRegister,
@@ -212,7 +224,7 @@ export const registerTelegramNativeCommands = ({
       shouldSkip,
     });
   };
-  for (const command of nativeCommands) {
+  for (const command of channelOwnedNativeCommands) {
     bot.command(normalizeTelegramCommandName(command.name), async (ctx, next) => {
       if (!ctx.message) {
         await next();

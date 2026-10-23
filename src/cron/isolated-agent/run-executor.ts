@@ -67,6 +67,7 @@ import {
   runCliAgent,
 } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
+import { captureCronFallbackAttribution } from "./run-fallback-attribution.js";
 import { resolveCronFallbacksOverride } from "./run-fallback-policy.js";
 import {
   setCronSessionAgentHarnessId,
@@ -190,6 +191,7 @@ function createCronPromptExecutor(
   const resolveCandidateExecution = createCronCandidateExecutionResolver(params);
 
   return async (promptText: string, runStartedAt: number): Promise<CronCompletedPromptRun> => {
+    const attributeFallback = captureCronFallbackAttribution(params.liveSelection);
     // A retry can fail during preparation, before any backend start callback.
     params.lifecycle.beginAttempt();
     const sessionTarget = {
@@ -662,15 +664,16 @@ function createCronPromptExecutor(
     }
     params.liveSelection.provider = fallbackResult.provider;
     params.liveSelection.model = fallbackResult.model;
-    setCronSessionRuntimeModel({
-      entry: params.cronSession.sessionEntry,
-      provider: fallbackResult.provider,
-      model: fallbackResult.model,
-    });
+    // Deliberately NOT setCronSessionRuntimeModel here. A fallback is a transient
+    // recovery choice; writing it to the session entry pins the session to the
+    // fallback and its context budget after the primary recovers, which is the
+    // exact outcome run-finalize's guard exists to prevent. liveSelection above
+    // still carries the served tuple for continuation ownership.
     const completed = {
       runResult: fallbackResult.result,
       fallbackProvider: fallbackResult.provider,
       fallbackModel: fallbackResult.model,
+      ...attributeFallback(fallbackResult),
       runStartedAt,
       runEndedAt: Date.now(),
     };

@@ -49,6 +49,7 @@ import {
   resolveEffectiveCurrentChannelContext,
   resolveMessageToolActionSchemaActions,
 } from "./message-tool-discovery.js";
+import { checkDuplicateSend } from "./message-tool-execution.send-guards.js";
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
 import { prepareMessageToolGroupThread } from "./message-tool-group-thread.js";
@@ -244,9 +245,11 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
     execute: async (toolCallId, args, signal) => {
       const assertCaller = turnAuthority.captureCaller(signal, captureGatewayToolCallerAssertion);
       // Shallow-copy so we don't mutate the original event args (used for logging/dedup).
+      // SAFETY: args is the tool-call payload; the shallow copy is only read through readToolStringParam/readToolParam helpers that validate each field.
       const params = { ...(args as Record<string, unknown>) };
       const action = readToolStringParam(params, "action", {
         required: true,
+        // SAFETY: readToolStringParam with required: true returns a non-empty string; the assertion only names the action union, and every use is an equality check or a by-name dispatch.
       }) as ChannelMessageActionName;
       const {
         authorization: trustedTurnContext,
@@ -446,13 +449,21 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
         preparedMessageToolCatalog,
       });
-      if (suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)) {
+      if (
+        sourceReplySinkDeliveryMode === "message_tool_only" &&
+        suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)
+      ) {
         decisions.recordPollVoteEchoSuppressed();
         return jsonResult({
           status: "suppressed",
           reason: "poll_vote_echo" satisfies VisibleTextSuppressionReason,
           message: "Suppressed outbound text because it only restated the poll vote just cast.",
         });
+      }
+
+      const duplicateSend = checkDuplicateSend(action, params, options?.runId, pollVoteEchoRoute);
+      if (duplicateSend?.suppressed) {
+        return duplicateSend.suppressed;
       }
 
       const hasCurrentMessageId =
@@ -673,10 +684,19 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
               )?.markSourceReplyDelivered();
             }
           }
-          if (action === "poll-vote" && pollVoteEchoRoute && pollEchoSessionKey) {
+          if (
+            action === "poll-vote" &&
+            pollVoteEchoRoute &&
+            pollEchoSessionKey &&
+            sourceReplySinkDeliveryMode === "message_tool_only"
+          ) {
+            // SAFETY: details is provider-supplied and untyped; pollVotedOption stays unknown and is accepted only when typeof is string.
             const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
             recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
           }
+          // Record only after a non-throwing send so a failed delivery can still
+          // be retried with the same text.
+          duplicateSend?.recordDelivered();
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

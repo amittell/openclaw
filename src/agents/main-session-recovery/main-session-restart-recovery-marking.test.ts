@@ -43,6 +43,7 @@ import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.
 import { createAgentRunDirectAbortError } from "../run-termination.js";
 import { readStartupRecoveryWarning } from "./main-session-restart-recovery-diagnostics.js";
 import {
+  markOrphanedMainSessionForRecovery,
   markRestartAbortedMainSessions,
   markStartupOrphanedMainSessionsForRecovery,
 } from "./main-session-restart-recovery-marking.js";
@@ -233,6 +234,49 @@ it.each(["before", "after"] as const)(
   },
 );
 
+// Fork #13: only boot and Gateway close know a restart happened; operator recovery
+// marks the row recoverable without claiming one, and keeps a restart already recorded.
+it("records a restart cause for boot marking but not for operator recovery", async () => {
+  await withOpenClawTestState({ label: "recovery-mark-cause" }, async (state) => {
+    const booted = "agent:main:main";
+    await replaceSessionEntry(
+      { sessionKey: booted },
+      { sessionId: "booted-session", updatedAt: 1, restartRecoveryDeliveryRunId: "booted-run" },
+    );
+    await expect(
+      markStartupOrphanedMainSessionsForRecovery({ stateDir: state.stateDir }),
+    ).resolves.toEqual({ marked: 1, skipped: 0 });
+    expect(loadSessionEntry({ sessionKey: booted })).toMatchObject({
+      abortedLastRun: true,
+      mainRestartRecovery: { cause: "gateway_restart" },
+    });
+
+    const operator = "agent:main:operator";
+    await replaceSessionEntry(
+      { sessionKey: operator },
+      {
+        sessionId: "operator-session",
+        updatedAt: 1,
+        restartRecoveryDeliveryRunId: "operator-run",
+      },
+    );
+    const [target] = await discoverRestartRecoveryStoreTargets({ stateDir: state.stateDir });
+    if (!target) {
+      throw new Error("expected the session store target");
+    }
+    await expect(
+      markOrphanedMainSessionForRecovery({
+        target: { ...target, sessionKey: operator },
+        expectedSessionId: "operator-session",
+      }),
+    ).resolves.toEqual({ marked: 1, skipped: 0 });
+    const marked = loadSessionEntry({ sessionKey: operator });
+    expect(marked?.abortedLastRun).toBe(true);
+    expect(marked?.mainRestartRecovery?.cycleId).toBeDefined();
+    expect(marked?.mainRestartRecovery?.cause).toBeUndefined();
+  });
+});
+
 it("recovers an orphan after its owner releases retained run metadata", async () => {
   await withOpenClawTestState({ label: "recovery-retained-run" }, async (state) => {
     const sessionKey = "agent:main:main";
@@ -360,6 +404,9 @@ it("marks only the closing Gateway's exact active admissions", async () => {
     expect(loadSessionEntry({ storePath, sessionKey: "agent:main:closing" })?.abortedLastRun).toBe(
       true,
     );
+    expect(
+      loadSessionEntry({ storePath, sessionKey: "agent:main:closing" })?.mainRestartRecovery?.cause,
+    ).toBe("gateway_restart");
     expect(
       loadSessionEntry({ storePath, sessionKey: "agent:main:other" })?.abortedLastRun,
     ).toBeUndefined();

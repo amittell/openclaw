@@ -329,6 +329,7 @@ export function bindSqliteWorkerBackend(
           scope,
           event.parentId,
           command.input.view?.admission?.entryId,
+          command.input.view?.questionAnswers,
         );
         if (mutationAt === undefined) {
           throw new SqliteTranscriptMutationConflictError(scope.sessionId);

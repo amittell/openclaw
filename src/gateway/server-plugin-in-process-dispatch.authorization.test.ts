@@ -21,6 +21,7 @@ import type {
 import {
   dispatchGatewayMethodInProcess,
   runWithOperatorToolGatewayCleanupContext,
+  getInProcessGatewayRequestContext,
   withOperatorToolGatewayAuthority,
 } from "./server-plugin-in-process-dispatch.js";
 import { registerInProcessGatewayDispatchPreparationTests } from "./server-plugin-in-process-dispatch.preparation.test-support.js";
@@ -768,6 +769,25 @@ describe("typed in-process agent authorization", () => {
     expect(resolveNodeInvokeRuntimeAuthorityError({ context, client: dispatched.client })).toBe(
       "agent runtime approval authority closed before node dispatch",
     );
+  });
+
+  it("rejects a closed owning gateway without falling through to another active scope", async () => {
+    await withPluginRuntimeGatewayRequestScope(
+      { context: createContext(), isWebchatConnect: () => false },
+      async () => {
+        const resolveGatewayContext = () => undefined;
+        expect(getInProcessGatewayRequestContext(resolveGatewayContext)).toBeUndefined();
+
+        await expect(
+          dispatchGatewayMethodInProcess(
+            "agent",
+            { message: "detached completion", idempotencyKey: "detached-completion" },
+            { resolveGatewayContext },
+          ),
+        ).rejects.toThrow("requires a gateway request scope or instance binding");
+      },
+    );
+    expect(startTurn).not.toHaveBeenCalled();
   });
 
   it("applies the pending-profile gate to typed in-process agent dispatch", async () => {

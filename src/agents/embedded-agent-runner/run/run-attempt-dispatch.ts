@@ -35,12 +35,15 @@ import type { PreparedEmbeddedAttemptDispatchInput } from "./execution-context.j
 import { resolveEmbeddedAttemptBasePrompt } from "./helpers.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 import { prepareEmbeddedAttemptPromptExecution } from "./prompt-image-preparation.js";
+import { resolveSessionTemperatureParams } from "./run-attempt-dispatch.session-temperature.js";
 import { CODEX_HARNESS_ID, resolveAttemptTrajectoryAttribution } from "./runtime-resolution.js";
 import {
   projectEmbeddedMessageContext,
   projectTrajectorySessionTarget,
 } from "./shared-run-context.js";
 import { MAX_BEFORE_AGENT_FINALIZE_REVISIONS } from "./terminal-retry-state.js";
+
+export { resolveSessionTemperatureOverride } from "./run-attempt-dispatch.session-temperature.js";
 
 /** Prepares the selected runtime and dispatches an attempt under its admitted lifecycle. */
 export async function prepareAndDispatchEmbeddedRunAttempt(
@@ -139,6 +142,11 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
   }
+  const sessionSampling = resolveSessionTemperatureParams({
+    agentId: workspaceResolution.agentId,
+    sessionKey: resolvedSessionKey,
+    storePath: params.config?.session?.store,
+  });
   const runtimePlan = buildAgentRuntimePlan({
     provider,
     modelId,
@@ -154,7 +162,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     agentDir,
     agentId: workspaceResolution.agentId,
     thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel, effectiveModel),
-    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode },
+    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode, ...sessionSampling },
   });
   const trajectoryAttribution = resolveAttemptTrajectoryAttribution({
     model: effectiveModel,

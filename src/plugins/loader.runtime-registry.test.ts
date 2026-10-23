@@ -591,6 +591,37 @@ describe("cached plugin load failures", () => {
   });
 });
 
+it("retires the cached root while preserving a caller-owned registry handle", async () => {
+  useNoBundledPlugins();
+  const plugin = writePlugin({
+    id: "restart-cache",
+    body: 'module.exports = { id: "restart-cache", register() {} };',
+  });
+  const options = {
+    config: {
+      plugins: {
+        allow: [plugin.id],
+        load: { paths: [plugin.file] },
+        slots: { memory: "none" },
+      },
+    },
+  };
+  const root = await loadAndActivateRootPluginRegistry(options);
+  const scopedOptions = { ...options, onlyPluginIds: [plugin.id] };
+  const snapshot = loadPluginRegistryHandle(scopedOptions);
+  expect(snapshot).not.toBe(root);
+  expect(await loadAndActivateRootPluginRegistry(options)).toBe(root);
+  expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
+
+  await clearActivePluginRegistry();
+
+  expect(getActivePluginRegistry()).toBeNull();
+  // A scoped handle has its own caller-owned lifetime; retiring the process
+  // root must neither revive that root nor dispose an unrelated handle.
+  expect(loadPluginRegistryHandle(scopedOptions)).toBe(snapshot);
+  expect(await loadAndActivateRootPluginRegistry(options)).not.toBe(root);
+});
+
 describe("clearPluginRegistryLoadCache", () => {
   it.each(["commit", "rollback"])(
     "releases only the retired cache aliases after staged %s",

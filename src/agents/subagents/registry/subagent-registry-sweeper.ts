@@ -53,8 +53,7 @@ import type {
 import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded, isStaleUnendedSubagentRun } from "./subagent-run-liveness.js";
 import {
-  loadSubagentSessionEntry,
-  resolveCompletionFromSessionEntry,
+  resolveSubagentRecoveryCompletion,
   resolveSubagentRunOrphanReason,
 } from "./subagent-session-reconciliation.js";
 export { retireSupersededSubagentRun } from "./subagent-registry-sweeper-retire.js";
@@ -366,20 +365,28 @@ export function createSubagentRegistrySweeper(params: {
               }
             };
             let observation;
+            let completion;
             try {
               assertActiveReadCurrent();
               const classification = resolveSubagentRunOrphanReason({ entry });
               observation =
                 typeof classification === "object" && classification !== null
                   ? await classification.read(assertActiveReadCurrent)
-                  : {
-                      orphanReason: classification,
-                      sessionEntry: await loadSubagentSessionEntry({
-                        childSessionKey: entry.childSessionKey,
-                        childAgentId: entry.childAgentId,
-                        assertCurrent: assertActiveReadCurrent,
-                      }),
-                    };
+                  : { orphanReason: classification };
+              assertActiveReadCurrent();
+              // Entry status can lag the run's real completion (restart mid-flush);
+              // the recovery seam reads the session entry, then falls back to a
+              // transcript tail scan before the run is error-finalized as lost context.
+              // A worker classification already read that entry: completion reuses the
+              // same snapshot instead of reading a second, possibly rewritten, row.
+              completion = await resolveSubagentRecoveryCompletion({
+                childSessionKey: entry.childSessionKey,
+                childAgentId: entry.childAgentId,
+                fallbackEndedAt: now,
+                notBeforeMs: entry.execution.startedAt ?? entry.createdAt,
+                assertCurrent: assertActiveReadCurrent,
+                snapshot: "sessionEntry" in observation ? observation : undefined,
+              });
               assertActiveReadCurrent();
             } catch (error) {
               if (error === readScope.retiredRead) {
@@ -387,10 +394,7 @@ export function createSubagentRegistrySweeper(params: {
               }
               throw error;
             }
-            const { orphanReason, sessionEntry } = observation;
-            const completion = resolveCompletionFromSessionEntry(sessionEntry, now, {
-              notBeforeMs: entry.execution.startedAt ?? entry.createdAt,
-            });
+            const { orphanReason } = observation;
             await params.completeSubagentRunWithRecovery(
               {
                 runId,

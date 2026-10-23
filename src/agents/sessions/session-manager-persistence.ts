@@ -13,7 +13,6 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import type { SessionMetadataWorkerOperations } from "../../config/sessions/session-manager-write-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
-import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import {
   captureSessionTranscriptTargetBinding,
@@ -37,6 +36,7 @@ import {
   getSessionCompactionPersistence,
   getSessionCompactionPersistenceAsync,
 } from "./session-compaction-persistence.js";
+import { captureAppendCustody } from "./session-manager-append-custody.js";
 import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
 import { SessionManagerCore } from "./session-manager-core.js";
 import { prepareSessionManagerSync } from "./session-manager-incognito-scope.js";
@@ -153,6 +153,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       throw new Error("Asynchronous session writes must own their transaction");
     }
     const initialWriter = this.#initialWriter;
+    const { questionAnswers, view: custodyView } = captureAppendCustody(captured, message);
     const assertOwned = captureOwnedTranscriptWriteAssertion(identity);
     const assertBinding = () => {
       const current = this.persistenceTarget;
@@ -169,8 +170,8 @@ export class SessionManagerPersistence extends SessionManagerCore {
       assertNavigation?.();
       initialWriter?.assertActive();
       assertOwned();
+      questionAnswers?.assertCurrent();
     };
-    const admission = resolveSessionTranscriptReadFence(captured);
     const persistCompaction = getSessionCompactionPersistenceAsync(this);
     if (entry.type === "compaction" && persistCompaction) {
       if (this.persistenceHeaderPending) {
@@ -307,7 +308,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
                       view: {
                         loadedVersion: this.transcriptVersion,
                         limits: this.boundedContextLimits,
-                        admission,
+                        ...custodyView,
                       },
                     }
                   : {}),

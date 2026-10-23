@@ -71,6 +71,7 @@ function parseCredentialEntry(
     credential: {
       ...typed,
       provider,
+      // SAFETY: reached only after normalizeRawCredentialEntry accepted typed.type and provider was normalised; the remaining fields come from that variant normaliser.
     } as AuthProfileCredential,
   };
 }
@@ -565,6 +566,7 @@ export function mergeAuthProfileStores(
         : {}),
       ...runtimeExternalProfileMetadata,
     },
+    // SAFETY: the literal above adds the runtime metadata block on top of a complete store, which is exactly what RuntimeAuthProfileStore adds to AuthProfileStore.
   }) as RuntimeAuthProfileStore;
   setRuntimeExternalCliProfileIds(result, runtimeExternalCliProfileIds);
   if (base.runtimeCredentialSources || override.runtimeCredentialSources) {

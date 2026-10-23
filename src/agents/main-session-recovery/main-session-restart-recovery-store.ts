@@ -227,7 +227,7 @@ export async function recoverStore(params: {
       !loadedEntry.mainRestartRecovery?.tombstone &&
       hasMainSessionRecoveryClaim(loadedEntry) &&
       (loadedEntry.abortedLastRun === true ||
-        isMainRestartRecoveryTerminalOnly(loadedEntry) ||
+        isMainRestartRecoveryTerminalOnly(loadedEntry, lifecycleGeneration) ||
         (isTerminalSessionStatus(loadedEntry.status) && loadedEntry.status !== "interrupted"));
     let decision: MainSessionRecoveryDecision = {
       decision: "deferred",
@@ -251,6 +251,17 @@ export async function recoverStore(params: {
         return result;
       }
       if (!isRecoveryCandidate) {
+        // Fork: every candidate logs its decision below. A non-candidate still
+        // carrying a recovery episode is one the marking pass claimed, so passing
+        // over it silently is how a marked session vanishes between "marked N" and
+        // "started M" with nothing in the log naming it or saying why.
+        if (loadedEntry.mainRestartRecovery && !loadedEntry.mainRestartRecovery.tombstone) {
+          mainSessionRecoveryLog.warn(
+            `restart recovery passed over a marked session: sessionKey=${sessionKey} ` +
+              `cycleId=${loadedEntry.mainRestartRecovery.cycleId} ` +
+              `abortedLastRun=${loadedEntry.abortedLastRun === true}`,
+          );
+        }
         continue;
       }
       if (!isMainRestartRecoveryCandidate(entry, sessionKey)) {
@@ -333,7 +344,10 @@ export async function recoverStore(params: {
         recoveryView.status === "tombstoned"
       ) {
         skip(recoveryView.status);
-        if (recoveryView.status === "inactive" && isMainRestartRecoveryTerminalOnly(loadedEntry)) {
+        if (
+          recoveryView.status === "inactive" &&
+          isMainRestartRecoveryTerminalOnly(loadedEntry, lifecycleGeneration)
+        ) {
           decision = { decision: "settled", reason: "terminal-residue", nextOwner: "none" };
         }
         continue;

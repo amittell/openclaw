@@ -191,7 +191,17 @@ export function inspectMainRestartRecoveryRolloverEligibility(
 
 // Retire only proven terminal fences without remaining execution or delivery
 // custody; treating unfinished fences as residue loses crash recovery (#118873).
-export function isMainRestartRecoveryTerminalOnly(entry: SessionEntry): boolean {
+//
+// Fork: Gateway-owned callers pass their current lifecycle generation. On a row
+// not marked interrupted, a fence whose run died with an earlier Gateway process
+// can never record a terminal fact, so it is settled the moment the current
+// Gateway sees it (rh-bot 2026-09-03: one such fence held a healthy session at
+// "changed while starting work" for 106 retries). An interrupted row's fences are
+// its crash recovery and stay authoritative; the gate lives here because 10.5's
+// callers (observe, claim_foreground, the startup scan) no longer check
+// abortedLastRun first. Standalone callers omit the generation; theirs differs
+// from the live Gateway's and must not retire its fences.
+export function isMainRestartRecoveryTerminalOnly(entry: SessionEntry, current?: string): boolean {
   const state = entry.mainRestartRecovery;
   if (state?.tombstone || state?.reservation || state?.foregroundClaims) {
     return false;
@@ -200,10 +210,12 @@ export function isMainRestartRecoveryTerminalOnly(entry: SessionEntry): boolean 
     return false;
   }
   const runs = entry.restartRecoveryRuns;
+  const settlesDead = current !== undefined && entry.abortedLastRun !== true;
+  const owned = settlesDead ? runs?.filter((run) => run.lifecycleGeneration === current) : runs;
   return (
     runs !== undefined &&
     runs.length > 0 &&
-    runs.every((run) => hasRestartRecoveryTerminalRun(entry, run.runId))
+    (owned ?? []).every((run) => hasRestartRecoveryTerminalRun(entry, run.runId))
   );
 }
 
@@ -307,14 +319,17 @@ export function transitionMainSessionRecovery(
       entry.restartRecoveryDeliverySourceRunId ??=
         entry.restartRecoveryDeliveryRunId ?? entry.lifecycleRunId;
       const state = entry.mainRestartRecovery;
+      // A mark without a cause (operator recovery) keeps a restart already on record.
+      const cause = command.cause ?? state?.cause;
       if (!state) {
-        entry.mainRestartRecovery = createCycle(command.cycleId);
-      } else if (state.foregroundClaims || state.reservation) {
+        entry.mainRestartRecovery = { ...createCycle(command.cycleId), ...(cause && { cause }) };
+      } else if (state.foregroundClaims || state.reservation || cause !== state.cause) {
         // Restart owns continuation now. Process-bound foreground and reservation
         // leases cannot authorize the old lifecycle after this durable handoff.
         updateRecoveryState(entry, state, {
           foregroundClaims: undefined,
           reservation: undefined,
+          ...(cause ? { cause } : {}),
         });
       }
       entry.activeWriterRunId = undefined;
@@ -381,7 +396,7 @@ export function transitionMainSessionRecovery(
       }
       if (
         isMainRestartRecoveryAggregateEmptyAndUnowned(entry) ||
-        isMainRestartRecoveryTerminalOnly(entry) ||
+        isMainRestartRecoveryTerminalOnly(entry, command.lifecycleGeneration) ||
         (hasCompletedMainSessionRecoveryOutcome(entry) &&
           !state?.tombstone &&
           !state?.reservation &&
@@ -595,7 +610,7 @@ export function transitionMainSessionRecovery(
       if (
         entry.sessionId === command.sessionId &&
         isMainRestartRecoveryCandidate(entry, command.sessionKey) &&
-        (isMainRestartRecoveryTerminalOnly(entry) ||
+        (isMainRestartRecoveryTerminalOnly(entry, command.lifecycleGeneration) ||
           isMainRestartRecoveryAggregateEmptyAndUnowned(entry))
       ) {
         Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));

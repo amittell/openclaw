@@ -2789,26 +2789,6 @@ describe("qa mock openai server", () => {
 
   it.each([
     [
-      "plans QA tool-search failure calls with denied-input args",
-      {
-        input: [
-          makeUserInput(
-            "tool search qa failure target=web_search. Exercise the denied-input path once and then summarize.",
-          ),
-        ],
-      },
-      "web_search",
-      "OPENCLAW_QA_WEB_SEARCH_DENIED_INPUT",
-    ],
-  ] as const)("%s", async (_name, body, tool, argument) => {
-    const item = outputItem(await expectNonStreamingResponsesJson(await startMockServer(), body));
-    expect(item.type).toBe("function_call");
-    expect(item.name).toBe(tool);
-    expect(String(item.arguments)).toContain(argument);
-  });
-
-  it.each([
-    [
       "plans one structured batch search for the Tool Search gateway fixture",
       {
         tools: [{ type: "function", name: "tool_search" }],

@@ -1,8 +1,9 @@
 import type { Context } from "grammy";
 import type { Message } from "grammy/types";
+import { recordChannelBotPairLoopAndCheckSuppression } from "openclaw/plugin-sdk/channel-inbound";
 import type { TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ChannelReplayClaimHandle } from "openclaw/plugin-sdk/persistent-dedupe";
-import { danger } from "openclaw/plugin-sdk/runtime-env";
+import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { asFiniteNumber } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import type { TelegramHandlerAuthorization } from "./bot-handlers.inbound-authorization.js";
@@ -17,6 +18,10 @@ import type {
   TelegramInboundDisposition,
   TelegramInboundPipeline,
 } from "./bot-handlers.types.js";
+import {
+  buildTelegramBotPairLoopFacts,
+  isTelegramBotPairLoopCandidate,
+} from "./bot-pair-loop-facts.js";
 import {
   isTelegramSpooledReplayUpdate,
   recordTelegramMessageProcessingResult,
@@ -39,7 +44,7 @@ export function createTelegramInboundPipeline({
   message: TelegramMessagePipeline;
   authorization: TelegramHandlerAuthorization;
 }): TelegramInboundPipeline {
-  const { accountId, bot, opts, runtime, shouldSkipUpdate } = handlerParams;
+  const { accountId, bot, opts, runtime, shouldSkipUpdate, telegramDeps } = handlerParams;
   const {
     releaseDispatchDedupeClaims,
     claimMessageDispatchDedupe,
@@ -68,6 +73,36 @@ export function createTelegramInboundPipeline({
       throw new Error("Telegram bot identity is unavailable");
     }
     return botUserId;
+  };
+  // Bot-to-bot loop protection. Telegram is the only mainstream channel that supplied no
+  // botLoopProtection facts, so the shared drop in src/channels/turn/execution.ts could
+  // never fire for it; Discord does the same thing in its own preflight. This records the
+  // (account, chat, bot pair) against the SHARED guard rather than a per-channel one -
+  // the fork's extensions/telegram bot-pair-loop file was superseded by the channel-generic
+  // guard, and carrying it would install a second guard inside a channel plugin.
+  //
+  // Only a message whose sender is another bot is recorded. Channel posts carry a synthetic
+  // is_bot sender, which is deliberate: a pair of bots posting into a channel is exactly the
+  // loop this bounds. Suppression is per pair and time-boxed by the configured cooldown, so
+  // a one-shot bot reply under the budget is unaffected.
+  const isSuppressedBotPairLoop = (msg: Message, botUserId: number): boolean => {
+    // Human traffic is the common case: decide it before touching the runtime config.
+    if (!isTelegramBotPairLoopCandidate(msg, botUserId)) {
+      return false;
+    }
+    const cfg = telegramDeps.getRuntimeConfig();
+    const facts = buildTelegramBotPairLoopFacts({ cfg, accountId, msg, botUserId });
+    if (!facts) {
+      return false;
+    }
+    const result = recordChannelBotPairLoopAndCheckSuppression(facts);
+    if (!result.suppressed) {
+      return false;
+    }
+    logVerbose(
+      `telegram: bot-to-bot loop suppressed for pair ${facts.senderId}->${facts.receiverId} in ${facts.conversationId} for ${Math.max(0, Math.ceil((result.cooldownUntilMs - Date.now()) / 1000))}s`,
+    );
+    return true;
   };
   const normalizeChannelPostMessage = (post: Message): Message => {
     const senderChat = post.sender_chat ?? post.chat;
@@ -104,6 +139,11 @@ export function createTelegramInboundPipeline({
     // Bot-authored message updates can be echoed back by Telegram. Channel-originated posts
     // remain eligible even when their sender is this bot.
     if (!isChannelPost && normalizedMsg.from?.id != null && normalizedMsg.from.id === botUserId) {
+      return { kind: "ignored" };
+    }
+    // Fork: bot-to-bot loop guard, on both message and channel_post (the synthetic
+    // channel-post sender is deliberately eligible; see isSuppressedBotPairLoop).
+    if (isSuppressedBotPairLoop(normalizedMsg, botUserId)) {
       return { kind: "ignored" };
     }
     const chatId = normalizedMsg.chat.id;

@@ -35,7 +35,10 @@ describe("sandbox container environment validation", () => {
         expect(issue.message).toContain(hint);
       }
       expect(issue.message).not.toContain("doctor --fix");
-      for (const fragment of value.split(/[\r\n\0]/u).filter(Boolean)) {
+      for (const fragment of value
+        .split(/[\r\n]/u)
+        .flatMap((part) => part.split("\u0000"))
+        .filter(Boolean)) {
         expect(issue.message).not.toContain(fragment);
       }
     }

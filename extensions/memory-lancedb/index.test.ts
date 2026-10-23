@@ -25,6 +25,14 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, test, expect, vi } from "vitest";
 import { createEmbeddings, isMemoryRecallTimeoutError, runWithTimeout } from "./embeddings.js";
 import memoryPlugin from "./index.js";
+import {
+  createAgentScopedSchemaMock,
+  createAgentScopedVectorQuery,
+  invokeEmbeddingCreate,
+  materializeRegisteredTool,
+  OPENAI_API_KEY,
+  registerTestPlugin,
+} from "./index.test-support.js";
 import { looksLikeEnvelopeSludge } from "./memory-capture-sanitization.js";
 import {
   detectCategory,
@@ -101,7 +109,6 @@ const CTX = "⟦openclaw:ctx⟧";
 // Marks a context header line the way buildInboundUserContextPrefix does.
 const ctxHeader = (label: string): string => `${label} ${CTX}`;
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-key";
 const withAllowedMemoryRecallAuthority = (ctx: Record<string, unknown> = {}) => ({
   toolAuthority: {
     fingerprint: "allowed-memory-authority",
@@ -126,10 +133,6 @@ type MemoryPluginTestConfig = {
   storageOptions?: Record<string, string>;
 };
 
-function invokeEmbeddingCreate(mock: ReturnType<typeof vi.fn>, body: unknown) {
-  return (mock as unknown as (body: unknown) => unknown)(body);
-}
-
 function resetMemoryModuleMocks(): void {
   moduleMocks.ensureGlobalUndiciEnvProxyDispatcher.mockReset();
   moduleMocks.createOpenAiClient.mockReset();
@@ -138,10 +141,6 @@ function resetMemoryModuleMocks(): void {
 }
 
 type MockCallSource = { mock: { calls: Array<Array<unknown>> } };
-
-function registerTestPlugin(plugin: { register: (api: never) => void }, api: unknown): void {
-  plugin.register(api as never);
-}
 
 function firstMockArg(source: MockCallSource, label: string, argIndex = 0) {
   const [call] = source.mock.calls;
@@ -170,15 +169,6 @@ function hookHandler(on: ReturnType<typeof vi.fn>, hookName: string) {
   return handler as ((event: unknown, context: unknown) => unknown) | undefined;
 }
 
-function materializeRegisteredTool(
-  toolOrFactory: unknown,
-  context: Record<string, unknown> = {},
-): any {
-  return typeof toolOrFactory === "function"
-    ? toolOrFactory({ agentId: "main", config: {}, ...context })
-    : toolOrFactory;
-}
-
 function registeredTool(
   registerTool: ReturnType<typeof vi.fn>,
   name: string,
@@ -190,18 +180,6 @@ function registeredTool(
     throw new Error(`expected ${name} tool registration`);
   }
   return tool;
-}
-
-function createAgentScopedSchemaMock() {
-  return vi.fn(async () => ({ fields: [{ name: "agentId" }] }));
-}
-
-function createAgentScopedVectorQuery(limit: ReturnType<typeof vi.fn>) {
-  const scopedQuery = { limit };
-  return {
-    ...scopedQuery,
-    where: vi.fn(() => scopedQuery),
-  };
 }
 
 function createStandardMemoryTableHarness(
@@ -1115,28 +1093,34 @@ describe("memory plugin e2e", () => {
     const recall = () =>
       beforePromptBuild?.(hookEvent, withAllowedMemoryRecallAuthority({ agentId: "main" }));
     const resultPromise = recall();
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Advance exactly the auto-recall budget: at the tool budget (15s) this
+    // would not fire, so the timing itself pins the tighter constant.
+    await vi.advanceTimersByTimeAsync(5_000);
 
     await expect(resultPromise).resolves.toBeUndefined();
     expect(ensureGlobalUndiciEnvProxyDispatcher).toHaveBeenCalledOnce();
     expect(firstMockArg(post as unknown as MockCallSource, "post path")).toBe("/embeddings");
     const postOptions = firstObjectArg(post as unknown as MockCallSource, "post options", 1);
     expect(postOptions.maxRetries).toBe(0);
-    expect(postOptions.timeout).toBe(15_000);
+    // Auto-recall carries a tighter budget (auto-recall.ts AUTO_RECALL_TIMEOUT_MS)
+    // than the explicit recall tool because it runs on the prompt-build hot path,
+    // and a breach parks recall on the shared cooldown instead of re-stalling
+    // every turn. Both the budget and the cooldown handoff are pinned here.
+    expect(postOptions.timeout).toBe(5_000);
     expect(loadLanceDbModule).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
-      "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
+      "memory-lancedb: auto-recall timed out after 5000ms; pausing recall for 60s to avoid restalling prompt build",
     );
 
     expect(await recall()).toBeUndefined();
     expect(post).toHaveBeenCalledTimes(1);
     expect(logger.debug).toHaveBeenCalledWith(
-      "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 15s",
+      "memory-lancedb: auto-recall skipped during recall cooldown: auto-recall timed out after 5s",
     );
 
     const recallTool = registeredTool(mockApi.registerTool, "memory_recall");
     const toolResult = await recallTool.execute("cooldown-call", { query: "editor" });
-    expectUnavailable(toolResult.details, "auto-recall timed out after 15s");
+    expectUnavailable(toolResult.details, "auto-recall timed out after 5s");
     expect(post).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(60_000);
@@ -1313,7 +1297,7 @@ describe("memory plugin e2e", () => {
           getRuntimeConfig: () => configFile,
         }),
       ),
-    ).toEqual([null, null, null]);
+    ).toEqual([null, null, null, null]);
     expect(
       registeredToolFactories.map(({ toolOrFactory }) =>
         materializeRegisteredTool(toolOrFactory, {
@@ -1321,7 +1305,7 @@ describe("memory plugin e2e", () => {
           getRuntimeConfig: () => configFile,
         }),
       ),
-    ).toEqual([null, null, null]);
+    ).toEqual([null, null, null, null]);
     const enabledTools = registeredToolFactories.map(({ toolOrFactory }) =>
       materializeRegisteredTool(toolOrFactory, {
         agentId: "main",
@@ -1332,6 +1316,7 @@ describe("memory plugin e2e", () => {
       { name: "memory_recall" },
       { name: "memory_store" },
       { name: "memory_forget" },
+      { name: "memory_refresh" },
     ]);
 
     const beforePromptBuild = on.mock.calls.find(

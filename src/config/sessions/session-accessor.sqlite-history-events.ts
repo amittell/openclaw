@@ -12,6 +12,10 @@ import {
   type SessionTranscriptDisplayDeltaResult,
 } from "./session-accessor.sqlite-history-query.js";
 import type { SessionTranscriptMessageEventPage } from "./session-accessor.sqlite-projection-read.js";
+export {
+  readSessionTranscriptCompactionShadowPage,
+  type SessionTranscriptCompactionShadowPage,
+} from "./session-accessor.sqlite-history-query.js";
 
 export function readTranscriptDisplayDelta(
   scope: SessionTranscriptReadScope,

@@ -1,11 +1,7 @@
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import {
-  sliceUtf16Safe,
-  truncateUtf16Safe,
-  truncateWithMarker,
-} from "@openclaw/normalization-core/utf16-slice";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { CurrentInboundPromptContext } from "../../agents/embedded-agent-runner/run/params.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveSessionGoalDisplayState } from "../../config/sessions/goals.js";
@@ -16,15 +12,19 @@ import type { EnvelopeFormatOptions } from "../envelope.js";
 import { formatAgentEnvelopeTimestamp } from "../envelope.js";
 import { getRequesterProfile } from "../requester-profile.js";
 import type { TemplateContext } from "../templating.js";
-import {
-  formatContextJsonBlock,
-  MAX_CONTEXT_JSON_STRING_CHARS,
-  neutralizeMarkdownFences,
-  selectInboundHistoryContext,
-} from "./channel-prompt-context.js";
+import { formatContextJsonBlock, selectInboundHistoryContext } from "./channel-prompt-context.js";
 import { markInboundContextLabel } from "./inbound-context-marker.js";
+import { formatTelegramCurrentMessageContext } from "./inbound-meta.current-message.js";
+import {
+  MAX_UNTRUSTED_TRANSCRIPT_FIELD_CHARS,
+  normalizePromptMetadataString,
+  normalizePromptMetadataStringArray,
+  sanitizePromptBody,
+  sanitizeTranscriptBody,
+  sanitizeTranscriptField,
+  truncateBodyHeadTail,
+} from "./inbound-meta.text.js";
 
-const MAX_UNTRUSTED_TRANSCRIPT_FIELD_CHARS = 500;
 const MAX_ACTIVE_GOAL_OBJECTIVE_CHARS = 200;
 const ACTIVE_GOAL_CONTEXT_PREFIX = "Active goal: ";
 const ACTIVE_GOAL_CONTEXT_SUFFIX =
@@ -99,21 +99,23 @@ export function refreshActiveGoalContext(
   const refreshedResumableText = context.resumableText
     ? refreshActiveGoalContextText(context.resumableText, injectedGoals, activeGoalContext)
     : undefined;
+  const refreshedCarrierText = context.carrierText
+    ? refreshActiveGoalContextText(context.carrierText, injectedGoals, activeGoalContext)
+    : undefined;
   if (!refreshedText) {
     return undefined;
   }
   return {
     ...context,
     text: refreshedText,
+    ...(refreshedCarrierText !== undefined
+      ? { carrierText: refreshedCarrierText || undefined }
+      : {}),
     ...(refreshedResumableText !== undefined
       ? { resumableText: refreshedResumableText || undefined }
       : {}),
     injectedGoalContexts: activeGoalContext ? [activeGoalContext] : undefined,
   };
-}
-
-function normalizePromptMetadataString(value: unknown): string | undefined {
-  return normalizeOptionalString(value)?.replaceAll("\u0000", "") || undefined;
 }
 
 function normalizePromptMediaPath(value: unknown): string | undefined {
@@ -154,53 +156,13 @@ function normalizePromptMediaPath(value: unknown): string | undefined {
   return toInboundMediaPath(path.posix.basename(normalized));
 }
 
-function normalizePromptMetadataStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const normalized = value
-    .map(normalizePromptMetadataString)
-    .filter((entry): entry is string => Boolean(entry));
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function sanitizePromptBody(value: unknown): string | undefined {
-  return typeof value === "string" ? value.replaceAll("\u0000", "") || undefined : undefined;
-}
-
-const HEAD_TAIL_OMISSION_MARKER = "…[omitted]…";
-
-// Retain actionable tail content within the downstream JSON string cap.
-function truncateBodyHeadTail(body: string): string {
-  if (body.length <= MAX_CONTEXT_JSON_STRING_CHARS) {
-    return body;
-  }
-  const available = MAX_CONTEXT_JSON_STRING_CHARS - HEAD_TAIL_OMISSION_MARKER.length;
-  const headChars = Math.floor(available * 0.6);
-  const tailChars = available - headChars;
-  const head = truncateUtf16Safe(body, headChars);
-  const tail = sliceUtf16Safe(body, -tailChars);
-  return `${head}${HEAD_TAIL_OMISSION_MARKER}${tail}`;
-}
-
+// Fork: the sanitizers live in inbound-meta.text.ts (line cap; shared with
+// inbound-meta.current-message.ts). This is 10.5's single entry point over them.
 function sanitizeTranscriptText(
   value: unknown,
   kind: "field" | "body" = "field",
 ): string | undefined {
-  const body = sanitizePromptBody(value);
-  if (!body) {
-    return undefined;
-  }
-  const truncated =
-    kind === "body"
-      ? truncateBodyHeadTail(body)
-      : truncateWithMarker(body, MAX_UNTRUSTED_TRANSCRIPT_FIELD_CHARS, {
-          marker: "…[truncated]",
-          reserve: 14,
-          trimEnd: true,
-        });
-  const sanitized = neutralizeMarkdownFences(truncated).replace(/\s+/g, " ").trim();
-  return kind === "body" ? sanitized || undefined : sanitized;
+  return kind === "body" ? sanitizeTranscriptBody(value) : sanitizeTranscriptField(value);
 }
 
 function formatChatWindowTimestamp(
@@ -356,30 +318,6 @@ function buildReplyChainPayload(
       },
     ];
   });
-}
-
-function isTelegramInboundContext(ctx: TemplateContext): boolean {
-  return [ctx.OriginatingChannel, ctx.Surface, ctx.Provider].some(
-    (value) => normalizePromptMetadataString(value) === "telegram",
-  );
-}
-
-function formatTelegramCurrentMessageContext(ctx: TemplateContext): string | undefined {
-  if (!isTelegramInboundContext(ctx)) {
-    return undefined;
-  }
-  const quote =
-    sanitizeTranscriptText(ctx.ReplyToQuoteText) ?? sanitizeTranscriptText(ctx.ReplyToBody, "body");
-  if (!quote) {
-    return undefined;
-  }
-  const messageId =
-    normalizePromptMetadataString(ctx.MessageSid) ??
-    normalizePromptMetadataString(ctx.MessageSidFull);
-  const header = messageId ? `#${messageId}:` : undefined;
-  return ["Current message:", `[Replying to: ${JSON.stringify(quote)}]`, header]
-    .filter((line) => line !== undefined)
-    .join("\n");
 }
 
 export function resolveInboundUserContextPromptJoiner(ctx: TemplateContext): " " | undefined {

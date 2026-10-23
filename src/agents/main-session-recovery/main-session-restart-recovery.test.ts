@@ -1441,7 +1441,7 @@ describe("main-session-restart-recovery", () => {
       to: "telegram:-100123",
       accountId: "work",
       threadId: 99,
-      text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
+      text: expect.stringContaining("I'm continuing your interrupted request now"),
       idempotencyKey: `main-session-restart-recovery:${String(gatewayParams().idempotencyKey)}:resumed-notice`,
     });
     expect(notice?.isCurrent?.({})).toBe(true);

@@ -85,7 +85,13 @@ export function mainSessionEntry(overrides: SessionEntryFixture = {}): SessionEn
     updatedAt: Date.now() - 10_000,
     status: "interrupted",
     abortedLastRun: true,
-    mainRestartRecovery: { cycleId: "interrupted-cycle", revision: 1, chargedAttempts: 0 },
+    // Fork #13: the default interrupted row is one Gateway close marked, so it records the restart.
+    mainRestartRecovery: {
+      cycleId: "interrupted-cycle",
+      revision: 1,
+      chargedAttempts: 0,
+      cause: "gateway_restart",
+    },
     ...overrides,
   });
 }

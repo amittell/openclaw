@@ -16,6 +16,11 @@ const recentPollVoteBySession = new Map<
   { option: string; route: string; recordedAt: number }
 >();
 
+/** Clears the session-scoped vote map; the fork's test setup resets it between cases. */
+export function resetPollVoteEchoForTest(): void {
+  recentPollVoteBySession.clear();
+}
+
 export function suppressPollVoteEcho(
   sessionKey: string | undefined,
   route: string | undefined,

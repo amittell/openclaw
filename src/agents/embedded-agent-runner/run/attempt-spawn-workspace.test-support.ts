@@ -37,6 +37,7 @@ import {
 import type { WorkspaceBootstrapFile } from "../../workspace.js";
 import { runPreparedTestPrompt } from "./attempt-prompt-admission.test-support.js";
 import { getSkillMocks, resetSkillMocks } from "./attempt-skills-mock.test-support.js";
+import { createCompletedAssistantStream } from "./attempt-spawn-workspace.assistant-stream-mock.test-support.js";
 import {
   readMockSessionCacheTtlTimestamp,
   resetSessionManagerMocks,
@@ -199,6 +200,7 @@ const hoisted = vi.hoisted((): AttemptBaseMocks => {
     reloadPersistedTranscriptAsync: vi.fn(async () => undefined),
     setNextUserMessagePersistence: vi.fn(),
     removeTrailingEntriesAsync: vi.fn(async () => 0),
+    setCompactionCheckpointHandleFormatter: vi.fn(),
   };
   return {
     spawnSubagentDirectMock,
@@ -830,16 +832,6 @@ type SessionPromptOverride = (
   options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
 ) => Promise<void>;
 
-function createCompletedAssistantStream() {
-  return {
-    async result() {
-      return { role: "assistant", content: "done" };
-    },
-    [Symbol.asyncIterator]() {
-      return (async function* () {})();
-    },
-  };
-}
 const ATTEMPT_SPAWN_WORKSPACE_TEST_SPECIFIER = "./attempt.ts?spawn-workspace-test";
 
 const loadRunEmbeddedAttempt = createLazyPromise(
@@ -937,6 +929,7 @@ export function resetEmbeddedAttemptHarness(
   hoisted.embeddedSystemPromptInputs.length = 0;
   hoisted.trajectoryEvents.length = 0;
   resetSessionManagerMocks(hoisted.sessionManager, params.sessionMessages);
+  hoisted.sessionManager.setCompactionCheckpointHandleFormatter.mockReset();
   if (params.subscribeImpl) {
     hoisted.subscribeEmbeddedAgentSessionMock.mockImplementation(params.subscribeImpl);
   }

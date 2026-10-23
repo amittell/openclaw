@@ -989,4 +989,100 @@ describe("handleEmbeddedAssistantFailure", () => {
       }
     }
   });
+
+  it("terminates with a visible error payload after exhausting silent-error retries on a single-profile model", async () => {
+    // Blocker: a wedged self-hosted single-profile model (vLLM connection churn) that
+    // fails with an unclassifiable error must NOT re-dispatch whole attempts until the
+    // ingress 5-min adoption-stall watchdog. After MAX_EMPTY_ERROR_RETRIES the same-model
+    // silent-error path hard-stops (action "silent-error-exhausted") so the turn ends in a
+    // visible outcome. The run loop converts that to a user-visible error payload.
+    const fixture = makeExhaustedCredentialFailureInput();
+    const assistant = buildEmbeddedRunnerAssistant({
+      provider: "vllm",
+      model: "local-model",
+      stopReason: "error",
+      errorMessage: "unknown provider glitch",
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    fixture.input.normalizedAttempt.attempt = attempt;
+    fixture.input.normalizedAttempt.attemptAssistant = assistant;
+    fixture.input.normalizedAttempt.currentAttemptAssistant = assistant;
+    fixture.input.normalizedAttempt.terminalState = resolveEmbeddedRunAttemptTerminalState({
+      attempt,
+      assistant,
+    });
+    fixture.input.runInput.fallbackConfigured = false;
+    fixture.input.emptyErrorRetries = 3; // at the cap
+    fixture.input.preparedRuntime.maybeRefreshRuntimeAuthForAuthError = vi.fn(async () => false);
+    // Drive the spy the fixture installed on input.failover instead of replacing it:
+    // the not-called assertion below reads this same handle, and a fresh vi.fn() here
+    // would leave it guarding an object the production path never touches. Rate-limit
+    // rotation also goes through advanceAuthProfile since 10.5.
+    fixture.advanceAuthProfile.mockResolvedValue(false);
+
+    const outcome = await handleEmbeddedAssistantFailure(fixture.input);
+
+    expect(outcome).toMatchObject({
+      action: "silent-error-exhausted",
+      emptyErrorRetries: 3,
+    });
+    // No profile rotation, no model fallback, no rate-limit retry.
+    expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
+    // No failover trace pushed (the turn terminates, not failovers).
+    expect(fixture.traceAttempts).toEqual([]);
+  });
+
+  it("keeps rotating profiles for silent-error exhaustion when a fallback model is configured", async () => {
+    // Regression guard: the hard stop only applies to single-profile models. With a
+    // configured fallback the existing model-fallback path must still recover the
+    // invisible failure.
+    const fixture = makeExhaustedCredentialFailureInput();
+    const assistant = buildEmbeddedRunnerAssistant({
+      provider: "vllm",
+      model: "local-model",
+      stopReason: "error",
+      errorMessage: "unknown provider glitch",
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    fixture.input.normalizedAttempt.attempt = attempt;
+    fixture.input.normalizedAttempt.attemptAssistant = assistant;
+    fixture.input.normalizedAttempt.currentAttemptAssistant = assistant;
+    fixture.input.normalizedAttempt.terminalState = resolveEmbeddedRunAttemptTerminalState({
+      attempt,
+      assistant,
+    });
+    fixture.input.runInput.fallbackConfigured = true;
+    fixture.input.emptyErrorRetries = 3; // at the cap
+    fixture.advanceAuthProfile.mockResolvedValue(false);
+
+    // With a fallback configured the turn does NOT hard-stop; it proceeds to the
+    // model-fallback path, which throws a FailoverError so the outer run loop can
+    // switch to the fallback model. The hard-stop only applies to single-profile
+    // models (fallbackConfigured === false).
+    // Assert on the failed model reference, which identifies WHICH model the failover
+    // is rotating away from. 10.1 (#163381) dropped it from the user copy ("OpenClaw
+    // couldn't finish this reply") and keeps it in the FailoverError's typed fields.
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toMatchObject({
+      provider: "anthropic",
+      model: "mock-1",
+    });
+    // Pin the FailoverError class + reason (not just the message string) so a future
+    // refactor cannot silently convert this into a plain Error or a different reason.
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toBeInstanceOf(
+      FailoverError,
+    );
+    const err = await handleEmbeddedAssistantFailure(fixture.input).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FailoverError);
+    expect((err as FailoverError).reason).toBe("unknown");
+  });
 });

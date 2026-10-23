@@ -31,6 +31,12 @@ export type TelegramIngressWorkerMessage =
       finishedAt: number;
     }
   | {
+      /** getUpdates answered with ids below the requested offset: a different queue. */
+      type: "offset-rejected";
+      requestedOffset: number;
+      adoptedUpdateId: number;
+    }
+  | {
       type: "spooled";
       updateId: number;
       queued: number;

@@ -532,8 +532,14 @@ test("leaves exec spans parentless rather than naming a span nobody exported", a
   await service.stop?.(ctx);
 
   const execSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.exec");
+  const scopeSpan = spanNamed(sdk.exporter.getFinishedSpans(), "openclaw.turn.scope");
   expect(execSpan).toBeDefined();
-  expect(execSpan?.parentSpanContext).toBeUndefined();
+  // The exec span now parents to the materialized turn scope (a real, exported,
+  // sampled span) instead of being parentless, so it no longer names a span nobody
+  // exported.
+  expect(scopeSpan).toBeDefined();
+  expect(execSpan?.parentSpanContext?.spanId).toBe(scopeSpan?.spanContext().spanId);
+  expect(execSpan?.spanContext().traceId).toBe(scopeSpan?.spanContext().traceId);
 }, 30_000);
 
 test.each(["Unicode-prefixed signal environment", "path-concatenated shared environment"])(
