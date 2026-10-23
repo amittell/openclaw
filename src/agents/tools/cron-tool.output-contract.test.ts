@@ -187,9 +187,7 @@ describe("automations output contract", () => {
       .mockResolvedValueOnce(details)
       .mockResolvedValueOnce(compactList)
       .mockResolvedValueOnce({ ...source, jobs: projectCronListJobs(cron, source, false) });
-    const gatewaySpy = vi.spyOn(gatewayModule, "callGatewayTool").mockImplementation(gatewayCall);
-    onTestFinished(() => gatewaySpy.mockRestore());
-    const tool = createCronTool();
+    const tool = createCronTool(undefined, { callGatewayTool: gatewayCall });
     const outputSchema = expectDefined(tool.outputSchema, "automations output schema");
     for (const args of [
       { action: "status" },
