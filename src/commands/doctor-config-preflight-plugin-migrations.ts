@@ -25,7 +25,6 @@ import {
 import type {
   LegacyStateMigrationStepReceipt,
   MigrationMessages,
-  MigrationLogger,
 } from "../infra/state-migrations.types.js";
 import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
@@ -52,7 +51,7 @@ export function createDoctorPluginMigrationPreparation(params: {
   measure: ConfigSnapshotReadMeasure;
   runWithPluginMetadataSnapshot: PluginMetadataSnapshotScopeRunner;
   doctorOnlyStateMigrations: boolean;
-  log?: MigrationLogger;
+  integrityCheck?: "quick" | "full";
 }) {
   const shouldDeferInstallation = () =>
     Boolean(resolveUpdateRehearsalRoot(params.env())) ||
@@ -85,6 +84,7 @@ export function createDoctorPluginMigrationPreparation(params: {
   let statelessPlugins = new Map<string, string | undefined>();
   let runtimePluginAliases = new Set<string>();
   let unavailablePluginIds = new Set<string>();
+  let discoveryBlockedPluginIds = new Set<string>();
   let replacementPluginIds: Readonly<Record<string, string>> = {};
   let sourceSnapshot: ConfigFileSnapshot | undefined;
   const inspectedStatelessPluginIds = new Set<string>();
@@ -106,6 +106,7 @@ export function createDoctorPluginMigrationPreparation(params: {
     statelessPlugins = new Map(inspection.statelessPlugins.map(({ id, version }) => [id, version]));
     runtimePluginAliases = new Set(inspection.runtimePluginAliases);
     unavailablePluginIds = new Set(inspection.unavailablePluginIds);
+    discoveryBlockedPluginIds = new Set(inspection.discoveryBlockedPluginIds);
     replacementPluginIds = inspection.replacementPluginIds ?? {};
     requirePlugins(inspection.requiredPluginIds, "requiresStateMigration");
     requirePlugins(inspection.inspectionRequiredPluginIds, "requiresDoctorInspection");
@@ -195,6 +196,7 @@ export function createDoctorPluginMigrationPreparation(params: {
       statelessPlugins.clear();
       runtimePluginAliases.clear();
       unavailablePluginIds.clear();
+      discoveryBlockedPluginIds.clear();
       replacementPluginIds = {};
       inspectedStatelessPluginIds.clear();
       refreshSnapshot = true;
@@ -227,7 +229,7 @@ export function createDoctorPluginMigrationPreparation(params: {
             autoMigrateLegacyPluginDoctorState({
               config,
               env: params.env(),
-              log: params.log,
+              integrityCheck: params.integrityCheck,
               ...(params.doctorOnlyStateMigrations ? { doctorOnlyStateMigrations: true } : {}),
             }),
           ),
@@ -357,7 +359,9 @@ export function createDoctorPluginMigrationPreparation(params: {
       const pending = [...previousById.values()]
         .filter((plugin) => !resolvedIds.has(plugin.pluginId))
         .map((plugin) =>
-          unavailablePluginIds.has(plugin.pluginId) && !installationDeferred
+          unavailablePluginIds.has(plugin.pluginId) &&
+          !discoveryBlockedPluginIds.has(plugin.pluginId) &&
+          !installationDeferred
             ? Object.assign(plugin, {
                 reason: `The migration owner is unavailable. Install or enable plugin "${plugin.pluginId}" to migrate its retained data and settings. For a retired plugin, ask its maintainer for a supported migration or recovery path.`,
               })
