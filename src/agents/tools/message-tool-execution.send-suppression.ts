@@ -1,16 +1,32 @@
 /** Outbound send-suppression bookkeeping for the message tool.
  *
  * Split out of ./message-tool-execution.ts to keep that file within the
- * max-lines budget. Holds the module-scoped duplicate-send state, keyed by
- * resolvePollVoteEchoRoute like the poll-vote echo state that upstream owns in
- * ./poll-vote-echo.ts. Tests reset both trackers through this module.
+ * max-lines budget. Holds the module-scoped poll-vote-echo and duplicate-send
+ * state; both are keyed by resolvePollVoteEchoRoute, which upstream owns in
+ * ./poll-vote-echo.ts. Tests reset the trackers through this module. Keep it
+ * import-free: the global test setup loads it, and a module it pulled in would
+ * load before a test's vi.mock of node:worker_threads (10.6 carry, 2026-10-23).
  */
-import { resetPollVoteEchoForTest } from "./poll-vote-echo.js";
+
+export const POLL_VOTE_ECHO_TTL_MS = 30_000;
+
+// Keyed by agent session (conversation), NOT per message-tool instance: a native
+// poll and its accompanying comment arrive as separate inbound messages and are
+// processed in separate agent runs, each with a fresh tool instance. An
+// instance-local record would be lost before the follow-up text run, so the echo
+// (the agent restating its vote in prose) would leak. Session-scoped +
+// route-checked storage lets the vote in one run suppress the restatement in the
+// next while never crossing conversations. Single slot per session, TTL-bounded.
+// 10.6's ./poll-vote-echo.ts reads and writes this map.
+export const recentPollVoteBySession = new Map<
+  string,
+  { option: string; route: string; recordedAt: number }
+>();
 
 // Duplicate-send guard: models that re-narrate after each tool result
 // (thinking-mode and small models especially) can call send twice with
 // near-identical text in one run, double-posting the channel. Keyed per run
-// (session fallback) and route-checked like the poll-vote echo; TTL +
+// (session fallback) and route-checked like the poll-vote echo above; TTL +
 // bounded list so a long-lived gateway cannot accumulate state.
 export const DUPLICATE_SEND_TTL_MS = 10 * 60 * 1000;
 export const DUPLICATE_SEND_MAX_TRACKED_PER_RUN = 8;
@@ -29,5 +45,5 @@ export const recentMessageToolSendsByRun = new Map<
  */
 export function resetMessageToolSendSuppressionForTest(): void {
   recentMessageToolSendsByRun.clear();
-  resetPollVoteEchoForTest();
+  recentPollVoteBySession.clear();
 }

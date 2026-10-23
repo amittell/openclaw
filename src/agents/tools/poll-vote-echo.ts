@@ -6,21 +6,14 @@ import { resolveActionDeliveryTargetAlias } from "../../infra/outbound/message-a
 import { normalizeAccountId } from "../../routing/session-key.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { readToolStringParam } from "./common.js";
-
-const POLL_VOTE_ECHO_TTL_MS = 30_000;
+import {
+  POLL_VOTE_ECHO_TTL_MS,
+  recentPollVoteBySession,
+} from "./message-tool-execution.send-suppression.js";
 
 // Share route-checked poll votes across runs in the same conversation: the poll
-// and its following comment can arrive at different tool instances.
-const recentPollVoteBySession = new Map<
-  string,
-  { option: string; route: string; recordedAt: number }
->();
-
-/** Clears the session-scoped vote map; the fork's test setup resets it between cases. */
-export function resetPollVoteEchoForTest(): void {
-  recentPollVoteBySession.clear();
-}
-
+// and its following comment can arrive at different tool instances. The fork keeps
+// the map in its import-free send-suppression module so the test setup can clear it.
 export function suppressPollVoteEcho(
   sessionKey: string | undefined,
   route: string | undefined,
