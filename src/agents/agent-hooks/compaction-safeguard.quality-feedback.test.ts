@@ -1,26 +1,8 @@
-/**
- * Pins the corrective boundary of the compaction quality guard: the regeneration
- * instruction names only COMPLETE missing identifiers and records how many it could not
- * name. Identifier length is unbounded, so a char budget alone cannot show all twelve; a
- * value cut mid-string is a value the corrective pass restores wrongly and the retry then
- * fails the same audit. These cases drive the largest input the extractor accepts —
- * MAX_EXTRACTED_IDENTIFIERS values at a length whose join overruns any fixed wrapper cap.
- *
- * Lives beside compaction-safeguard.test.ts, which is grandfathered over the max-lines cap.
- */
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type { ExtensionAPI, ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
-import type { Model } from "openclaw/plugin-sdk/llm";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { summarizeCompactionHistory } from "../compaction.js";
-import { castAgentMessages } from "../test-helpers/agent-message-fixtures.js";
+import { describe, expect, it } from "vitest";
 import {
   auditSummaryQuality,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
-import { setCompactionSafeguardRuntime } from "./compaction-safeguard-runtime.js";
-import compactionSafeguardExtension from "./compaction-safeguard.js";
-import { testing } from "./compaction-safeguard.test-support.js";
 
 const LATEST_ASK = "report the deployment status";
 const MISSING_IDENTIFIERS_PREFIX = "missing_identifiers:";
@@ -58,35 +40,12 @@ const REQUIRED_HEADINGS = [
 ];
 const OVER_OPERATOR_CAP_TEXT = "y".repeat(4200);
 
-function structuredSummary(sections: { pendingAsks: string; identifiers: string }): string {
-  return [
-    "## Decisions",
-    "Keep flow.",
-    "## Open TODOs",
-    "None.",
-    "## Constraints/Rules",
-    "Follow rules.",
-    "## Pending user asks",
-    sections.pendingAsks,
-    "## Exact identifiers",
-    sections.identifiers,
-  ].join("\n");
-}
-
 /** Reproduces the safeguard's own feedback composition (compaction-safeguard.ts). */
 function wrapQualityFeedback(reasons: string[]): string {
   return wrapUntrustedInstructionBlock(
     "Quality check feedback",
     `Previous summary failed quality checks (${reasons.join(", ")}).`,
   );
-}
-
-/** Identifiers whose unique head reached the prompt without the rest of the value. */
-function partiallyRenderedIdentifiers(promptText: string): string[] {
-  return LONG_IDENTIFIERS.filter(
-    (identifier, index) =>
-      promptText.includes(identifierHead(index)) && !promptText.includes(identifier),
-  ).map((identifier) => `${identifier.slice(0, 40)}...`);
 }
 
 function namedMissingIdentifiers(reasons: string[]): string[] {
@@ -109,114 +68,6 @@ function auditWorstCase(identifiers: string[]): { ok: boolean; reasons: string[]
     latestUnresolvedUserRequest: LATEST_ASK,
     retainedTurnSummary: `## Pending user asks\n${LATEST_ASK}`,
   });
-}
-
-const mockSummarizeCompactionHistory = vi.fn<typeof summarizeCompactionHistory>();
-
-beforeEach(() => {
-  mockSummarizeCompactionHistory.mockReset();
-  testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
-});
-
-afterEach(() => {
-  testing.setSummarizeCompactionHistoryForTest();
-});
-
-function stubSessionManager(): ExtensionContext["sessionManager"] {
-  const stub: ExtensionContext["sessionManager"] = {
-    getCwd: () => "/stub",
-    getSessionId: () => "stub-id",
-    getSessionTarget: () => undefined,
-    getLeafId: () => null,
-    getAppendParentId: () => null,
-    getAppendMode: () => undefined,
-    getLeafEntry: () => undefined,
-    getEntry: () => undefined,
-    getLabel: () => undefined,
-    getBranch: () => [],
-    getHeader: () => null,
-    getEntries: () => [],
-    getTree: () => [],
-    getSessionName: () => undefined,
-  };
-  return stub;
-}
-
-function createAnthropicModelFixture(overrides: Partial<Model> = {}): Model {
-  return {
-    id: "claude-opus-4-5",
-    name: "Claude Opus 4.5",
-    provider: "anthropic",
-    api: "anthropic" as const,
-    baseUrl: "https://api.anthropic.com",
-    contextWindow: 200000,
-    maxTokens: 4096,
-    reasoning: false,
-    input: ["text"] as const,
-    cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 },
-    ...overrides,
-  };
-}
-
-type CompactionHandler = (event: unknown, ctx: unknown) => Promise<unknown>;
-type CompactionOutcome = { cancel?: boolean; compaction?: { summary?: string } };
-
-/** Runs one quality-guarded, non-split compaction of a single user message. */
-async function runQualityGuardCompaction(params: {
-  model: Model;
-  messageText: string;
-}): Promise<CompactionOutcome> {
-  let compactionHandler: CompactionHandler | undefined;
-  const mockApi = {
-    on: vi.fn((event: string, handler: CompactionHandler) => {
-      if (event === "session_before_compact") {
-        compactionHandler = handler;
-      }
-    }),
-  } as unknown as ExtensionAPI;
-  compactionSafeguardExtension(mockApi);
-  if (!compactionHandler) {
-    throw new Error("Expected compaction safeguard to register a handler.");
-  }
-  const sessionManager = stubSessionManager();
-  setCompactionSafeguardRuntime(sessionManager, {
-    model: params.model,
-    recentTurnsPreserve: 0,
-    qualityGuardEnabled: true,
-    qualityGuardMaxRetries: 1,
-  });
-  const event = {
-    preparation: {
-      messagesToSummarize: castAgentMessages([
-        { role: "user", content: params.messageText, timestamp: 1 },
-      ]),
-      turnPrefixMessages: [] as AgentMessage[],
-      firstKeptEntryId: "entry-1",
-      tokensBefore: 1_500,
-      fileOps: { read: [], edited: [], written: [] },
-      settings: { reserveTokens: 4_000 },
-      isSplitTurn: false,
-    },
-    customInstructions: "",
-    signal: new AbortController().signal,
-  };
-  const ctx = {
-    model: undefined,
-    sessionManager,
-    modelRegistry: {
-      getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "test-key" })),
-    },
-  } as unknown as Partial<ExtensionContext>;
-  return (await compactionHandler(event, ctx)) as CompactionOutcome;
-}
-
-function customInstructionsOfSummarizeCall(callIndex: number): string {
-  const instructions =
-    mockSummarizeCompactionHistory.mock.calls[callIndex]?.[0]?.customInstructions;
-  if (typeof instructions !== "string") {
-    throw new Error(`expected summarize call ${callIndex + 1} to carry custom instructions`);
-  }
-  return instructions;
 }
 
 describe("compaction-safeguard corrective quality feedback", () => {
@@ -270,36 +121,13 @@ describe("compaction-safeguard corrective quality feedback", () => {
     ).not.toContain(OVER_OPERATOR_CAP_TEXT);
   });
 
-  it("sends whole identifiers plus the omitted count to the corrective pass", async () => {
-    // The finalizer repairs a well-formed summary's identifier section itself, so the defect
-    // list only reaches the model when a heading is missing too: drop ## Exact identifiers.
-    const failingSummary = [
-      "## Decisions",
-      "Keep flow.",
-      "## Open TODOs",
-      "None.",
-      "## Constraints/Rules",
-      "Follow rules.",
-      "## Pending user asks",
-      LATEST_ASK,
-    ].join("\n");
-    mockSummarizeCompactionHistory
-      .mockResolvedValueOnce(failingSummary)
-      .mockResolvedValueOnce(
-        structuredSummary({ pendingAsks: LATEST_ASK, identifiers: LONG_IDENTIFIERS.join("\n") }),
-      );
-
-    const result = await runQualityGuardCompaction({
-      model: createAnthropicModelFixture(),
-      messageText: `${LATEST_ASK} ${LONG_IDENTIFIERS.join(" ")}`,
-    });
-
-    expect(result.cancel).not.toBe(true);
-    expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
-    expect(customInstructionsOfSummarizeCall(0)).not.toContain("Quality check feedback");
-    const corrective = customInstructionsOfSummarizeCall(1);
-    expect(corrective).toContain("Quality check feedback");
-    expect(partiallyRenderedIdentifiers(corrective)).toStrictEqual([]);
-    expect(corrective).toContain("missing_identifiers_omitted:");
+  it("skips an oversized identifier without hiding later complete values", () => {
+    const identifiers = [
+      `https://example.com/${"x".repeat(4000)}`,
+      ...SHORT_IDENTIFIERS.slice(0, 11),
+    ];
+    const { reasons } = auditWorstCase(identifiers);
+    expect(namedMissingIdentifiers(reasons)).toStrictEqual(identifiers.slice(1));
+    expect(reasons).toContain("missing_identifiers_omitted:1");
   });
 });

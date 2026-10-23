@@ -11,15 +11,7 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 
 const MAX_EXTRACTED_IDENTIFIERS = 12;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
-// Identifier length is unbounded (extractOpaqueIdentifiers' URL branch matches greedily to
-// whitespace), so no budget can always name all MAX_EXTRACTED_IDENTIFIERS values. Everything
-// else in the corrective feedback text is bounded: up to five missing_section:* and five
-// duplicate_section:* codes, one latest_user_ask_not_* code, retained_turn_ask_marked_pending,
-// missing_identifiers_omitted:<n>, the "missing_identifiers:" prefix, the ", " separators, and
-// the "Previous summary failed quality checks (...)." sentence compaction-safeguard.ts wraps
-// them in. That is 522 chars at the worst case today, and
-// compaction-safeguard.quality-feedback.test.ts pins it under this 600-char reserve, so the
-// untrusted-block cap is never what cuts the list.
+// Reserve room for the other audit reasons and corrective sentence inside the 4k wrapper.
 const MAX_MISSING_IDENTIFIER_REASON_CHARS = MAX_UNTRUSTED_INSTRUCTION_CHARS - 600;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
@@ -470,11 +462,7 @@ function hasAskOverlap(summary: string, latestAsk: string | null): boolean {
   return overlapCount >= requirement.requiredMatches;
 }
 
-/**
- * Names only the missing identifiers that fit whole, and counts the rest. A value cut
- * mid-string is a wrong value: the corrective pass restores something the source never
- * contained and fails the same audit, so the omitted count records the gap instead.
- */
+/** Preserve whole identifiers; count values that cannot fit in the corrective request. */
 function missingIdentifierAuditReasons(missing: string[]): string[] {
   const named: string[] = [];
   let used = 0;
