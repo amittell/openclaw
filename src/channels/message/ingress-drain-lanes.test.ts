@@ -1,12 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
+import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
-import { createChannelIngressDrain } from "./ingress-drain.js";
+import {
+  createChannelIngressDrain,
+  type CreateChannelIngressDrainOptions,
+} from "./ingress-drain.js";
 import {
   createTestIngressQueue,
   type IngressDrainTestPayload as Payload,
   withTempState,
 } from "./ingress-drain.test-helpers.js";
+
+function createAdoptingDrain(
+  queue: CreateChannelIngressDrainOptions<Payload>["queue"],
+  currentNow: number,
+) {
+  const dispatches: string[] = [];
+  const drain = createChannelIngressDrain<Payload>({
+    queue,
+    now: () => currentNow,
+    retryPolicy: { baseMs: 60_000, maxMs: 60_000 },
+    dispatchClaimedEvent: async (event, lifecycle) => {
+      dispatches.push(event.id);
+      await lifecycle.onAdopted();
+    },
+  });
+  return { drain, dispatches };
+}
 
 describe("channel ingress drain lanes", () => {
   it("keeps a competing lane head ahead of its tail while dispatching other lanes", async () => {
@@ -211,16 +232,7 @@ describe("channel ingress drain lanes", () => {
       expect(tailClaim).not.toBeNull();
       await queue.release(tailClaim!, { lastError: "boom", releasedAt: currentNow });
 
-      const dispatches: string[] = [];
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        now: () => currentNow,
-        retryPolicy: { baseMs: 60_000, maxMs: 60_000 },
-        dispatchClaimedEvent: async (event, lifecycle) => {
-          dispatches.push(event.id);
-          await lifecycle.onAdopted();
-        },
-      });
+      const { drain, dispatches } = createAdoptingDrain(queue, currentNow);
 
       await expect(drain.drainOnce()).resolves.toEqual({ started: 1 });
       await vi.waitFor(() => expect(dispatches).toEqual(["head"]));
@@ -240,16 +252,7 @@ describe("channel ingress drain lanes", () => {
       expect(headClaim).not.toBeNull();
       await queue.release(headClaim!, { lastError: "boom", releasedAt: currentNow });
 
-      const dispatches: string[] = [];
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        now: () => currentNow,
-        retryPolicy: { baseMs: 60_000, maxMs: 60_000 },
-        dispatchClaimedEvent: async (event, lifecycle) => {
-          dispatches.push(event.id);
-          await lifecycle.onAdopted();
-        },
-      });
+      const { drain, dispatches } = createAdoptingDrain(queue, currentNow);
 
       await expect(drain.drainOnce()).resolves.toEqual({ started: 0 });
       expect(dispatches).toEqual([]);
@@ -326,6 +329,107 @@ describe("channel ingress drain lanes", () => {
     });
   });
 
+  it.each([
+    { failureOrder: "before deferral", releaseOutcome: "committed" },
+    { failureOrder: "after deferral", releaseOutcome: "committed" },
+    { failureOrder: "after deferral", releaseOutcome: "unknown" },
+  ] as const)(
+    "keeps a failed lane head ahead of its tail when release is $releaseOutcome ($failureOrder)",
+    async ({ failureOrder, releaseOutcome }) => {
+      await withTempState(async (stateDir) => {
+        let clock = 10_000;
+        const queue = createTestIngressQueue(stateDir, { now: () => clock });
+        await queue.enqueue("head", { text: "head" }, { laneKey: "same", receivedAt: 1 });
+        await queue.enqueue("tail", { text: "tail" }, { laneKey: "same", receivedAt: 2 });
+        const releaseStarted = createDeferredCore();
+        const finishRelease = createDeferredCore();
+        const releaseFailure = new SqliteWorkerError(
+          "Synthetic lost release outcome",
+          "outcome-unknown",
+        );
+        const release = queue.release.bind(queue);
+        const heldRelease = vi.spyOn(queue, "release").mockImplementationOnce(async (...args) => {
+          releaseStarted.resolve();
+          await finishRelease.promise;
+          if (releaseOutcome === "unknown") {
+            throw releaseFailure;
+          }
+          return await release(...args);
+        });
+        let failure: Promise<void> | undefined;
+        let settlementError: unknown;
+        const dispatches: string[] = [];
+        const drain = createChannelIngressDrain<Payload>({
+          queue,
+          now: () => clock,
+          deferredLaneOccupancy: "release",
+          retryPolicy: { baseMs: 1_000, maxMs: 1_000 },
+          dispatchClaimedEvent: async (event, lifecycle) => {
+            dispatches.push(event.id);
+            if (event.id === "head" && !failure) {
+              if (failureOrder === "after deferral") {
+                lifecycle.onDeferred();
+              }
+              if (!lifecycle.onFailed) {
+                throw new Error("Expected the deferred failure lifecycle");
+              }
+              failure = Promise.resolve(lifecycle.onFailed(new Error("retry head"))).catch(
+                (error: unknown) => {
+                  settlementError = error;
+                },
+              );
+              await releaseStarted.promise;
+              return { kind: "deferred" };
+            }
+            await lifecycle.onAdopted();
+            return { kind: "completed" };
+          },
+        });
+        try {
+          expect(await drain.drainOnce()).toEqual({ started: 1 });
+          await drain.waitForIdle();
+          await queue.enqueue("other", { text: "other" }, { laneKey: "other", receivedAt: 3 });
+          await drain.drainOnce();
+          await drain.waitForIdle();
+          expect(dispatches).toEqual(["head", "other"]);
+
+          finishRelease.resolve();
+          await failure;
+          if (releaseOutcome === "unknown") {
+            expect(settlementError).toBe(releaseFailure);
+            await drain.drainOnce();
+            await drain.waitForIdle();
+            expect(dispatches).toEqual(["head", "other"]);
+            expect(await queue.listClaims()).toMatchObject([{ id: "head" }]);
+            expect(await queue.listPending()).toMatchObject([{ id: "tail", attempts: 0 }]);
+            return;
+          }
+          expect(settlementError).toBeUndefined();
+          expect(await queue.listPending()).toMatchObject([
+            { id: "head", attempts: 1, lastError: "retry head" },
+            { id: "tail", attempts: 0 },
+          ]);
+          expect(await drain.drainOnce()).toEqual({ started: 0 });
+
+          clock += 1_000;
+          expect(await drain.drainOnce()).toEqual({ started: 1 });
+          await drain.waitForIdle();
+          expect(await drain.drainOnce()).toEqual({ started: 1 });
+          await drain.waitForIdle();
+          expect(dispatches).toEqual(["head", "other", "head", "tail"]);
+          expect(await queue.listPending()).toEqual([]);
+          expect(await queue.listClaims()).toEqual([]);
+        } finally {
+          finishRelease.resolve();
+          await failure;
+          await drain.waitForIdle();
+          drain.dispose();
+          heldRelease.mockRestore();
+        }
+      });
+    },
+  );
+
   it("never claims a retry-delayed event whose lane head settled after the drain snapshot", async () => {
     await withTempState(async (stateDir) => {
       const queue = createTestIngressQueue(stateDir);
@@ -343,16 +447,7 @@ describe("channel ingress drain lanes", () => {
       await queue.complete(headClaim!);
       vi.spyOn(queue, "listUnsettled").mockResolvedValue(snapshot);
 
-      const dispatches: string[] = [];
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        now: () => currentNow,
-        retryPolicy: { baseMs: 60_000, maxMs: 60_000 },
-        dispatchClaimedEvent: async (event, lifecycle) => {
-          dispatches.push(event.id);
-          await lifecycle.onAdopted();
-        },
-      });
+      const { drain, dispatches } = createAdoptingDrain(queue, currentNow);
 
       await expect(drain.drainOnce()).resolves.toEqual({ started: 0 });
       expect(dispatches).toEqual([]);

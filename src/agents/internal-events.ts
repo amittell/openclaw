@@ -80,7 +80,7 @@ export function collectAgentInternalEventMedia(events: AgentInternalEvent[] | un
       }),
     );
     for (const mediaUrl of [
-      ...(Array.isArray(event.mediaUrls) ? event.mediaUrls : []),
+      ...(event.mediaUrls ?? []),
       ...mediaUrlsFromGeneratedAttachments(event.attachments),
     ]) {
       const normalized = normalizeOptionalString(mediaUrl);
@@ -126,6 +126,7 @@ function formatChildResultDataBlock(value: string): string {
     wrapPromptDataBlock({
       label: "Child result",
       text: value,
+      encoding: "verbatim",
     }) || "Child result: (no output)"
   );
 }
@@ -133,7 +134,6 @@ function formatChildResultDataBlock(value: string): string {
 function formatGeneratedMediaDirectiveLines(
   event: Pick<AgentTaskCompletionInternalEvent, "mediaUrls" | "attachments">,
   raw = false,
-  label = "Generated media:",
 ): string[] {
   const mediaUrls = Array.from(
     new Set(
@@ -146,7 +146,7 @@ function formatGeneratedMediaDirectiveLines(
     return [];
   }
   return [
-    label,
+    "Generated media:",
     ...mediaUrls.map((mediaUrl) => {
       // Delimit literal quotes and suffixes that the unquoted parser treats as serialized output.
       const reference =

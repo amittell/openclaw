@@ -1,8 +1,7 @@
 import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import * as bootstrapCache from "../../agents/bootstrap-cache.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { expectObjectFields, mockCall } from "../../test-utils/mock-call-assertions.js";
@@ -10,8 +9,8 @@ import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.
 import type { MsgContext } from "../templating.js";
 import { buildCommandContextForTest as buildCommandContext } from "./commands-context.test-support.js";
 import { maybeHandleResetCommand } from "./commands-reset.js";
+import { buildSessionCommandTestParams } from "./commands-session-params.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
-import { parseInlineSessionDirectives } from "./directive-handling.parse.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-soft-reset-tombstone-");
 
@@ -81,10 +80,8 @@ function buildResetParams(
     ...ctxOverrides,
   } as MsgContext;
 
-  return {
-    ctx,
-    cfg,
-    command: {
+  return buildSessionCommandTestParams(
+    {
       rawBodyNormalized: commandBody.trim(),
       commandBodyNormalized: commandBody.trim(),
       isAuthorizedSender: true,
@@ -98,20 +95,14 @@ function buildResetParams(
       to: ctx.To ?? "bot",
       resetHookTriggered: false,
     },
-    directives: parseInlineSessionDirectives(""),
-    elevated: { enabled: true, allowed: true, failures: [] },
-    sessionKey: "agent:main:main",
-    agentId: "main",
-    workspaceDir: "/tmp/openclaw-commands",
-    defaultGroupActivation: () => "mention",
-    resolvedVerboseLevel: "off",
-    resolvedReasoningLevel: "off",
-    resolveDefaultThinkingLevel: async () => undefined,
-    provider: "whatsapp",
-    model: "test-model",
-    contextTokens: 0,
-    isGroup: false,
-  };
+    {
+      ctx,
+      cfg,
+      workspaceDir: "/tmp/openclaw-commands",
+      provider: "whatsapp",
+      model: "test-model",
+    },
+  );
 }
 
 function buildAcpResetParams(command: string) {
@@ -165,18 +156,13 @@ function queueHookReply() {
 }
 
 describe("handleCommands reset hooks", () => {
-  let clearBootstrapSnapshotSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    clearBootstrapSnapshotSpy = vi.spyOn(bootstrapCache, "clearBootstrapSnapshot");
     resetMocks.resetConfiguredBindingTargetInPlace.mockResolvedValue({ ok: true });
     resetMocks.resolveBoundAcpThreadSessionKey.mockResolvedValue(undefined);
     triggerInternalHookMock.mockResolvedValue(undefined);
     routeReplyMock.mockResolvedValue({ ok: true, delivered: true, messageId: "reset-hook-1" });
   });
-
-  afterEach(() => clearBootstrapSnapshotSpy.mockRestore());
 
   it.each([false, true])("triggers /new hooks with native=%s", async (native) => {
     const target = "agent:main:telegram:direct:123";
@@ -393,7 +379,6 @@ describe("handleCommands reset hooks", () => {
     expect(
       loadSessionEntry({ sessionKey: params.sessionKey, storePath })?.updatedAt,
     ).toBeGreaterThan(0);
-    expect(clearBootstrapSnapshotSpy).toHaveBeenCalledWith("agent:main:main");
   });
 
   it.each<[string, Partial<MsgContext>, boolean, boolean?]>([
@@ -477,7 +462,6 @@ describe("handleCommands reset hooks", () => {
       });
       expect(params.command.softResetTriggered === true).toBe(allowed);
       expect(triggerInternalHookMock).toHaveBeenCalledTimes(allowed ? 1 : 0);
-      expect(clearBootstrapSnapshotSpy).toHaveBeenCalledTimes(allowed ? 1 : 0);
       expect(routeReplyMock).not.toHaveBeenCalled();
       expect(resetMocks.resetConfiguredBindingTargetInPlace).not.toHaveBeenCalled();
       if (allowed) {

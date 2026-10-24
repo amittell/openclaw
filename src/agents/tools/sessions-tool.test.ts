@@ -12,12 +12,13 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { isAgentSessionModelPatchOrigin } from "../../gateway/session-model-patch-origin.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import * as failoverErrors from "../failover-error.js";
 import { createAgentPatchedSessionModelRunGuard } from "../session-model-auto-revert.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
+import { captureSessionDecisionWork as captureDecisionWork } from "./sessions-spawn-tool.decision.test-support.js";
 import { createSessionsTool } from "./sessions-tool.js";
 import {
   adversarialResolved,
@@ -38,48 +39,52 @@ beforeEach(() => {
 
 type AgentToolGatewayRequest = Parameters<AgentToolGatewayRequestCaller>[0];
 
-async function captureSessionDecisionWork<T>(run: () => Promise<T>): Promise<{
-  result: T;
-  work: ExecutionDecisionWork[];
-}> {
-  const work: ExecutionDecisionWork[] = [];
-  const clear = configureExecutionDecisionWorkSink((item) => {
-    work.push(item);
-    return true;
-  });
-  try {
-    const token = createExecutionIdentityAdmissionToken("sessions-tool-action", {
-      contextId: "sessions-tool-context",
-      executionId: "sessions-tool-execution",
-    });
-    const result = await withGatewayToolCallerIdentity(
-      {
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        executionIdentityToken: token,
-        receiptAuthority: () => true,
-      },
-      run,
-    );
-    return { result, work };
-  } finally {
-    clear();
-  }
+function captureSessionDecisionWork<T>(run: () => Promise<T>) {
+  return captureDecisionWork(run, "sessions-tool");
+}
+
+function globalSessionConfig(): OpenClawConfig {
+  return {
+    session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
+    agents: {
+      ownership: "explicit",
+      defaults: { sessionStore: { agentId: "ops" } },
+      entries: { ops: {}, research: {} },
+    },
+  };
 }
 
 describe("sessions tool", () => {
+  it("paginates canonical owner profiles without exposing private directory fields", async () => {
+    const profiles = Array.from({ length: 34 }, (_, index) => ({
+      id: `person-${index}`,
+      displayName: `Person ${index}`,
+      mergedInto: null,
+      githubIdentity: null,
+      emails: ["private@example.test"],
+      role: "admin",
+    }));
+    const callGateway = vi.fn().mockResolvedValue({
+      profiles: [{ ...profiles[0], id: "merged-person", mergedInto: "person-0" }, ...profiles],
+    });
+    const tool = createSessionsTool({ senderIsOwner: true, callGateway });
+    const first = await tool.execute("owners-first", { action: "owner_profiles" });
+    expect(first.details).toMatchObject({ profiles: expect.any(Array), nextOffset: 32 });
+    expect(JSON.stringify(first.details)).not.toMatch(/private@example|merged-person|"role"/);
+    const second = await tool.execute("owners-next", { action: "owner_profiles", offset: 32 });
+    expect(second.details).toEqual({
+      profiles: [
+        { id: "person-32", displayName: "Person 32", githubIdentity: null },
+        { id: "person-33", displayName: "Person 33", githubIdentity: null },
+      ],
+    });
+  });
+
   it("carries the persisted fixed-store owner for a bare patch key", async () => {
     const callGateway = vi.fn().mockResolvedValue({});
     const tool = createSessionsTool({
       agentSessionKey: "global",
-      config: {
-        session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
-        agents: {
-          ownership: "explicit",
-          defaults: { sessionStore: { agentId: "ops" } },
-          entries: { ops: {}, research: {} },
-        },
-      },
+      config: globalSessionConfig(),
       callGateway,
     });
 
@@ -102,14 +107,7 @@ describe("sessions tool", () => {
     const tool = createSessionsTool({
       agentSessionKey: "agent:research:main",
       requesterAgentIdOverride: "research",
-      config: {
-        session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
-        agents: {
-          ownership: "explicit",
-          defaults: { sessionStore: { agentId: "ops" } },
-          entries: { ops: {}, research: {} },
-        },
-      },
+      config: globalSessionConfig(),
       callGateway,
     });
 
@@ -830,7 +828,7 @@ describe("sessions tool", () => {
       config: { session: { store: storePath } },
       callGateway: callGateway as never,
     });
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},

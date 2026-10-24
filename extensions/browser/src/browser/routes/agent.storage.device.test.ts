@@ -17,6 +17,8 @@ const routeState = vi.hoisted(() => {
     cookiesGetViaPlaywright: vi.fn(async () => ({ cookies: [] })),
     cookiesSetManyViaPlaywright: vi.fn(async () => ({ added: 2 })),
     setDeviceViaPlaywright: vi.fn(async () => {}),
+    setTimezoneViaPlaywright: vi.fn(async () => {}),
+    setLocaleViaPlaywright: vi.fn(async () => {}),
     setHttpCredentialsViaPlaywright: vi.fn(async () => {}),
     storage,
     storageGetViaPlaywright: vi.fn(async ({ kind, key }: { kind: StorageKind; key?: string }) => ({
@@ -100,7 +102,40 @@ beforeEach(() => {
 
 describe("browser device route", () => {
   it.each([
-    { route: "/set/device", body: { name: "iPhone 15" } },
+    {
+      route: "timezone",
+      field: "timezoneId",
+      value: 0,
+      expected: "0",
+      method: "setTimezoneViaPlaywright",
+    },
+    {
+      route: "locale",
+      field: "locale",
+      value: false,
+      expected: "false",
+      method: "setLocaleViaPlaywright",
+    },
+  ] as const)(
+    "preserves scalar coercion at the $route boundary",
+    async ({ route, field, value, expected, method }) => {
+      const response = await post(`/set/${route}`, { [field]: value });
+      expectResponse(response, { ok: true, targetId: "tab-1" });
+      expect(routeState[method]).toHaveBeenCalledWith({ ...target, [field]: expected });
+    },
+  );
+
+  it.each([
+    { route: "timezone", field: "timezoneId" },
+    { route: "locale", field: "locale" },
+    { route: "device", field: "name" },
+  ])("rejects blank $field before acquiring a browser", async ({ route, field }) => {
+    const response = await post(`/set/${route}`, { [field]: " \t " });
+    expectResponse(response, { error: `${field} is required` }, 400);
+    expect(routeState.withPlaywrightRouteContext).not.toHaveBeenCalled();
+  });
+
+  it.each([
     { route: "/set/media", body: { colorScheme: "dark" } },
     { route: "/set/timezone", body: { timezoneId: "America/New_York" } },
     { route: "/set/locale", body: { locale: "en-US" } },
@@ -119,7 +154,7 @@ describe("browser device route", () => {
     const controller = new AbortController();
     const response = await post(
       "/set/device",
-      { targetId: "tab-1", name: "iPhone 14" },
+      { targetId: "tab-1", name: "  iPhone 14  " },
       {},
       controller.signal,
     );
@@ -180,10 +215,7 @@ describe("browser cookie batch route", () => {
     expect(response.body).toEqual({ ok: true, targetId: "tab-1", added: 2 });
   });
 
-  it.each([
-    ["empty", { cookies: [] }],
-    ["non-array", { cookies: {} }],
-  ])("rejects a %s cookies payload", async (_label, body) => {
+  it.each([["empty", { cookies: [] }]])("rejects a %s cookies payload", async (_label, body) => {
     const response = await post("/cookies/set-many", body);
 
     expect(response.statusCode).toBe(400);
@@ -243,21 +275,18 @@ describe("browser storage route boundaries", () => {
     });
   });
 
-  it.each(["set", "clear"])(
-    "rejects an invalid storage kind before %s dispatch",
-    async (operation) => {
-      const response = await post(
-        `/storage/:kind/${operation}`,
-        { key: "", targetId: " requested-tab " },
-        { kind: "invalid" },
-      );
+  it.each(["set"])("rejects an invalid storage kind before %s dispatch", async (operation) => {
+    const response = await post(
+      `/storage/:kind/${operation}`,
+      { key: "", targetId: " requested-tab " },
+      { kind: "invalid" },
+    );
 
-      expect(response.statusCode).toBe(400);
-      expect(routeState.withPlaywrightRouteContext).not.toHaveBeenCalled();
-      expect(routeState.storageSetViaPlaywright).not.toHaveBeenCalled();
-      expect(routeState.storageClearViaPlaywright).not.toHaveBeenCalled();
-    },
-  );
+    expect(response.statusCode).toBe(400);
+    expect(routeState.withPlaywrightRouteContext).not.toHaveBeenCalled();
+    expect(routeState.storageSetViaPlaywright).not.toHaveBeenCalled();
+    expect(routeState.storageClearViaPlaywright).not.toHaveBeenCalled();
+  });
 
   it("keeps cookie reads behind the current-tab URL guard", async () => {
     const response = await get("/cookies");

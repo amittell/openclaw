@@ -1,9 +1,11 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 // Owns catalog-row menu state, actions, focus anchor, and rendering for AppSidebar.
-import { Show } from "solid-js";
+import { Show, type Component } from "solid-js";
 import { pathForRoute } from "../app-route-paths.ts";
+import { registerSessionNavigationEnglish } from "../i18n/locales/en-session-navigation.ts";
+import { registerSessionOrganizationEnglish } from "../i18n/locales/en-session-organization.ts";
 import { formatUiError } from "../lib/format-error.ts";
-import { t } from "../lib/reactive/i18n.ts";
+import { t, registerEnglishCatalog } from "../lib/reactive/i18n.ts";
 import { projectSource } from "../lib/reactive/projection.ts";
 import { readSessionMethodScopeAccess } from "../lib/session-method-access.ts";
 import { parseCatalogSessionKey, type CatalogSessionKey } from "../lib/sessions/catalog-key.ts";
@@ -12,15 +14,18 @@ import { sessionNavigationTarget } from "../lib/sessions/route-navigation.ts";
 import { showToast } from "../lib/toast.ts";
 import type { CatalogSessionMenuRequest } from "./app-sidebar-session-catalogs.ts";
 import type { SidebarCatalogSessionMutationScope } from "./app-sidebar-session-types.ts";
-import { CatalogSessionMenu } from "./catalog-session-menu-solid.tsx";
+import type { CatalogSessionMenu } from "./catalog-session-menu-solid.tsx";
 import { showConfirmDialog } from "./confirm-dialog.ts";
 import { SESSION_MENU_OPEN_EVENT } from "./session-progress-hovercard-target.ts";
-import type { SidebarMenusControllerHost } from "./sidebar-menus-controller-types.ts";
+import type { SidebarMenusOwner } from "./sidebar-menus-types.ts";
+
+registerEnglishCatalog(registerSessionNavigationEnglish);
+registerEnglishCatalog(registerSessionOrganizationEnglish);
 
 type SidebarCatalogSessionMenuState = CatalogSessionMenuRequest & { x: number; y: number };
 
 type SidebarCatalogMenuHost = Pick<
-  SidebarMenusControllerHost,
+  SidebarMenusOwner,
   | "activeRouteId"
   | "basePath"
   | "getRouteSessionKey"
@@ -29,7 +34,7 @@ type SidebarCatalogMenuHost = Pick<
   | "terminalAvailable"
 > & {
   sessionData: Pick<
-    SidebarMenusControllerHost["sessionData"],
+    SidebarMenusOwner["sessionData"],
     | "beginSessionMutation"
     | "isSessionMutationScopeCurrent"
     | "archiveSessionCatalog"
@@ -40,8 +45,8 @@ type SidebarCatalogMenuHost = Pick<
 
 export function createSidebarCatalogMenu(host: SidebarCatalogMenuHost, beforeOpen: () => void) {
   let state: { menu: SidebarCatalogSessionMenuState; trigger: HTMLElement | null } | null = null;
-  const listeners = new Set<() => void>();
-  const publish = () => listeners.forEach((notify) => notify());
+  let notify: (() => void) | undefined;
+  const publish = () => notify?.();
   const isOpenFor = (key: CatalogSessionKey) => matchesMenu(state?.menu, key);
 
   function open(
@@ -200,20 +205,20 @@ export function createSidebarCatalogMenu(host: SidebarCatalogMenuHost, beforeOpe
     close,
     retargetTrigger,
     createView(viewHost: SidebarCatalogMenuHost) {
-      const snapshot = projectSource(listeners, {
+      const snapshot = projectSource(null, {
         read: () => state,
-        subscribe: (source, notify) => {
-          source.add(notify);
-          return () => source.delete(notify);
+        subscribe: (_, listener) => {
+          notify = listener;
+          return () => (notify = undefined);
         },
         equality: "revision",
       });
       return {
         isOpenFor: (key: CatalogSessionKey) => matchesMenu(snapshot.read()?.menu, key),
-        render: () => (
+        render: (CatalogMenu: Component<Parameters<typeof CatalogSessionMenu>[0]>) => (
           <Show when={snapshot.read()?.menu} keyed>
             {(menu) => (
-              <CatalogSessionMenu
+              <CatalogMenu
                 x={menu.x}
                 y={menu.y}
                 trigger={snapshot.read()?.trigger ?? null}

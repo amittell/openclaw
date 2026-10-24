@@ -58,6 +58,7 @@ import {
 import { writeTarArchiveWithRetry } from "./backup-tar-retry.js";
 import { walkBackupTar } from "./backup-tar-walk.js";
 import { isErrno } from "./errors.js";
+import { safeStat } from "./path-existence.js";
 import {
   createLegacyAuditBackupCapture,
   legacyAuditBackupCapturesMatch,
@@ -141,12 +142,8 @@ async function resolveOutputPath(params: {
     return path.join(resolved, basename);
   }
 
-  try {
-    if ((await fs.stat(resolved)).isDirectory()) {
-      return path.join(resolved, basename);
-    }
-  } catch {
-    // Treat as a file path when the target does not exist yet.
+  if ((await safeStat(resolved))?.isDirectory()) {
+    return path.join(resolved, basename);
   }
 
   return resolved;
@@ -528,10 +525,13 @@ async function createBackupArchiveInScope(
     const gatewayLockDir = resolveGatewayLockDir(plan.stateDir);
     const skippedEntries = new Map<string, "volatile" | "vanished">();
     const opaqueSqliteSourcePaths = new Map<string, "archived" | "skipped">();
+    // Linked state roots can have distinct configured and canonical capture siblings.
+    // Otherwise the inventory owns privacy admission, except for config-only exports.
+    const checkConfiguredCaptureRoot = onlyConfig || plan.stateDir !== inventory.stateDir;
     const tarFilter = (entryPath: string, entryStat: import("node:fs").Stats): boolean => {
       const resolvedEntryPath = path.resolve(entryPath);
       const inventoryPath = sourcePathRemaps.get(resolvedEntryPath) ?? resolvedEntryPath;
-      if (isUpdateCapturePath(inventoryPath, plan.stateDir)) {
+      if (checkConfiguredCaptureRoot && isUpdateCapturePath(inventoryPath, plan.stateDir)) {
         return false;
       }
       const isDirectory = entryStat.isDirectory();
@@ -664,6 +664,12 @@ async function createBackupArchiveInScope(
                 ];
                 // Per-entry reports must not overflow the bounded restore manifest.
                 const manifest = buildManifest({ ...result, skipped: plan.skipped }, plan);
+                if (stateSqliteBackup.sharedDatabaseSourcePath !== undefined) {
+                  manifest.paths = {
+                    ...manifest.paths,
+                    sharedDatabaseSourcePath: stateSqliteBackup.sharedDatabaseSourcePath,
+                  };
+                }
                 manifest.externalSymbolicLinks = externalSymbolicLinks;
                 manifest.sqliteSnapshots = snapshotFacts.map((snapshot) =>
                   snapshot.role === "agent"

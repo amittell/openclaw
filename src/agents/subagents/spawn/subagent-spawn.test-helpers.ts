@@ -4,6 +4,7 @@ import os from "node:os";
 import { expect, vi } from "vitest";
 import "../../../test-utils/prepare-compiled-subprocesses.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.shared.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resolveLeastPrivilegeOperatorScopesForMethod } from "../../../gateway/method-scopes.js";
 import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
 import type { RegisterSubagentRunParams } from "../registry/subagent-registry-run-launch-record.js";
@@ -54,6 +55,39 @@ type HookRunner = Pick<SubagentLifecycleHookRunner, "hasHooks"> &
 type SubagentSpawnModuleForTest = Awaited<typeof import("./subagent-spawn.js")> & {
   resetSubagentRegistryForTests: typeof import("../registry/subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
 };
+
+type ThinkingProvenanceCase = [
+  name: string,
+  context: Parameters<typeof import("./subagent-spawn.js").spawnSubagentDirect>[1] & {
+    requesterThinkingExplicit?: boolean;
+  },
+  saved: string | undefined,
+  expected: string | undefined,
+  spawnThinking?: string,
+  requesterThinkingDefault?: string,
+];
+
+export function createThinkingProvenanceCases(): ThinkingProvenanceCase[] {
+  const automatic: ThinkingProvenanceCase[1] = {
+    requesterThinkingLevel: "high",
+    requesterThinkingExplicit: false,
+  };
+  return [
+    [
+      "inherits explicit active effort",
+      { requesterThinkingLevel: "ultra", requesterThinkingExplicit: true },
+      "medium",
+      "ultra",
+    ],
+    ["inherits legacy active effort", { requesterThinkingLevel: "ultra" }, "medium", "ultra"],
+    ["ignores automatic effort and stale preference", automatic, "medium", undefined],
+    ["ignores automatic effort without a preference", automatic, undefined, undefined],
+    ["does not persist an unselected model default", {}, undefined, undefined],
+    ["prefers explicit spawn effort", automatic, undefined, "low", "low"],
+    ["inherits persisted effort", {}, "off", "off"],
+    ["inherits configured effort", {}, undefined, "high", undefined, "high"],
+  ];
+}
 
 export function createSubagentRegistrationScopeForTest(
   overrides: Partial<SubagentRegistrationScope> &
@@ -138,6 +172,58 @@ export async function supportedSpawnModelChoice(
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     },
   };
+}
+
+export function createSpawnBoundaryConfig(
+  workspace: string,
+  maxChildrenPerAgent?: number,
+): OpenClawConfig {
+  return {
+    logging: { audit: { enabled: true, executionIdentity: true } },
+    tools: { swarm: { enabled: true, maxConcurrent: 1 } },
+    agents: {
+      ownership: "explicit",
+      defaults: {
+        workspace,
+        systemAgent: { agentId: "main" },
+        model: { primary: "custom/test-model" },
+        ...(maxChildrenPerAgent !== undefined ? { subagents: { maxChildrenPerAgent } } : {}),
+      },
+      entries: { main: { workspace } },
+    },
+    models: {
+      mode: "replace",
+      providers: {
+        custom: {
+          api: "openai-completions",
+          apiKey: "test-key",
+          baseUrl: "https://example.invalid/v1",
+          models: [
+            {
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              id: "test-model",
+              input: ["text"],
+              maxTokens: 1_024,
+              name: "Test model",
+              reasoning: false,
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+/** Rethrows proof and cleanup failures without losing either outcome. */
+export function throwBoundFailures(failures: unknown[]): void {
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Spawn proof and fixture cleanup failed", {
+      cause: failures[0],
+    });
+  }
 }
 
 /** Build a minimal runtime config for sessions_spawn tests. */

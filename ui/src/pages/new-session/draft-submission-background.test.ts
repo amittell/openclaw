@@ -3,15 +3,9 @@ import { createDeferred } from "../../../../test/helpers/promise.ts";
 import { createNativeNotificationsCapability } from "../../app/native-notifications.ts";
 import type { ApplicationPlacementStartupStatus } from "../../app/session-placement-startup.ts";
 import * as toast from "../../lib/toast.ts";
-import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
+import { createDraftFixture, resetSubmissionMocks } from "./draft-submission-flow.test-support.ts";
 
-afterEach(() => {
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  sessionStorage.clear();
-  localStorage.clear();
-});
+afterEach(resetSubmissionMocks);
 
 function nativeBackgroundFixture(options: Parameters<typeof createDraftFixture>[0] = {}) {
   const postMessage = vi.fn();
@@ -27,15 +21,15 @@ function nativeBackgroundFixture(options: Parameters<typeof createDraftFixture>[
   return { ...fixture, postMessage, dispose: () => nativeNotifications?.dispose() };
 }
 
-function failedPlacement(
-  sendState: "failed" | "unconfirmed",
+function placementStatus(
+  sendState: "failed" | "waiting-reconnect",
   sendRunId = "run-background",
   error?: string,
 ): ApplicationPlacementStartupStatus {
   return {
     sessionKey: "agent:main:dashboard:background",
     targetKind: "device",
-    phase: "failed",
+    phase: sendState === "failed" ? "failed" : "reconnecting",
     startedAt: 1,
     error,
     initialTurn: {
@@ -48,6 +42,41 @@ function failedPlacement(
     },
   };
 }
+
+it("uses the chosen identity at completion rather than stale roster artwork", async () => {
+  const published = createDeferred();
+  const showToast = vi.spyOn(toast, "showToast").mockImplementation(() => {
+    published.resolve();
+    return true;
+  });
+  const { context, flow, dispose } = nativeBackgroundFixture({
+    agents: [{ id: "main", name: "Old name", identity: { avatar: "data:image/png;base64,b2xk" } }],
+    request: async (method) => (method === "agent.wait" ? { status: "ok", endedAt: 1 } : {}),
+  });
+  vi.spyOn(context.agentIdentity, "get").mockReturnValue({
+    agentId: "main",
+    name: "Garden keeper",
+    nameSource: "config",
+    avatar: "data:image/webp;base64,bmV3",
+    emoji: "🌱",
+  });
+  try {
+    await flow.submit(undefined, true);
+    await published.promise;
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        avatar: {
+          id: "main",
+          name: "Garden keeper",
+          avatar: "data:image/webp;base64,bmV3",
+          textAvatar: "🌱",
+        },
+      }),
+    );
+  } finally {
+    dispose();
+  }
+});
 
 it.each([
   [true, "replacement Gateway"],
@@ -155,10 +184,10 @@ it.each([
   ["observation deadline", null],
   ["retryable provider error", null, { error: "Retryable provider failure", pendingError: true }],
   ["queued turn", null, { status: "pending" }],
-  ["checking delivery", failedPlacement("unconfirmed")],
-  ["newer retry failure", failedPlacement("failed", "newer-run", "Newer retry rejected")],
-  ["display error without send outcome", { ...failedPlacement("failed"), initialTurn: undefined }],
-  ["confirmed send failure", failedPlacement("failed", "run-background", "Placement rejected")],
+  ["pending delivery", placementStatus("waiting-reconnect")],
+  ["newer retry failure", placementStatus("failed", "newer-run", "Newer retry rejected")],
+  ["display error without send outcome", { ...placementStatus("failed"), initialTurn: undefined }],
+  ["confirmed send failure", placementStatus("failed", "run-background", "Placement rejected")],
 ] as const)(
   "waits for terminal background completion after %s",
   async (

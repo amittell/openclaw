@@ -5,9 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { collectPluginSourceEntries } from "../scripts/lib/bundled-plugin-build-entries.mjs";
 import { createManagedHandoffBuildConfigs } from "../scripts/lib/managed-handoff-build-config.mts";
+import { createNativeTypeScriptParser } from "../scripts/lib/native-typescript.mts";
 import { runtimeProcessBuildEntries } from "../scripts/lib/runtime-process-build-entries.mts";
+import { readUpdateCompatibilityInventory } from "../scripts/lib/update-compat-chunks.mts";
+import { ModuleGraph } from "../scripts/lib/update-compat-module-graph.mts";
 import { buildPackageDistEntriesFromExports } from "../scripts/lib/workspace-package-entries.mts";
 import { controlUiSource } from "../src/plugins/package-manifest.js";
+import aiBuildConfig from "../tsdown.ai.config.ts";
 import { compileViteConfigConsumers } from "./knip-vite-consumers.mjs";
 
 const BUNDLED_PLUGIN_ROOT_DIR = "extensions";
@@ -23,6 +27,10 @@ const repositoryScriptEntries = [
   "scripts/lib/plugin-npm-build-and-pack.mts!",
   // Package scripts execute the PostgreSQL schema generator, which consumes state declarations.
   "scripts/generate-postgres-schema.mts!",
+  // src/daemon/systemd-directives.ts documents this node regeneration command.
+  "scripts/generate-systemd-directives.mjs!",
+  // ui:validators:gen/check compile canonical payload schemas into browser runtime guards.
+  "scripts/generate-control-ui-validators.mts!",
   // Immutable activation and release deployment launch this packaged entry by path.
   "gateway-prewarm.mjs!",
   "apps/linux/scripts/test-runtime-boundary.mjs!",
@@ -41,6 +49,8 @@ const repositoryScriptEntries = [
   "scripts/annotate-proof-image.mts!",
   "scripts/render-proof-video.mts!",
   "scripts/ci-shard-timings-refresh.mts!",
+  // The scheduled-run execution context design invokes this development replay by path.
+  "scripts/dev/cron-context-replay.mts!",
   // db:postgres:gen/check invoke this generator through the source loader.
   "scripts/generate-postgres-schema.mts!",
   // CI preflight executes the manifest from its trusted harness checkout.
@@ -65,17 +75,130 @@ const repositoryScriptEntries = [
   // setup-pnpm-store-cache invokes this helper from composite-action YAML.
   ".github/actions/setup-pnpm-store-cache/seed-pnpm-from-image.mjs!",
   "apps/android/scripts/build-release-artifacts.ts!",
+  // scripts/README.md invokes this warm-interaction benchmark CLI by path.
+  "scripts/bench-control-ui-interactions.ts!",
+  // scripts/README.md invokes these exact memory-search benchmarks by path.
+  "scripts/bench-memory-search.mjs!",
+  "scripts/bench-memory-search-sqlite.mjs!",
+  // #180983 invokes this isolated plugin-registration benchmark CLI by path.
+  "scripts/bench-plugin-registration.mts!",
   // The cold-load benchmark guide invokes this opt-in CLI by path.
   "scripts/bench-control-ui-cold-load.ts!",
+  // scripts/control-ui-retention/README.md invokes this opt-in production census.
+  "scripts/control-ui-retention/retention-suite.ts!",
+  "scripts/control-ui-retention/vitest.config.ts!",
+  // #179175 invokes this development-loop benchmark CLI by path.
+  "scripts/bench-control-ui-dev-loop.mts!",
+  // #179449 documents this document-handler benchmark CLI by path.
+  "scripts/bench-control-ui-document.ts!",
   // The channel-turn benchmark guide invokes this opt-in CLI by path.
   "scripts/bench-channel-turn.mts!",
+  // The guide's async-context census wrapper imports this preload before the channel-turn entry.
+  "scripts/perf/async-context-probe.cjs!",
+  // The transcript-broadcast benchmark loads this fsync probe through --entry.
+  "scripts/perf/fsync-gateway-entry.ts!",
+  // scripts/perf/README.md invokes this fsync scratch measurement through Node.
+  "scripts/perf/fsync-scratch-measure.ts!",
+  // scripts/perf/README.md invokes this database page-cache benchmark by path.
+  "scripts/perf/database-page-cache-measure.ts!",
+  // The source header documents this GitHub reader benchmark's Node command.
+  "scripts/perf/github-reader-measure.ts!",
+  // docs/reference/test/performance.md invokes the Decision transport comparison driver.
+  "scripts/bench-decision-transport.mts!",
+  // docs/reference/test/performance.md invokes the frozen-revision benchmark builder.
+  "scripts/build-decision-transport-bench.mts!",
+  // scripts/perf/README.md invokes this shared-writer benchmark by path.
+  "scripts/bench-channel-ingress-writer.ts!",
+  // The performance guide invokes these measurement commands by path.
+  "scripts/perf/adoption-candidates-measure.ts!",
+  "scripts/perf/background-result-wait-measure.ts!",
+  // #181383 invokes this committed Bash-output benchmark by path from a source checkout.
+  "scripts/perf/bash-output-measure.ts!",
+  "scripts/perf/codex-process-inspection-measure.ts!",
+  "scripts/perf/diagnostic-profile-measure.ts!",
+  "scripts/perf/owned-directory-events-measure.ts!",
+  "scripts/perf/plugin-gateway-scope-measure.ts!",
+  // #181150 invokes this reproducible session-row owner probe by path.
+  "scripts/perf/session-actor-row-facts-measure.ts!",
+  "scripts/perf/session-catalog-selection-measure.ts!",
+  "scripts/perf/session-pr-subscriptions-measure.ts!",
+  "scripts/perf/session-tool-surface-measure.ts!",
+  "scripts/perf/subagent-maintenance-capture-measure.ts!",
+  "scripts/perf/subagent-sweep-measure.ts!",
+  "scripts/perf/tool-schema-preparation-measure.ts!",
+  // The performance guide and transcript driver invoke these tools and preloads by path.
+  "scripts/lib/gateway-bench-transport-preload.ts!",
+  "scripts/perf/async-store-measure.mjs!",
+  "scripts/perf/code-mode-store-measure.ts!",
+  "scripts/perf/gateway-agent-event-measure.ts!",
+  "scripts/perf/transcript-hydration-counts-preload.ts!",
+  // The performance guide and retained package-integrity rerun invoke these benchmarks by path.
+  "scripts/bench-package-integrity.ts!",
+  "scripts/perf/provider-request-prepare-measure.ts!",
+  "scripts/perf/session-profile-reference-measure.ts!",
+  "scripts/perf/worker-task-metrics-measure.ts!",
+  // scripts/perf/README.md invokes this worker protocol benchmark by path.
+  "scripts/perf/worker-module-graphs-measure.mjs!",
+  // scripts/perf/README.md invokes this cold usage-cache measurement CLI by path.
+  "scripts/perf/chat-metadata-burst-measure.ts!",
+  // scripts/perf/README.md invokes this model-prompt statistics measurement CLI by path.
+  "scripts/perf/model-prompt-stats-measure.ts!",
+  // scripts/perf/README.md invokes this synthetic mention Inbox benchmark by path.
+  "scripts/perf/mention-inbox-measure.ts!",
+  // scripts/perf/README.md invokes this main-thread stall measurement CLI by path.
+  "scripts/perf/main-thread-stall-measure.mjs!",
+  // scripts/perf/README.md invokes this synthetic reload fixture by path.
+  "scripts/perf/control-ui-reload-fixture.ts!",
+  // docs/ci/checkout.md invokes this checkout materialization benchmark by path.
+  "scripts/perf/ci-preflight-checkout-measure.mjs!",
+  // The narration payload benchmark in #179092 is invoked by path.
+  "scripts/perf/tool-frame-replay.ts!",
+  // scripts/perf/README.md invokes these drivers and their worker-memory preload.
+  "scripts/perf/workboard-read-measure.ts!",
+  "scripts/perf/transcript-hydration-headroom.ts!",
+  "scripts/perf/transcript-worker-memory-preload.ts!",
+  // transcript-broadcast-measure.ts preloads this stage probe with --import.
+  "scripts/perf/github-options-measure-preload.ts!",
+  // scripts/perf/README.md invokes this prompt-history fingerprint benchmark by path.
+  "scripts/perf/prompt-cache-history-measure.ts!",
+  // scripts/perf/README.md invokes this synthetic authority allocation probe by path.
+  "scripts/perf/operator-authority-measure.ts!",
+  // #179149 invokes this synthetic event-dispatch allocation probe by path.
+  "scripts/perf/agent-event-dispatch-measure.ts!",
+  // scripts/perf/README.md invokes this WebSocket diagnostic accounting benchmark.
+  "scripts/perf/ws-event-diagnostics-measure.ts!",
+  // scripts/perf/README.md invokes this database-path allocation probe by path.
+  "scripts/perf/state-path-resolution-measure.ts!",
   // Maintainers invoke this isolated transcript-rewrite benchmark by path.
   "scripts/bench-session-manager-rewrite.ts",
   // The team-shaped fixture README invokes these measurement CLIs by path.
   "scripts/perf/team-shape-measure.ts",
   "scripts/perf/transcript-broadcast-measure.ts",
   "scripts/perf/post-restart-burst-measure.ts",
-  "scripts/bundle-a2ui.mts!",
+  "scripts/perf/catalog-polling-measure.ts",
+  // The history/diff benchmark guide invokes this measurement CLI by path.
+  "scripts/perf/history-diff-measure.ts!",
+  // scripts/perf/README.md invokes this checkout-diff measurement CLI by path.
+  "scripts/perf/checkout-diff-measure.ts!",
+  // scripts/perf/README.md invokes this isolated viewer-presence measurement CLI.
+  "scripts/perf/presence-churn-measure.ts!",
+  // scripts/perf/README.md invokes this isolated session-roster measurement CLI.
+  "scripts/perf/session-roster-churn-measure.ts!",
+  "scripts/perf/seal-version-restart.ts!",
+  // #178599 documents: node --expose-gc scripts/perf/heap-headroom.ts.
+  "scripts/perf/heap-headroom.ts!",
+  // Maintainers invoke this isolated Doctor metadata-retention benchmark by path.
+  "scripts/perf/doctor-metadata-retention.ts!",
+  // The connected-idle benchmark runs by path and loads its instrumentation with --import.
+  "scripts/perf/idle-gateway-measure.ts!",
+  "scripts/perf/idle-gateway-measure-preload.mjs!",
+  // Worker-environment shutdown proof invokes this measurement CLI by path.
+  "scripts/perf/worker-environment-shutdown-measure.ts!",
+  // The branch-rotation guide invokes the driver, which loads its IPC preload by path.
+  "scripts/perf/branch-rotation-measure.ts!",
+  "scripts/perf/branch-rotation-measure-preload.ts!",
+  // The documented placement shutdown reproduction is invoked as a standalone CLI.
+  "scripts/perf/worker-placement-reconcile-shutdown-measure.ts!",
   // The standalone build guide invokes this builder by path.
   "scripts/build-bun-standalone.mjs!",
   // Maintainers invoke the isolated macOS standalone Doctor proof by path.
@@ -142,6 +265,9 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/fixtures/config.mjs!",
   "scripts/e2e/lib/fixtures/plugins.mjs!",
   "scripts/e2e/lib/fixtures/workspace.mjs!",
+  // The Docker custody shell copies the server and mounts the scenario by path.
+  "scripts/e2e/lib/mcp-docker-custody/scenario.mjs!",
+  "scripts/e2e/lib/mcp-docker-custody/server.cjs!",
   // Muse Docker shells invoke auth directly and select deterministic/live by mode.
   "scripts/e2e/lib/muse-runtime/auth.mjs!",
   "scripts/e2e/lib/muse-runtime/deterministic.mjs!",
@@ -192,6 +318,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/upgrade-survivor/native-assignment-app-server.mjs!",
   // package-activation-recovery.sh preloads this observer into the released updater.
   "scripts/e2e/lib/upgrade-survivor/package-activation-fault.mjs!",
+  // run.sh preloads this fixture adapter through NODE_OPTIONS by path.
+  "scripts/e2e/lib/upgrade-survivor/plugin-registry-redirect.mjs!",
   "scripts/e2e/lib/upgrade-survivor/probe-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs!",
@@ -208,6 +336,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/upgrade-survivor/update-admission-entry-probe.mjs!",
   "scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs!",
   "scripts/e2e/lib/upgrade-survivor/update-report-recovery.mjs!",
+  // run.sh wraps the legacy operator-state updater with this timeout observer.
+  "scripts/e2e/lib/upgrade-survivor/update-timeout-diagnostics.mjs!",
   "scripts/e2e/lib/upgrade-survivor/mobile-pairing-client.mts!",
   "scripts/e2e/lib/upgrade-survivor/watchos-direct-node.mjs!",
   "scripts/embedded-run-abort-leak.ts!",
@@ -257,6 +387,8 @@ const repositoryScriptEntries = [
   "scripts/pre-commit/guard-staged-content.mjs!",
   // Frozen-target contract admission is invoked as a standalone Node CLI.
   "scripts/preflight-frozen-target-contracts.mjs!",
+  // #175328 invokes this real agent-exec streaming proof by path.
+  "scripts/proof-final-answer-stream.mts!",
   // Generates the checked-in native protocol models from core descriptor metadata.
   "scripts/protocol-gen.ts!",
   "scripts/pr-lib/ci-dispatch.mjs!",
@@ -314,12 +446,16 @@ const repositoryScriptEntries = [
   "scripts/verify-full-release-producer-job.mjs!",
   // Staging and signed-app packaging execute this verifier with each bundled Bun.
   "scripts/verify-mac-runtime.mjs!",
+  // App packaging verifies reusable source artifacts before preserving their build identity.
+  "scripts/verify-mac-source-build.mts!",
   "scripts/verify-stable-main-closeout.mjs!",
   "scripts/write-package-dist-inventory.ts!",
   "scripts/write-plugin-sdk-entry-dts.ts!",
   "scripts/write-unified-entry-dts.ts!",
   "security/opengrep/check-rule-metadata.mjs!",
   "security/opengrep/compile-rules.mjs!",
+  // create-claw/SKILL.md invokes this CLI bridge for skills and plugin inventory.
+  "skills/create-claw/scripts/cli.mjs!",
   "skills/meme-maker/scripts/meme.mjs!",
 ] as const;
 
@@ -446,10 +582,7 @@ const rootEntries = [
   "config/knip.all-exports.config.ts!",
   "config/knip.scripts-exports.config.ts!",
   // OpenGrep rule tests read these as static source inputs; they are never executed.
-  "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.js!",
-  "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.ts!",
-  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.js!",
-  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.ts!",
+  "security/opengrep/rules/*/*.{js,ts}!",
   "{openclaw,docker-entrypoint}.mjs!",
   // Desktop service integration consumes this API in the staged builder/app cutover (#172569).
   // Remove this audit root after those in-tree callers land.
@@ -472,6 +605,7 @@ const rootEntries = [
   // Built as the official image's Docker HEALTHCHECK entrypoint.
   "src/docker-healthcheck.ts!",
   // Deployed in the worker archive and launched by path, without a static host import.
+  "src/worker/worker-deploy-client-credentials.ts!",
   "src/worker/worker-deploy-entry.ts!",
   "src/worker/worker-deploy-file-tool-planning.ts!",
   "src/worker/worker-deploy-file-tool-read.ts!",
@@ -573,7 +707,6 @@ const rootEntries = [
   bundledPluginFile("telegram", "src/audit.ts", "!"),
   bundledPluginFile("telegram", "src/token.ts", "!"),
   "src/hooks/bundled/*/handler.ts!",
-  "src/hooks/llm-slug-generator.ts!",
   // Local-only test-state consumers are modeled by the full-tree test scan.
   "src/plugin-sdk/!(test-state).ts!",
 ] as const;
@@ -610,7 +743,6 @@ const bundledPluginEntries = [
 
 const bundledPluginIgnoredRuntimeDependencies = [
   "@agentclientprotocol/claude-agent-acp",
-  "@a2ui/lit",
   "@azure/identity",
   "@clawdbot/lobster",
   "@discord/embedded-app-sdk",
@@ -651,7 +783,6 @@ const rootBundledPluginRuntimeDependencies = [
 // Root installation and build workflows deliberately mirror these dependencies from their
 // owning workspace, or invoke their package binaries/loaders without a static module import.
 const rootToolingAndWorkspaceDependencies = [
-  "@a2ui/lit",
   "@copilotkit/aimock",
   // scripts/ui.mts anchors these lookups at ui/package.json before invoking the UI workspace.
   "@vitest/browser-playwright",
@@ -705,6 +836,73 @@ function compileDynamicMjsConsumers(source: string, filePath: string): string {
     );
   }
   return source;
+}
+
+function compileUpdateCompatibilityConsumers(rootDir: string): string[] {
+  using parser = createNativeTypeScriptParser({ cwd: rootDir });
+  const graph = new ModuleGraph(parser, rootDir);
+  const inventory = readUpdateCompatibilityInventory(
+    path.join(rootDir, "scripts/lib/update-compat-inventory.json"),
+  );
+  const recordedOrigins = new Map<string, { module: string; symbol: string }>();
+  for (const release of inventory.releases) {
+    for (const chunk of release.chunks) {
+      for (const { origin } of chunk.exports) {
+        recordedOrigins.set(`${origin.module}:${origin.symbol}`, origin);
+      }
+    }
+  }
+  const imports: string[] = [];
+  const origins = [...recordedOrigins.values()].toSorted((left, right) =>
+    `${left.module}:${left.symbol}`.localeCompare(`${right.module}:${right.symbol}`),
+  );
+  for (const [index, origin] of origins.entries()) {
+    const sourceFile = path.join(rootDir, origin.module);
+    if (graph.names(sourceFile).includes(origin.symbol)) {
+      imports.push(
+        `import { ${origin.symbol} as __updateCompatibilityConsumer${index} } from ${JSON.stringify(`./${origin.module}`)};`,
+      );
+      continue;
+    }
+    const currentOrigin = graph.localOrigin(sourceFile, origin.symbol);
+    if (
+      !currentOrigin ||
+      (currentOrigin.module === origin.module && currentOrigin.symbol === origin.symbol) ||
+      !graph.names(path.join(rootDir, currentOrigin.module)).includes(currentOrigin.symbol)
+    ) {
+      throw new Error(
+        `Recorded updater binding ${origin.module}:${origin.symbol} is neither a named export nor an imported named binding`,
+      );
+    }
+  }
+  return imports;
+}
+
+function compileBundledPackageConsumers(source: string, filePath: string): string {
+  const manifestPath = path.resolve(filePath);
+  if (
+    manifestPath === path.resolve("package.json") ||
+    manifestPath === path.resolve("packages/ai/package.json")
+  ) {
+    // The bundled SDK imports these runtime externals. Project the real build
+    // policy into each shipping manifest; the root config alone has one owner.
+    const manifest: {
+      dependencies?: Record<string, string>;
+    } = JSON.parse(source);
+    const neverBundle = aiBuildConfig.deps?.neverBundle;
+    if (typeof neverBundle !== "function") {
+      throw new Error("Expected the AI build's externalization callback.");
+    }
+    const imports = Object.keys(manifest.dependencies ?? {})
+      .filter((dependency) => neverBundle(dependency, undefined, false))
+      .map((dependency) => `import ${JSON.stringify(dependency)};`);
+    if (manifestPath === path.resolve("package.json")) {
+      imports.push(...compileUpdateCompatibilityConsumers(path.dirname(manifestPath)));
+    }
+    return imports.join("\n");
+  }
+  // JSON has no import graph in Knip unless a compiler supplies one.
+  return "";
 }
 
 function bundledPluginWorkspace(extraEntries: readonly string[] = []) {
@@ -777,6 +975,7 @@ const config = {
     yml: compileWorkflowConsumers,
     sh: compileShellConsumers,
     mjs: compileDynamicMjsConsumers,
+    json: compileBundledPackageConsumers,
   },
   ignoreFiles: [
     // Production mode excludes dev/maintainer executables. The full-tree
@@ -786,6 +985,11 @@ const config = {
     "packages/*/dist/**",
     // Declaration companions describe executable JavaScript modules; they are not standalone roots.
     "scripts/**/*.d.{mts,ts}",
+    // MCP compatibility tests launch these subprocess fixtures by path; the full-tree scan owns them.
+    "extensions/browser/src/browser/chrome-mcp.v1-peer.fixture.mjs",
+    "extensions/qa-lab/src/suite-runtime-agent-tools.v1-peer.fixture.mjs",
+    // The Telegram context test loads this Worker by URL; the full-tree test scan owns it.
+    bundledPluginFile("telegram", "src/telegram-ingress-worker.context.test-support.mjs"),
     "**/live-*.ts",
     // This worker-thread proof entry is loaded from its test with new URL(),
     // which Knip cannot discover as a static import.
@@ -819,6 +1023,18 @@ const config = {
     "src/infra/database-engine/physical-facts.ts": ["exports"],
     // The full-tree companion config makes tests entrypoints; these contracts
     // are intentionally test-only in the production graph.
+    // Native-command tests exercise requester authorization and cancellation at this runtime gate.
+    "src/auto-reply/reply/request-native-subagent.ts": ["exports"],
+    // Scheduled-command tests exercise registry replacement and persisted-job validation at the owner.
+    "src/gateway/plugin-command-scheduled-run.ts": ["exports"],
+    // Diagnostic fixtures reset owner-private state; the full-tree audit checks these consumers.
+    "src/logging/diagnostic-memory.ts": ["exports"],
+    "src/logging/diagnostic-phase.ts": ["exports"],
+    "src/logging/diagnostic-run-activity.ts": ["exports"],
+    "src/logging/diagnostic-runtime.ts": ["exports"],
+    "src/logging/diagnostic-session-recovery-coordinator.ts": ["exports"],
+    "src/logging/diagnostic-session-state.ts": ["exports"],
+    "src/logging/diagnostic-stability.ts": ["exports"],
     "src/boards/board-notices.ts": ["exports"],
     "src/boards/board-store.ts": ["exports"],
     "src/gateway/board-view-ticket.ts": ["exports"],
@@ -842,13 +1058,12 @@ const config = {
     "ui/src/pages/chat/composer-persistence.{ts,tsx}": ["exports"],
     // The presentation fixture and focused UI tests consume these seams;
     // the full-tree companion scan continues to audit their actual consumers.
-    "ui/src/components/provider-icon.ts": ["exports"],
     "ui/src/components/terminal/terminal-panel.ts": ["types"],
     "ui/src/pages/chat/components/chat-attachment-card-solid.tsx": ["exports"],
     "ui/src/pages/chat/components/chat-camera-capture.tsx": ["types"],
     "ui/src/pages/chat/components/chat-child-attention.tsx": ["types"],
-    "ui/src/pages/chat/components/chat-ci-automation-control.{ts,tsx}": ["types"],
-    "ui/src/pages/chat/components/chat-ci-details.{ts,tsx}": ["types"],
+    "ui/src/pages/chat/components/chat-ci-automation-control.tsx": ["types"],
+    "ui/src/pages/chat/components/chat-ci-details.tsx": ["types"],
     "ui/src/pages/chat/components/chat-clawhub-card.tsx": ["exports"],
     "ui/src/pages/chat/components/chat-details.tsx": ["types"],
     "ui/src/pages/chat/components/chat-question-card{,-view}.{ts,tsx}": ["types"],
@@ -910,7 +1125,6 @@ const config = {
         "playwright-core",
         "partial-json",
         // The native Canvas bundle falls back without optional Markdown support.
-        "@a2ui/markdown-it",
         "sqlite-vec",
         "tree-sitter-bash",
         ...rootToolingAndWorkspaceDependencies,
@@ -945,10 +1159,14 @@ const config = {
         "*.config.{js,mjs,cjs,ts,mts,cts}!",
         "*.mjs!",
       ],
-      entry: rootEntries,
+      entry: ["package.json!", ...rootEntries],
     },
     "examples/ai-chat": {
       entry: ["index.mjs!"],
+      project: ["**/*.{js,mjs,cjs,ts,mts,cts}!"],
+    },
+    "examples/inline-incident": {
+      entry: ["index.ts!", "control-ui.ts!"],
       project: ["**/*.{js,mjs,cjs,ts,mts,cts}!"],
     },
     "qa/convex-credential-broker": {
@@ -964,6 +1182,8 @@ const config = {
         "src/test-helpers/proof-video.ts!",
         "index.html!",
         "src/main.{ts,tsx}!",
+        // The generated foreign-locale modules import this factory by absolute path.
+        "src/i18n/lib/lazy-catalog.ts!",
         "src/lib/browser-redact.{ts,tsx}!",
         "vite.config.ts!",
         "vitest*.ts!",
@@ -984,6 +1204,8 @@ const config = {
     "packages/ai": {
       // Mirror the published export map so knip sees every dist entry point.
       entry: [
+        // The JSON compiler models the shared build's external runtime consumers.
+        "package.json!",
         "src/index.ts!",
         "src/provider-types.ts!",
         "src/providers.ts!",
@@ -1036,6 +1258,7 @@ const config = {
       entry: ["index.js!", "scripts/postinstall.js!"],
       project: ["index.js!", "scripts/**/*.js!"],
     },
+    [`${BUNDLED_PLUGIN_ROOT_DIR}/abliteration`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/amazon-bedrock-mantle`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/amazon-bedrock`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/anthropic`]: bundledPluginWorkspace(),
@@ -1063,20 +1286,17 @@ const config = {
       // The opt-in browser benchmark is documented and invoked directly by path.
       "scripts/bench-lightweight.ts!",
     ]),
-    [`${BUNDLED_PLUGIN_ROOT_DIR}/canvas`]: bundledPluginWorkspace([
-      // Package build/copy scripts are invoked from package.json.
-      "scripts/copy-a2ui.mjs!",
-      // Rolldown consumes this config and its browser bootstrap entry.
-      "src/host/a2ui-app/rolldown.config.mjs!",
-      "src/host/a2ui-app/bootstrap.jsx!",
-      "src/host/a2ui-app/bootstrap-v0.9.jsx!",
-    ]),
+    [`${BUNDLED_PLUGIN_ROOT_DIR}/canvas`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/cloudflare-ai-gateway`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/chutes`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/clawrouter`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/cohere`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/comfy`]: bundledPluginWorkspace(),
-    [`${BUNDLED_PLUGIN_ROOT_DIR}/copilot`]: bundledPluginWorkspace(),
+    [`${BUNDLED_PLUGIN_ROOT_DIR}/copilot`]: bundledPluginWorkspace([
+      // The plugin README invokes this benchmark and its NODE_OPTIONS preload by path.
+      "test/bench-attempt-transcript-journal.ts!",
+      "test/journal-allocation-probe.mjs!",
+    ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/copilot-proxy`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/codex`]: bundledPluginWorkspace([
       // Provider runtime and harness surfaces are reached through plugin
@@ -1133,22 +1353,26 @@ const config = {
       "src/mxc-spawn-launcher.mjs!",
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/nvidia`]: bundledPluginWorkspace(),
-    [`${BUNDLED_PLUGIN_ROOT_DIR}/openai`]: bundledPluginWorkspace([
-      // OpenAI exposes provider, OAuth, overlay, media, usage, and realtime
-      // contracts to runtime/plugin integration paths that Knip cannot trace.
-      "embedding-batch.ts!",
-      "media-understanding-provider.ts!",
-      "model-route-contract.ts!",
-      "native-web-search.ts!",
-      "openai-chatgpt-oauth-flow.runtime.ts!",
-      "openai-chatgpt-oauth.runtime.ts!",
-      "openai-chatgpt-provider.runtime.ts!",
-      "openai-provider.ts!",
-      "prompt-overlay.ts!",
-      "realtime-provider-shared.ts!",
-      "tts.ts!",
-      "usage.ts!",
-    ]),
+    [`${BUNDLED_PLUGIN_ROOT_DIR}/openai`]: {
+      ...bundledPluginWorkspace([
+        // OpenAI exposes provider, OAuth, overlay, media, usage, and realtime
+        // contracts to runtime/plugin integration paths that Knip cannot trace.
+        "embedding-batch.ts!",
+        "media-understanding-provider.ts!",
+        "model-route-contract.ts!",
+        "native-web-search.ts!",
+        "openai-chatgpt-oauth-flow.runtime.ts!",
+        "openai-chatgpt-oauth.runtime.ts!",
+        "openai-chatgpt-provider.runtime.ts!",
+        "openai-provider.ts!",
+        "prompt-overlay.ts!",
+        "realtime-provider-shared.ts!",
+        "tts.ts!",
+        "usage.ts!",
+      ]),
+      // Werift loads the packaged binary codec through its runtime dependency graph.
+      ignoreDependencies: [...bundledPluginIgnoredRuntimeDependencies, "@shinyoshiaki/binary-data"],
+    },
     [`${BUNDLED_PLUGIN_ROOT_DIR}/onepassword`]: bundledPluginWorkspace([
       // Shipped resolver child process declared as a static plugin artifact.
       "onepassword-secret-ref-resolver.js!",

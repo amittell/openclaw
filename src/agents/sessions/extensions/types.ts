@@ -34,7 +34,7 @@ import type {
   ToolExecutionMode,
 } from "../../runtime/index.js";
 import type { BashResult } from "../bash-executor.js";
-import type { CompactionPreparation, CompactionResult } from "../compaction/index.js";
+import type { CompactionPreparation, CompactionResult } from "../compaction/compaction.js";
 import type { EventBus } from "../event-bus.js";
 import type { ExecOptions, ExecResult } from "../exec.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.js";
@@ -1254,7 +1254,6 @@ export interface ExtensionRuntime
 /** Host runtime with required worker-backed persistence capabilities. */
 export interface ExtensionRuntimeV2 extends ExtensionRuntimeState, ExtensionActionsV2 {}
 
-/** Loaded extension with all registered items. */
 export interface Extension {
   path: string;
   resolvedPath: string;

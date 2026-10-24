@@ -38,9 +38,11 @@ vi.mock("../plugins/setup-registry.js", () => ({
   resolvePluginSetupProviderCore: () => undefined,
 }));
 
+// mock-isolation: Synthetic auth and SecretRef fixtures supply provider hooks; external discovery would alter credential precedence.
 vi.mock("../plugins/provider-external-auth-core.js", () => ({
   createProviderExternalAuthResolver: () => ({
     resolveExternalAuthProfilesWithPlugins: () => [],
+    withPreparedExternalAuthProfiles: async <T>(_params: unknown, run: () => Promise<T>) => run(),
   }),
 }));
 
@@ -270,7 +272,7 @@ function expectAuthFields(
   }
 }
 
-function expectSecret(value: string | undefined, expected: string) {
+function expectSecret(value: string | null | undefined, expected: string) {
   expect(looksLikeSecretSentinel(value ?? "")).toBe(true);
   expect(resolveSecretSentinel(value ?? "")).toBe(expected);
 }

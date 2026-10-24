@@ -16,6 +16,9 @@ afterAll(() => parser.close());
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const IGNORED_DIRS = new Set([".cache", ".git", "build", "coverage", "dist", "node_modules"]);
 const ROOTS = ["src", "extensions", "scripts", "ui"] as const;
+// Match the generated-source exclusions in the oxlint handwritten-code ratchets.
+const GENERATED_SOURCE_PATH =
+  /(?:^|\/)(?:__generated__|generated|[^/]+\.generated|protocol-gen|dist)(?:\/|$)|\.generated\.[^/]+$/u;
 
 type SuppressionEntry = {
   file: string;
@@ -33,6 +36,7 @@ function collectFileSuppressions(file: string, source: string): SuppressionEntry
 function isProductionCodeFile(relativePath: string): boolean {
   return (
     CODE_EXTENSIONS.has(path.extname(relativePath)) &&
+    !GENERATED_SOURCE_PATH.test(relativePath) &&
     !path.posix.basename(relativePath).startsWith("__rootdir_boundary_canary__.") &&
     !(relativePath.includes("/test/") || /\.(?:test|spec)\.tsx?$/.test(relativePath))
   );
@@ -95,6 +99,20 @@ const productionLintSuppressions = listSuppressionFiles().flatMap((file) =>
 
 describe("production lint suppressions", () => {
   it.each([
+    ["ui/src/lib/protocol-validators.generated/approvals.js", false],
+    ["src/schema.generated.ts", false],
+    ["src/__generated__/schema.ts", false],
+    ["src/generated/schema.ts", false],
+    ["extensions/demo/protocol-gen/schema.ts", false],
+    ["extensions/demo/dist/index.js", false],
+    ["scripts/generate-schema.ts", true],
+    ["ui/src/lib/protocol-validators.generated-reader.ts", true],
+    ["src/agents/blobster-renderer.ts", true],
+  ])("classifies handwritten suppression scope for %s", (file, handwritten) => {
+    expect(isProductionCodeFile(file)).toBe(handwritten);
+  });
+
+  it.each([
     ["/* oxlint-disable\nmax-lines, no-console\n-- TODO: split this file. */", ["no-console"]],
     ["/* oxlint-disable eslint/max-lines, no-debugger */", ["no-debugger"]],
     ["/* oxlint-disable - reason */", []],
@@ -115,9 +133,10 @@ describe("production lint suppressions", () => {
   it("keeps the intentional production suppression tail on an explicit allowlist", () => {
     expect(summarizeSuppressions(productionLintSuppressions)).toEqual(
       [
+        // These callbacks run only in the page and preserve page-thrown message coercion.
+        "extensions/browser/src/browser/page-function-runtime.ts|@typescript-eslint/no-base-to-string|1",
+        "extensions/browser/src/browser/page-function-runtime.ts|no-eval|2",
         "extensions/browser/src/browser/pw-tools-core.activity.ts|unicorn/prefer-dom-node-text-content|1",
-        "extensions/browser/src/browser/pw-tools-core.interactions.actions.ts|@typescript-eslint/no-implied-eval|2",
-        "extensions/browser/src/browser/pw-tools-core.interactions.content.ts|@typescript-eslint/no-implied-eval|1",
         "extensions/codex/session-history-worker-runtime.ts|no-warning-comments|1",
         "extensions/codex/src/app-server/run-attempt-turn-request.ts|preserve-caught-error|1",
         "extensions/diffs/src/viewer-client.ts|eslint/no-underscore-dangle|1",
@@ -134,12 +153,29 @@ describe("production lint suppressions", () => {
         "scripts/e2e/parallels/host-command.ts|no-warning-comments|1",
         "scripts/lib/plain-gh.mjs|no-warning-comments|1",
         "scripts/lib/sqlite-reliability-process.ts|typescript/prefer-promise-reject-errors|1",
+        // The load probe forwards native WebSocket.send with its original socket receiver.
+        "scripts/perf/catalog-polling-measure.ts|typescript/unbound-method|1",
+        // The diagnostics probe restores Session.post and invokes it with its live receiver.
+        "scripts/perf/diagnostic-profile-measure.ts|typescript/unbound-method|1",
+        // Node BroadcastChannel.postMessage has no target-origin parameter.
+        "scripts/perf/idle-gateway-measure-preload.mjs|unicorn/require-post-message-target-origin|1",
+        // The size-record probe forwards Map.set with the original map receiver.
+        "scripts/perf/model-prompt-stats-measure.ts|typescript/unbound-method|1",
+        // The provider probe forwards native methods with their original receivers.
+        "scripts/perf/provider-request-prepare-measure.ts|typescript/unbound-method|3",
+        // The setup probe executes an expression from the same trusted source input it imports.
+        "scripts/perf/session-history-reader-setup-measure.mjs|typescript/no-implied-eval|1",
+        // The subscription probe forwards track with the original AsyncWorkScope receiver.
+        "scripts/perf/session-pr-subscriptions-measure.ts|typescript/unbound-method|1",
+        // The registry-copy probe forwards Map.set with the original map receiver.
+        "scripts/perf/subagent-maintenance-capture-measure.ts|typescript/unbound-method|1",
+        // The retention probe measures fresh strings from the transcript JSON decode boundary.
+        "scripts/perf/system-prompt-pool-retention.ts|unicorn/prefer-structured-clone|1",
         "src/agents/agent-bundle-mcp-runtime.ts|unicorn/prefer-add-event-listener|1",
         "src/agents/agent-tools.abort.ts|typescript/prefer-promise-reject-errors|1",
         "src/agents/auth-profiles/oauth-refresh-fence.ts|preserve-caught-error|1",
         "src/agents/auth-profiles/oauth-refresh-peers.ts|preserve-caught-error|1",
         "src/agents/mcp-http-transport.ts|unicorn/prefer-add-event-listener|3",
-        "src/agents/provider-http-errors.ts|preserve-caught-error|1",
         "src/channels/plugins/channel-runtime-surface.types.ts|typescript/no-unnecessary-type-parameters|1",
         "src/channels/plugins/config-schema.ts|typescript/no-generated-empty-object-type|1",
         "src/channels/plugins/contracts/test-helpers.ts|typescript/no-unnecessary-type-parameters|1",
@@ -151,7 +187,8 @@ describe("production lint suppressions", () => {
         "src/cli/plugins-cli-test-helpers.ts|typescript/no-unnecessary-type-parameters|1",
         "src/cli/program/openclaw-command.ts|eslint/no-underscore-dangle|1",
         "src/cli/test-runtime-capture.ts|typescript/no-unnecessary-type-parameters|1",
-        "src/commands/backup-restore.ts|preserve-caught-error|1",
+        // Both restore cleanup paths retain the primary and cleanup failures in AggregateError.errors.
+        "src/commands/backup-restore.ts|preserve-caught-error|2",
         "src/config/sessions/session-accessor.sqlite-schema-probes.test-support.ts|typescript/unbound-method|2",
         "src/config/sessions/session-accessor.sqlite-worker-request.ts|no-warning-comments|1",
         "src/config/sessions/session-transcript-reconcile.close-failure.test-support.mjs|typescript/unbound-method|1",
@@ -159,7 +196,14 @@ describe("production lint suppressions", () => {
         // Canonical entries must honor toJSON and omit non-JSON values exactly as persistence does.
         "src/config/sessions/transcript-json.ts|unicorn/prefer-structured-clone|1",
         "src/config/zod-schema.channel-messaging-common.ts|typescript/no-generated-empty-object-type|1",
-        "src/gateway/test-helpers.server.ts|typescript/no-unnecessary-type-parameters|1",
+        // Command declarations compare their stored JSON shape, where undefined properties are omitted.
+        "src/cron/store/job-mutations.ts|unicorn/prefer-structured-clone|1",
+        // Task lineage traversal sorts its invocation-private result without another array copy.
+        "src/gateway/control-ui-session-task-prs.ts|unicorn/no-array-sort|1",
+        // Pinned Bun HTTP sockets omit Writable._writev; this probe selects native or one-copy batching.
+        "src/gateway/server/ws-transport.ts|no-underscore-dangle|1",
+        // Node worker ports do not accept a browser target origin.
+        "src/gateway/system-ca-warmup.worker.ts|unicorn/require-post-message-target-origin|1",
         "src/hooks/module-loader.ts|typescript/no-unnecessary-type-parameters|1",
         "src/infra/device-pairing-row-mapping.ts|typescript/no-unnecessary-type-parameters|1",
         "src/infra/json-file.ts|typescript-eslint/no-unnecessary-type-parameters|1",
@@ -172,6 +216,9 @@ describe("production lint suppressions", () => {
         "src/infra/sqlite-worker-input.bun.test-support.ts|typescript/unbound-method|1",
         "src/infra/sqlite-worker-shared-state-admission.test-support.ts|typescript/unbound-method|1",
         "src/infra/worker-cpu.ts|typescript/unbound-method|4",
+        // MCP owns callback properties; Node worker messages have no browser target origin.
+        "src/mcp/tools-stdio-server.lifecycle.fixture.mjs|unicorn/prefer-add-event-listener|1",
+        "src/mcp/tools-stdio-server.lifecycle.fixture.mjs|unicorn/require-post-message-target-origin|1",
         "src/node-host/invoke-payload.ts|typescript/no-unnecessary-type-parameters|1",
         "src/node-host/mcp.ts|unicorn/prefer-add-event-listener|1",
         "src/plugin-sdk/channel-config-helpers.ts|typescript/no-unnecessary-type-parameters|1",
@@ -210,12 +257,17 @@ describe("production lint suppressions", () => {
         "src/state/openclaw-agent-worker-store.test-support.ts|unicorn/require-post-message-target-origin|1",
         "src/test-utils/config-machine-state.ts|typescript/no-unnecessary-type-parameters|1",
         "src/test-utils/vitest-mock-fn.ts|typescript/no-explicit-any|1",
+        // The query observer invokes the captured native method with the intercepted database receiver.
+        "src/transcripts/library.query-budget.test-support.ts|typescript/unbound-method|1",
         "src/utils.ts|typescript/no-unnecessary-type-parameters|1",
         "src/utils/run-with-concurrency.ts|typescript/prefer-promise-reject-errors|1",
         // Native host bridges are not EventTargets or Window.postMessage endpoints.
+        "ui/src/app/native-bridge.ts|unicorn/require-post-message-target-origin|1",
         "ui/src/app/native-gateway-auth.ts|unicorn/prefer-add-event-listener|1",
         "ui/src/app/native-gateway-auth.ts|unicorn/require-post-message-target-origin|2",
         "ui/src/components/mascot-canvas.ts|unicorn/no-array-fill-with-reference-type|1",
+        // A bridge renderer keeps the same native host for its complete lifetime.
+        "ui/src/components/session-background.tsx|solid/reactivity|1",
         "ui/src/components/session-progress-card.test-support.tsx|no-underscore-dangle|2",
         // These Solid sinks consume HTML sanitized or escaped by their content owners.
         "ui/src/components/solid/markdown-html.tsx|solid/no-innerhtml|1",
@@ -223,6 +275,8 @@ describe("production lint suppressions", () => {
         // PanelRefreshStatus keeps its shared className prop across rendering callers.
         "ui/src/pages/custodian/custodian-surface.tsx|solid/no-react-specific-props|1",
         "ui/src/pages/logs/view.tsx|solid/no-react-specific-props|1",
+        // Session commands relay the owner's original error so the display boundary can format it.
+        "ui/src/pages/sessions/view.tsx|typescript/only-throw-error|1",
       ].filter((entry) => fs.existsSync(path.join(repoRoot, entry.split("|", 1)[0]!))),
     );
   });

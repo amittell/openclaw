@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { beforeEach, describe, expect, vi } from "vitest";
 import { createCommandTest } from "../../../test/helpers/command-fixture.js";
 import { setRuntimeConfigSnapshot } from "../../config/io.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   openOpenClawStateDatabase,
@@ -20,7 +19,10 @@ import {
 import { createHarness } from "./placement-dispatch-test-harness.js";
 import { createWorkerPlacementMoveService } from "./placement-move-service.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
+import { journalOwner } from "./placement-suite.test-support.js";
 import { prepareSessionWorkerPlacementStop } from "./session-placement-lifecycle.js";
+import { workspaceJournal } from "./workspace-manifest-fixtures.test-support.js";
+import * as workspaceResultStaging from "./workspace-result-staging.js";
 
 const tempDirs = useStateDatabaseTempDirs();
 const it = createCommandTest();
@@ -220,10 +222,10 @@ describe("worker placement dispatch reclaim", () => {
       "workspace:lease",
       "workspace:verify",
       "workspace:verify-local",
+      "teardown:stop",
       "teardown:destroy",
       "placement:reconciling",
       "placement:reclaimed",
-      "teardown:stop",
     ]);
   });
 
@@ -535,6 +537,9 @@ describe("worker placement dispatch reclaim", () => {
   );
 
   it("retains and reports cloud versions that conflict during an idle reclaim", async () => {
+    // This lifecycle fixture records only a synthetic conflict ref; Git history has its own proof.
+    using history = vi.spyOn(workspaceResultStaging, "adoptStagedWorkerWorkspaceHistory");
+    history.mockResolvedValue(undefined);
     const harness = await createHarness(database, placementStore, {
       reconcileConflictPaths: ["src/local.ts"],
     });
@@ -615,7 +620,7 @@ describe("worker placement dispatch reclaim", () => {
           expectedState: "local",
           expectedGeneration: 0,
         }),
-      ).rejects.toThrow("changed before retirement");
+      ).rejects.toThrow("during an active turn");
       await placementStore.releaseTurn(claim);
       const retirement = {
         sessionId: REQUEST.sessionId,
@@ -675,23 +680,12 @@ describe("worker placement dispatch reclaim", () => {
 
       const basePack = Buffer.from("retirement workspace base pack");
       await placementStore.beginWorkspaceReconciliation(
-        {
-          sessionId: active.sessionId,
-          environmentId: active.environmentId,
-          ownerEpoch: active.activeOwnerEpoch,
-          placementGeneration: active.generation,
-        },
-        {
-          version: 1,
+        journalOwner(active),
+        workspaceJournal(active.workspaceBaseManifestRef, `sha256:${"d".repeat(64)}`, {
           temporaryNonce: "c".repeat(32),
-          baseManifestRef: active.workspaceBaseManifestRef,
-          currentManifestRef: `sha256:${"d".repeat(64)}`,
-          baseEntries: [],
-          appliedEntries: [],
           baseTree: "e".repeat(40),
-          basePackSha256: createHash("sha256").update(basePack).digest("hex"),
           basePack,
-        },
+        }),
       );
       const draining = await placementStore.startDrain({
         sessionId: active.sessionId,
@@ -1034,7 +1028,7 @@ describe("worker placement dispatch reclaim", () => {
       reconcileCommitsManifest: false,
       runReclaimBarrier: async ({ authorize, beforeDrain, begin, reclaim }) => {
         queued.resolve();
-        return await runExclusiveSessionLifecycleMutation("placement-reclaim", {
+        return await runSessionMutation({
           scope,
           identities,
           run: async () => {
@@ -1049,7 +1043,7 @@ describe("worker placement dispatch reclaim", () => {
       },
     });
     await harness.service.dispatch(REQUEST);
-    const owner = runExclusiveSessionLifecycleMutation("placement-reclaim", {
+    const owner = runSessionMutation({
       scope,
       identities,
       run: async () => {

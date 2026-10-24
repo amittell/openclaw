@@ -2,6 +2,7 @@ import { assert, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
 import {
   ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
@@ -375,6 +376,13 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
           message: { role: "user", content: "retained" },
         },
       ]);
+      db.db
+        .prepare(`UPDATE transcript_events
+        SET navigation_type = NULL, navigation_custom_type = NULL,
+            navigation_display = 0, message_role = NULL, navigation_last_type = NULL,
+            navigation_last_custom_type = NULL, navigation_valid = 1
+        WHERE session_id = ?`)
+        .run(scope.sessionId);
       deleteSessionEntryRows(db, scope.sessionKey);
     }, options);
     expect(f.events()).toHaveLength(2);
@@ -388,7 +396,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
     expect(state.transcript.navigation).toHaveLength(2);
     let rejectFresh = false;
     let freshChecks = 0;
-    const context = {
+    const context: AgentWorkerOperationContext = {
       open: () => database,
       options,
       writeTransaction: <T>(
@@ -396,7 +404,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         _owner: string,
         write: (current: typeof database) => T,
       ) => write(database),
-      admit: (_stage: "transaction" | "commit", facts?: unknown) => {
+      admit: (_stage, facts) => {
         if (
           facts &&
           typeof facts === "object" &&

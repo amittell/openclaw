@@ -162,12 +162,12 @@ function resolveTelegramDispatcherPolicy(params: {
       mode: "explicit-proxy",
       proxyUrl: explicitProxyUrl,
       allowPrivateProxy: true,
-      proxyTls: { ...connect },
+      proxyTls: connect,
     };
   }
   return {
     mode: params.useEnvProxy ? "env-proxy" : "direct",
-    connect: { ...connect },
+    connect,
   };
 }
 
@@ -439,7 +439,7 @@ export function resolveTelegramTransport(
 
   const useEnvProxy = !resolvedExplicitProxyUrl && hasEnvProxy;
   const defaultDispatcherPolicy = resolveTelegramDispatcherPolicy({
-    autoSelectFamily: autoSelectDecision.value,
+    autoSelectFamily: autoSelectDecision,
     dnsResultOrder: dnsDecision.value,
     useEnvProxy,
     forceIpv4: false,

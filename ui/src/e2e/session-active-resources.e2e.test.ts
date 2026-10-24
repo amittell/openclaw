@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
@@ -5,6 +7,7 @@ import { DESKTOP_PANEL_TOGGLE_EVENT } from "../components/panel-toggle-contract.
 import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import { selectChatLayoutAction } from "../test-helpers/chat-layout-menu.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
+import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   defaultControlUiFeatureMethods,
   installMockGateway,
@@ -108,10 +111,10 @@ async function assertNoProvisioning(gateway: MockGatewayControls) {
 }
 
 suite.define(() => {
-  it.each(["mobile", "reclaim", "swap", "explicit-target", "stale-roster"] as const)(
+  it.each(["mobile", "reclaim", "swap", "explicit-target", "stale-roster", "unavailable"] as const)(
     "reveals a running desktop on direct entry and respects reload (%s)",
     async (scenario) => {
-      const width = scenario === "mobile" ? 390 : 1280;
+      const width = scenario === "mobile" || scenario === "unavailable" ? 390 : 1280;
       const staleRoster = scenario === "stale-roster";
       const explicitTargetOnReload = scenario === "explicit-target";
       await withPage(async ({ page }) => {
@@ -154,7 +157,9 @@ suite.define(() => {
         const desktopBox = await pane(page).locator(".desktop-surface").boundingBox();
         expect(desktopBox!.width).toBeLessThanOrEqual(width);
         if (width === 390) {
-          expect(chatBox).toBeNull();
+          // Mobile discovery opens the panel dock while retaining Chat above it.
+          expect(chatBox!.height).toBeGreaterThan(100);
+          await pane(page).locator('.chat-mobile-host[data-mode="dock"]').waitFor();
           expect(desktopBox!.width).toBeGreaterThan(width - 32);
           expect(desktopBox!.height).toBeGreaterThan(100);
         } else {
@@ -213,6 +218,34 @@ suite.define(() => {
           await gateway.resolveDeferred("desktop.observe");
           await pane(page).locator(".desktop-surface canvas").waitFor();
           expect(await desktopTab(page).count()).toBe(1);
+        } else if (scenario === "unavailable") {
+          const statusReads = (await gateway.getRequests("environments.status")).length;
+          await gateway.setMethodResponse("environments.status", {
+            ...environment,
+            status: "unavailable",
+          });
+          await gateway.emitGatewayEvent("node.runnerInventory.changed", {
+            nodeId: "worker-desktop",
+          });
+          await gateway.waitForRequest("environments.status", { after: statusReads });
+          await page.waitForLoadState("networkidle");
+          const frame = await takeControlUiScreenshotFrame(page, pane(page), [], {
+            animations: "disabled",
+          });
+          await writeFile(path.join(suite.artifactDir, "desktop-unavailable.png"), frame.png);
+          expect(await desktopTab(page).count()).toBe(0);
+          expect(await pane(page).locator("openclaw-desktop-panel").count()).toBe(0);
+          expect(
+            await pane(page).locator(".agent-chat__composer-combobox textarea").isVisible(),
+          ).toBe(true);
+          // Retirement is not a user dismissal: a confirmed recovered resource may reappear.
+          await gateway.setMethodResponse("environments.status", environment);
+          await gateway.emitGatewayEvent("node.runnerInventory.changed", {
+            nodeId: "worker-desktop",
+          });
+          await desktopTab(page).waitFor();
+          await assertNoProvisioning(gateway);
+          return;
         } else if (scenario === "reclaim") {
           await dockChatSidePanel(page, "bottom");
           await gateway.setSessionsListResponse(list(false));
@@ -233,6 +266,11 @@ suite.define(() => {
             nodeId: "worker-desktop",
           });
           expect(await desktopTab(page).isVisible()).toBe(false);
+          // Closing the sheet is temporary; closing its Desktop tab dismisses discovery.
+          await selectChatLayoutAction(pane(page), "Side panel");
+          await desktopTab(page).waitFor();
+          await pane(page).getByRole("button", { name: "Close Desktop", exact: true }).click();
+          await desktopTab(page).waitFor({ state: "hidden" });
           await page.reload();
           await ready(page);
           expect(await desktopTab(page).isVisible()).toBe(false);
@@ -371,99 +409,187 @@ suite.define(() => {
     },
   );
 
-  it("reveals the exact live browser result on initial load without opening another browser tab", async () => {
-    await withPage(async ({ page }) => {
-      await page.route("**/__openclaw__/assistant-media**", (route) =>
-        route.fulfill({
-          contentType: "image/png",
-          body: Buffer.from(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
-            "base64",
-          ),
-        }),
-      );
-      const target = {
-        target: "node",
-        node: "browser-node",
-        profile: "session-profile",
-        targetId: "existing-target",
-        url: "https://example.com",
-        title: "Existing session browser",
-      };
-      const gateway = await openResources(page, {
-        historyMessages: [
-          { role: "user", content: "Read the page", timestamp: 1000 },
-          {
-            role: "toolResult",
-            toolName: "browser",
-            toolCallId: "browser-call",
-            timestamp: 2000,
-            content: "Opened",
-            details: { browserTab: target },
-          },
-          { role: "assistant", content: "The page is ready.", timestamp: 3000 },
-        ],
-        methodResponses: {
-          "sessions.list": list(false),
-          "browser.request": {
-            cases: [
+  it.each([390, 1280])(
+    "keeps browser results inline until explicitly opened at width %s",
+    async (width) => {
+      await suite.withPage(
+        { serviceWorkers: "block", viewport: { width, height: 900 } },
+        async ({ page }) => {
+          await page.route("**/__openclaw__/assistant-media**", (route) =>
+            route.fulfill({
+              contentType: "image/png",
+              body: Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+                "base64",
+              ),
+            }),
+          );
+          const target = {
+            target: "node",
+            node: "browser-node",
+            profile: "session-profile",
+            targetId: "existing-target",
+            url: "https://example.com",
+            title: "Existing session browser",
+          };
+          const gateway = await installMockGateway(page, {
+            sessionKey: key,
+            featureMethods,
+            historyMessages: [
+              { role: "user", content: "Read the page", timestamp: 1000 },
               {
-                match: {
-                  path: "/tabs",
-                  target: "node",
-                  node: "browser-node",
-                  query: { profile: "session-profile" },
-                },
-                response: { running: true, tabs: [{ ...target, tabId: "t1" }] },
+                role: "toolResult",
+                toolName: "browser",
+                toolCallId: "browser-call",
+                timestamp: 2000,
+                content: "Opened",
+                details: { browserTab: target },
               },
-              {
-                match: { path: "/screenshot" },
-                response: {
-                  path: "/proof/page.png",
-                  targetId: "existing-target",
-                  url: target.url,
-                },
-              },
-              {
-                match: { path: "/act" },
-                response: {
-                  result: { cssWidth: 100, cssHeight: 100, title: target.title, url: target.url },
-                },
-              },
-              {
-                match: { path: "/screencast" },
-                response: {
-                  __mockError: {
-                    code: "UNAVAILABLE",
-                    message: "Use screenshot proof",
-                    details: { code: "SCREENCAST_UNSUPPORTED" },
-                  },
-                },
-              },
+              { role: "assistant", content: "The page is ready.", timestamp: 3000 },
             ],
-          },
+            methodResponses: {
+              "sessions.list": list(false),
+              "browser.request": {
+                cases: [
+                  {
+                    match: {
+                      path: "/tabs",
+                      target: "node",
+                      node: "browser-node",
+                      query: { profile: "session-profile" },
+                    },
+                    response: { running: true, tabs: [{ ...target, tabId: "t1" }] },
+                  },
+                  {
+                    match: { path: "/screenshot" },
+                    response: {
+                      path: "/proof/page.png",
+                      targetId: "existing-target",
+                      url: target.url,
+                    },
+                  },
+                  {
+                    match: { path: "/act" },
+                    response: {
+                      result: {
+                        cssWidth: 100,
+                        cssHeight: 100,
+                        title: target.title,
+                        url: target.url,
+                      },
+                    },
+                  },
+                  {
+                    match: { path: "/screencast" },
+                    response: {
+                      __mockError: {
+                        code: "UNAVAILABLE",
+                        message: "Use screenshot proof",
+                        details: { code: "SCREENCAST_UNSUPPORTED" },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          });
+          await page.goto(`${suite.server.baseUrl}chat/main/resource-demo`);
+          await ready(page);
+          const card = pane(page).locator("openclaw-browser-tab-card");
+          await card.locator(".shot img").waitFor({ state: "attached" });
+          const panel = pane(page).locator("openclaw-browser-panel[embedded]");
+          const shown = (await panel.isVisible()) ? panel.locator(".bp-shot") : card;
+          const initial = await takeControlUiScreenshotFrame(page, pane(page), [shown], {
+            animations: "disabled",
+          });
+          await writeFile(path.join(suite.artifactDir, `browser-inline-${width}.png`), initial.png);
+          expect(await panel.count()).toBe(0);
+          expect(
+            await pane(page).locator(".agent-chat__composer-combobox textarea").isVisible(),
+          ).toBe(true);
+          await page.reload();
+          await ready(page);
+          await card.locator(".shot img").waitFor();
+          expect(await panel.count()).toBe(0);
+          await card.getByRole("button", { name: "Open", exact: true }).click();
+          await panel.locator(".bp-shot").waitFor();
+          expect(await panel.count()).toBe(1);
+          const reads = await gateway.getRequests("browser.request", { path: "/tabs" });
+          expect(reads.length).toBeGreaterThan(0);
+          for (const request of reads) {
+            expect(request.params).toMatchObject({
+              target: "node",
+              node: "browser-node",
+              query: { profile: "session-profile" },
+            });
+          }
+          // Explicit preview opening may focus that exact tab, but must not start a browser or create tabs.
+          const browserRequests = await gateway.getRequests("browser.request");
+          expect(
+            browserRequests.some((request) =>
+              ["/start", "/tabs/open"].includes(String(asNullableRecord(request.params)?.path)),
+            ),
+          ).toBe(false);
+          await page.reload();
+          await ready(page);
+          await pane(page).locator("openclaw-browser-panel[embedded] .bp").waitFor();
+          await pane(page).locator("openclaw-browser-panel .bp-shot").waitFor();
+          expect(await panel.count()).toBe(1);
         },
-      });
-      await pane(page).locator("openclaw-browser-panel[embedded] .bp").waitFor();
-      expect(await pane(page).locator("openclaw-browser-panel").count()).toBe(1);
-      const reads = await gateway.getRequests("browser.request", { path: "/tabs" });
-      expect(reads.length).toBeGreaterThan(0);
-      for (const request of reads) {
-        expect(request.params).toMatchObject({
-          target: "node",
-          node: "browser-node",
-          query: { profile: "session-profile" },
+      );
+    },
+  );
+
+  it("shows durable move failure and retries without admitting a message", async () => {
+    const sessionKey = "agent:main:main";
+    const session = {
+      key: sessionKey,
+      sessionId: "move-recovery",
+      kind: "direct",
+      label: "Headless workspace checks",
+      updatedAt: 1000,
+      worktree: { path: "/workspace/synthetic" },
+      placement: { state: "draining", generation: 2, environmentId: "worker:synthetic" },
+      placementMove: {
+        target: { kind: "gateway" },
+        updatedAtMs: 1000,
+        error: "Workspace reconciliation failed. Retry the saved move.",
+        retry: {
+          expected: { generation: 1, environmentId: "worker:synthetic", ownerEpoch: 1 },
+          target: { kind: "gateway" },
+        },
+      },
+    };
+    await suite.withPage(
+      { viewport: { width: 390, height: 900 }, serviceWorkers: "block" },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page, {
+          featureMethods: [...defaultControlUiFeatureMethods, "sessions.move"],
+          sessions: [session],
+          sessionInfo: session,
+          historyMessages: [{ role: "user", content: "Run the workspace checks headlessly." }],
+          deferredMethods: ["sessions.move"],
         });
-      }
-      await assertNoProvisioning(gateway);
-      await pane(page).locator("openclaw-browser-panel .bp-shot").waitFor();
-      await selectChatLayoutAction(pane(page), /^Swap /);
-      await page.reload();
-      await ready(page);
-      await pane(page).locator("openclaw-browser-panel[embedded] .bp").waitFor();
-      await pane(page).locator("openclaw-browser-panel .bp-shot").waitFor();
-      expect(await pane(page).locator("openclaw-browser-panel").count()).toBe(1);
-      await assertNoProvisioning(gateway);
-    });
+        await page.goto(`${suite.server.baseUrl}chat`);
+        await gateway.waitForRequest("chat.startup");
+        await page.getByText("Run the workspace checks headlessly.", { exact: true }).waitFor();
+        await page.waitForLoadState("networkidle");
+        const frame = await takeControlUiScreenshotFrame(page, page.locator(".shell"), [], {
+          animations: "disabled",
+        });
+        await writeFile(path.join(suite.artifactDir, "failed-move.png"), frame.png);
+        await page.getByText(session.placementMove.error, { exact: true }).waitFor();
+        expect(await page.getByText("Finishing session move…", { exact: true }).count()).toBe(0);
+        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        expect(await composer.isDisabled()).toBe(true);
+        await page.getByRole("button", { name: "Retry move", exact: true }).click();
+        const retry = await gateway.waitForRequest("sessions.move");
+        expect(retry.params).toMatchObject({ key: sessionKey, ...session.placementMove.retry });
+        await page.getByText("Finishing session move…", { exact: true }).waitFor();
+        expect(await composer.isDisabled()).toBe(true);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+        await gateway.resolveDeferred("sessions.move", { ok: true });
+      },
+    );
   });
 });
