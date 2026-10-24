@@ -1,6 +1,6 @@
 // Telegram tests cover size-aware upload deadlines through the real send stack.
 import { InputFile } from "grammy";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createTelegramBot } from "./bot.js";
 import { recordTelegramUploadBytes } from "./request-timeouts.js";
 import { withTelegramApiContext } from "./send-context.js";
@@ -22,7 +22,15 @@ vi.mock("./fetch.js", async (importOriginal) => ({
 }));
 
 const MIB = 1024 * 1024;
-const cfg = { channels: { telegram: { botToken: "123456:upload-timeout-fixture" } } };
+const cfg = {
+  channels: {
+    telegram: {
+      botToken: "123456:upload-timeout-fixture",
+      // Upload deadlines do not depend on persisted conversation bindings.
+      threadBindings: { enabled: false },
+    },
+  },
+};
 
 describe("Telegram media upload deadline", () => {
   const aborts: Array<{ method: string; afterMs: number; reason: string }> = [];
@@ -118,6 +126,7 @@ describe("Telegram media upload deadline", () => {
       token: cfg.channels.telegram.botToken,
       config: cfg,
     });
+    onTestFinished(() => bot.stop());
     const outcome = bot.api
       .sendVideo(123, taggedUpload("clip.mp4", upload.uploadBytes))
       .catch((error: unknown) => error);
