@@ -1,16 +1,25 @@
 import { isMainThread } from "node:worker_threads";
+import { assertRuntimeSupportsPluginModule } from "../infra/runtime-profile.js";
 import { toSafeImportPath } from "../shared/import-specifier.js";
 import { VERSION } from "../version.js";
 import { runPluginRegistration } from "./api-lifecycle.js";
 import { tryNativeRequireModule } from "./native-module-require.js";
 import { getPluginCache, withPluginCache } from "./plugin-cache.js";
-import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
+import { PluginInventoryRetiredError } from "./plugin-instance-error.js";
+import {
+  bindPluginInstanceModuleLoader,
+  hasRetainedNativeEsmArtifact,
+} from "./plugin-instance-module-loader.js";
 import { getPluginInstance, getPluginValueInstance } from "./plugin-instance-scope.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { withProfile } from "./plugin-load-profile.js";
 import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
+import { nativeAdmissionStateFor } from "./plugin-native-admission-state.js";
 import { installOpenClawPluginSdkNativeResolver } from "./plugin-sdk-native-resolver.js";
-import { getPluginRegistryInspectionResources } from "./registry-inspection-resources.js";
+import {
+  getPluginRegistryInspectionResources,
+  type PluginRegistryInspectionResources,
+} from "./registry-inspection-resources.js";
 import { isPluginRegistryRetired } from "./registry-lifecycle.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
 import { withPluginRegistrationContext } from "./runtime.js";
@@ -144,7 +153,17 @@ export function createPluginModuleLoader(options: {
     rootDir: string;
     registry: PluginRegistry;
     standalone?: boolean;
+    /** Installer-proven identity when the plugin source cannot change in place. */
+    immutableInstallIdentity?: string;
   };
+  // Only uncached inspections of immutable installs may share evaluated code.
+  const inspection = (owner: Owner) =>
+    getPluginRegistryInspectionResources(owner.registry) === undefined
+      ? {}
+      : {
+          inspectionSourceIdentity: owner.immutableInstallIdentity,
+          inspectionRetention: nativeAdmissionStateFor(cache).inspectionNativeEsm,
+        };
   const binding = (
     modulePath: string,
     owner: Owner,
@@ -156,6 +175,7 @@ export function createPluginModuleLoader(options: {
     rootDir: owner.rootDir,
     standalone: owner.standalone,
     expectedSourceDigest: captured.expectedSourceDigests?.[owner.record.id],
+    ...inspection(owner),
     devSourceRoot: captured.devSourceRoot,
     pluginSdkResolution: captured.pluginSdkResolution,
     createHostModuleLoader: () => createLoaderForModule(modulePath),
@@ -178,9 +198,26 @@ export function createPluginModuleLoader(options: {
     });
   return Object.assign(load, {
     async prepare(modulePath: string, owner: Owner): Promise<void> {
+      assertRuntimeSupportsPluginModule(modulePath);
       // Compute workers already own retained native-ESM source captures. Keep their
       // inline acquisition path so a prepared artifact cannot compete with that owner.
-      if (!isMainThread || owner.record.origin === "bundled" || getPluginInstance(owner.record)) {
+      // An inspection that joins a retained native ESM artifact binds it synchronously;
+      // acquiring another worker capture would only be discarded.
+      const retained = () =>
+        hasRetainedNativeEsmArtifact({
+          origin: owner.record.origin,
+          source: modulePath,
+          ...inspection(owner),
+          devSourceRoot: captured.devSourceRoot,
+          pluginSdkResolution: captured.pluginSdkResolution,
+          registry: owner.registry,
+        });
+      if (
+        !isMainThread ||
+        owner.record.origin === "bundled" ||
+        getPluginInstance(owner.record) ||
+        retained()
+      ) {
         return;
       }
       await withPluginCache(cache, async () => {
@@ -192,12 +229,13 @@ export function createPluginModuleLoader(options: {
         });
         if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
           await preparedArtifact.artifact.disposeAsync();
-          throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+          throw new PluginInventoryRetiredError();
         }
         try {
           // Reentrant loading may have installed this exact owner while acquisition
-          // yielded. Never replace its module identity with a second capture.
-          if (getPluginInstance(owner.record)) {
+          // yielded, or a concurrent inspection retained the same native ESM artifact.
+          // Never replace its module identity with a second capture.
+          if (getPluginInstance(owner.record) || retained()) {
             await preparedArtifact.artifact.disposeAsync();
             return;
           }
@@ -238,8 +276,10 @@ export function createLazyPluginRuntime(params: {
   devSourceRoot?: string | null;
   pluginSdkResolution?: PluginSdkResolutionPreference;
   runtimeOptions?: CreatePluginRuntimeOptions;
+  inspectionResources?: PluginRegistryInspectionResources;
 }): PluginRuntime {
-  const cache = getPluginCache();
+  // Inspections own their cache through physical disposal; raw runtime views retain theirs.
+  const cache = params.inspectionResources ? new WeakRef(getPluginCache()) : getPluginCache();
   type RuntimeModule = {
     createPluginRuntime?: PluginRuntimeFactory;
   };
@@ -257,30 +297,35 @@ export function createLazyPluginRuntime(params: {
       );
     }
     const resolvedPath = resolution.resolvedPath;
-    return withPluginCache(cache, () =>
-      withProfile({ source: resolvedPath }, "runtime-module", () => {
-        const native = tryNativeRequireModule(resolvedPath, {
-          aliasMap: preparePluginLoaderAliases({
-            modulePath: resolvedPath,
-            moduleUrl: import.meta.url,
-            devSourceRoot: params.devSourceRoot,
-            pluginSdkResolution: params.pluginSdkResolution,
-          }).resolveAlias,
-        });
-        if (!native.ok) {
-          throw new Error(
-            `Unable to load host plugin runtime natively: ${resolvedPath}. Use a supported native TypeScript loader for a source host, or rebuild the host runtime.`,
-          );
-        }
-        return native.moduleExport as RuntimeModule;
-      }),
-    );
+    return withProfile({ source: resolvedPath }, "runtime-module", () => {
+      const native = tryNativeRequireModule(resolvedPath, {
+        aliasMap: preparePluginLoaderAliases({
+          modulePath: resolvedPath,
+          moduleUrl: import.meta.url,
+          devSourceRoot: params.devSourceRoot,
+          pluginSdkResolution: params.pluginSdkResolution,
+        }).resolveAlias,
+      });
+      if (!native.ok) {
+        throw new Error(
+          `Unable to load host plugin runtime natively: ${resolvedPath}. Use a supported native TypeScript loader for a source host, or rebuild the host runtime.`,
+        );
+      }
+      return native.moduleExport as RuntimeModule;
+    });
   };
 
   const base = createRuntimeBase();
   let resolvedRuntime: PluginRuntime | null = null;
   const resolveRuntime = (): PluginRuntime => {
-    resolvedRuntime ??= withPluginCache(cache, () => {
+    if (resolvedRuntime) {
+      return resolvedRuntime;
+    }
+    const owner = cache instanceof WeakRef ? cache.deref() : cache;
+    if (!owner) {
+      throw new PluginInventoryRetiredError();
+    }
+    resolvedRuntime = withPluginCache(owner, () => {
       const { createPluginRuntime } = resolveRuntimeModule();
       if (typeof createPluginRuntime !== "function") {
         throw new Error("Plugin runtime module missing createPluginRuntime export");
