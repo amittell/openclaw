@@ -61,7 +61,7 @@ import type {
 } from "./chat-typing-presence.ts";
 import { getChatComposerState } from "./components/chat-composer-state.ts";
 import type { ChatPaneHeaderAction } from "./components/chat-pane-header.types.ts";
-import type { ChatSessionSharingState } from "./components/chat-session-sharing.solid.tsx";
+import type { ChatSessionSharingState } from "./components/chat-session-sharing-shared.tsx";
 import { getTranscriptState } from "./components/chat-thread-interactions.ts";
 import { createChatTranscript } from "./components/chat-transcript-controller.ts";
 import type { ComposerActivityLayout } from "./components/chat-transcript-layout-owner.ts";
@@ -195,6 +195,7 @@ export abstract class ChatPaneStateOwner {
   }
 
   dispose() {
+    this.context?.connectionBootstrap.cancelQueued(this);
     this.context?.connectionBootstrap.setForegroundPane(this, null);
     this.chatState.dispose();
     this.isConnected = false;
@@ -222,6 +223,7 @@ export abstract class ChatPaneStateOwner {
   sessionKey = "";
   // This session-keyed pane retains its initial skeleton through URL canonicalization.
   routeLoadingSkeleton = false;
+  deferSnapshotRows = false;
   routeResolutionPending = false;
   agentId?: string = undefined;
   inputRegion: ChatInputRegion = "page";
@@ -474,7 +476,6 @@ export abstract class ChatPaneStateOwner {
   ) {
     const sessions = target ? this.swarm.hydrator?.rows : undefined;
     return {
-      swarm: target && this.swarm.enabled ? { ...target, sessions: sessions ?? [] } : undefined,
       subagentSessions: sessions,
       subagentSessionsHydrated: Boolean(target && this.swarm.hydrator?.hydrated),
       subagentSessionsPending: Boolean(target && this.swarm.hydrator?.pendingChildRead),
@@ -610,6 +611,12 @@ export abstract class ChatPaneStateOwner {
       this.context.placementStartup.retry(sessionKey);
     }
   };
+  protected readonly discardSessionPlacementStartup = () => {
+    const sessionKey = this.state?.sessionKey;
+    if (sessionKey) {
+      this.context.placementStartup.discard(sessionKey);
+    }
+  };
   protected headerRenameInitialValue = "";
   protected headerCopiedTimer: number | null = null;
   protected composerPrefillAttentionTimer: number | null = null;
@@ -709,7 +716,6 @@ export abstract class ChatPaneStateOwner {
     snapshot: ApplicationContext["gateway"]["snapshot"],
   ): void;
   protected abstract applyApplicationConfig(config: ApplicationContext["config"]["current"]): void;
-  protected abstract applySessionsState(state: ApplicationContext["sessions"]["state"]): void;
   protected abstract cancelHeaderRename(): void;
   protected abstract handleArchiveSessionShortcut(event: KeyboardEvent): boolean;
   protected abstract resetOlderMessagesViewport(): void;

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
@@ -25,6 +24,8 @@ import { REQUEST } from "./placement-dispatch-test-fixtures.js";
 import { createHarness } from "./placement-dispatch-test-harness.js";
 import { createWorkerPlacementIdleSweep } from "./placement-idle-sweep.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
+import { journalOwner } from "./placement-suite.test-support.js";
+import { workspaceJournal } from "./workspace-manifest-fixtures.test-support.js";
 
 const tempDirs = useStateDatabaseTempDirs();
 
@@ -74,6 +75,7 @@ describe("worker placement idle suspension", () => {
     const isPlacementOperationInFlight = vi.fn(
       (sessionId: string) => options.isPlacementOperationInFlight?.(sessionId) ?? false,
     );
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     const idleSweep = createWorkerPlacementIdleSweep({
       placements,
       environments: harness.environments,
@@ -93,7 +95,6 @@ describe("worker placement idle suspension", () => {
         : {}),
       info,
       warn,
-      now: () => nowMs,
     });
     return { harness, idleSweep, profile, info, warn, isPlacementOperationInFlight };
   }
@@ -362,23 +363,10 @@ describe("worker placement idle suspension", () => {
       } else if (kind === "reconciling-result") {
         const basePack = Buffer.from("idle workspace journal");
         await placements.beginWorkspaceReconciliation(
-          {
-            sessionId: active.sessionId,
-            environmentId: active.environmentId,
-            ownerEpoch: active.activeOwnerEpoch,
-            placementGeneration: active.generation,
-          },
-          {
-            version: 1,
-            temporaryNonce: "a".repeat(32),
-            baseManifestRef: active.workspaceBaseManifestRef,
-            currentManifestRef: `sha256:${"c".repeat(64)}`,
-            baseEntries: [],
-            appliedEntries: [],
-            baseTree: "f".repeat(40),
-            basePackSha256: createHash("sha256").update(basePack).digest("hex"),
+          journalOwner(active),
+          workspaceJournal(active.workspaceBaseManifestRef, `sha256:${"c".repeat(64)}`, {
             basePack,
-          },
+          }),
         );
         expect(placements.get(REQUEST.sessionId)?.turnClaim).toBeNull();
       } else if (kind === "draining") {

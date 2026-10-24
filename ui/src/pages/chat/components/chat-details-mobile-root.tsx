@@ -40,7 +40,6 @@ type ChatDetailsMobileCollection<T> = {
 
 type ChatDetailsMobileRootDestination =
   | { kind: "people" }
-  | { kind: "context" }
   | { kind: "task-progress" }
   | { kind: "subagents" }
   | { kind: "subagent"; sessionKey: ChatSubagentActivity["key"] }
@@ -84,7 +83,6 @@ export type ChatDetailsMobileRootProps = {
   processes?: JSX.Element;
   /** The complete mobile Environment section, including its own heading and group. */
   environment?: JSX.Element;
-  context?: JSX.Element;
   pullRequests?: ChatPullRequestMobileCollectionProps & { summary: ChatDetailsMobileEntry };
   /** Native publication/recovery can exist without any attached PR. */
   publication?: JSX.Element;
@@ -92,7 +90,6 @@ export type ChatDetailsMobileRootProps = {
   publicationEntry?: ChatDetailsMobileEntry;
   automations?: ChatDetailsMobileCollection<CronCompactJob["id"]>;
   outputs?: ChatDetailsMobileEntry;
-  outputsNotice?: JSX.Element;
   /** Supply even for one version; omission is not a greater-than-one policy. */
   versions?: ChatDetailsMobileEntry;
   onNavigate: (
@@ -151,10 +148,7 @@ function RootEntry(props: {
       <span class="chat-details-mobile-root__copy">
         <span
           ref={createTextOverflow(() => props.entry.label)}
-          class={[
-            "chat-details-mobile-root__label",
-            { "chat-details-mobile-root__label--note": props.entry.truncateDescription },
-          ]}
+          class="chat-details-mobile-root__label"
         >
           {props.entry.label}
         </span>
@@ -229,11 +223,6 @@ export function ChatDetailsMobileRoot(props: ChatDetailsMobileRootProps) {
         )}
       </Show>
       {props.environment}
-      <Show when={props.context}>
-        <RootGroup name="context" label={props.labels.context}>
-          {props.context}
-        </RootGroup>
-      </Show>
       <Show
         when={
           pullRequestsTotal() > 0 ||
@@ -319,20 +308,17 @@ export function ChatDetailsMobileRoot(props: ChatDetailsMobileRootProps) {
           </RootGroup>
         </Show>
       </Loading>
-      <Show when={props.outputs || props.outputsNotice}>
-        <RootGroup name="outputs" label={props.labels.generatedFiles}>
-          <Show when={props.outputs}>
-            {(entry) => (
-              <RootEntry
-                entry={entry()}
-                icon="fileText"
-                destination={{ kind: "outputs" }}
-                root={props}
-              />
-            )}
-          </Show>
-          {props.outputsNotice}
-        </RootGroup>
+      <Show when={props.outputs}>
+        {(entry) => (
+          <RootGroup name="outputs" label={props.labels.generatedFiles}>
+            <RootEntry
+              entry={entry()}
+              icon="fileText"
+              destination={{ kind: "outputs" }}
+              root={props}
+            />
+          </RootGroup>
+        )}
       </Show>
       <Show when={props.versions && props.versions.metadata !== 0 && props.versions}>
         {(entry) => (
