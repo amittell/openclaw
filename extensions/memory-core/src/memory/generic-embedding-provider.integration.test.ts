@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
+import { json } from "node:stream/consumers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   clearEmbeddingProviders,
@@ -14,7 +15,7 @@ import { createEmbeddingProvider, resolveEmbeddingProviderIndexIdentity } from "
 import type { IndexedMemoryChunk } from "./manager-chunk-writer.js";
 import { MemoryIndexDatabase } from "./manager-database-context.js";
 import { MemoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
-import type { MemoryIndexWorkItem, MemorySemanticProviderGeneration } from "./manager-sync-ops.js";
+import type { MemoryIndexWorkItem, MemorySemanticProviderGeneration } from "./manager-sync-base.js";
 
 type CapturedRequest = {
   method: string | undefined;
@@ -32,14 +33,6 @@ type TestServer = {
 const servers: TestServer[] = [];
 let registeredEmbeddingProvidersSnapshot: ReturnType<typeof listRegisteredEmbeddingProviders>;
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-}
-
 async function startEmbeddingServer(options?: {
   reject?: (inputCount: number) => { status: number; body: string } | undefined;
   authorization?: string;
@@ -48,7 +41,7 @@ async function startEmbeddingServer(options?: {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       try {
-        const body = await readJsonBody(req);
+        const body = (await json(req)) as Record<string, unknown>;
         requests.push({
           method: req.method,
           url: req.url,

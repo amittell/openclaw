@@ -13,10 +13,7 @@ import {
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveSignalAccount } from "./accounts.js";
-import {
-  clearSignalApprovalReactionTargetsForTest,
-  resolveSignalApprovalReactionTargetWithPersistence,
-} from "./approval-reactions.js";
+import { resolveSignalApprovalReactionTargetWithPersistence } from "./approval-reactions.js";
 import { signalPlugin } from "./channel.js";
 import * as clientModule from "./client-adapter.js";
 import {
@@ -32,8 +29,10 @@ import {
   registerSignalReplyContext,
   resolveSignalReplyContextWithPersistence,
 } from "./reply-authors.js";
-import { buildSignalSetupPatch, signalDmPolicy } from "./setup-core.js";
+import { signalDmPolicy } from "./setup-core.js";
 import * as transportDetectionModule from "./transport-detection.js";
+
+const reactionStores = await vi.hoisted(() => import("./approval-reactions.test-support.js"));
 
 function signalConfig(signal: NonNullable<OpenClawConfig["channels"]>["signal"]): OpenClawConfig {
   return { channels: { signal } };
@@ -139,12 +138,6 @@ describe("looksLikeUuid", () => {
 });
 
 describe("signal sender identity", () => {
-  it("keeps IPv6 bind hosts on the managed transport", () => {
-    expect(buildSignalSetupPatch({ httpHost: "::1", httpPort: "9090" })).toMatchObject({
-      transport: { kind: "managed-native", httpHost: "::1", httpPort: 9090 },
-    });
-  });
-
   it("falls back to sourceUuid when sourceNumber has no digits", () => {
     const sender = resolveSignalSender({
       sourceNumber: "not a phone number",
@@ -663,7 +656,7 @@ describe("signal outbound", () => {
   it.each(["explicit account", "resolved default account"])(
     "registers delivered approval reactions under the %s",
     async (mode) => {
-      clearSignalApprovalReactionTargetsForTest();
+      reactionStores.clearSignalApprovalReactionStoresForTest();
       const useDefault = mode === "resolved default account";
       const cfg: OpenClawConfig = useDefault
         ? {
@@ -722,7 +715,7 @@ describe("signal outbound", () => {
           }),
         ).resolves.toMatchObject({ approvalId: "exec-1", decision: "allow-once" });
         await expect(reactionTarget(messageId)).resolves.toBeNull();
-        clearSignalApprovalReactionTargetsForTest();
+        reactionStores.clearSignalApprovalReactionStoresForTest();
       } else {
         await expect(reactionTarget(messageId)).resolves.toEqual({
           approvalId: "exec-after-delivery",

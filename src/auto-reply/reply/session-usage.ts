@@ -16,11 +16,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { estimateAggregateUsageCost } from "../../utils/usage-format.js";
 
-function resolveNonNegativeTokenCount(value: number | undefined): number | undefined {
-  const resolved = asNonNegativeFiniteNumber(value);
-  return resolved === undefined ? undefined : Math.floor(resolved);
-}
-
 type SessionUsageUpdateParams = {
   cfg?: OpenClawConfig;
   agentDir?: string;
@@ -39,7 +34,6 @@ type SessionUsageUpdateParams = {
   contextTokensSource?: SessionEntry["contextTokensSource"];
   contextBudgetStatus?: SessionEntry["contextBudgetStatus"];
   promptTokens?: number;
-  isHeartbeat?: boolean;
   systemPromptReport?: SessionSystemPromptReport;
   /** Presence overrides usage inference; undefined tokens explicitly mean current context is unknown. */
   currentContextSnapshot?: { tokens: number | undefined };
@@ -77,6 +71,7 @@ export function prepareSessionUsageUpdate(params: SessionUsageUpdateParams) {
     return undefined;
   }
   const preserveUserFacingRunState = params.preserveUserFacingSessionModelState === true;
+  const currentContextTokens = asNonNegativeFiniteNumber(params.currentContextSnapshot?.tokens);
   const update: SessionEntryUsageUpdate = {
     usage: params.usage,
     lastCallUsage: params.lastCallUsage,
@@ -87,14 +82,12 @@ export function prepareSessionUsageUpdate(params: SessionUsageUpdateParams) {
     contextBudgetStatus: params.contextBudgetStatus,
     systemPromptReport: params.systemPromptReport,
     promptTokens: params.promptTokens,
-    currentContextTokens: resolveNonNegativeTokenCount(params.currentContextSnapshot?.tokens),
+    currentContextTokens:
+      currentContextTokens === undefined ? undefined : Math.floor(currentContextTokens),
     hasContextUpdate,
     hasFreshContextSnapshot,
     hasCurrentContextSnapshot,
-    preserveSessionModelState:
-      params.isHeartbeat === true ||
-      params.preserveRuntimeModel === true ||
-      preserveUserFacingRunState,
+    preserveSessionModelState: params.preserveRuntimeModel === true || preserveUserFacingRunState,
     preserveUserFacingRunState,
     preserveFreshTotalTokensOnStaleUsage: params.preserveFreshTotalTokensOnStaleUsage,
   };
