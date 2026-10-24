@@ -5,7 +5,8 @@ import type { AgentActivityItem } from "../../../../../packages/gateway-protocol
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import { messageRecoveryKey } from "../chat-message-recovery.ts";
 import * as chatThreadBuild from "../chat-thread-build.ts";
-import { persistedMessageEntryId, setExpansionState } from "../chat-thread.ts";
+import { persistedMessageEntryId } from "../chat-thread-items.ts";
+import { setExpansionState } from "../chat-thread.ts";
 import {
   createTestTranscript as createTranscript,
   stubAnimationFrames,
@@ -446,7 +447,10 @@ describe("voice reconciliation", () => {
     const messages = [
       savedMessage("Hidden saved words", "voice:saved"),
       savedMessage("Pending input", "pending:input"),
-      savedMessage("Pending send", "send:pending", { kind: "pending-send", state: "unconfirmed" }),
+      savedMessage("Pending send", "send:pending", {
+        kind: "pending-send",
+        state: "waiting-reconnect",
+      }),
     ];
     const map = vi.spyOn(messages, "map");
     const props = threadProps("voice-membership", undefined, messages);

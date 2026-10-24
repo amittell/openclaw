@@ -2,6 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   extractAssistantPhaseText,
   extractFirstTextBlock,
+  readTerminalSourceReplyDeliveryMirror,
 } from "../../shared/chat-message-content.js";
 import {
   CRON_DIRECT_DELIVERY_CONTEXT_KIND,
@@ -31,6 +32,7 @@ export type SessionRecentConversationText = {
 export type ReadRecentSessionConversationTextOptions = {
   beforeTimestampMs?: number;
   includeCronDirectDeliveryContext?: boolean;
+  includeMessageToolSourceReplies?: boolean;
   limit?: number;
   minTimestampMs?: number;
   role?: "user" | "assistant";
@@ -71,7 +73,8 @@ function extractRecentConversationText(
   if (
     message.role === "assistant" &&
     isTranscriptOnlyOpenClawAssistantMessage(message) &&
-    !includeCronDirectDeliveryContext
+    !includeCronDirectDeliveryContext &&
+    !(options.includeMessageToolSourceReplies && readTerminalSourceReplyDeliveryMirror(message))
   ) {
     return undefined;
   }
