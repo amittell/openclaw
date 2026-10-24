@@ -18,11 +18,34 @@ type EmbeddedRunWaiter = {
 };
 const EMBEDDED_RUN_WAITERS = new Map<string, Set<EmbeddedRunWaiter>>();
 
-export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean {
+/**
+ * Message ids already folded into an active run via mid-turn steering, per
+ * session. Used to prevent the same inbound from being re-injected into the
+ * running turn a second time (for example when a re-dispatched inbound with an
+ * identical messageId is steered again). Cleared when the run is cleared or
+ * replaced so a genuinely new run can steer the same messageId.
+ */
+const STEERED_MESSAGE_IDS = new Map<string, Set<string>>();
+
+export function queueEmbeddedPiMessage(
+  sessionId: string,
+  text: string,
+  messageId?: string,
+): boolean | "duplicate" {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
     return false;
+  }
+  const normalizedMessageId = messageId?.trim();
+  const steered = STEERED_MESSAGE_IDS.get(sessionId);
+  // A consumed input stays consumed while its run pauses or compacts. Returning
+  // false here would send it through the caller's fallback follow-up queue.
+  if (normalizedMessageId && steered?.has(normalizedMessageId)) {
+    diag.debug(
+      `queue message skipped: sessionId=${sessionId} reason=already_steered messageId=${normalizedMessageId}`,
+    );
+    return "duplicate";
   }
   if (!handle.isStreaming()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
@@ -31,6 +54,11 @@ export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean
   if (handle.isCompacting()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
     return false;
+  }
+  if (normalizedMessageId) {
+    const messageIds = steered ?? new Set<string>();
+    messageIds.add(normalizedMessageId);
+    STEERED_MESSAGE_IDS.set(sessionId, messageIds);
   }
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
   void handle.queueMessage(text);
@@ -121,6 +149,12 @@ export function setActiveEmbeddedRun(
   sessionKey?: string,
 ) {
   const wasActive = ACTIVE_EMBEDDED_RUNS.has(sessionId);
+  if (wasActive) {
+    // The previous run's steering state belongs to that run. Clear it so the
+    // replacing run can steer the same messageId without being rejected as a
+    // duplicate of the prior run's steering.
+    STEERED_MESSAGE_IDS.delete(sessionId);
+  }
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
   logSessionStateChange({
     sessionId,
@@ -140,6 +174,7 @@ export function clearActiveEmbeddedRun(
 ) {
   if (ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle) {
     ACTIVE_EMBEDDED_RUNS.delete(sessionId);
+    STEERED_MESSAGE_IDS.delete(sessionId);
     logSessionStateChange({ sessionId, sessionKey, state: "idle", reason: "run_completed" });
     if (!sessionId.startsWith("probe-")) {
       diag.debug(`run cleared: sessionId=${sessionId} totalActive=${ACTIVE_EMBEDDED_RUNS.size}`);
@@ -148,6 +183,11 @@ export function clearActiveEmbeddedRun(
   } else {
     diag.debug(`run clear skipped: sessionId=${sessionId} reason=handle_mismatch`);
   }
+}
+
+/** Test-only: clear all steering de-duplication state. */
+export function resetSteeredMessageIdsForTest(): void {
+  STEERED_MESSAGE_IDS.clear();
 }
 
 export type { EmbeddedPiQueueHandle };

@@ -24,6 +24,7 @@ import {
 import type { FinalizedMsgContext } from "../templating.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
 import { createAcpDispatchDeliveryCoordinator } from "./dispatch-acp-delivery.js";
+import { recordReplyLanded } from "./reply-dedupe.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 
 type DispatchProcessedRecorder = (
@@ -187,6 +188,22 @@ export async function tryDispatchAcpReply(params: {
     originatingTo: params.originatingTo,
     onReplyStart: params.onReplyStart,
   });
+  // Wrap the coordinator's deliver so EVERY successful visible ACP delivery
+  // (projector block/final, accumulated TTS final, identity notice final, and
+  // the error final payload) seeds the re-dispatch guard. Without this, an ACP
+  // turn that already emitted a reply would not record it and the same
+  // re-presented inbound could be re-dispatched into the same session.
+  const deliver = async (
+    kind: Parameters<typeof delivery.deliver>[0],
+    payload: Parameters<typeof delivery.deliver>[1],
+    meta?: Parameters<typeof delivery.deliver>[2],
+  ) => {
+    const delivered = await delivery.deliver(kind, payload, meta);
+    if (delivered && (kind === "final" || kind === "block")) {
+      recordReplyLanded(params.ctx);
+    }
+    return delivered;
+  };
 
   const promptText = resolveAcpPromptText(params.ctx);
   if (!promptText) {
@@ -220,7 +237,7 @@ export async function tryDispatchAcpReply(params: {
   const projector = createAcpReplyProjector({
     cfg: params.cfg,
     shouldSendToolSummaries: params.shouldSendToolSummaries,
-    deliver: delivery.deliver,
+    deliver,
     provider: params.ctx.Surface ?? params.ctx.Provider,
     accountId: params.ctx.AccountId,
   });
@@ -270,7 +287,7 @@ export async function tryDispatchAcpReply(params: {
           ttsAuto: params.sessionTtsAuto,
         });
         if (ttsSyntheticReply.mediaUrl) {
-          const delivered = await delivery.deliver("final", {
+          const delivered = await deliver("final", {
             mediaUrl: ttsSyntheticReply.mediaUrl,
             audioAsVoice: ttsSyntheticReply.audioAsVoice,
           });
@@ -295,7 +312,7 @@ export async function tryDispatchAcpReply(params: {
           meta: currentMeta,
         });
         if (resolvedDetails.length > 0) {
-          const delivered = await delivery.deliver("final", {
+          const delivered = await deliver("final", {
             text: prefixSystemMessage(["Session ids resolved.", ...resolvedDetails].join("\n")),
           });
           queuedFinal = queuedFinal || delivered;
@@ -319,7 +336,7 @@ export async function tryDispatchAcpReply(params: {
       fallbackCode: "ACP_TURN_FAILED",
       fallbackMessage: "ACP turn failed before completion.",
     });
-    const delivered = await delivery.deliver("final", {
+    const delivered = await deliver("final", {
       text: formatAcpRuntimeErrorText(acpError),
       isError: true,
     });
