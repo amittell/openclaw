@@ -73,6 +73,7 @@ export function cronJobDefinitionFromReadView(
     configRevision: _configRevision,
     reauthorizationRequired: _reauthorizationRequired,
     streamExecutionHost: _streamExecutionHost,
+    payloadSource: _payloadSource,
     nextRunAtMs: _nextRunAtMs,
     lastRunAtMs: _lastRunAtMs,
     lastRunStatus: _lastRunStatus,

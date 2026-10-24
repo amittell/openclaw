@@ -21,12 +21,6 @@ import {
 
 registerDevicesEnglish();
 
-type DeviceAliasTarget = {
-  id: string;
-  name: string;
-  operatorLabel?: string;
-};
-
 type InventoryRemovalPrompt =
   | { kind: "entry"; entry: InventoryRemovalRequest }
   | { kind: "stale"; entries: InventoryRemovalRequest[] };
@@ -53,7 +47,11 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
   }
 
   // Alias edits and destructive confirmations share one identity-scoped slot.
-  async function editAlias(device: DeviceAliasTarget): Promise<void> {
+  async function editAlias(device: {
+    id: string;
+    name: string;
+    operatorLabel?: string;
+  }): Promise<void> {
     if (!host.canManagePairing() || pending) {
       return;
     }
@@ -107,9 +105,12 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
               message: t("devices.inventory.removeStalePromptBody"),
             }),
       },
-      prompt.kind === "entry"
-        ? (pageState) => removeInventoryEntry(pageState, prompt.entry)
-        : (pageState) => removeStaleInventoryEntries(pageState, prompt.entries),
+      () =>
+        host.runInventoryTask((pageState) =>
+          prompt.kind === "entry"
+            ? removeInventoryEntry(pageState, prompt.entry)
+            : removeStaleInventoryEntries(pageState, prompt.entries),
+        ),
     );
   }
 
@@ -124,10 +125,12 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
         message: t("devices.inventory.rejectPromptBody"),
         confirmLabel: t("devices.inventory.reject"),
       },
-      (pageState) =>
-        target === "device"
-          ? rejectDevicePairing(pageState, requestId)
-          : rejectNodePairingRequest(pageState, requestId),
+      () =>
+        host.runPageTask((pageState) =>
+          target === "device"
+            ? rejectDevicePairing(pageState, requestId)
+            : rejectNodePairingRequest(pageState, requestId),
+        ),
     );
   }
 
@@ -139,12 +142,14 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
         details: t("devices.inventory.deviceId", { id: deviceId }),
         confirmLabel: t("devices.inventory.revoke"),
       },
-      (pageState) =>
-        revokeDeviceToken(pageState, {
-          deviceId,
-          gatewayUrl: host.gatewayUrl(),
-          role,
-        }),
+      () =>
+        host.runInventoryTask((pageState) =>
+          revokeDeviceToken(pageState, {
+            deviceId,
+            gatewayUrl: host.gatewayUrl(),
+            role,
+          }),
+        ),
     );
   }
 
@@ -199,7 +204,7 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
   // identity and current authority are revalidated before the operation runs.
   async function confirmDestructiveAction(
     prompt: Omit<ConfirmDialogOptions, "danger" | "signal">,
-    run: (pageState: DevicesPageDataState) => unknown,
+    run: () => Promise<unknown>,
   ) {
     if (!host.canManagePairing() || pending) {
       return;
@@ -225,7 +230,7 @@ export function createDevicesDialogs(host: DevicesDialogHost) {
     ) {
       return;
     }
-    await host.runInventoryTask(run);
+    await run();
   }
   return {
     cancel,
