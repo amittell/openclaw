@@ -31,11 +31,21 @@ export function queueEmbeddedPiMessage(
   sessionId: string,
   text: string,
   messageId?: string,
-): boolean {
+): boolean | "duplicate" {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
     return false;
+  }
+  const normalizedMessageId = messageId?.trim();
+  const steered = STEERED_MESSAGE_IDS.get(sessionId);
+  // A consumed input stays consumed while its run pauses or compacts. Returning
+  // false here would send it through the caller's fallback follow-up queue.
+  if (normalizedMessageId && steered?.has(normalizedMessageId)) {
+    diag.debug(
+      `queue message skipped: sessionId=${sessionId} reason=already_steered messageId=${normalizedMessageId}`,
+    );
+    return "duplicate";
   }
   if (!handle.isStreaming()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
@@ -45,17 +55,10 @@ export function queueEmbeddedPiMessage(
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
     return false;
   }
-  const normalizedMessageId = messageId?.trim();
   if (normalizedMessageId) {
-    const steered = STEERED_MESSAGE_IDS.get(sessionId) ?? new Set<string>();
-    if (steered.has(normalizedMessageId)) {
-      diag.debug(
-        `queue message failed: sessionId=${sessionId} reason=already_steered messageId=${normalizedMessageId}`,
-      );
-      return false;
-    }
-    steered.add(normalizedMessageId);
-    STEERED_MESSAGE_IDS.set(sessionId, steered);
+    const messageIds = steered ?? new Set<string>();
+    messageIds.add(normalizedMessageId);
+    STEERED_MESSAGE_IDS.set(sessionId, messageIds);
   }
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
   void handle.queueMessage(text);

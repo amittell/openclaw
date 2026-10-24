@@ -34,7 +34,7 @@ describe("queueEmbeddedPiMessage steering de-duplication", () => {
     setActiveEmbeddedRun("session-1", handle);
     expect(queueEmbeddedPiMessage("session-1", "hello", "msg-1")).toBe(true);
     // Re-dispatched inbound with the identical messageId must be dropped.
-    expect(queueEmbeddedPiMessage("session-1", "hello again", "msg-1")).toBe(false);
+    expect(queueEmbeddedPiMessage("session-1", "hello again", "msg-1")).toBe("duplicate");
     expect(handle.queueMessage).toHaveBeenCalledTimes(1);
     clearActiveEmbeddedRun("session-1", handle);
   });
@@ -80,7 +80,7 @@ describe("queueEmbeddedPiMessage steering de-duplication", () => {
     // A's later clear takes the handle-mismatch branch and must not touch
     // B's steering state.
     clearActiveEmbeddedRun("session-1", first);
-    expect(queueEmbeddedPiMessage("session-1", "dup", "msg-1")).toBe(false);
+    expect(queueEmbeddedPiMessage("session-1", "dup", "msg-1")).toBe("duplicate");
     clearActiveEmbeddedRun("session-1", second);
 
     // After B clears, a new run may steer msg-1 again.

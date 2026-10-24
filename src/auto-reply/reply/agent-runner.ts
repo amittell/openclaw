@@ -99,7 +99,6 @@ export async function runReplyAgent(params: {
     shouldSteer,
     shouldFollowup,
     isActive,
-    isStreaming,
     opts,
     typing,
     sessionEntry,
@@ -194,12 +193,16 @@ export async function runReplyAgent(params: {
     }
   };
 
-  if (shouldSteer && isStreaming) {
+  if (shouldSteer) {
     const steered = queueEmbeddedPiMessage(
       followupRun.run.sessionId,
       followupRun.prompt,
       followupRun.messageId,
     );
+    if (steered === "duplicate") {
+      typing.cleanup();
+      return undefined;
+    }
     if (steered && !shouldFollowup) {
       await touchActiveSessionEntry();
       typing.cleanup();

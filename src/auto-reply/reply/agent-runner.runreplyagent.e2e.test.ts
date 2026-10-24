@@ -2,6 +2,11 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearActiveEmbeddedRun,
+  setActiveEmbeddedRun,
+  type EmbeddedPiQueueHandle,
+} from "../../agents/pi-embedded-runner/runs.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import * as sessions from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
@@ -69,10 +74,13 @@ vi.mock("../../agents/model-fallback.js", () => ({
   }),
 }));
 
-vi.mock("../../agents/pi-embedded.js", () => ({
-  queueEmbeddedPiMessage: vi.fn().mockReturnValue(false),
-  runEmbeddedPiAgent: (params: unknown) => state.runEmbeddedPiAgentMock(params),
-}));
+vi.mock("../../agents/pi-embedded.js", async () => {
+  const { queueEmbeddedPiMessage } = await import("../../agents/pi-embedded-runner/runs.js");
+  return {
+    queueEmbeddedPiMessage,
+    runEmbeddedPiAgent: (params: unknown) => state.runEmbeddedPiAgentMock(params),
+  };
+});
 
 vi.mock("../../agents/cli-runner.js", () => ({
   runCliAgent: (params: unknown) => state.runCliAgentMock(params),
@@ -108,6 +116,9 @@ function createMinimalRun(params?: {
   typingMode?: TypingMode;
   blockStreamingEnabled?: boolean;
   isActive?: boolean;
+  shouldSteer?: boolean;
+  isStreaming?: boolean;
+  messageId?: string;
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
   runOverrides?: Partial<FollowupRun["run"]>;
@@ -124,6 +135,7 @@ function createMinimalRun(params?: {
   const sessionKey = params?.sessionKey ?? "main";
   const followupRun = {
     prompt: "hello",
+    messageId: params?.messageId,
     summaryLine: "hello",
     enqueuedAt: Date.now(),
     run: {
@@ -160,10 +172,10 @@ function createMinimalRun(params?: {
         followupRun,
         queueKey: "main",
         resolvedQueue,
-        shouldSteer: false,
+        shouldSteer: params?.shouldSteer ?? false,
         shouldFollowup: params?.shouldFollowup ?? false,
         isActive: params?.isActive ?? false,
-        isStreaming: false,
+        isStreaming: params?.isStreaming ?? false,
         opts,
         typing,
         sessionEntry: params?.sessionEntry,
@@ -287,6 +299,78 @@ async function runReplyAgentWithBase(params: {
     typingMode: params.typingMode ?? "instant",
   });
 }
+
+describe("runReplyAgent duplicate steering", () => {
+  it.each([
+    { mode: "steer", compacting: false, streaming: true },
+    { mode: "steer-backlog", compacting: false, streaming: true },
+    { mode: "steer", compacting: true, streaming: true },
+    { mode: "steer", compacting: false, streaming: false },
+  ])(
+    "does not enqueue an already steered message ($mode, $compacting, $streaming)",
+    async ({ mode, compacting, streaming }) => {
+      const handle: EmbeddedPiQueueHandle = {
+        queueMessage: vi.fn(async () => {}),
+        isStreaming: vi.fn(() => true),
+        isCompacting: vi.fn(() => false),
+        abort: vi.fn(),
+      };
+      setActiveEmbeddedRun("session", handle);
+      try {
+        const runParams = {
+          isActive: true,
+          shouldSteer: true,
+          isStreaming: true,
+          messageId: "steered-once",
+          shouldFollowup: mode === "steer-backlog",
+          resolvedQueueMode: mode,
+        };
+        const { run } = createMinimalRun(runParams);
+        await run();
+        expect(handle.queueMessage).toHaveBeenCalledOnce();
+        // steer-backlog intentionally queues the first input as well as steering it.
+        expect(enqueueFollowupRun).toHaveBeenCalledTimes(mode === "steer-backlog" ? 1 : 0);
+        vi.mocked(enqueueFollowupRun).mockClear();
+        runParams.isStreaming = streaming;
+        vi.mocked(handle.isStreaming).mockReturnValue(streaming);
+        vi.mocked(handle.isCompacting).mockReturnValue(compacting);
+
+        await run();
+
+        expect(handle.queueMessage).toHaveBeenCalledOnce();
+        expect(enqueueFollowupRun).not.toHaveBeenCalled();
+        expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+      } finally {
+        clearActiveEmbeddedRun("session", handle);
+      }
+    },
+  );
+
+  it("keeps an unaccepted input retryable when the active run is compacting", async () => {
+    const handle: EmbeddedPiQueueHandle = {
+      queueMessage: vi.fn(async () => {}),
+      isStreaming: () => true,
+      isCompacting: () => true,
+      abort: vi.fn(),
+    };
+    setActiveEmbeddedRun("session", handle);
+    try {
+      const { run } = createMinimalRun({
+        isActive: true,
+        shouldSteer: true,
+        isStreaming: true,
+        messageId: "not-yet-steered",
+        resolvedQueueMode: "steer",
+      });
+      await run();
+      expect(handle.queueMessage).not.toHaveBeenCalled();
+      expect(enqueueFollowupRun).toHaveBeenCalledOnce();
+      expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+    } finally {
+      clearActiveEmbeddedRun("session", handle);
+    }
+  });
+});
 
 describe("runReplyAgent heartbeat followup guard", () => {
   it("drops heartbeat runs when another run is active", async () => {
