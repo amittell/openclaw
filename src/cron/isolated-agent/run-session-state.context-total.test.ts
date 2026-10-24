@@ -3,7 +3,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { SESSION_TOTAL_TOKENS_VERSION, type SessionEntry } from "../../config/sessions/types.js";
-import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createCronSessionRowWriter } from "./run-prepare-runtime.js";
 import { createPersistCronSessionEntry, type MutableCronSession } from "./run-session-state.js";
@@ -47,13 +46,6 @@ describe("createPersistCronSessionEntry context total", () => {
           persistSessionEntry: createCronSessionRowWriter({
             agentId: scope.agentId,
             agentSessionKey: scope.sessionKey,
-            resultTarget: {
-              ...scope,
-              sessionId: existingEntry.sessionId,
-              lifecycleRevision,
-              generation: getAgentEventLifecycleGeneration(),
-            },
-            cronSession,
           }),
         });
 
