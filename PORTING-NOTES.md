@@ -3728,3 +3728,88 @@ distinctive added lines present in the candidate; control: 9 PRs merged inside t
   single-snapshot reader (10-11, after the 10.5 cut). At 10.5 the fork's selector reads one snapshot for
   any limit up to 1,000 rows (default 10).
 - Test-only, not carried: #176070, #175029, #168611, and #164551's 10-19 fixture.
+
+# Carrying onto v2026.10.6 and v2026.10.7 (patch releases on the 10.5 line), 2026-10-23..26
+
+Measured on the M4 Pro (`Mac16,7`, user alex) with a private, checksum-verified node v26.12.1 on PATH (both tags
+refuse older Node in preinstall) and pnpm 12.15.0. Alex chose (question tool, 2026-10-23 ~20:19Z) to carry onto 10.6
+and deploy it to both bots, and (2026-10-26 ~01:44Z) "10.6 to both, then 10.7". Both tags are fast-forwards of the
+previous one, so each carry is a squash of the previous fork tip onto the tag (as 9.8 -> 9.9 was).
+
+## Refs
+
+| what                                                                       | sha            |
+| -------------------------------------------------------------------------- | -------------- |
+| v2026.10.6^{commit} (+294 on 10.5; agent 25, state 20)                     | `fe06181dc5ec` |
+| `upgrade-v2026.10.6` squash of `f8d05dd6861f`                              | `389a645fb9b`  |
+| poll-vote map kept in the import-free send-suppression module              | `8154791ae93`  |
+| v2026.10.7^{commit} (+73 on 10.6; same schema, Node and pnpm)              | `157d8c2bc3ea` |
+| `upgrade-v2026.10.7` squash of `8154791ae938`                              | `be0a832f8e5`  |
+| main-session-recovery-state line-cap split                                 | `ff4a71434f5`  |
+| restart-cause resume wording, compaction-provenance pin                    | `7bb739a7242`  |
+| degraded-compaction fork tests re-pinned to 10.7 (proxy ruling, room #221) | `b267a8b2947`  |
+
+## Method
+
+`git merge --squash <previous fork tip>` onto the tag, then per-file rulings for the conflicts (10 on each tag;
+the commit bodies of `389a645fb9b` and `be0a832f8e5` carry them). Qualification: build, `tsgo:all`, the
+assertion-safety and line-cap ratchets against the tag, oxlint and oxfmt on every hand-resolved file, and a fast
+gate of the `--changed <tag>` plan (562 files on both tags) plus the tests of every hand-resolved file and the
+cron, compaction, memory-core and tool-catalog suites. Every failing file was then run ALONE in three cells:
+the carry, the bare tag, and the previous carry.
+
+## Drops (the tag already has them)
+
+- **10.6:** #170063 (`04809113654`), the 10.5 pull-forward `0d8d45afd93`. #155019 fixed the fork's #154834
+  settled-failed-delivery case; `subagent-active-context{,.test}.ts` are 10.6's, and the deploy kit's marker for
+  it is dropped.
+- **10.7:** `a16ff7f3230` ("backport harness recovery remediations") absorbed most of the fork's compaction degrade
+  work: the `degraded` finalize flag, the split-turn reservation in the suffix cap (`compaction-suffix.ts`),
+  `qualityDegraded` provenance on `compactionResult`, and the `quality_guard_degraded_fallback` path (now with a
+  best summary across attempts).
+- Still not in either tag: #174884 (merged to main 10-18), #138415 (merged to main 10-23 02:54Z), #178677.
+
+## Divergences kept
+
+- **Compaction (10.7):** on 10.7's file the fork keeps its tool-failure split, `wrapUntrustedQualityFeedbackBlock`
+  for corrective-retry reasons, the retention-aware fit with identifier shedding on the degraded path
+  (`identifier-retention` / `quality-retention` losses), SAFETY comments on every cast, and
+  `compaction-details.ts` (with `qualityDegraded` in `CompactionDetails`; its `extractLatestUserRequest` now
+  selects through 10.7's `latestCompactionUserText`). `findCutPoint` keeps the open tool-call frame guard.
+- **Degraded fallback source (10.7), ADOPTED from upstream** (proxy ruling, room #221): the fallback keeps the
+  draft the audit rejected, not the previous summary. Four fork tests re-pinned in `b267a8b2947`.
+- **Restart-cause resume prompt (10.7):** 10.7 made the shared `RESTART_RECOVERY_INTERRUPTION_NOTE` cause-neutral,
+  so the fork's restart variant now states the restart itself (`7bb739a7242`).
+- **Compaction checkpoint handle:** the fork's handle line follows a compaction summary in the model context;
+  `compaction-provenance.test.ts` is pinned to it (`7bb739a7242`). It also fails, unpinned, on the 10.6 carry
+  (test only; the 10.6 fast gate never selected that file).
+- **Poll-vote echo (10.6):** 10.6's `poll-vote-echo.ts` owns suppression and recording; the fork keeps its
+  `message_tool_only` gates and duplicate-send guard, and the vote map lives in the import-free
+  `message-tool-execution.send-suppression.ts`. A heavy import there loads before each test file's
+  `vi.mock("node:worker_threads")` and broke three files (`8154791ae93`).
+- **`intent` for non-owner turns (10.7): OPEN for Alex.** 10.7's #176892 keeps the declaration stable for every
+  turn and gates execution; the fork returns a refusing stub (non-owner) or omits it (unknown sender) through
+  plugin `ownerOnly`. Until he rules, `prepare.completion-tools.test.ts` (2) and `owner-only-tool-stubs.test.ts`
+  (1) fail on the 10.7 carry.
+
+## Guards (heads above)
+
+- 10.6 at `8154791ae93` and 10.7 at `b267a8b2947`'s parent `ff4a71434f5` onward: `tsgo:all` rc=0, assertion-safety
+  OK (10.7: 6,712 grandfathered), line-cap OK (10.7 after the `main-session-recovery-terminal-only.ts` split),
+  oxlint and oxfmt clean on the resolved files, build rc=0.
+
+## Tests
+
+- **10.6 fast gate, 785 files:** every failure is in four tooling files that fail identically on bare 10.6
+  (`ci-workflow-planning`, `ci-workflow-guards`, `crabbox-staging`, `release-workflow-matrix-plan`; 126 tests).
+- **10.7 fast gate, 897 files:** the same four inherited tooling files, plus 8 files classified in three cells and
+  resolved above (restart-cause, compaction-provenance, four degrade tests) or held (the two `intent` files).
+
+## Deploy (10.6)
+
+- Node 26.12.1 on both bots first (the Air with Alex, room #207-#211): both bots `brew pin node`, and a new
+  Homebrew node needs Alex's macOS Local Network grant on each bot's own screen.
+- pnpm 12.15.0 is younger than the repo's 7-day `minimumReleaseAge`; Alex chose to pre-install it into each bot's
+  `~/Library/pnpm/.tools` from outside the repo.
+- rh-bot: `8154791ae938` deployed 2026-10-26 01:51:52Z, verified; real-turn gate pending at the time of writing.
+  mac-mini follows rh-bot's gate.
