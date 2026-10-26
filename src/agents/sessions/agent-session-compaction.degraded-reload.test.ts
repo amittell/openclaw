@@ -158,8 +158,12 @@ describe("AgentSession degraded compaction reload", () => {
       expect(boundary.summary).toContain("## Pending user asks\nLatest user request context:");
       expect(boundary.summary).toContain(LATEST_ASK);
       expect(boundary.summary).not.toContain(OVERSIZED_IDENTIFIER);
+      // 10.7 (a16ff7f3230) builds the fallback from the rejected draft, not the prior
+      // boundary (proxy ruling, room #221, 2026-10-26), so a prior boundary's facts survive
+      // only through the summarizer's own draft.
+      expect(boundary.summary).toContain("Summary without headings");
       if (priorBoundary) {
-        expect(boundary.summary).toContain("Never restart the database during business hours.");
+        expect(boundary.summary).not.toContain("Never restart the database during business hours.");
       }
       const replay = JSON.stringify(reopened.buildSessionContext().messages);
       expect(replay).toContain(LATEST_ASK);

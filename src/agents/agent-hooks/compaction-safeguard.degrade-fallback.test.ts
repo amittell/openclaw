@@ -215,13 +215,16 @@ describe("compaction-safeguard quality-guard exhaustion", () => {
     expect(result.compaction?.firstKeptEntryId).toBe("entry-1");
   });
 
-  it("carries the previous summary forward and discards the rejected draft", async () => {
+  // 10.7 (a16ff7f3230) keeps the generated facts when the audit rejects only their
+  // coverage or format; the previous summary is the fallback for an empty draft
+  // (proxy ruling, room #221, 2026-10-26). Before 10.7 the fork discarded the draft.
+  it("keeps the rejected draft's facts in the structured fallback", async () => {
     const { result } = await runUntilQualityGuardExhausted();
     const summary = result.compaction?.summary ?? "";
 
-    expect(summary).toContain("PRIOR_SUMMARY_MARKER");
+    expect(summary).toContain("REJECTED_LLM_SUMMARY_MARKER");
     expect(summary).toContain("## Decisions");
-    expect(summary).not.toContain("REJECTED_LLM_SUMMARY_MARKER");
+    expect(summary).not.toContain("PRIOR_SUMMARY_MARKER");
   });
 
   it("leaves no safeguard cancellation, so the session is not stranded", async () => {

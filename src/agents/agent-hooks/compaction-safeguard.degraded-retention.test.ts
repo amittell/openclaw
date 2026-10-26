@@ -122,7 +122,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
       // Identifiers are best-effort on this path and the request context is bounded, so an
       // identifier that cannot fit must not take the request down with it.
       const summary = expectCompactionResult(result).summary;
-      expect(summary).toContain("## Pending user asks\nLatest user request context:");
+      // 10.7's degraded fallback places the request context by its source (a16ff7f3230;
+      // proxy ruling, room #221, 2026-10-26): a leading "## Latest user request context"
+      // section for a source ask, inline under the pending asks for a run-owned request.
+      expect(summary).toContain("Latest user request context");
       expect(summary).toContain(latestAsk);
       expect(summary).toContain(fittingIdentifier);
       expect(summary).not.toContain(identifier);

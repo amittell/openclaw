@@ -36,9 +36,11 @@ registerAgentSessionLoopTestLifecycle();
  * the active request is the one fact a later turn cannot recover from the transcript, and
  * earlier this section read "None." while the user was still waiting on that prompt.
  */
+// 10.7 (a16ff7f3230) builds the degraded fallback from the rejected draft, not the
+// empty previous summary (proxy ruling, room #221, 2026-10-26).
 const DEGRADED_FALLBACK_SUMMARY = [
   "## Decisions",
-  "No prior history.",
+  "Core summary without required safeguard headings",
   "",
   "## Open TODOs",
   "None.",
