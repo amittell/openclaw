@@ -173,6 +173,8 @@ describe("production lint suppressions", () => {
         "scripts/lib/control-ui-talk-fixture.ts|typescript/unbound-method|5",
         "scripts/lib/plain-gh.mjs|no-warning-comments|1",
         "scripts/lib/sqlite-reliability-process.ts|typescript/prefer-promise-reject-errors|1",
+        // The frame census retains native methods and supplies their original receivers through .call.
+        "scripts/perf/agent-event-frame-census-preload.mjs|typescript/unbound-method|3",
         // The copy-count probe restores the native method after measurement.
         "scripts/perf/agent-fresh-array-copy-measure.ts|no-extend-native|2",
         // The owner probe executes its selected trusted source expression rather than a copied implementation.
@@ -200,6 +202,8 @@ describe("production lint suppressions", () => {
         "scripts/perf/pg-footprint-preload.mjs|unicorn/require-post-message-target-origin|1",
         // The fault injector supplies the native pg.Client receiver through Reflect.apply.
         "scripts/perf/pg-pool-hang.worker.mjs|typescript/unbound-method|1",
+        // The require tracer forwards the original method with each requesting module as receiver.
+        "scripts/perf/plugin-transform-preload.mjs|typescript/unbound-method|1",
         // The provider probe forwards native methods with their original receivers.
         "scripts/perf/provider-request-prepare-measure.ts|typescript/unbound-method|3",
         // Node worker ports have no browser target origin.
