@@ -7,26 +7,29 @@ const MIN_SECRET_VALUE_LENGTH = 6;
 const MAX_SECRET_VALUES = 512;
 
 type SecretValueRedactor = (text: string, mask: (value: string, index: number) => string) => string;
-type SecretRedactionRegistryState = {
+// Native and source module copies share membership and matcher invalidation.
+const state = resolveGlobalSingleton<{
+  revision: number;
   registeredValues: Map<string, true>;
   registeredValueRedactor: SecretValueRedactor | undefined;
   longestRegisteredValueLength: number | undefined;
-};
-
-// Native and source module copies share membership and matcher invalidation.
-const state = resolveGlobalSingleton<SecretRedactionRegistryState>(
-  Symbol.for("openclaw.secretRedactionRegistry"),
-  () => ({
-    registeredValues: new Map<string, true>(),
-    registeredValueRedactor: undefined,
-    longestRegisteredValueLength: undefined,
-  }),
-);
+}>(Symbol.for("openclaw.secretRedactionRegistry"), () => ({
+  revision: 0,
+  registeredValues: new Map<string, true>(),
+  registeredValueRedactor: undefined,
+  longestRegisteredValueLength: undefined,
+}));
 
 type SecretRedactionRegistrySnapshot = { values: readonly string[] };
 function invalidateMatcher(): void {
+  state.revision += 1;
   state.registeredValueRedactor = undefined;
   state.longestRegisteredValueLength = undefined;
+}
+
+/** Invalidates prepared redacted facts when exact secret membership changes. */
+export function getSecretRedactionRegistryRevision(): number {
+  return state.revision;
 }
 
 function registerOneSecretValue(value: string): void {

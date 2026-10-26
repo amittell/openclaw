@@ -6,25 +6,13 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { mountRouterOutlet } from "../../app/router-outlet.test-support.tsx";
+import { configSnapshot } from "../../lib/config/config-snapshot.test-support.ts";
 import { createGatewayHarness } from "../../lib/config/config-test-harness.ts";
 import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
 import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
+import { sessionStorageStatus as inventory } from "./session-storage.test-support.ts";
 import { SessionStorageSettings } from "./session-storage.tsx";
-
-function inventory(): SessionsStorageStatusResult {
-  return {
-    agents: [],
-    maintenance: {
-      running: false,
-      lastStartedAt: null,
-      lastCompletedAt: null,
-      lastError: null,
-      archivedTranscripts: 0,
-      externalizedTranscripts: 0,
-    },
-  };
-}
 
 it("leaves Storage while a submitted run is held and ignores its late completion", async () => {
   const heldRun = createDeferred<SessionsStorageStatusResult>();
@@ -41,13 +29,9 @@ it("leaves Storage while a submitted run is held and ignores its late completion
         method === "sessions.storage.status"
           ? inventory()
           : {
-              config,
-              hash: "raw-one",
+              ...configSnapshot(config, "raw-one"),
               configRevisionHash: "revision-one",
               appliedConfigHash: "revision-one",
-              valid: true,
-              issues: [],
-              raw: JSON.stringify(config),
             },
       );
     },
@@ -59,20 +43,16 @@ it("leaves Storage while a submitted run is held and ignores its late completion
   await runtimeConfig.ensureLoaded();
   type RouteModule = { renderSolid: () => JSX.Element };
   const router: Router<"storage" | "next", object, RouteModule, undefined> = createRouter({
-    routes: [
+    routes: (["storage", "next"] as const).map((id) =>
       definePage({
-        id: "storage",
-        path: "/storage",
-        component: () => ({ renderSolid: StoragePage }),
+        id,
+        path: `/${id}`,
+        component: () => ({
+          renderSolid: id === "storage" ? StoragePage : () => <p>Next settings page</p>,
+        }),
         loader: () => undefined,
       }),
-      definePage({
-        id: "next",
-        path: "/next",
-        component: () => ({ renderSolid: () => <p>Next settings page</p> }),
-        loader: () => undefined,
-      }),
-    ],
+    ),
   });
   // SAFETY: Storage reads only these owners; the provider supplies shared fixture defaults.
   const context = { gateway, runtimeConfig, router } as unknown as ApplicationContext;
