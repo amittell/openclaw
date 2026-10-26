@@ -52,14 +52,10 @@ export function isUnclassifiedNoBodyHttpSignal(signal: FailoverSignal): boolean 
   const message = signal.message?.trim();
   return !message || isExplicitNoBodyHttpMessage(message, status);
 }
-// The diagnostic redactor replaces a whole provider body with one of these
-// placeholders when it is oversized or not cleanly parseable. A placeholder
-// carries no classifiable signal, so a 400/422 whose body was destroyed this
-// way must not be collapsed into "format" (which drives a terminal model-swap
-// recovery instead of the token-budget overflow recovery that fits it).
+// Whole-body redaction placeholders contain no evidence of a request-format failure.
 const REDACTION_DESTROYED_BODY_RE =
   /^\[(?:Malformed|Oversized) diagnostic JSON redacted\]$|^\[Unserializable\]$/;
-export function isRedactionDestroyedHttpBody(message: string | undefined, status: number): boolean {
+function isRedactionDestroyedHttpBody(message: string | undefined, status: number): boolean {
   if (status !== 400 && status !== 422) {
     return false;
   }
@@ -311,11 +307,7 @@ export function classifyFailoverClassificationFromHttpStatus(
     if (isUnclassifiedNoBodyHttpSignal({ status, message })) {
       return null;
     }
-    // When the body was destroyed by the diagnostic redactor (oversized or
-    // malformed JSON), no classifiable signal survives. Defaulting it to
-    // "format" hides the real error and forces a terminal model-swap recovery
-    // instead of the token-budget overflow recovery that fits it. Treat it
-    // like the no-body case: return null and let the caller decide.
+    // A destroyed body cannot establish format semantics or recover its original cause.
     if (isRedactionDestroyedHttpBody(message, status)) {
       return null;
     }

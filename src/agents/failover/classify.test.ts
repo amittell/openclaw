@@ -5,7 +5,6 @@ import {
   classifyFailoverSignal,
   isAuthErrorMessage,
   isBillingErrorMessage,
-  isRedactionDestroyedHttpBody,
   isServerErrorMessage,
   isTimeoutErrorMessage,
 } from "./classify.js";
@@ -105,45 +104,30 @@ describe("failover classification", () => {
     ).toBe("format");
   });
 
-  it("does not collapse a redaction-destroyed 400 body into format", () => {
-    // The diagnostic redactor replaces an oversized/malformed JSON body with a
-    // placeholder. No classifiable signal survives, so the 400 must read as
-    // null — not "format", which would drive a terminal model-swap recovery
-    // instead of the token-budget overflow recovery that fits it.
-    const placeholders = [
+  it.each([400, 422])("leaves placeholder-only HTTP %i failures unclassified", (status) => {
+    for (const body of [
       "[Malformed diagnostic JSON redacted]",
       "[Oversized diagnostic JSON redacted]",
       "[Unserializable]",
-    ];
-    for (const placeholder of placeholders) {
-      expect(classifyWithoutPlugin(`400: ${placeholder}`)).toBeNull();
-      expect(classifyWithoutPlugin(`400 ${placeholder}`)).toBeNull();
-      expect(classifyWithoutPlugin(placeholder)).toBeNull();
+    ]) {
       expect(
-        classifyFailoverSignal({ status: 400, message: `400: ${placeholder}` }, noPlugin),
+        classifyFailoverSignal({ status, message: `${status}: ${body}` }, noPlugin),
       ).toBeNull();
     }
-    // 422 shares the ambiguous-body path.
-    expect(classifyWithoutPlugin(`422: [Malformed diagnostic JSON redacted]`)).toBeNull();
-    // The helper is scoped to 400/422 and to a full-body placeholder only.
-    expect(isRedactionDestroyedHttpBody("400: [Malformed diagnostic JSON redacted]", 400)).toBe(
-      true,
+    expectReason("format", validationSignal(status), noPlugin);
+    expectReason(
+      "format",
+      { status, message: "[Malformed diagnostic JSON redacted] Unsupported parameter: logprobs" },
+      noPlugin,
     );
-    expect(isRedactionDestroyedHttpBody("400: [Malformed diagnostic JSON redacted]", 500)).toBe(
-      false,
+  });
+
+  it("preserves other HTTP status semantics for redacted bodies", () => {
+    expectReason(
+      "server_error",
+      { status: 500, message: "[Malformed diagnostic JSON redacted]" },
+      noPlugin,
     );
-    expect(
-      isRedactionDestroyedHttpBody(
-        '400 {"error":{"message":"max_tokens cannot be greater than max_model_len"}}',
-        400,
-      ),
-    ).toBe(false);
-    // A real classifiable 400 body must keep its semantics (format for a schema rejection).
-    expect(
-      classifyWithoutPlugin(
-        '400 {"error":{"type":"invalid_request_error","message":"Unsupported parameter: logprobs"}}',
-      ),
-    ).toBe("format");
   });
 
   it("keeps an explicit rejection ahead of context-length message patterns", () => {
