@@ -1,5 +1,6 @@
 // Commander registration for model catalog, status, auth, alias, and fallback commands.
 import type { Command } from "commander";
+import { validateProfileId } from "../agents/auth-profiles/sanitize.js";
 import { formatDocsHelp } from "./help-format.js";
 import { registerModelsAccountsCli } from "./models-accounts-cli.js";
 import type { GlobalOnlyModelCommandName } from "./models-cli.runtime.js";
@@ -424,7 +425,15 @@ export function registerModelsCli(program: Command) {
       runAgentModelCommand(
         command,
         (agent) => ({ ...opts, agent }),
-        async () => (await import("../commands/models/auth.js"))[handler],
+        async () => {
+          // Reject a malformed token profile id before it reaches the credential store.
+          const profileIdError =
+            name === "paste-token" && opts.profileId ? validateProfileId(opts.profileId) : null;
+          if (profileIdError) {
+            throw new Error(`Invalid --profile-id: ${profileIdError}`);
+          }
+          return (await import("../commands/models/auth.js"))[handler];
+        },
       ),
     );
   }
@@ -439,6 +448,22 @@ export function registerModelsCli(program: Command) {
         command,
         (agent) => ({ ...opts, provider: "github-copilot", method: "device", agent }),
         async () => (await import("../commands/models/auth.js")).modelsAuthLoginCommand,
+      ),
+    );
+
+  auth
+    .command("clean")
+    .description(
+      "Remove stale profiles from auth-profiles.json that are not configured in openclaw.json",
+    )
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .option("--dry-run", "Preview removals without writing changes")
+    .option("--json", "Output as JSON")
+    .action((opts: { dryRun?: boolean; json?: boolean }, command) =>
+      runAgentModelCommand(
+        command,
+        (agent) => ({ agent, dryRun: Boolean(opts.dryRun), json: Boolean(opts.json) }),
+        async () => (await import("../commands/models/auth-clean.js")).modelsAuthCleanCommand,
       ),
     );
 

@@ -44,7 +44,7 @@ import {
 } from "./chat-history-budget.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
 import { decodeChatHistoryPageCursor } from "./chat-history-page-cursor.js";
-import { readChatHistoryPage } from "./chat-history-pages.js";
+import { readChatHistoryCompactionSpanPage, readChatHistoryPage } from "./chat-history-pages.js";
 import {
   resolveEmbeddedAgentRunRecoverySnapshot,
   respondChatHistoryUnavailable,
@@ -88,6 +88,7 @@ export async function handleChatHistoryRequest({
     offset,
     cursor,
     messageId: wireMessageId,
+    compactionId,
     sessionId: wireSessionId,
     maxChars,
     toolResultMaxChars,
@@ -105,8 +106,13 @@ export async function handleChatHistoryRequest({
     selectorError = "invalid history page cursor";
   } else if (offset !== undefined && wireMessageId !== undefined) {
     selectorError = "offset and messageId cannot be used together";
-  } else if (cursor !== undefined && (offset !== undefined || wireMessageId !== undefined)) {
-    selectorError = "cursor cannot be used with offset or messageId";
+  } else if (compactionId !== undefined && wireMessageId !== undefined) {
+    selectorError = "compactionId and messageId cannot be used together";
+  } else if (
+    cursor !== undefined &&
+    (offset !== undefined || wireMessageId !== undefined || compactionId !== undefined)
+  ) {
+    selectorError = "cursor cannot be used with offset, messageId, or compactionId";
   } else if (wireSessionId !== undefined && wireMessageId === undefined) {
     selectorError = "sessionId requires messageId";
   } else if (pageCursor && retainedSessionId && pageCursor.sessionId !== retainedSessionId) {
@@ -234,7 +240,7 @@ export async function handleChatHistoryRequest({
         ? [{ runId: receipt.runId, consumedByEventId: receipt.consumedByEventId }]
         : [],
     );
-    let historyPage: Awaited<ReturnType<typeof readChatHistoryPage>>;
+    let historyPage: Awaited<ReturnType<typeof readChatHistoryCompactionSpanPage>>;
     try {
       historyPage =
         deltaCursor !== undefined
@@ -242,27 +248,47 @@ export async function handleChatHistoryRequest({
           : await measureDiagnosticsTimelineSpan(
               `gateway.${method}.history_page`,
               () =>
-                readChatHistoryPage(
-                  {
-                    // Internal adapters may inspect message objects before responding.
-                    encodeResponse: acceptsSerializedJson && method === req.method,
-                    entry: historyEntry,
-                    provider: resolvedSessionModel.provider,
-                    sessionId,
-                    storePath,
-                    sessionAgentId,
-                    canonicalKey,
-                    max,
-                    maxHistoryBytes,
-                    responseHistoryBytes: maxResponseBytes,
-                    effectiveMaxChars,
-                    toolResultMaxChars,
-                    offset,
-                    messageId,
-                    ...(pageCursor ? { pageCursor } : {}),
-                  },
-                  signal,
-                ),
+                compactionId !== undefined
+                  ? readChatHistoryCompactionSpanPage(
+                      {
+                        entry: historyEntry,
+                        provider: resolvedSessionModel.provider,
+                        sessionId,
+                        storePath,
+                        sessionAgentId,
+                        canonicalKey,
+                        max,
+                        maxHistoryBytes,
+                        responseHistoryBytes: maxResponseBytes,
+                        effectiveMaxChars,
+                        toolResultMaxChars,
+                        offset,
+                        messageId,
+                        compactionId,
+                      },
+                      signal,
+                    )
+                  : readChatHistoryPage(
+                      {
+                        // Internal adapters may inspect message objects before responding.
+                        encodeResponse: acceptsSerializedJson && method === req.method,
+                        entry: historyEntry,
+                        provider: resolvedSessionModel.provider,
+                        sessionId,
+                        storePath,
+                        sessionAgentId,
+                        canonicalKey,
+                        max,
+                        maxHistoryBytes,
+                        responseHistoryBytes: maxResponseBytes,
+                        effectiveMaxChars,
+                        toolResultMaxChars,
+                        offset,
+                        messageId,
+                        ...(pageCursor ? { pageCursor } : {}),
+                      },
+                      signal,
+                    ),
               {
                 config: cfg,
                 phase: method,
@@ -275,6 +301,18 @@ export async function handleChatHistoryRequest({
             );
     } catch (error) {
       respondReadError(error);
+      return;
+    }
+    if (!historyPage) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `compactionId "${compactionId}" is not a compaction checkpoint in this session; ` +
+            'compaction rows in history carry __openclaw.kind "compaction" and the id in __openclaw.id',
+        ),
+      );
       return;
     }
     const responsePage = historyPage.encodedResponse

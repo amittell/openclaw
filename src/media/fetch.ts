@@ -112,6 +112,7 @@ type SaveResponseMediaOptions = {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 type SaveRemoteMediaOptions = FetchMediaOptions & {
@@ -120,6 +121,7 @@ type SaveRemoteMediaOptions = FetchMediaOptions & {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 type GuardedMediaResponse = {
@@ -530,6 +532,7 @@ async function saveOkMediaResponse(
       params.maxBytes,
       params.originalFilename,
       detectionFilePathHint,
+      { scope: params.scope },
     );
     return { ...saved, ...(fileName ? { fileName } : {}) };
   } catch (err) {

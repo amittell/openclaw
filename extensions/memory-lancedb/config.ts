@@ -8,7 +8,10 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 type ProducedMemoryConfig = ReturnType<typeof memoryConfigSchema.parse>;
 type OptionalMemoryFields = "dreaming" | "dbPath" | "autoCapture" | "autoRecall";
-type OptionalEmbeddingFields = "apiKey" | "baseUrl" | "dimensions";
+// `fallbackBaseUrl` is an optional secondary OpenAI-compatible endpoint. When set, the embedder
+// fails over to it if the primary baseUrl is unreachable (client-side failover; see
+// OpenAiCompatibleEmbeddings).
+type OptionalEmbeddingFields = "apiKey" | "baseUrl" | "fallbackBaseUrl" | "dimensions";
 export type MemoryConfig = Omit<ProducedMemoryConfig, "embedding" | OptionalMemoryFields> &
   Partial<Pick<ProducedMemoryConfig, OptionalMemoryFields>> & {
     embedding: Omit<ProducedMemoryConfig["embedding"], OptionalEmbeddingFields> &
@@ -27,7 +30,14 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-small": 1536,
   "text-embedding-3-large": 3072,
 };
-const EMBEDDING_CONFIG_KEYS = ["provider", "apiKey", "model", "baseUrl", "dimensions"] as const;
+const EMBEDDING_CONFIG_KEYS = [
+  "provider",
+  "apiKey",
+  "model",
+  "baseUrl",
+  "fallbackBaseUrl",
+  "dimensions",
+] as const;
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -184,6 +194,10 @@ export const memoryConfigSchema = {
         apiKey: typeof embedding.apiKey === "string" ? resolveEnvVars(embedding.apiKey) : undefined,
         baseUrl:
           typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined,
+        fallbackBaseUrl:
+          typeof embedding.fallbackBaseUrl === "string"
+            ? resolveEnvVars(embedding.fallbackBaseUrl)
+            : undefined,
         dimensions,
       },
       dreaming,

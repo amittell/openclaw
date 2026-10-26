@@ -517,11 +517,16 @@ type GroupToolPolicyOutcome =
   | { kind: "resolved"; policy?: SandboxToolPolicy }
   | { kind: "account-unavailable"; accountId: string; message: string };
 
-function unavailableScheduledAccount(accountId: string): GroupToolPolicyOutcome {
+function unavailableScheduledAccount(
+  accountId: string,
+  missingCreatorChannel = false,
+): GroupToolPolicyOutcome {
   return {
     kind: "account-unavailable",
     accountId,
-    message: `Scheduled account "${accountId}" is unavailable. Re-add it to the channel configuration, or recreate this automation from the intended account.`,
+    message: missingCreatorChannel
+      ? `Scheduled account "${accountId}" is unavailable: the job has no recorded creator channel, so its scheduled authority cannot be resolved. Re-save the job's tool cap from the creator's authenticated turn to record it, or recreate the automation from the intended account.`
+      : `Scheduled account "${accountId}" is unavailable. Re-add it to the channel configuration, or recreate this automation from the intended account.`,
   };
 }
 
@@ -565,7 +570,7 @@ export function resolveGroupToolPolicyOutcome(params: {
   const accountId = normalizeAccountId(params.accountId);
   if (!channel) {
     return params.requireConfiguredAccount && accountId !== DEFAULT_ACCOUNT_ID
-      ? unavailableScheduledAccount(accountId)
+      ? unavailableScheduledAccount(accountId, true)
       : { kind: "resolved" };
   }
   let plugin;

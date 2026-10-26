@@ -6,6 +6,7 @@ import {
   extractFastDirective,
   extractReasoningDirective,
   extractStatusDirective,
+  extractTemperatureDirective,
   extractTraceDirective,
   extractThinkDirective,
   extractVerboseDirective,
@@ -14,6 +15,7 @@ import { extractQueueDirective } from "./queue/directive.js";
 
 const REPLY_DIRECTIVE_COMMANDS = {
   think: "hasThinkDirective",
+  temperature: "hasTemperatureDirective",
   verbose: "hasVerboseDirective",
   trace: "hasTraceDirective",
   fast: "hasFastDirective",
@@ -85,6 +87,7 @@ export function parseInlineSessionDirectives(
     return parsed;
   };
   const think = parseScopedDirective("think", extractThinkDirective);
+  const temperature = parseScopedDirective("temperature", extractTemperatureDirective);
   const verbose = parseScopedDirective("verbose", extractVerboseDirective);
   const trace = parseScopedDirective("trace", extractTraceDirective);
   const fast = parseScopedDirective("fast", extractFastDirective);
@@ -118,6 +121,11 @@ export function parseInlineSessionDirectives(
     thinkLevel: think.thinkLevel,
     rawThinkLevel: think.rawLevel,
     clearThinkLevel: think.hasDirective && isSessionDefaultDirectiveValue(think.rawLevel),
+    hasTemperatureDirective: temperature.hasDirective,
+    temperature: temperature.temperature,
+    rawTemperature: temperature.rawTemperature,
+    clearTemperature:
+      temperature.hasDirective && isSessionDefaultDirectiveValue(temperature.rawTemperature),
     hasVerboseDirective: verbose.hasDirective,
     verboseLevel: verbose.verboseLevel,
     rawVerboseLevel: verbose.rawLevel,

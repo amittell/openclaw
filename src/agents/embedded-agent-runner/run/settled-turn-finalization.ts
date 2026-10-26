@@ -4,6 +4,7 @@ import {
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
+import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import {
   SessionTranscriptWriterClaimReboundError,
@@ -20,6 +21,7 @@ import {
   GENERIC_ASSISTANT_ERROR_TEXT,
 } from "../../embedded-agent-helpers/error-text.js";
 import { runAgentHarnessSettledTurnFinalization } from "../../harness/selection.js";
+import { RejectedToolCallSettledTurnFinalizationError } from "../../harness/settled-turn-finalization-outcome.js";
 import { resolveSettledTurnFinalizationText } from "../../harness/settled-turn-finalization-result.js";
 import type {
   AgentHarness,
@@ -43,16 +45,20 @@ import { resolveRuntimeModelAttempt } from "./backend.js";
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
 import {
   resolveSettledToolBatchEvidence,
+  SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
+import {
+  resolveAnswerOnlyFinalizationRequest,
+  resolveSettledTurnFinalizationRequest,
+} from "./settled-turn-finalization-request.js";
 import {
   isEmbeddedRunTerminalTimeout,
   resolveEmbeddedRunAttemptTerminalOutcome,
   type EmbeddedRunTerminalState,
 } from "./terminal-outcome.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
-import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type TerminalPreparationInput = Parameters<typeof prepareEmbeddedRunTerminal>[0];
@@ -60,6 +66,10 @@ type CreateAttemptControls = ReturnType<
   typeof createEmbeddedRunLaneController
 >["createAttemptControls"];
 const MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS = 2;
+// "low" is a level every reasoning transport accepts. "off" is not kept: a
+// response that exhausted its budget on reasoning at "off" shows the transport
+// ignored it and fell back to its default effort.
+const ANSWER_ONLY_THINK_LEVELS = new Set<ThinkLevel>(["minimal", "low"]);
 const SETTLED_TOOL_FINALIZATION_FALLBACK_TEXT =
   "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
 type TerminalPreparationBase = Omit<
@@ -123,7 +133,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     lastRunPromptUsage,
     finalizationOutcome,
   });
-  const prompt = resolveSettledTurnFinalizationRequest({
+  const finalizationRequest = {
     runParams: input.terminalBase.runParams,
     attempt,
     activeErrorContext: input.terminalBase.activeErrorContext,
@@ -138,7 +148,11 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     settledTurnFinalizationAvailable:
       !input.terminalBase.runParams.providerReviewAcknowledgment &&
       typeof input.finalization.harness.finalizeSettledTurn === "function",
-  });
+  };
+  // A response that spent its whole budget on reasoning needs less reasoning,
+  // not another settled-tool pass at the same effort, so this request wins.
+  const answerOnlyPrompt = resolveAnswerOnlyFinalizationRequest(finalizationRequest);
+  const prompt = answerOnlyPrompt ?? resolveSettledTurnFinalizationRequest(finalizationRequest);
   if (!prompt) {
     return preserveInitial("not-attempted");
   }
@@ -167,39 +181,66 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   // A host summary cannot replace a tool failure or an owner-recorded timeout.
   // Keep the original outcome when recovery produces no answer, including for
   // silent helper runs; a synthetic fallback would otherwise clear the timeout
-  // and report an aborted run as a delivered success.
+  // and report an aborted run as a delivered success. The tool-run fallback
+  // text also misdescribes an answer-only pass, which keeps its incomplete turn.
   const preserveOriginalTerminal =
+    answerOnlyPrompt !== null ||
     Boolean(initial.attempt.lastToolError) ||
     isEmbeddedRunTerminalTimeout(initial.terminalState.outcome);
   const terminalFallbackAllowed =
     input.finalization.preparedAttempt.silentExpected !== true && !preserveOriginalTerminal;
   const terminalFailed =
     classifyAgentRunTerminalOutcome(initial.terminalState.outcome) === "failure";
+  const answerOnlyThinkLevel = answerOnlyPrompt
+    ? resolveAnswerOnlyThinkLevel(input.finalization.preparedAttempt.thinkLevel)
+    : undefined;
+  // The answer-only pass is the turn's one bounded recovery; it never repeats.
+  const maxFinalizationAttempts = answerOnlyPrompt ? 1 : MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS;
   log.warn(
-    `settled post-tool turn lacked a final answer: ${describeRun()} — running isolated finalization`,
+    answerOnlyThinkLevel
+      ? `final response spent its output budget on reasoning: ${describeRun()} — running one answer-only finalization (tools disabled, thinking=${answerOnlyThinkLevel})`
+      : `settled post-tool turn lacked a final answer: ${describeRun()} — running isolated finalization`,
   );
   let finalizationOutcome: "answered" | "empty" | "failed" | "silent-fallback" = "failed";
   try {
     let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
     let finalizationAttempt = 0;
+    let attemptPrompt = prompt;
     for (;;) {
       finalizationAttempt += 1;
       assertFinalizationActive();
-      finalization = await runPreparedSettledTurnFinalization({
-        attempt: {
-          ...input.finalization.preparedAttempt,
-          // The first transcript append may have committed the writer after
-          // dispatch preparation. The summary must retain that original fence.
-          ...(committedSessionTarget ? { sessionTarget: committedSessionTarget } : {}),
-          sessionId: committedSessionTarget?.sessionId ?? initial.sessionIdUsed,
-          sessionFile: initial.sessionFileUsed ?? input.finalization.preparedAttempt.sessionFile,
-        },
-        settledAttempt: initial.attempt,
-        harness: input.finalization.harness,
-        prompt,
-        createAttemptControls: input.finalization.createAttemptControls,
-        abortSignal: input.finalization.abortSignal,
-      });
+      try {
+        finalization = await runPreparedSettledTurnFinalization({
+          attempt: {
+            ...input.finalization.preparedAttempt,
+            // The first transcript append may have committed the writer after
+            // dispatch preparation. The summary must retain that original fence.
+            ...(committedSessionTarget ? { sessionTarget: committedSessionTarget } : {}),
+            sessionId: committedSessionTarget?.sessionId ?? initial.sessionIdUsed,
+            sessionFile: initial.sessionFileUsed ?? input.finalization.preparedAttempt.sessionFile,
+            ...(answerOnlyThinkLevel ? { thinkLevel: answerOnlyThinkLevel } : {}),
+          },
+          settledAttempt: initial.attempt,
+          harness: input.finalization.harness,
+          prompt: attemptPrompt,
+          createAttemptControls: input.finalization.createAttemptControls,
+          abortSignal: input.finalization.abortSignal,
+        });
+      } catch (error) {
+        // A pass that stopped at a rejected tool call did no work. It spends
+        // the same bounded attempt an empty pass would, never a new budget.
+        if (
+          !(error instanceof RejectedToolCallSettledTurnFinalizationError) ||
+          finalizationAttempt >= maxFinalizationAttempts
+        ) {
+          throw error;
+        }
+        log.warn(
+          `settled-turn finalization stopped at a tool call with tools disabled: ${describeRun()} tools=${error.toolNames.join(",")} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
+        );
+        attemptPrompt = `${prompt}\n\n${SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION}`;
+        continue;
+      }
       assertFinalizationActive();
       attempt = finalization.attempt;
       // The harness retains authored silence as an empty result; only the host
@@ -222,20 +263,17 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
-      if (
-        finalization.outcome !== "empty" ||
-        finalizationAttempt >= MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-      ) {
+      if (finalization.outcome !== "empty" || finalizationAttempt >= maxFinalizationAttempts) {
         break;
       }
       log.warn(
-        `settled-turn finalization completed without a visible answer: ${describeRun()} — retrying ${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS - 1} with tools disabled`,
+        `settled-turn finalization completed without a visible answer: ${describeRun()} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
       );
     }
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(
-        `settled-turn finalization completed without a visible answer: ${describeRun()} attempts=${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
+        `settled-turn finalization completed without a visible answer: ${describeRun()} attempts=${finalizationAttempt}/${maxFinalizationAttempts} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
       );
     }
   } catch (error) {
@@ -364,6 +402,10 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
           ? ("completed-empty" as const)
           : finalizationOutcome,
   };
+}
+
+function resolveAnswerOnlyThinkLevel(level: ThinkLevel): ThinkLevel {
+  return ANSWER_ONLY_THINK_LEVELS.has(level) ? level : "low";
 }
 
 function resolveSessionWriterDeliveryAuthority(input: {

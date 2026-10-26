@@ -195,6 +195,7 @@ export function createAgentTurnService(
       let supersededSessionId: string | undefined;
       let skipAgentInitialSessionTouch = false;
       let pendingChatRun: { sessionKey: string; agentId?: string } | undefined;
+      let resolvedStorePath: string | undefined;
       let admittedSessionId = resolvedSessionId ?? runId;
       const admissionController = createAgentAdmissionController({
         assertAdmissionCurrent,
@@ -288,6 +289,7 @@ export function createAgentTurnService(
           touchInteraction,
         } = preparedSession;
         cfgForAgent = cfgLocal;
+        resolvedStorePath = storePath;
         // Authorize the canonical session the run will actually target — covering
         // keyless requests whose default/effective session is resolved only here —
         // before any run side effects (admission, dispatch).
@@ -528,6 +530,7 @@ export function createAgentTurnService(
             prepared: preparedDispatch,
             mainRestartRecoveryOwnerLease,
             resolvedSessionId,
+            storePath: resolvedStorePath,
             agentId,
             isNewSession,
             imageOrder,

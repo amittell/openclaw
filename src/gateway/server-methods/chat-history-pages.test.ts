@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { shouldReadAnchoredWindow } from "./chat-history-pages.js";
 import {
   enrichChatHistoryCompactionMarkers,
   prepareChatHistoryResponsePage,
@@ -143,5 +144,52 @@ describe("chat history source-row byte limits", () => {
     expect(page.activity).toBeUndefined();
     expect(page.nextOffset).toBe(2);
     expect(page.hasMore).toBe(true);
+  });
+});
+
+describe("shouldReadAnchoredWindow", () => {
+  const cli = "claude-cli-session-1";
+
+  it("reads a compaction span even when the session has a CLI import binding", () => {
+    // Regression: the span shares the anchored branch with messageId, which
+    // deliberately falls through to the CLI merge. Falling through here answered a
+    // span request with the live tail and reported success, so the caller could not
+    // tell the shadowed rows were never read.
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: undefined,
+        compactionId: "entry-compaction-1",
+        cliSessionId: cli,
+      }),
+    ).toBe(true);
+  });
+
+  it("still lets messageId fall through to the CLI merge", () => {
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: "entry-message-1",
+        compactionId: undefined,
+        cliSessionId: cli,
+      }),
+    ).toBe(false);
+  });
+
+  it("reads anchored windows directly without a CLI binding", () => {
+    for (const anchor of [
+      { messageId: "entry-message-1", compactionId: undefined },
+      { messageId: undefined, compactionId: "entry-compaction-1" },
+    ]) {
+      expect(shouldReadAnchoredWindow({ ...anchor, cliSessionId: undefined })).toBe(true);
+    }
+  });
+
+  it("leaves an unanchored tail read to the normal path", () => {
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: undefined,
+        compactionId: undefined,
+        cliSessionId: undefined,
+      }),
+    ).toBe(false);
   });
 });

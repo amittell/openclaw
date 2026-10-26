@@ -94,6 +94,7 @@ import { applySessionContextWindowPatch } from "./sessions-patch-context-window.
 import { applySessionsPatchDisplayMetadata } from "./sessions-patch-display-metadata.js";
 import { applySessionPatchLifecycleFlags } from "./sessions-patch-lifecycle-flags.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
+import { applySessionPatchTemperature } from "./sessions-patch-temperature.js";
 
 type SessionPatchProjectionParams = {
   cfg: OpenClawConfig;
@@ -390,6 +391,11 @@ function* projectSessionPatchSteps(
   );
   if (fastModeError) {
     return invalid(fastModeError);
+  }
+
+  const temperatureError = applySessionPatchTemperature(next, patch);
+  if (temperatureError) {
+    return invalid(temperatureError);
   }
 
   if ("toolOverrides" in patch) {

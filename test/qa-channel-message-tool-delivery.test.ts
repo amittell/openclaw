@@ -9,6 +9,7 @@ import {
 } from "../extensions/qa-channel/api.js";
 import { createQaBusState, startQaBusServer } from "../extensions/qa-lab/api.js";
 import { createMessageTool } from "../src/agents/tools/message-tool-execution.js";
+import { resetMessageToolSendSuppressionForTest } from "../src/agents/tools/message-tool-execution.send-suppression.js";
 import { buildThreadingToolContext } from "../src/auto-reply/reply/agent-runner-utils.js";
 import { resolveReplyToMode } from "../src/auto-reply/reply/reply-threading.js";
 import * as bootstrapRegistry from "../src/channels/plugins/bootstrap-registry.js";
@@ -27,6 +28,10 @@ import { withOpenClawTestState } from "../src/test-utils/openclaw-test-state.js"
 afterEach(() => {
   vi.restoreAllMocks();
   setActivePluginRegistry(createTestRegistry([]));
+  // Every case here shares one conversationId, one nonce, and (when trusted) one
+  // runId, so this fork's intra-run duplicate-send tracker would otherwise carry a
+  // prior case's sends into the next one and suppress them outright.
+  resetMessageToolSendSuppressionForTest();
 });
 
 const conversationId = "qa-shared-id";
@@ -474,24 +479,37 @@ describe("QA message-tool current conversation delivery", () => {
             ).rejects.toThrow("Completion source replies");
           }
         }
-        for (const args of [
+        // INTENTIONAL DIVERGENCE FROM UPSTREAM INPUT: upstream sends one nonce
+        // twice. This case measures routing, accounts and threading, not the fork's
+        // intra-run duplicate-send guard, which has its own coverage in
+        // message-tool.test.ts, so the two sends carry distinct text. Restoring the
+        // shared nonce to "match upstream" re-weakens this case to `trusted ? 1 : 2`,
+        // which is the regression this exists to prevent.
+        const withinSourceArgs = [
           {},
           { target: `dm:${conversationId}`, accountId: "SECONDARY", replyTo: inbound.id },
-        ]) {
-          await tool.execute("within-source", { action: "send", message: nonce, ...args });
+        ];
+        for (const [index, args] of withinSourceArgs.entries()) {
+          await tool.execute("within-source", {
+            action: "send",
+            message: `${nonce} ${index + 1}`,
+            ...args,
+          });
         }
         const snapshot = await getQaBusState(baseUrl);
         const outbound = snapshot.messages.filter((message) => message.direction === "outbound");
         expect(outbound).toHaveLength(2);
-        for (const message of outbound) {
+        outbound.forEach((message, index) => {
+          // Exact text per index pins ordering with content: a containment check
+          // would pass even if both sends carried the same index.
           expect(message).toMatchObject({
             conversation: inbound.conversation,
             accountId: "secondary",
-            text: nonce,
+            text: `${nonce} ${index + 1}`,
           });
           expect.soft(message.threadId).toBe("topic");
           expect(message.replyToId).toBe(inbound.id);
-        }
+        });
       },
     );
   });

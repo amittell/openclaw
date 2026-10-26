@@ -4,6 +4,7 @@ import { Value } from "typebox/value";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { typeCheckSources } from "../../../test/helpers/typescript.js";
 import { clearCronJobActive, markCronJobActive } from "../../cron/active-jobs.js";
+import { cronJobReadView } from "../../cron/job-read-view.js";
 import { CronService } from "../../cron/service.js";
 import { createCronStoreHarness, createNoopLogger } from "../../cron/service.test-harness.js";
 import type { CronJob } from "../../cron/types.js";
@@ -156,6 +157,48 @@ describe("automations output contract", () => {
     expect(
       Value.Errors(expectDefined(tool.outputSchema, "automations output schema"), result.details),
     ).toEqual([]);
+  });
+
+  it("accepts the reauthorization flags that Gateway projections emit", async () => {
+    const { storePath } = await makeStorePath();
+    const cron = createCronService(storePath);
+    onTestFinished(() => cron.stop());
+    const ownerSessionKey = "agent:main:telegram:direct:creator";
+    const blocked: CronJob = {
+      ...job,
+      id: "dm-capped-watcher",
+      sessionTarget: "isolated",
+      payload: { kind: "agentTurn", message: "Check the queue", toolsAllow: ["read"] },
+      owner: { sessionKey: ownerSessionKey, accountId: "work" },
+      scheduledToolPolicy: { version: 1, mode: "account", ownerSessionKey, ownerAccountId: "work" },
+    };
+    const source = {
+      ...page,
+      jobs: [freezeJsonSnapshot(structuredClone(blocked))],
+      snapshotRevision: "blocked-inventory",
+    };
+    const compactList = { ...source, jobs: projectCronListJobs(cron, source, true) };
+    const details = cronJobReadView(blocked);
+    expect(compactList.jobs[0]).toMatchObject({ reauthorizationRequired: true });
+    expect(details).toMatchObject({ reauthorizationRequired: true });
+    const gatewayCall = vi
+      .fn()
+      .mockResolvedValueOnce(await cron.status())
+      .mockResolvedValueOnce(details)
+      .mockResolvedValueOnce(compactList)
+      .mockResolvedValueOnce({ ...source, jobs: projectCronListJobs(cron, source, false) });
+    const tool = createCronTool(undefined, { callGatewayTool: gatewayCall });
+    const outputSchema = expectDefined(tool.outputSchema, "automations output schema");
+    for (const args of [
+      { action: "status" },
+      { action: "get", jobId: blocked.id },
+      { action: "list" },
+      { action: "list" },
+    ]) {
+      const result = await tool.execute(`reauthorization-${args.action}`, args);
+      expect(Value.Errors(outputSchema, result.details), args.action).toEqual([]);
+    }
+    expect(gatewayCall).toHaveBeenCalledTimes(4);
   });
 
   it("still runs on a shipped Gateway that rejects the run wait", async () => {

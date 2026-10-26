@@ -25,6 +25,8 @@ import {
 import type {
   SessionTranscriptPageReader,
   ReadRecentSessionMessagesResult,
+  ReadSessionMessagesAroundIdResult,
+  SessionTranscriptReadScope,
 } from "../session-transcript-read.types.js";
 import { attachChatHistoryReplyMessages } from "./chat-history-reply-messages.js";
 import { prepareChatHistoryResponsePage } from "./chat-history-response-page.js";
@@ -36,6 +38,15 @@ export type ChatHistoryPageKernelOptions = {
   resolveCurrentUserProfileDisplay?: CurrentUserProfileDisplayResolver;
   resolveCronJobName?: ChatDisplayProjectionOptions["resolveCronJobName"];
   readMessageSequence?: (message: unknown) => number | undefined;
+  /**
+   * Reads the span a compaction summary shadowed (fork: chat.history / sessions_history
+   * `compactionId`). Host-supplied because the span reader is not in the worker's admitted
+   * reader set; `undefined` from it means the id is not a compaction in this transcript.
+   */
+  readCompactionShadowPage?: (
+    readScope: SessionTranscriptReadScope,
+    opts: { compactionId: string; maxMessages: number; offset: number },
+  ) => Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined>;
 };
 
 function resolveChatHistoryActiveLeafEntryId(
@@ -48,6 +59,33 @@ function resolveChatHistoryActiveLeafEntryId(
     return readPage.activeLeafEntryId ?? null;
   }
   return resolveSessionTranscriptActiveLeafEntryId(readPage.transcriptEvents ?? []) ?? null;
+}
+
+/**
+ * Anchored reads (messageId, compaction span) bypass the incremental tail.
+ *
+ * Bound snapshots are terminal by contract, so a messageId read falls through to the
+ * CLI-import merge when the session carries an import binding, because that merge
+ * still centers on messageId at the handler cap. Offset pages use the tail reader.
+ *
+ * A compaction span never falls through. It is a fixed historical window in this
+ * session's own transcript, so an import binding cannot change what the boundary
+ * shadowed, and the merge would answer a span request with the live tail while
+ * reporting success -- the caller could not tell the span was never read.
+ *
+ * Since v2026.10.1 the kernel merges CLI imports inside its readers and passes no binding
+ * here; the `cliSessionId` arm remains the contract for a host that merges after the read.
+ */
+export function shouldReadAnchoredWindow(params: {
+  messageId: string | undefined;
+  compactionId: string | undefined;
+  cliSessionId: string | undefined;
+}): boolean {
+  const { messageId, compactionId, cliSessionId } = params;
+  if (compactionId) {
+    return true;
+  }
+  return Boolean(messageId) && !cliSessionId;
 }
 
 /** Assemble one page from admitted readers; host imports and profile discovery stay outside. */
@@ -67,6 +105,7 @@ export async function readChatHistoryPageKernel(
     offset,
     messageId,
     pageCursor,
+    compactionId,
   } = params;
   if (!sessionId || !storePath) {
     if (messageId) {
@@ -90,16 +129,34 @@ export async function readChatHistoryPageKernel(
   const attachReplyMessages = (messages: unknown[]) =>
     attachChatHistoryReplyMessages(augmentChatHistoryWithCanvasBlocks(messages), params, options);
   const readSequence = options.readMessageSequence ?? readChatHistoryMessageSeq;
-  if (messageId) {
+  // v2026.10.1 merges CLI imports inside the readers it hands this kernel, so the kernel has
+  // no import binding to gate on and anchored messageId reads always read directly. The
+  // compaction span reads through `readCompactionShadowPage`, never through those readers.
+  if (shouldReadAnchoredWindow({ messageId, compactionId, cliSessionId: undefined })) {
     const direction = pageCursor?.direction;
-    const readPage = await options.readers.readSessionMessagesAroundIdWithStatsAsync(readScope, {
-      messageId,
-      // Directional pages exclude the anchor; older pages also need preceding turn context.
-      maxMessages: max + (direction === "older" ? 2 : direction === "newer" ? 1 : 0),
-      direction,
-      allowResetArchiveFallback: true,
-      readOnly: options.readOnly,
-    });
+    let readPage: ReadSessionMessagesAroundIdResult | undefined;
+    if (compactionId) {
+      // A shadowed span is a fixed historical window: no live tail cursor and no CLI merge.
+      const spanPage = await options.readCompactionShadowPage?.(readScope, {
+        compactionId,
+        maxMessages: max,
+        offset: offset ?? 0,
+      });
+      // The span reader returns at most maxMessages rows, so it carries no overread context.
+      readPage = spanPage && { ...spanPage, found: true, hasOverreadContext: false };
+    } else if (messageId) {
+      readPage = await options.readers.readSessionMessagesAroundIdWithStatsAsync(readScope, {
+        messageId,
+        // Directional pages exclude the anchor; older pages also need preceding turn context.
+        maxMessages: max + (direction === "older" ? 2 : direction === "newer" ? 1 : 0),
+        direction,
+        allowResetArchiveFallback: true,
+        readOnly: options.readOnly,
+      });
+    }
+    if (!readPage) {
+      return { messages: [] };
+    }
     const source = readPage.displaySource
       ? createTranscriptDisplaySource([readPage.displaySource])
       : undefined;
@@ -193,6 +250,23 @@ export async function readChatHistoryPageKernel(
           (message) => (readSequence(message) ?? Infinity) <= newestPageSeq,
         );
       }
+    }
+    if (compactionId) {
+      // The span pages by offset inside the shadowed window, so it keeps its pagination.
+      const pageOffset = readPage.offset;
+      return {
+        messages: await attachReplyMessages(projected),
+        ...(projection.activity.length ? { activity: projection.activity } : {}),
+        responseOffset: pageOffset,
+        pagination: {
+          offset: pageOffset,
+          totalMessages: readPage.totalMessages,
+          rawPageMessages: Math.min(
+            max,
+            Math.max(readPage.messages.length, readPage.totalMessages > pageOffset ? 1 : 0),
+          ),
+        },
+      };
     }
     const cursorMessages = dropChatHistoryOverreadContextMessage(
       pageMessages,

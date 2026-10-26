@@ -100,6 +100,32 @@ function messagesMatchForIdempotentReplay(stored: unknown, candidate: unknown): 
   return isDeepStrictEqual(serializedShape(stored), serializedShape(candidate, legacyMediaMirror));
 }
 
+// Fork-only (upstream #169154; main fixed it in #169237, which needs #167938's prompt projection).
+// Storage redaction is not idempotent for every rule: a value the first pass hints (`eyJhbG…2C31`)
+// a second pass masks (`***`). A run's copy of an admitted user turn can arrive one pass further
+// than its stored copy, so a keyed user replay also matches the stored copy redacted once more.
+function userReplayMatchesAdmittedMessage(
+  stored: unknown,
+  candidate: unknown,
+  options: Pick<TranscriptMessageAppendOptions<unknown>, "config">,
+): boolean {
+  if (messagesMatchForIdempotentReplay(stored, candidate)) {
+    return true;
+  }
+  if (
+    !isRecord(stored) ||
+    stored.role !== "user" ||
+    !isRecord(candidate) ||
+    candidate.role !== "user"
+  ) {
+    return false;
+  }
+  return messagesMatchForIdempotentReplay(
+    redactTranscriptMessageForStorage(stored, options),
+    candidate,
+  );
+}
+
 type TranscriptMessageEnvelope = {
   type: "message";
   id: string;
@@ -234,10 +260,13 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     if (existing) {
       if (
         !options.prepareMessageAfterIdempotencyCheck &&
-        !messagesMatchForIdempotentReplay(
-          existing.message,
-          pending?.message ?? serializeForStorage(options.message),
-        )
+        !(pending
+          ? messagesMatchForIdempotentReplay(existing.message, pending.message)
+          : userReplayMatchesAdmittedMessage(
+              existing.message,
+              serializeForStorage(options.message),
+              options,
+            ))
       ) {
         throw new TranscriptTurnAdmissionConflictError(idempotencyKey);
       }
@@ -323,7 +352,9 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     if (existing) {
       if (
         !options.prepareMessageAfterIdempotencyCheck &&
-        !messagesMatchForIdempotentReplay(existing.message, finalMessage)
+        !(pending
+          ? messagesMatchForIdempotentReplay(existing.message, finalMessage)
+          : userReplayMatchesAdmittedMessage(existing.message, finalMessage, options))
       ) {
         throw new TranscriptTurnAdmissionConflictError(idempotencyKey ?? `event:${messageId}`);
       }

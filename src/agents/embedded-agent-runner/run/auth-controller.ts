@@ -14,7 +14,6 @@ import {
 import { OAuthRefreshFailureError } from "../../auth-profiles/oauth-refresh-failure.js";
 import { classifyFailoverReason } from "../../embedded-agent-helpers.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
-import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
 import { getFailoverErrorCode } from "../../failover/error.js";
 import type { FailoverReason } from "../../failover/signal.js";
 import { renderAuthProfileFailoverCopy } from "../../failover/user-copy.js";
@@ -29,7 +28,13 @@ import { providerModelRouteAcceptsAuthMode } from "../../provider-model-route-au
 import { applyPreparedRuntimeAuthToModel } from "../../provider-request-config.js";
 import { protectPreparedProviderRuntimeAuth } from "../../provider-runtime-auth-protection.js";
 import { unwrapSecretSentinelsForProviderEgress } from "../../provider-secret-egress.js";
-import { clampRuntimeAuthRefreshDelayMs } from "../../runtime-auth-refresh.js";
+import {
+  clampRuntimeAuthRefreshDelayMs,
+  RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS,
+  RuntimeAuthDeadlineError,
+  withRuntimeAuthRefreshDeadline,
+} from "../../runtime-auth-refresh.js";
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.cooldown-probe.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 import {
@@ -40,6 +45,9 @@ import {
 } from "./helpers.js";
 import type { resolveEmbeddedRunEffectiveModel } from "./model-harness.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
+// Re-exported so `./auth-controller.js` stays the import path for the cooldown
+// probe policy; auth-controller.test.ts reads it there.
+export { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.cooldown-probe.js";
 
 export type EmbeddedRunAuthState = {
   readonly models: {
@@ -69,42 +77,6 @@ function resolveUnavailableAuthReason(
   profileIds: string[],
 ): FailoverReason {
   return resolveProfilesUnavailableReason({ store, profileIds }) ?? "unknown";
-}
-
-/** Decides whether one automatic profile may bypass its current cooldown. */
-export function resolveEmbeddedAuthCooldownProbePolicy(params: {
-  authStore: AuthProfileStore;
-  profileCandidates: Array<string | undefined>;
-  lockedProfileId?: string;
-  modelId: string;
-  allowTransientCooldownProbe: boolean;
-}): { probeProfileIds: ReadonlySet<string>; unavailableReason: FailoverReason | null } {
-  const autoProfileCandidates = params.profileCandidates.filter(
-    (candidate): candidate is string =>
-      typeof candidate === "string" && candidate.length > 0 && candidate !== params.lockedProfileId,
-  );
-  const allAutoProfilesInCooldown =
-    autoProfileCandidates.length > 0 &&
-    autoProfileCandidates.every((candidate) =>
-      isProfileInCooldown(params.authStore, candidate, undefined, params.modelId),
-    );
-  const unavailableReason = allAutoProfilesInCooldown
-    ? resolveUnavailableAuthReason(params.authStore, autoProfileCandidates)
-    : null;
-  const probeProfileIds = new Set<string>();
-  if (
-    params.allowTransientCooldownProbe &&
-    allAutoProfilesInCooldown &&
-    shouldUseTransientCooldownProbeSlot(unavailableReason)
-  ) {
-    for (const candidate of autoProfileCandidates) {
-      const candidateReason = resolveUnavailableAuthReason(params.authStore, [candidate]);
-      if (shouldUseTransientCooldownProbeSlot(candidateReason)) {
-        probeProfileIds.add(candidate);
-      }
-    }
-  }
-  return { probeProfileIds, unavailableReason };
 }
 
 /** Shares one transient probe across the selected owner's initial and later candidates. */
@@ -221,6 +193,13 @@ export function createEmbeddedRunAuthController(params: {
     });
   };
 
+  // Single hard-deadline backstop applied at EVERY auth boundary that can block
+  // on a provider hook, keychain read, or cross-agent lock/gate. Without it, any
+  // one of those hanging leaves the model-turn lane deadlocked (the rh-bot
+  // freeze). Covers the refresh path AND the cold-start/profile-rotation path.
+  const withAuthDeadline = <T>(work: Promise<T>, label: string): Promise<T> =>
+    withRuntimeAuthRefreshDeadline(work, RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS, label);
+
   const clearRuntimeAuthRefreshTimer = () => {
     const runtimeAuthState = state.runtimeAuthState;
     if (!runtimeAuthState?.refreshTimer) {
@@ -251,7 +230,7 @@ export function createEmbeddedRunAuthController(params: {
     // after another profile or credential has already become active.
     const refreshGeneration = runtimeAuthState.generation;
     const refreshProfileId = runtimeAuthState.profileId;
-    const refreshPromise: Promise<void> = (async () => {
+    const refreshOperation: Promise<void> = (async () => {
       const sourceApiKey = runtimeAuthState.sourceApiKey.trim();
       if (!sourceApiKey) {
         throw new Error(`Runtime auth refresh requires a source credential.`);
@@ -293,21 +272,44 @@ export function createEmbeddedRunAuthController(params: {
           `Runtime auth refreshed for ${runtimeModel.provider}; expires in ${Math.max(0, Math.floor(remaining / 1000))}s.`,
         );
       }
-    })()
+    })();
+    // Hard backstop: a provider auth hook, keychain read, or cross-agent lock
+    // wait that never settles must not leave `refreshInFlight` pending forever,
+    // or every later model turn deadlocks awaiting it, freezing the gateway
+    // until restart (observed in production).
+    const refreshPromise: Promise<void> = withAuthDeadline(
+      refreshOperation,
+      state.models.runtime.provider,
+    )
       .catch((err: unknown) => {
         const runtimeModel = state.models.runtime;
+        if (err instanceof RuntimeAuthDeadlineError) {
+          // The deadline abandons refreshOperation without cancelling it, and
+          // the continuation still holds this generation's stale-check
+          // snapshot. Bump the generation so the abandoned completion fails
+          // that check instead of overwriting credentials a retry installs.
+          const activeState = state.runtimeAuthState;
+          if (activeState && activeState.generation === refreshGeneration) {
+            activeState.generation = refreshGeneration + 1;
+            params.log.debug(
+              `Invalidated runtime auth generation ${refreshGeneration} for ${runtimeModel.provider}; deadline abandoned an in-flight refresh.`,
+            );
+          }
+        }
         params.log.warn(
           `Runtime auth refresh failed for ${runtimeModel.provider}: ${formatErrorMessage(err)}`,
         );
         throw err;
       })
       .finally(() => {
+        // Clear whenever this promise is still the active in-flight handle.
+        // Intentionally not gated on generation: a profile rotation during a
+        // slow/hung refresh must still release the handle it owns, otherwise the
+        // stale handle wedges the new generation's refreshes. The deadline path
+        // above bumps the generation itself, so a generation gate here would
+        // strand the handle it just invalidated.
         const activeState = state.runtimeAuthState;
-        if (
-          activeState &&
-          activeState.generation === refreshGeneration &&
-          activeState.refreshInFlight === refreshPromise
-        ) {
+        if (activeState && activeState.refreshInFlight === refreshPromise) {
           activeState.refreshInFlight = undefined;
         }
       });
@@ -478,17 +480,24 @@ export function createEmbeddedRunAuthController(params: {
 
   const applyApiKeyInfo = async (candidate?: string, attemptIndex?: number): Promise<void> => {
     const preparedModel = await params.prepareModelForAuthProfile?.(candidate, attemptIndex);
-    const apiKeyInfo = await getApiKeyForModelCore({
-      model: preparedModel?.runtimeModel ?? state.models.runtime,
-      cfg: params.config,
-      profileId: candidate,
-      store: params.authStore,
-      agentDir: params.agentDir,
-      workspaceDir: params.workspaceDir,
-      lockedProfile: candidate != null && candidate === params.lockedProfileId,
-      allowAuthProfileFallback: preparedModel?.allowAuthProfileFallback,
-      secretSentinels: true,
-    });
+    const resolutionModel = preparedModel?.runtimeModel ?? state.models.runtime;
+    // Hard-deadline credential resolution: a wedged keychain/OAuth call here
+    // blocks every later model turn awaiting the same single-flight, which
+    // froze the gateway until restart in production (#93952).
+    const apiKeyInfo = await withAuthDeadline(
+      getApiKeyForModelCore({
+        model: resolutionModel,
+        cfg: params.config,
+        profileId: candidate,
+        store: params.authStore,
+        agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
+        lockedProfile: candidate != null && candidate === params.lockedProfileId,
+        allowAuthProfileFallback: preparedModel?.allowAuthProfileFallback,
+        secretSentinels: true,
+      }),
+      `${resolutionModel.provider} credential resolution`,
+    );
     if (
       preparedModel?.authRequirement &&
       !providerModelRouteAcceptsAuthMode({
@@ -526,12 +535,15 @@ export function createEmbeddedRunAuthController(params: {
     const profileId = usesAwsSdkChain ? (apiKeyInfo.profileId ?? candidate) : apiKeyInfo.profileId;
     let runtimeAuthHandled = false;
     try {
-      const preparedAuth = await prepareRuntimeAuthForModel({
-        runtimeModel,
-        apiKey: sourceApiKey,
-        authMode: apiKeyInfo.mode,
-        profileId: apiKeyInfo.profileId,
-      });
+      const preparedAuth = await withAuthDeadline(
+        prepareRuntimeAuthForModel({
+          runtimeModel,
+          apiKey: sourceApiKey,
+          authMode: apiKeyInfo.mode,
+          profileId: apiKeyInfo.profileId,
+        }),
+        `${runtimeModel.provider} runtime auth`,
+      );
       applyPreparedRuntimeRequestOverrides(runtimeModel, preparedAuth);
       if (preparedAuth?.apiKey) {
         clearRuntimeAuthRefreshTimer();

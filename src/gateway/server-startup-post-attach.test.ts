@@ -23,9 +23,11 @@ import {
   getGatewayContextLifetime,
   getPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
-import type { PluginServiceCronHost } from "../plugins/service-cron.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
-import { createServiceRegistration } from "../plugins/services.test-support.js";
+import {
+  createServiceCronHost,
+  createServiceRegistration,
+} from "../plugins/services.test-support.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -3272,8 +3274,8 @@ describe("startGatewayPostAttachRuntime", () => {
         hasHooks: vi.fn((hookName: string) => hookName === "gateway_start"),
         runGatewayStart,
       };
-      const initialCron = createCronHost();
-      const depsCron = closing === "close" ? initialCron : createCronHost();
+      const initialCron = createServiceCronHost();
+      const depsCron = closing === "close" ? initialCron : createServiceCronHost();
       let currentCron = initialCron;
       const params = createPostAttachParams({
         trackStartupWork: (run) => {
@@ -3315,7 +3317,7 @@ describe("startGatewayPostAttachRuntime", () => {
         .getCronService;
       expect(serviceGetter?.()).toBe(closing === "restart" ? initialCron : undefined);
 
-      const reloadedCron = createCronHost();
+      const reloadedCron = createServiceCronHost();
       currentCron = reloadedCron;
       params.deps.cron = (closing === "close" ? reloadedCron : depsCron) as never;
       expect(getCron()).toBe(reloadedCron);
@@ -3329,24 +3331,6 @@ describe("startGatewayPostAttachRuntime", () => {
       expect(ctx.abortSignal?.aborted).toBe(true);
     },
   );
-});
-
-const createCronHost = (): PluginServiceCronHost => ({
-  enqueueRun: vi.fn<PluginServiceCronHost["enqueueRun"]>(),
-  status: vi.fn<PluginServiceCronHost["status"]>(async () => ({
-    enabled: true,
-    triggersEnabled: true,
-    storePath: "/synthetic/openclaw.sqlite",
-    storage: "sqlite",
-    sqlitePath: "/synthetic/openclaw.sqlite",
-    jobs: 0,
-    nextWakeAtMs: null,
-  })),
-  list: vi.fn<PluginServiceCronHost["list"]>(),
-  add: vi.fn<PluginServiceCronHost["add"]>(),
-  update: vi.fn<PluginServiceCronHost["update"]>(),
-  remove: vi.fn<PluginServiceCronHost["remove"]>(),
-  removeStaleJobFamily: vi.fn<PluginServiceCronHost["removeStaleJobFamily"]>(),
 });
 
 function createPostAttachRuntimeDeps(

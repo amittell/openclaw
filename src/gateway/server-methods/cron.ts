@@ -654,13 +654,15 @@ export const cronHandlers: GatewayRequestHandlers = {
         throw error;
       }
       if (!result.removed) {
-        respondCronJobNotFound(respond, jobId);
+        // Concurrent-delete race: another caller removed the job between read and remove.
+        respond(true, { removed: false, reason: "already-gone" }, undefined);
         return;
       }
       context.logGateway.info("cron: job removed", { jobId });
       respond(true, result, undefined);
     },
-    { allowCurrentJob: true },
+    // Idempotent delete: a second, racing remove of an already-gone job is a no-op success.
+    { allowCurrentJob: true, missingIsAlreadyGoneForUnscopedCaller: true },
   ),
   "cron.run": scopedCronJobHandler(
     "cron.run",

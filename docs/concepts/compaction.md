@@ -30,10 +30,25 @@ With the built-in safeguard quality guard enabled, OpenClaw applies the final
 summary budget before validation. Required headings must remain in the retained
 generated body, while pending asks and exact identifiers must remain in the
 exact text that would be stored. Invalid output gets only the configured number
-of corrective attempts. If no finalized summary passes, compaction stops before
-writing a transcript entry, keeps the original history, and surfaces the
-existing recovery outcome. A summary timeout is the one exception; see
-[Auto-compaction](#auto-compaction).
+of corrective attempts. If no finalized summary passes, OpenClaw stores a bounded
+degraded summary - the structured previous summary with the latest request context
+and whichever exact identifiers still fit, plus the generated split-turn prefix and
+the preserved recent turns. Identifiers are best-effort on this path: the longest are
+dropped first so the bounded request context always survives, and when the artifact
+must be trimmed, older preserved turns are cut before the split-turn prefix. The
+boundary it writes records
+`details.qualityDegraded`, which is the durable fact; the run also logs
+`reasonCode=quality_guard_degraded_fallback`, which is diagnostic only and does not
+survive the session. This is
+lossy on purpose: cancelling instead left the transcript at full size, so every
+later turn failed the same preflight and the session could not be compacted at
+all. A configured compaction provider that throws or returns an empty result
+falls back to built-in LLM summarization rather than cancelling. Cancellation is
+reserved for a failed built-in generation, an unresolvable summarization model,
+and missing credentials, which keep the original history. A summary timeout in an
+automatic compaction is the one exception; see [Auto-compaction](#auto-compaction).
+Abort and timeout signals the caller triggered are re-thrown, so explicit
+cancellation is always respected.
 
 ## Auto-compaction
 
@@ -42,6 +57,8 @@ Auto-compaction is on by default. It runs when the session nears the context lim
 If the provider rejects a request after tool calls have completed, the built-in runtime can compact and continue from their recorded results. It keeps the current model and account, preserves the original request, and does not replay completed actions. This recovery requires settled tool results; pending tools, approvals, cancellation, and a tool that intentionally ended the turn retain their normal handling. If a Gateway restart later interrupts that continuing run, recovery preserves the accepted input even when compaction has summarized it.
 
 Overflow recovery trims tool results within the current model-context window. Older messages and reset boundaries remain in retained history without being copied into new transcript entries.
+
+If overflow recovery cannot make the prompt fit, the failed reply suggests `/reset`, `/new`, or a larger-context model. The Control UI shows this guidance in Details and keeps it in saved chat history. For a single oversized prompt, shorten the prompt before resending it in a new session.
 
 Stopping or timing out a run also stops its overflow or timeout recovery. The built-in OpenClaw runtime does not start further recovery hooks, maintenance, transcript truncation, or retries after cancellation. Cancellation is not rollback: a compaction that already completed remains in the transcript and is still counted, without sending a late reply. The context estimate follows the latest model or compaction observation; billing totals remain separate.
 

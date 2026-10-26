@@ -10,7 +10,9 @@ export type CompactionLoss =
   | "suffix-head"
   | "split-turn-head"
   | "split-turn-tail"
-  | "preserved-turn-head";
+  | "preserved-turn-head"
+  | "identifier-retention"
+  | "quality-retention";
 
 export type ContextSection = {
   text: string;

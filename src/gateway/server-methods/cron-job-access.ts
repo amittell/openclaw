@@ -125,6 +125,11 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
     allowCurrentJob?: boolean;
     checkVisibility?: boolean;
     preserveCronGetWireMessage?: boolean;
+    /**
+     * Idempotent delete: an absent job is a no-op success. Only an unscoped caller sees every
+     * job, so only it may learn that an id is absent; a scoped caller still gets not-found.
+     */
+    missingIsAlreadyGoneForUnscopedCaller?: boolean;
   } = {},
 ): GatewayRequestHandler {
   return defineValidatedGatewayHandler(method, validate, async (options) => {
@@ -149,6 +154,10 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
       }
       const callerScope = readCronCallerScope(client);
       const job = prepareVisibility ? context.cron.getJob(jobId) : loaded;
+      if (!job && !callerScope && scope.missingIsAlreadyGoneForUnscopedCaller) {
+        respond(true, { removed: false, reason: "already-gone" }, undefined);
+        return;
+      }
       const visibility = scope.checkVisibility ? visibilityRead.resolve() : undefined;
       if (
         !job ||

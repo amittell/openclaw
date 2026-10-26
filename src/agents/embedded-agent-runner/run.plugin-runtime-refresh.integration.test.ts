@@ -16,6 +16,7 @@ import {
   useOpenAIPlatformAuthFixture,
 } from "./run.overflow-compaction.harness.js";
 import { loadSharedRunIntegrationHarness } from "./run.shared-integration-harness.test-support.js";
+import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "./run/incomplete-turn-recovery.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 let state: OpenClawTestState;
@@ -378,6 +379,15 @@ describe("plugin runtime refresh admission", () => {
       mockedRunEmbeddedAttempt.mockResolvedValueOnce(
         makeAttemptResult({ assistantTexts: [finalText] }),
       );
+      // FORK DIVERGENCE (silent-stop delivery nudge, bab392de8d3): under message_tool_only,
+      // visible text that never went through the message tool gets one bounded delivery
+      // retry. The nudged pass answers with the same text, so selection is unchanged.
+      const nudged = kind !== "generated";
+      if (nudged) {
+        mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+          makeAttemptResult({ assistantTexts: [finalText] }),
+        );
+      }
       mockedBuildEmbeddedRunPayloads.mockImplementation(({ assistantTexts }) =>
         assistantTexts.map((text) => ({ text })),
       );
@@ -390,7 +400,12 @@ describe("plugin runtime refresh admission", () => {
         preparedRunAdmission: admission,
         ...(kind === "generated" ? {} : { sourceReplyDeliveryMode: "message_tool_only" as const }),
       }).finally(() => admission.close());
-      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(nudged ? 3 : 2);
+      if (nudged) {
+        expect(mockedRunEmbeddedAttempt.mock.calls[2]?.[0]?.prompt).toBe(
+          SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
+        );
+      }
       expect(result.didSendViaMessagingTool).not.toBe(true);
       expect(result.messagingToolSentMediaUrls ?? []).toEqual([]);
       expect(result.meta.agentMeta?.terminalReceipt?.sourceReplyDelivered).not.toBe(true);
