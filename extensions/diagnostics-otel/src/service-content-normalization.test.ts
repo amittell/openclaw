@@ -17,12 +17,12 @@ vi.mock("../api.js", async (importOriginal) => {
   };
 });
 
-import { MAX_OTEL_LOG_BODY_CHARS } from "./service-constants.js";
 import { normalizeOtelLogString } from "./service-content-normalization.js";
 import {
   assignOtelModelContentAttributes,
   assignOtelToolContentAttributes,
 } from "./service-genai-content.js";
+import { MAX_OTEL_LOG_BODY_CHARS } from "./service-logs.js";
 
 const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 const TRUNCATED_SUFFIX = "...(truncated)";
