@@ -7,6 +7,7 @@ import {
 } from "../../agents/reply-completion.js";
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { createRestartRecoveryTombstoneFixture } from "../../config/sessions/main-session-recovery-fixtures.test-support.js";
 import type { WorkerSessionPlacementRecord } from "../../gateway/worker-environments/placement-record.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import type { PluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
@@ -15,6 +16,7 @@ import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { registerFastAutoProgressCases } from "./dispatch-from-config.fast-progress.cases.js";
 import { registerQueuedFollowupNoticeCases } from "./dispatch-from-config.queue-notices.test-support.js";
+import { sendPolicySessionEntry } from "./dispatch-from-config.session-fixtures.test-support.js";
 import {
   createDispatcher,
   diagnosticMocks,
@@ -41,6 +43,8 @@ import {
   createHookCtx,
   describe1BeforeEach0,
   describe2BeforeEach0,
+  createMessageToolOnlyDispatchArgs,
+  mockPluginBoundDiscordBinding,
 } from "./dispatch-from-config.test-support.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
@@ -49,8 +53,54 @@ import { buildTestCtx } from "./test-ctx.js";
 
 const NO_VISIBLE_REPLY_FALLBACK_TEXT = MISSING_REPLY_NOTICE_TEXT;
 
-function sendPolicySessionEntry(sendPolicy: "allow" | "deny") {
-  return { sessionId: "s1", updatedAt: 0, sendPolicy };
+function createThreadedSlackContext(
+  sessionKey: string,
+  body: string,
+  overrides: Partial<MsgContext> = {},
+) {
+  return buildTestCtx({
+    Provider: "slack",
+    Surface: "slack",
+    SessionKey: sessionKey,
+    ParentSessionKey: "agent:main:slack:channel:c1",
+    Body: body,
+    CommandBody: body,
+    RawBody: body,
+    InboundAccessAuthorized: true,
+    InboundEventKind: "user_request",
+    InputProvenance: { kind: "external_user", sourceChannel: "slack" },
+    ...overrides,
+  });
+}
+
+function createArchivedDiscordContext(to: string, sessionKey: string) {
+  return buildTestCtx({
+    Provider: "discord",
+    Surface: "discord",
+    OriginatingChannel: "discord",
+    OriginatingTo: to,
+    ChatType: "channel",
+    From: "discord:user:12345",
+    To: to,
+    AccountId: "default",
+    SessionKey: sessionKey,
+    Body: "start work",
+    CommandBody: "start work",
+    RawBody: "start work",
+    CommandSource: undefined,
+    InboundAccessAuthorized: true,
+    InboundEventKind: "user_request",
+    InputProvenance: { kind: "external_user", sourceChannel: "discord" },
+  });
+}
+
+function exhaustedRecoveryState() {
+  return {
+    cycleId: "cycle-1",
+    revision: 4,
+    chargedAttempts: 3,
+    tombstone: { reason: "automatic recovery exhausted" },
+  };
 }
 
 function groupSilenceConfig(group: "allow" | "disallow"): OpenClawConfig {
@@ -955,15 +1005,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       SessionKey: "agent:main:telegram:direct:user1",
     });
 
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver,
-      replyOptions: {
-        sourceReplyDeliveryMode: "message_tool_only",
-      },
-    });
+    const result = await dispatchReplyFromConfig(
+      createMessageToolOnlyDispatchArgs(ctx, dispatcher, replyResolver),
+    );
 
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     expect(result.queuedFinal).toBe(false);
@@ -1510,14 +1554,10 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       },
       { receiveMessages: false },
     );
-    mockPluginBinding({
+    mockPluginBoundDiscordBinding({
       bindingId: "binding-archived",
       targetSessionKey: "plugin-binding:codex:archived",
-      conversation: {
-        channel: "discord",
-        accountId: "default",
-        conversationId: "channel:archived-test",
-      },
+      conversationId: "channel:archived-test",
       pluginRoot: "/tmp/plugin",
     });
     const archivedAt = Date.now() - 1_000;
@@ -1528,24 +1568,10 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "must not run" }) satisfies ReplyPayload);
-    const ctx = buildTestCtx({
-      Provider: "discord",
-      Surface: "discord",
-      OriginatingChannel: "discord",
-      OriginatingTo: "discord:channel:archived-test",
-      ChatType: "channel",
-      From: "discord:user:12345",
-      To: "discord:channel:archived-test",
-      AccountId: "default",
-      SessionKey: "agent:main:discord:channel:archived-test",
-      Body: "start work",
-      CommandBody: "start work",
-      RawBody: "start work",
-      CommandSource: undefined,
-      InboundAccessAuthorized: true,
-      InboundEventKind: "user_request",
-      InputProvenance: { kind: "external_user", sourceChannel: "discord" },
-    });
+    const ctx = createArchivedDiscordContext(
+      "discord:channel:archived-test",
+      "agent:main:discord:channel:archived-test",
+    );
 
     await expect(
       dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver }),
@@ -1609,24 +1635,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
         : undefined;
       const dispatcher = createDispatcher();
       const replyResolver = vi.fn(async () => ({ text: "restored reply" }) satisfies ReplyPayload);
-      const ctx = buildTestCtx({
-        Provider: "discord",
-        Surface: "discord",
-        OriginatingChannel: "discord",
-        OriginatingTo: "discord:channel:restored-test",
-        ChatType: "channel",
-        From: "discord:user:12345",
-        To: "discord:channel:restored-test",
-        AccountId: "default",
-        SessionKey: sessionKey,
-        Body: "start work",
-        CommandBody: "start work",
-        RawBody: "start work",
-        CommandSource: undefined,
-        InboundAccessAuthorized: true,
-        InboundEventKind: "user_request",
-        InputProvenance: { kind: "external_user", sourceChannel: "discord" },
-      });
+      const ctx = createArchivedDiscordContext("discord:channel:restored-test", sessionKey);
 
       const dispatch = dispatchReplyFromConfig({
         ctx,
@@ -1674,12 +1683,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       updatedAt: Date.now(),
       archivedAt,
       status: "failed",
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 4,
-        chargedAttempts: 3,
-        tombstone: { reason: "automatic recovery exhausted" },
-      },
+      mainRestartRecovery: exhaustedRecoveryState(),
     };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "must not run" }) satisfies ReplyPayload);
@@ -1727,18 +1731,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     const replyResolver = vi.fn(async () => ({ text: "thread handled" }) satisfies ReplyPayload);
 
     const result = await dispatchReplyFromConfig({
-      ctx: buildTestCtx({
-        Provider: "slack",
-        Surface: "slack",
-        SessionKey: "agent:main:slack:channel:c1:thread:healthy",
-        ParentSessionKey: "agent:main:slack:channel:c1",
-        Body: "thread reply",
-        CommandBody: "thread reply",
-        RawBody: "thread reply",
-        InboundAccessAuthorized: true,
-        InboundEventKind: "user_request",
-        InputProvenance: { kind: "external_user", sourceChannel: "slack" },
-      }),
+      ctx: createThreadedSlackContext("agent:main:slack:channel:c1:thread:healthy", "thread reply"),
       cfg: emptyConfig,
       dispatcher,
       replyResolver,
@@ -1760,12 +1753,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       sessionId: "preseed-thread-session",
       updatedAt: Date.now(),
       archivedAt,
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 4,
-        chargedAttempts: 3,
-        tombstone: { reason: "automatic recovery exhausted" },
-      },
+      mainRestartRecovery: exhaustedRecoveryState(),
     };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => {
@@ -1774,18 +1762,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
 
     const result = await dispatchReplyFromConfig({
-      ctx: buildTestCtx({
-        Provider: "slack",
-        Surface: "slack",
-        SessionKey: "agent:main:slack:channel:c1:thread:123",
-        ParentSessionKey: "agent:main:slack:channel:c1",
-        Body: "thread reply",
-        CommandBody: "thread reply",
-        RawBody: "thread reply",
-        InboundAccessAuthorized: true,
-        InboundEventKind: "user_request",
-        InputProvenance: { kind: "external_user", sourceChannel: "slack" },
-      }),
+      ctx: createThreadedSlackContext("agent:main:slack:channel:c1:thread:123", "thread reply"),
       cfg: emptyConfig,
       dispatcher,
       replyResolver,
@@ -1812,31 +1789,18 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     sessionStoreMocks.currentEntry = {
       sessionId: "preseed-thread-session",
       updatedAt: Date.now(),
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 4,
-        chargedAttempts: 3,
-        tombstone: { reason: "automatic recovery exhausted" },
-      },
+      mainRestartRecovery: exhaustedRecoveryState(),
     };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "should not run" }) satisfies ReplyPayload);
 
     await expect(
       dispatchReplyFromConfig({
-        ctx: buildTestCtx({
-          Provider: "slack",
-          Surface: "slack",
-          SessionKey: "agent:main:slack:channel:c1:thread:123",
-          ParentSessionKey: "agent:main:slack:channel:c1",
-          Body: "thread event",
-          CommandBody: "thread event",
-          RawBody: "thread event",
-          InboundAccessAuthorized: true,
-          InboundEventKind: "user_request",
-          InputProvenance: { kind: "external_user", sourceChannel: "slack" },
-          ...context,
-        }),
+        ctx: createThreadedSlackContext(
+          "agent:main:slack:channel:c1:thread:123",
+          "thread event",
+          context,
+        ),
         cfg: emptyConfig,
         dispatcher,
         replyResolver,
@@ -1879,16 +1843,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
         updatedAt: Date.now(),
         archivedAt,
         status: "failed",
-        mainRestartRecovery: {
-          cycleId: "cycle-1",
-          revision: 4,
-          chargedAttempts: 3,
-          tombstone: {
-            reason: "automatic recovery exhausted",
-            recoveredSessionId: "dashboard-successor",
-            recoveredSessionKey: "agent:main:dashboard:successor",
-          },
-        },
+        mainRestartRecovery: createRestartRecoveryTombstoneFixture(),
       };
       const dispatcher = createDispatcher();
       const replyResolver = vi.fn(async () => {
@@ -1956,14 +1911,10 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     // process the message with delivery suppressed. See #53328.
     setNoAbort();
     mockPluginBindingClaim();
-    mockPluginBinding({
+    mockPluginBoundDiscordBinding({
       bindingId: "binding-deny",
       targetSessionKey: "plugin-binding:codex:abc123",
-      conversation: {
-        channel: "discord",
-        accountId: "default",
-        conversationId: "channel:deny-test",
-      },
+      conversationId: "channel:deny-test",
       pluginRoot: "/tmp/plugin",
     });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("deny");
@@ -2160,15 +2111,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       Body: "observed message",
     });
 
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver,
-      replyOptions: {
-        sourceReplyDeliveryMode: "message_tool_only",
-      },
-    });
+    const result = await dispatchReplyFromConfig(
+      createMessageToolOnlyDispatchArgs(ctx, dispatcher, replyResolver),
+    );
 
     expect(result).toEqual({
       queuedFinal: false,
@@ -2241,15 +2186,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       WasMentioned: false,
     });
 
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver,
-      replyOptions: {
-        sourceReplyDeliveryMode: "message_tool_only",
-      },
-    });
+    const result = await dispatchReplyFromConfig(
+      createMessageToolOnlyDispatchArgs(ctx, dispatcher, replyResolver),
+    );
 
     const claimCall = firstMockCall(
       hookMocks.runner.runInboundClaimForPluginOutcome,
@@ -2547,15 +2486,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
     const ctx = buildTestCtx({ SessionKey: "test:session", ChatType: "channel" });
 
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver,
-      replyOptions: {
-        sourceReplyDeliveryMode: "message_tool_only",
-      },
-    });
+    const result = await dispatchReplyFromConfig(
+      createMessageToolOnlyDispatchArgs(ctx, dispatcher, replyResolver),
+    );
 
     expect(result.queuedFinal).toBe(false);
     expect(result.sourceReplyDeliveryMode).toBe("message_tool_only");
@@ -2565,12 +2498,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("delivers fast auto progress in message-tool-only mode when verbose progress is on", async () => {
     setNoAbort();
-    sessionStoreMocks.currentEntry = {
-      sessionId: "s1",
-      updatedAt: 0,
-      sendPolicy: "allow",
-      verboseLevel: "on",
-    };
+    sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow", { verboseLevel: "on" });
     const dispatcher = createDispatcher();
     const payload = {
       text: "💨Fast: auto-off(75s>=60s)",
@@ -2606,12 +2534,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     "suppresses $label fast auto progress for room-event message-tool-only turns",
     async ({ forceToolResultProgress, verboseLevel }) => {
       setNoAbort();
-      sessionStoreMocks.currentEntry = {
-        sessionId: "s1",
-        updatedAt: 0,
-        sendPolicy: "allow",
+      sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow", {
         verboseLevel,
-      };
+      });
       const dispatcher = createDispatcher();
       const onToolResult = vi.fn(() => true);
       const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
@@ -2791,12 +2716,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("delivers verbose tool progress in message-tool-only mode", async () => {
     setNoAbort();
-    sessionStoreMocks.currentEntry = {
-      sessionId: "s1",
-      updatedAt: 0,
-      sendPolicy: "allow",
-      verboseLevel: "on",
-    };
+    sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow", { verboseLevel: "on" });
     const dispatcher = createDispatcher();
     const onToolResult = vi.fn(() => false);
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
@@ -2838,15 +2758,9 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     const replyResolver = vi.fn(async () => failureNotice satisfies ReplyPayload);
     const ctx = buildTestCtx({ SessionKey: "test:session" });
 
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver,
-      replyOptions: {
-        sourceReplyDeliveryMode: "message_tool_only",
-      },
-    });
+    const result = await dispatchReplyFromConfig(
+      createMessageToolOnlyDispatchArgs(ctx, dispatcher, replyResolver),
+    );
 
     expect(replyResolver).toHaveBeenCalledTimes(1);
     expect(result.queuedFinal).toBe(true);

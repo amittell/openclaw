@@ -114,6 +114,9 @@ describe("failover classification", () => {
         classifyFailoverSignal({ status, message: `${status}: ${body}` }, noPlugin),
       ).toBeNull();
     }
+    expect(
+      classifyFailoverSignal({ status, message: `${status} status code (no body)` }, noPlugin),
+    ).toBeNull();
     expectReason("format", validationSignal(status), noPlugin);
     expectReason(
       "format",
