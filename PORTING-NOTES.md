@@ -3748,6 +3748,9 @@ previous one, so each carry is a squash of the previous fork tip onto the tag (a
 | main-session-recovery-state line-cap split                                 | `ff4a71434f5`  |
 | restart-cause resume wording, compaction-provenance pin                    | `7bb739a7242`  |
 | degraded-compaction fork tests re-pinned to 10.7 (proxy ruling, room #221) | `b267a8b2947`  |
+| porting notes for the 10.6 and 10.7 carries                                | `a9baeb4e4d3`  |
+| diagnostic: name the integrity condition that refuses a direct reader (#1) | `676c2e35a57`  |
+| `intent` for non-owner turns adopted from 10.7 (Alex's ruling, #3)         | `7ba03bd5ebd`  |
 
 ## Method
 
@@ -3787,10 +3790,14 @@ the carry, the bare tag, and the previous carry.
   `message_tool_only` gates and duplicate-send guard, and the vote map lives in the import-free
   `message-tool-execution.send-suppression.ts`. A heavy import there loads before each test file's
   `vi.mock("node:worker_threads")` and broke three files (`8154791ae93`).
-- **`intent` for non-owner turns (10.7): OPEN for Alex.** 10.7's #176892 keeps the declaration stable for every
-  turn and gates execution; the fork returns a refusing stub (non-owner) or omits it (unknown sender) through
-  plugin `ownerOnly`. Until he rules, `prepare.completion-tools.test.ts` (2) and `owner-only-tool-stubs.test.ts`
-  (1) fail on the 10.7 carry.
+- **`intent` for non-owner turns (10.7), ADOPTED from upstream** (Alex's ruling, alexm/openclaw#3, 2026-10-26):
+  10.7's #176892 declares `intent` the same on every turn and puts it in `GATEWAY_OWNER_ONLY_CORE_TOOLS`, so
+  execution needs an explicit owner. `extensions/memory-core/index{,.test}.ts` are 10.7's (the fork's stub and
+  `ownerOnly` registration for `intent` are gone; plugin `ownerOnly` stays for other plugin tools), and
+  `owner-only-tool-stubs.test.ts` uses a synthetic `plugin_owner_only_probe` as its plugin stand-in
+  (`7ba03bd5ebd`).
+- **Integrity-refusal diagnostic (fork-only, #1):** `assertSource` logs which condition refused a direct
+  shared-state reader before it throws the unchanged error (`676c2e35a57`; `openclaw-state-db-direct-reader-refusal.ts`).
 
 ## Guards (heads above)
 
@@ -3803,7 +3810,11 @@ the carry, the bare tag, and the previous carry.
 - **10.6 fast gate, 785 files:** every failure is in four tooling files that fail identically on bare 10.6
   (`ci-workflow-planning`, `ci-workflow-guards`, `crabbox-staging`, `release-workflow-matrix-plan`; 126 tests).
 - **10.7 fast gate, 897 files:** the same four inherited tooling files, plus 8 files classified in three cells and
-  resolved above (restart-cause, compaction-provenance, four degrade tests) or held (the two `intent` files).
+  resolved above (restart-cause, compaction-provenance, four degrade tests, and the two `intent` files in
+  `7ba03bd5ebd`).
+- **After `7ba03bd5ebd`:** `prepare.completion-tools` 30/30, `owner-only-tool-stubs` 8/8, memory-core `index`
+  37/37, and the memory-core + cli-runner + owner-only set (212 files) 2287 pass, 0 fail, 4 skip. tsgo (core,
+  extensions, src tests, extension tests), line-cap, assertion-safety and max-lines ratchets: all OK.
 
 ## Deploy (10.6)
 
@@ -3811,5 +3822,14 @@ the carry, the bare tag, and the previous carry.
   Homebrew node needs Alex's macOS Local Network grant on each bot's own screen.
 - pnpm 12.15.0 is younger than the repo's 7-day `minimumReleaseAge`; Alex chose to pre-install it into each bot's
   `~/Library/pnpm/.tools` from outside the repo.
-- rh-bot: `8154791ae938` deployed 2026-10-26 01:51:52Z, verified; real-turn gate pending at the time of writing.
-  mac-mini follows rh-bot's gate.
+- rh-bot: `8154791ae938` deployed 2026-10-26 01:51:52Z; real-turn gate passed 09:41Z. mac-mini deployed 12:16Z;
+  real-turn gate passed 12:36Z.
+- Bot config, 2026-10-27 04:19Z (Alex's ruling, #2): `update.checkOnStart=false` on both bots, a hot-reload key.
+  The update check's fetch into the live checkout set off a full git repack that filled mac-mini's disk.
+
+## Deploy (10.7): HELD
+
+Alex, 2026-10-26 (#5): "CI on mega-mini first". 10.7 deploys only after a forge-CI build on the arm64 lane exists
+and a Linux-built dist is proven against a bot's macOS build. Two macOS builds of one commit already differ in the
+build stamps and in `control-ui/` content-hash names, so the comparison is CORE plus a normalized control-ui
+digest (`bot-dist-ci` branch on alexm/openclaw, `.writhub/scripts/dist-digest.mjs`).
