@@ -13,6 +13,15 @@ import {
 import { isAuthPermanentErrorMessage } from "./message-patterns.js";
 import { renderRateLimitOrOverloadedCopy } from "./user-copy.js";
 
+// Helpers from upstream main's classify.test.ts that #183006's cases use (10.8 lacks them).
+const noPlugin = { providerPlugin: null };
+const validation = { errorType: "invalid_request_error", code: "unknown_parameter" };
+const validationSignal = (status: number) => ({
+  status,
+  message: `${status} Unknown parameter: 'logprobs'`,
+  ...validation,
+});
+
 describe("numeric authentication status context", () => {
   it.each([401, 403])("preserves authentication status %s", (status) => {
     for (const message of [
@@ -125,6 +134,40 @@ describe("request validation behind gateway status codes", () => {
       }
     },
   );
+
+  it.each([400, 422])("leaves placeholder-only HTTP %i failures unclassified", (status) => {
+    for (const body of [
+      "[Malformed diagnostic JSON redacted]",
+      "[Oversized diagnostic JSON redacted]",
+      "[Unserializable]",
+    ]) {
+      expect(
+        classifyFailoverSignal({ status, message: `${status}: ${body}` }, noPlugin),
+      ).toBeNull();
+    }
+    expect(
+      classifyFailoverSignal({ status, message: `${status} status code (no body)` }, noPlugin),
+    ).toBeNull();
+    expect(classifyFailoverSignal(validationSignal(status), noPlugin)).toEqual({
+      kind: "reason",
+      reason: "format",
+    });
+    expect(
+      classifyFailoverSignal(
+        { status, message: "[Malformed diagnostic JSON redacted] Unsupported parameter: logprobs" },
+        noPlugin,
+      ),
+    ).toEqual({ kind: "reason", reason: "format" });
+  });
+
+  it("preserves other HTTP status semantics for redacted bodies", () => {
+    expect(
+      classifyFailoverSignal(
+        { status: 500, message: "[Malformed diagnostic JSON redacted]" },
+        noPlugin,
+      ),
+    ).toEqual({ kind: "reason", reason: "server_error" });
+  });
 
   it.each([
     { status: 401, reason: "auth" },
