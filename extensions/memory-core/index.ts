@@ -76,11 +76,23 @@ function createLazyMemoryTool(params: {
   };
 }
 
-// Built per call: owner and non-owner turns get equal declarations, never a shared object.
-function standingIntentToolDeclaration(): Pick<
-  AnyAgentTool,
-  "label" | "name" | "description" | "parameters"
-> {
+function createLazyStandingIntentTool(
+  ctx: OpenClawPluginToolContext,
+  reportUnavailable: (reason: string) => void,
+): AnyAgentTool | null {
+  const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config;
+  const provider = ctx.messageChannel?.trim();
+  const senderId = ctx.requesterSenderId?.trim();
+  if (!cfg) {
+    reportUnavailable("runtime config is unavailable for this turn");
+    return null;
+  }
+  const agentId = resolveSessionAgentIdStrict({
+    sessionKey: ctx.sessionKey,
+    config: cfg,
+    agentId: ctx.agentId,
+  });
+  let executorPromise: Promise<AnyAgentTool["execute"]> | undefined;
   return {
     label: "Standing Intent",
     name: "intent",
@@ -114,38 +126,6 @@ function standingIntentToolDeclaration(): Pick<
       required: ["action"],
       additionalProperties: false,
     },
-  };
-}
-
-function createLazyStandingIntentTool(
-  ctx: OpenClawPluginToolContext,
-  reportUnavailable: (reason: string) => void,
-): AnyAgentTool | null {
-  if (ctx.senderIsOwner !== true) {
-    // Registered `ownerOnly`: the host keeps this declaration for a non-owner turn and
-    // swaps in its refusing stub. The declaration alone still grants nothing.
-    return {
-      ...standingIntentToolDeclaration(),
-      execute: async () => {
-        throw new Error("intent is not available on this turn: owner-only.");
-      },
-    };
-  }
-  const cfg = ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config;
-  const provider = ctx.messageChannel?.trim();
-  const senderId = ctx.requesterSenderId?.trim();
-  if (!cfg) {
-    reportUnavailable("runtime config is unavailable for this turn");
-    return null;
-  }
-  const agentId = resolveSessionAgentIdStrict({
-    sessionKey: ctx.sessionKey,
-    config: cfg,
-    agentId: ctx.agentId,
-  });
-  let executorPromise: Promise<AnyAgentTool["execute"]> | undefined;
-  return {
-    ...standingIntentToolDeclaration(),
     execute: async (toolCallId, params, signal, onUpdate) => {
       executorPromise ??= loadStandingIntentToolModule().then((module) =>
         module.createStandingIntentExecutor({
@@ -348,7 +328,7 @@ export default definePluginEntry({
             api.logger.warn(`memory-core: intent tool unavailable: ${reason}`);
           }),
       },
-      { names: ["intent"], ownerOnly: true },
+      { names: ["intent"] },
     );
 
     api.on("before_prompt_build", async (event, ctx) => {

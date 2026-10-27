@@ -62,6 +62,9 @@ const OWNER_ONLY = [...GATEWAY_OWNER_ONLY_CORE_TOOLS];
 // Since #154239 (v2026.10.1) `sessions` gates its own actions on a non-owner turn
 // (assign_owner only) instead of being denied, so it stays the real tool there.
 const STUBBED_OWNER_ONLY = OWNER_ONLY.filter((name) => name !== "sessions");
+// Since v2026.10.7 (#176892) `intent` is itself a core owner-only tool, so a synthetic name stands
+// in for a plugin tool registered `ownerOnly`; the fork keeps that path for other plugin tools.
+const PLUGIN_OWNER_ONLY = "plugin_owner_only_probe";
 const sessionKey = "agent:main:telegram:direct:owner";
 
 function createRealToolSpies(name: string) {
@@ -191,14 +194,14 @@ describe("owner-only tool stubs", () => {
     initializeGlobalHookRunner(
       createMockPluginRegistry([{ hookName: "before_tool_call", handler: beforeToolCall }]),
     );
-    // `intent` stands in for a plugin tool registered `ownerOnly`: the plugin resolver
+    // PLUGIN_OWNER_ONLY stands in for a plugin tool registered `ownerOnly`: the plugin resolver
     // already hands a non-owner turn its stub, which then flows through agent policy.
     vi.mocked(createOpenClawTools).mockImplementation((options) => [
       ...OWNER_ONLY.map(createRealTool),
       createRealTool("message"),
       options?.senderIsOwner === true
-        ? createRealTool("intent")
-        : createOwnerOnlyToolStub(createRealTool("intent")),
+        ? createRealTool(PLUGIN_OWNER_ONLY)
+        : createOwnerOnlyToolStub(createRealTool(PLUGIN_OWNER_ONLY)),
     ]);
   });
 
@@ -222,7 +225,7 @@ describe("owner-only tool stubs", () => {
 
     expect(other.map((tool) => tool.name)).toEqual(owner.map((tool) => tool.name));
     expect(listOwnerOnlyToolStubNames(other).toSorted()).toEqual(
-      [...STUBBED_OWNER_ONLY, "intent"].toSorted(),
+      [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY].toSorted(),
     );
     expect(isOwnerOnlyToolStub(requireTool(other, "message"))).toBe(false);
     expect(isOwnerOnlyToolStub(requireTool(other, "sessions"))).toBe(false);
@@ -369,7 +372,7 @@ describe("owner-only tool stubs", () => {
     finalizeAgentToolAvailability([probe, ...buildTurnTools(false)]);
 
     expect(callable).toContain("message");
-    for (const name of [...STUBBED_OWNER_ONLY, "intent"]) {
+    for (const name of [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
       expect(callable).not.toContain(name);
     }
   });
@@ -385,7 +388,7 @@ describe("owner-only tool stubs", () => {
     expect(cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name))).toContain(
       "message",
     );
-    for (const name of [...STUBBED_OWNER_ONLY, "intent"]) {
+    for (const name of [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
       expect(inherited).not.toContain(name);
       expect(
         cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name)),
@@ -455,6 +458,7 @@ describe("owner-only tool stubs", () => {
         expect(captured).not.toContain("gateway");
         expect(captured).not.toContain("nodes");
         expect(captured).not.toContain("intent");
+        expect(captured).not.toContain(PLUGIN_OWNER_ONLY);
         retainedResolver =
           vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority;
         expect(retainedResolver).toEqual(expect.any(Function));
