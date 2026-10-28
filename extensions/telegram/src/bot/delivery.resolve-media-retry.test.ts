@@ -392,8 +392,10 @@ describe("resolveMedia chat provenance scope", () => {
     const getFile = vi.fn().mockResolvedValue({ file_path: "/var/lib/telegram-bot-api/file.pdf" });
     rootRead.mockResolvedValueOnce({
       buffer: Buffer.from("pdf-data"),
+      containment: "kernel-atomic",
       realPath: "/var/lib/telegram-bot-api/file.pdf",
-      stat: { size: 8 },
+      stat: { size: 8 } as fs.Stats,
+      exactIdentity: { dev: 1n, ino: 1n },
     });
     saveMediaBuffer.mockResolvedValueOnce({
       path: "/tmp/inbound/file.pdf",

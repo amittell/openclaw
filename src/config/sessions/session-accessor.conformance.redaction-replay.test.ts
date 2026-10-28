@@ -2,12 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import {
   publicAccessorAdapter,
   sqliteAdapter,
   type TestPaths,
 } from "./session-accessor.conformance-adapters.test-support.js";
-import { closeSessionAccessorConformanceFixture } from "./session-accessor.conformance.test-support.js";
 
 // Keep accessor conformance independent of any real openclaw.json on the machine.
 vi.mock("../config.js", async () => ({
@@ -41,7 +41,9 @@ describe.each([publicAccessorAdapter, sqliteAdapter])(
     });
 
     afterEach(async () => {
-      await closeSessionAccessorConformanceFixture(paths.tempDir);
+      // As beta.4's conformance suite: retire this root's databases, then drop the root.
+      await closeOpenClawAgentDatabasesAsync(paths.tempDir);
+      fs.rmSync(paths.tempDir, { recursive: true, force: true });
     });
 
     it("replays a keyed user turn whose stored copy a second redaction pass would change", async () => {

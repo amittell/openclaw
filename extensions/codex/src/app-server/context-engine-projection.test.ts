@@ -396,11 +396,7 @@ describe("projectContextEngineAssemblyForCodex", () => {
         maxRenderedContextChars: resolveCodexContinuityProjectionMaxChars({}),
       });
 
-      // The fork's compaction checkpoint handle follows a compaction entry's summary (see the
-      // compaction summary test above); user and assistant text carry none.
-      const checkpointHandle =
-        type === "compaction" ? "\n[compaction checkpoint summary: shadows 0 earlier entries]" : "";
-      expect(result.promptText).toContain(`\n${text}${checkpointHandle}\n</conversation_context>`);
+      expect(result.promptText).toContain(`\n${text}\n</conversation_context>`);
       expect(result.promptText).not.toContain("[truncated ");
       expect(result.promptContextRange!.end - result.promptContextRange!.start).toBeLessThanOrEqual(
         24_000,

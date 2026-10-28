@@ -46,7 +46,6 @@ import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
 import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
-import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
 import { registerCronRunWaitTests } from "./cron-run-wait.test-support.js";
 import {
   createCronTestContext,

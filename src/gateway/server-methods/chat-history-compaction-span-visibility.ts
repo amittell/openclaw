@@ -16,7 +16,11 @@ const MAX_SPAN_VISIBILITY_PASSES = 4;
 const runKey = (runId: string, messageSeq: number | undefined) =>
   `${runId}\u0000${messageSeq ?? ""}`;
 
-/** Prepares the facts the span's projection asks for; a missing fact fails the read closed. */
+/**
+ * Prepares the facts the span's projection asks for. A question the span's own messages never
+ * asked (a reply preview quoting a message outside the span) answers "hidden", so it stays
+ * closed without failing every retry of the page; a worker failure still fails the read.
+ */
 export async function prepareCompactionSpanSubagentCoordination(
   target: SessionTranscriptReadScope,
   messages: readonly unknown[],
@@ -70,7 +74,7 @@ export async function prepareCompactionSpanSubagentCoordination(
       }
     }
   }
-  return createPreparedSessionHistorySubagentProjection(
+  const prepared = createPreparedSessionHistorySubagentProjection(
     { sessions: [...sessions], runMessages: [...runs.values()], ...(failure ? { failure } : {}) },
     () => {
       for (const assertCurrent of assertions) {
@@ -78,4 +82,13 @@ export async function prepareCompactionSpanSubagentCoordination(
       }
     },
   );
+  return {
+    assertCurrent: prepared.assertCurrent,
+    isSubagentSession: (sessionKey) =>
+      failure || sessions.has(sessionKey) ? prepared.isSubagentSession(sessionKey) : true,
+    isSubagentRunMessage: (runId, messageSeq) =>
+      failure || runs.has(runKey(runId, messageSeq))
+        ? prepared.isSubagentRunMessage(runId, messageSeq)
+        : true,
+  };
 }
