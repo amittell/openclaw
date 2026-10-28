@@ -3887,7 +3887,16 @@ and stays gated on #5 (a forge-CI build on the arm64 lane, proven against a bot'
   - Their modify/delete conflicts show they assume main's later file layout.
 - **Where they come from instead:** all five are native in `v2026.10.10-beta.4`. Until a 10.10 carry, the bots keep
   the FrenChat prompt-cache drop causes 1 and 4 (#168169, #169237) and the #177656 exec error (#169584, issue #1).
-- **Candidate drops still to line-check:** #158161 (cherry-picked into 10.8 as `e05ca71024a`), #155000, #130400.
+- **Candidate drops, line-checked 2026-10-28: none is a drop.**
+  - **#158161:** the fork's port (`57d604fb5ce`: `packages/ai/src/utils/overflow.ts` plus two failover test files,
+    +43) is NOT in 10.8. `e05ca71024a` is #167878, a different fix whose message mentions #158161. Upstream merged
+    #158161 on main as `177b090d8f4`, not in 10.8; replace the fork's port with it at the next carry that has it.
+  - **#155000:** the fork's port (`d1bb7d61de0`: `subagent-reasoning-only-retry.ts`, its test, and
+    `terminal-resolution.ts`, +296/-76) is fully present beside 10.8's #162567. A line check cannot show
+    redundancy; dropping it needs a behavior test of the subagent reasoning-only exhaustion case on bare 10.8.
+  - **#130400** (closed upstream, never merged): a Telegram replay guard against answering the same message twice.
+    The carry has 215/219 of its substantive added lines; bare 10.8 has 2/219. Dropping it would remove the fix from
+    the bots.
 
 ## Qualification (M4, Node 26.12.1, at `e160396b8c6`, then the three fixes above)
 
