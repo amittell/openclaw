@@ -46,10 +46,10 @@ import {
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
+  formatQualityFeedbackReasons,
   nestRequiredSummaryHeadings,
   resolveSummaryReserveTokens,
   wrapUntrustedInstructionBlock,
-  wrapUntrustedQualityFeedbackBlock,
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
@@ -1076,10 +1076,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             ? "Fix all issues and include every required section with exact identifiers preserved."
             : "Fix all issues and include every required section while following the configured identifier policy.";
         const budgetInstruction = `Keep the complete summary body within ${finalized.bodyBudget} UTF-16 code units so the finalized artifact remains valid after required suffixes.`;
-        const qualityFeedbackReasons = wrapUntrustedQualityFeedbackBlock(
-          "Quality check feedback",
-          `Previous summary failed quality checks (${reasons}).`,
-        );
+        const qualityFeedbackReasons = formatQualityFeedbackReasons(reasons);
         correctiveInstructions = qualityFeedbackReasons
           ? `${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
           : `${qualityFeedbackInstruction}\n${budgetInstruction}`;

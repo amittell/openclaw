@@ -91,6 +91,14 @@ export function wrapUntrustedQualityFeedbackBlock(label: string, text: string): 
   });
 }
 
+/** The corrective pass's feedback block for one failed quality audit. */
+export function formatQualityFeedbackReasons(reasons: string): string {
+  return wrapUntrustedQualityFeedbackBlock(
+    "Quality check feedback",
+    `Previous summary failed quality checks (${reasons}).`,
+  );
+}
+
 function resolveExactIdentifierSectionInstruction(
   summarizationInstructions?: CompactionSummarizationInstructions,
 ): string {

@@ -57,9 +57,11 @@ import {
 import {
   type ExhaustedRestartRecoveryTarget,
   type ExpectedRestartRecoveryTarget,
+  isRestartRecoveryCandidateEntry,
   mainSessionRecoveryLog,
   MAX_RECOVERY_RETRIES,
   resolveRestartRecoveryTerminalClientRunId,
+  warnIfPassedOverMarkedSession,
 } from "./main-session-restart-recovery-shared.js";
 import { resolveRestartRecoveryDispatchTarget } from "./main-session-restart-recovery-target.js";
 
@@ -224,12 +226,7 @@ export async function recoverStore(params: {
   )) {
     let entry = loadedEntry;
     let completionSource: SessionSourceAssertion | undefined;
-    const isRecoveryCandidate =
-      !loadedEntry.mainRestartRecovery?.tombstone &&
-      hasMainSessionRecoveryClaim(loadedEntry) &&
-      (loadedEntry.abortedLastRun === true ||
-        isMainRestartRecoveryTerminalOnly(loadedEntry, lifecycleGeneration) ||
-        (isTerminalSessionStatus(loadedEntry.status) && loadedEntry.status !== "interrupted"));
+    const isRecoveryCandidate = isRestartRecoveryCandidateEntry(loadedEntry, lifecycleGeneration);
     let decision: MainSessionRecoveryDecision = {
       decision: "deferred",
       reason: "preparation_failed",
@@ -252,17 +249,7 @@ export async function recoverStore(params: {
         return result;
       }
       if (!isRecoveryCandidate) {
-        // Fork: every candidate logs its decision below. A non-candidate still
-        // carrying a recovery episode is one the marking pass claimed, so passing
-        // over it silently is how a marked session vanishes between "marked N" and
-        // "started M" with nothing in the log naming it or saying why.
-        if (loadedEntry.mainRestartRecovery && !loadedEntry.mainRestartRecovery.tombstone) {
-          mainSessionRecoveryLog.warn(
-            `restart recovery passed over a marked session: sessionKey=${sessionKey} ` +
-              `cycleId=${loadedEntry.mainRestartRecovery.cycleId} ` +
-              `abortedLastRun=${loadedEntry.abortedLastRun === true}`,
-          );
-        }
+        warnIfPassedOverMarkedSession(loadedEntry, sessionKey);
         continue;
       }
       if (!isMainRestartRecoveryCandidate(entry, sessionKey)) {

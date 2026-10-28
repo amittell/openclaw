@@ -3998,6 +3998,14 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
     mode (#167979).
   - `attempt-session-prepare.ts` is beta.4's inline settings block plus the fork's three changes, at 699 counted
     lines. The `attempt-session-settings.ts` split is deleted.
+- **Line caps (ratchet with `--base` beta.4), Air's three files.** The fork's additions moved to siblings:
+  - `compaction.ts`: the I1 open-tool-call cut guard is now `open-tool-call-cut-guard.ts`, and the file is at 813
+    (beta.4 813).
+  - `compaction-safeguard.ts`: `formatQualityFeedbackReasons` in `compaction-safeguard-quality.ts` builds the
+    corrective feedback block, and the file is at 1011 (beta.4 1013).
+  - `main-session-restart-recovery-store.ts`: beta.4's candidate predicate (with the fork's generation argument)
+    and the fork's passed-over warning are now in `main-session-restart-recovery-shared.ts`, and the file is at 699
+    (cap 700).
 - **Telegram version-3 carrier:** a clean-merge bug, caught in review. `runtime-context-prompt.ts` ran the fork's
   `carrierText` through #166869's joiner-aware `append`, which puts late context first for a space joiner. The
   carrier is rendered without a joiner, so it gets its own paragraph-order append. beta.4's joiner `it.each` pins

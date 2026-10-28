@@ -7,15 +7,18 @@ import {
   type InternalSessionEntry as SessionEntry,
   type SessionStoreTarget,
 } from "../../config/sessions.js";
+import { hasMainSessionRecoveryClaim } from "../../config/sessions/restart-recovery-state.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target-paths.js";
 import { isPerAgentSessionStoreConfig } from "../../config/sessions/session-store-config.js";
 import { prepareSessionStoreTargetInventory } from "../../config/sessions/session-store-target-inventory.js";
 import { prepareSessionStoreTargetInventoryRead } from "../../config/sessions/session-store-target-runtime.js";
+import { isTerminalSessionStatus } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { LEGACY_IMPLICIT_AGENT_ID } from "../../routing/session-key.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import { resolveAgentSessionDirs } from "../session-dirs.js";
+import { isMainRestartRecoveryTerminalOnly } from "./main-session-recovery-terminal-only.js";
 
 export const mainSessionRecoveryLog = createSubsystemLogger("main-session-restart-recovery");
 export const DEFAULT_RECOVERY_DELAY_MS = 5_000;
@@ -143,4 +146,34 @@ export function isKilledMainSessionRecoveryFenceOnly(entry: SessionEntry): boole
     !state?.foregroundClaims &&
     !state?.tombstone,
   );
+}
+
+/** Whether a loaded entry is a restart-recovery candidate for this Gateway generation. */
+export function isRestartRecoveryCandidateEntry(
+  entry: SessionEntry,
+  lifecycleGeneration?: string,
+): boolean {
+  return (
+    !entry.mainRestartRecovery?.tombstone &&
+    hasMainSessionRecoveryClaim(entry) &&
+    (entry.abortedLastRun === true ||
+      isMainRestartRecoveryTerminalOnly(entry, lifecycleGeneration) ||
+      (isTerminalSessionStatus(entry.status) && entry.status !== "interrupted"))
+  );
+}
+
+/**
+ * Fork: every candidate logs its decision. A non-candidate still carrying a recovery
+ * episode is one the marking pass claimed, so passing over it silently is how a marked
+ * session vanishes between "marked N" and "started M" with nothing in the log naming it.
+ */
+export function warnIfPassedOverMarkedSession(entry: SessionEntry, sessionKey: string): void {
+  const recovery = entry.mainRestartRecovery;
+  if (recovery && !recovery.tombstone) {
+    mainSessionRecoveryLog.warn(
+      `restart recovery passed over a marked session: sessionKey=${sessionKey} ` +
+        `cycleId=${recovery.cycleId} ` +
+        `abortedLastRun=${entry.abortedLastRun === true}`,
+    );
+  }
 }
