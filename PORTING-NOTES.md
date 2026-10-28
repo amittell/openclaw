@@ -3973,6 +3973,12 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
   I1 open-tool-call cut guard (`createToolCallOccurrenceQueue`, `extractToolCallsFromAssistant`,
   `extractToolResultId`). The fork's `compact.hooks.codex-plans.test-support.ts` is removed, because beta.4 defines
   the helper inline.
+  - The fork's `compaction-safeguard.degraded-retention.test.ts` (10.5 carry, `690039aceec`) is deleted. Upstream's
+    `degraded-fallback.test.ts` carries the same cases: an identical `it.each`, a superset of its assertions, and one
+    case more. Its own header said "upstream carries no file at this path", which is no longer true.
+  - The fork's `compaction-safeguard.degrade-fallback.test.ts` (#722) stays and passes on beta.4's logic. It pins
+    what upstream's file does not: the retry budget is exhausted before degrading, a passing summary is untouched,
+    the reason codes are deduped, and no cancellation is left behind.
 - **Auth, failover, sessions, restart recovery (Air):**
   - `skipInheritance` moves to `runtime-read.types.ts`, where beta.4 now defines `LoadAuthProfileStoreOptions`.
   - #93952's `withAuthDeadline` wraps beta.4's `forceRefresh` argument object. The cooldown-probe extraction stays.
@@ -4013,6 +4019,9 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
   - A quoted reply to a message outside the span can fail that page on every retry. This happens when the quoted
     message is a `sessions_send` input whose source session no span message asks about: its lookup was never
     prepared, so `requireFact` throws.
+  - `84760e8fb48` fixes that failure: an unasked lookup answers "hidden", and a worker failure still fails the read.
+    Remaining, display only: a reply preview is projected alone, so an ordinary assistant reply quoted in the span
+    view reaches an unasked `isSubagentRunMessage` and reads `not_visible` (room #299).
   - Preparation also makes one sequential worker request per missing fact, for up to 4 passes.
   - The owner-correct fix is to read the span inside the worker.
 - **Tests edited by reading only, to be confirmed by the M4 run:**
@@ -4023,5 +4032,10 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
 
 ## Qualification
 
-Pending on the M4: `tsgo`, the build, the compaction suite, the fork's degrade-fallback test and the fast gate. The
-CI dist build runs on `megamini-checks` (#5).
+On the M4 at `84760e8fb48` (Node 26.12.1, room #298 and #300):
+
+- `tsgo:all`: rc=0 in 186 s. That covers core, ui, the core-test shards, extensions, scripts and root tests.
+- `pnpm build`: rc=0 in 22m37s (tsdown-packages 18m42s).
+- Compaction suite: 32 files, 335 tests, 335 pass, in 48 s. It includes the fork's `degrade-fallback` test.
+- Pending: the ratchets with `--base` beta.4, oxlint and oxfmt, the PR-wrapper inventory, and the fast gate (718
+  files). The CI dist build runs on `megamini-checks` (#5).
