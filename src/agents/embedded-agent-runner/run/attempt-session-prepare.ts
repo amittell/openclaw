@@ -18,12 +18,6 @@ import {
   shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
-import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
-import {
-  applyAgentAutoCompactionGuard,
-  isSilentOverflowProneModel,
-  resolveEffectiveCompactionMode,
-} from "../../agent-settings.js";
 import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
@@ -64,6 +58,7 @@ import {
 import { buildAfterTurnRuntimeContext } from "./attempt-prompt-helpers.js";
 import type { EmbeddedAttemptSessionPreparationInput } from "./attempt-session-prepare-input.js";
 import { openSessionAfterProjectionRecovery } from "./attempt-session-projection-recovery.js";
+import { prepareEmbeddedAttemptSettingsManager } from "./attempt-session-settings.js";
 import { resolveExistingAttemptTranscriptState } from "./attempt-transcript-helpers.js";
 import type { EmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
 import { createUserTranscriptContextRegistry } from "./attempt-user-transcript-context-registry.js";
@@ -118,24 +113,12 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   prepareSystemPromptUpdate?: SystemPromptUpdatePreparation;
 }) {
   const { attempt, prepareSystemPromptUpdate } = input;
-  const settingsManager = createPreparedEmbeddedAgentSettingsManager({
-    cwd: input.effectiveCwd,
+  const settingsManager = prepareEmbeddedAttemptSettingsManager({
+    attempt,
+    activeContextEngineInfo: input.activeContextEngineInfo,
     agentDir: input.agentDir,
-    cfg: attempt.config,
+    effectiveCwd: input.effectiveCwd,
     pluginMetadataSnapshot: input.getCurrentAttemptPluginMetadataSnapshot(),
-    contextTokenBudget: attempt.contextTokenBudget,
-  });
-  applyAgentAutoCompactionGuard({
-    settingsManager,
-    contextEngineInfo: input.activeContextEngineInfo,
-    compactionMode: resolveEffectiveCompactionMode(attempt.config),
-    silentOverflowProneProvider: isSilentOverflowProneModel({
-      provider: attempt.provider,
-      modelId: attempt.modelId,
-      baseUrl: attempt.model.baseUrl ?? undefined,
-    }),
-    // The finalizer's result gate rejects any compaction, so never start one.
-    compactionForbidden: attempt.operation === "settled-tool-finalization",
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.
