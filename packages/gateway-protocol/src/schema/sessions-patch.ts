@@ -51,6 +51,7 @@ const SessionsPatchMutationProperties = {
   ),
   contextWindow: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
   thinkingLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+  temperature: Type.Optional(Type.Union([Type.Number({ minimum: 0, maximum: 2 }), Type.Null()])),
   fastMode: Type.Optional(
     Type.Union([Type.Boolean(), Type.Literal("auto"), Type.Literal("ultrafast"), Type.Null()]),
   ),

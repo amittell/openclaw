@@ -23,6 +23,7 @@ describe("automatic memory recall privacy", () => {
       resolveEnabledAgentId: (agentId) => agentId,
       readCooldown: () => undefined,
       recordCooldown: vi.fn(),
+      cooldownMs: 60_000,
     });
 
     await expect(

@@ -1,4 +1,3 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ExecutionIdentityAdmissionToken as ExecutionToken } from "../../audit/execution-identity-admission.js";
 import { dispatchInboundMessageWithRoutedChannelDispatcher } from "../../auto-reply/dispatch.js";
 import { getGroupThreadDispatchContext } from "../../auto-reply/group-thread-context.js";
@@ -42,16 +41,26 @@ import {
   isChannelPartialDeliveryError,
 } from "./delivery-result.js";
 import {
+  type AnyChannelDeliveryAdapter,
+  CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
+  deliverChannelTurnDispatchFallback,
+  markChannelDeliveryErrorVisible,
+} from "./delivery-visibility.js";
+import {
   createDirectPendingFinalCustody,
   NO_PENDING_FINAL_CUSTODY,
   resolvePendingFinalCompletion,
   toCoreManagedDeliveryInfo,
 } from "./direct-delivery-custody.js";
 import {
+  shouldDeliverDispatchFailureFallback,
+  throwIfTerminalDurableDeliveryFailed,
+  toSurfacedDispatchError,
+} from "./dispatch-failure.js";
+import {
   deliverInboundReplyWithMessageSendContextCore,
   deliverStructuredInboundReplyWithMessageSendContextCore,
   isDurableInboundReplyDeliveryHandled,
-  throwIfDurableInboundReplyDeliveryFailed,
   type DurableInboundReplyDeliveryParams,
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
@@ -75,8 +84,6 @@ type RoutedAssembledChannelTurn = Omit<
 > & {
   delivery: ChannelTurnDeliveryAdapter;
 };
-
-type AnyChannelDeliveryAdapter = ChannelEventDeliveryAdapter | ChannelTurnDeliveryAdapter;
 
 type ChannelDeliveryOperation<T extends { payload: ReplyPayload }> = {
   prepare: (payload: ReplyPayload) => T | null;
@@ -169,20 +176,6 @@ function resolveAssembledReplyPipeline(
       ...replyOptions,
     },
   };
-}
-
-function markChannelDeliveryErrorVisible(error: unknown): unknown {
-  if (isRecord(error)) {
-    try {
-      Object.assign(error, { sentBeforeError: true, visibleReplySent: true });
-      return error;
-    } catch {
-      // Fall back to a wrapper when a platform error object is non-extensible.
-    }
-  }
-  const visibleError = new Error("visible channel reply delivery failed", { cause: error });
-  Object.assign(visibleError, { sentBeforeError: true, visibleReplySent: true });
-  return visibleError;
 }
 
 async function runChannelDeliveryObserver(params: {
@@ -483,7 +476,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
       if (durable.status === "failed" && isPlatformMessageNotDispatchedError(durable.error)) {
         await settleFailedPendingFinalDelivery(preparedPayload, durable.error);
       }
-      throwIfDurableInboundReplyDeliveryFailed(durable);
+      throwIfTerminalDurableDeliveryFailed(durable);
       if (isDurableInboundReplyDeliveryHandled(durable)) {
         // Durable sends emit canonical message_sent after outbound hooks settle.
         await runChannelDeliveryObserver({
@@ -517,6 +510,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
       } else {
         if (ownership === "routed-delivery" && params.admission?.kind !== "observeOnly") {
           const hook = await applyRoutedDirectMessageSending({
+            // SAFETY: reached only when ownership === "routed-delivery", which is the routed turn shape.
             turn: params as RoutedAssembledChannelTurn,
             payload: effectivePayload,
           });
@@ -681,8 +675,24 @@ async function dispatchChannelTurnWithDeliveryOwner(
         if (settlementError !== undefined && isChannelPartialDeliveryError(settlementError)) {
           throw toErrorObject(settlementError, "channel delivery settlement failed");
         }
+        // Visible non-outcome (Bug 2): a failed user-visible turn with nothing
+        // visible settled still ends in a visible outcome before rethrowing.
+        const fallbackNeeded = shouldDeliverDispatchFailureFallback(params, {
+          dispatchError,
+          dispatchResult,
+          settlementError,
+        });
+        if (fallbackNeeded) {
+          try {
+            await deliverChannelTurnDispatchFallback(delivery, {
+              text: CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
+            });
+          } catch {
+            // Preserve the original dispatch error.
+          }
+        }
         if (dispatchError !== undefined) {
-          throw toErrorObject(dispatchError, "channel dispatch failed");
+          throw toSurfacedDispatchError(dispatchError);
         }
         if (settlementError !== undefined) {
           throw toErrorObject(settlementError, "channel delivery settlement failed");
@@ -711,6 +721,7 @@ export async function dispatchRoutedChannelTurn(
   params: ChannelTurnPlan<ChannelTurnDeliveryAdapter>,
 ): Promise<ChannelTurnResult> {
   return await dispatchChannelTurnWithDeliveryOwner(
+    // SAFETY: this is the routed entry point, so the assembled turn carries a routed delivery adapter.
     assembleResolvedChannelTurn(params) as RoutedAssembledChannelTurn,
     "routed-delivery",
   );

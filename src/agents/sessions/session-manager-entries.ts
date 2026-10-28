@@ -1,4 +1,5 @@
 import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import type { BuildSessionContextOptions } from "../../../packages/agent-core/src/index.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { ImageContent, TextContent } from "../../llm/types.js";
@@ -31,6 +32,15 @@ type LeafControlSelection = {
 };
 
 export class SessionManagerEntries extends SessionManagerAppend {
+  // Set per run from the registered tool set; every context build in that run must
+  // render the same checkpoint bytes or the provider prompt cache breaks each turn.
+  private checkpointHandleFormatter: BuildSessionContextOptions["formatCheckpointHandle"];
+
+  setCompactionCheckpointHandleFormatter(
+    formatter: BuildSessionContextOptions["formatCheckpointHandle"],
+  ): void {
+    this.checkpointHandleFormatter = formatter;
+  }
   private createEntry<T extends { type: SessionEntry["type"] }>(data: T) {
     return {
       ...data,
@@ -332,7 +342,9 @@ export class SessionManagerEntries extends SessionManagerAppend {
   }
 
   buildSessionContext(): SessionContext {
-    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[]) as SessionContext;
+    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[], {
+      formatCheckpointHandle: this.checkpointHandleFormatter,
+    }) as SessionContext;
   }
 
   /** Omitted projection metadata follows its retained branch anchors, outside model history. */

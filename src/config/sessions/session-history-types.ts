@@ -100,6 +100,7 @@ export type ChatHistoryPageParams = {
   offset: number | undefined;
   messageId: string | undefined;
   pageCursor?: ChatHistoryPageCursor;
+  compactionId?: string;
   ignoreCliSessionImports?: boolean;
   cliHistoryHomeDir?: string;
   cliHistoryRedaction?: TranscriptRedactionSnapshot;

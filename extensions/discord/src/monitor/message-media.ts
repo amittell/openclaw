@@ -58,9 +58,20 @@ type DiscordMediaOperation = DiscordMediaResolveOptions & {
   endpointRuntime: DiscordEndpointRuntime | null;
   maxBytes: number;
   out: DiscordMediaInfo[];
+  scope?: string;
 };
 
+/**
+ * Provenance scope for inbound Discord media: the originating channel id, stamped as
+ * "discord-<channelId>" so a flat media/inbound file identifies its conversation.
+ */
+function resolveDiscordMediaScope(message: { channelId?: string | null }): string | undefined {
+  const channelId = message.channelId;
+  return typeof channelId === "string" && channelId ? `discord-${channelId}` : undefined;
+}
+
 function createDiscordMediaOperation(
+  message: Message,
   maxBytes: number,
   options?: DiscordMediaResolveOptions,
 ): DiscordMediaOperation {
@@ -70,6 +81,7 @@ function createDiscordMediaOperation(
     endpointRuntime: getDiscordEndpointRuntime() ?? null,
     maxBytes,
     out: [],
+    scope: resolveDiscordMediaScope(message),
   };
 }
 
@@ -158,7 +170,7 @@ export async function resolveMediaList(
 ): Promise<DiscordMediaInfo[]> {
   return resolveMessageMedia(
     message,
-    createDiscordMediaOperation(maxBytes, options),
+    createDiscordMediaOperation(message, maxBytes, options),
     "discord: failed to download",
   );
 }
@@ -169,7 +181,7 @@ export async function resolveForwardedMediaList(
   options?: DiscordMediaResolveOptions,
 ): Promise<DiscordMediaInfo[]> {
   const snapshots = resolveDiscordMessageSnapshots(message);
-  const operation = createDiscordMediaOperation(maxBytes, options);
+  const operation = createDiscordMediaOperation(message, maxBytes, options);
   if (snapshots.length > 0) {
     for (const snapshot of snapshots) {
       await appendResolvedMediaFromAttachments({
@@ -200,7 +212,7 @@ export async function resolveReferencedReplyMediaList(
   return referencedReply
     ? resolveMessageMedia(
         referencedReply,
-        createDiscordMediaOperation(maxBytes, options),
+        createDiscordMediaOperation(message, maxBytes, options),
         "discord: failed to download referenced reply",
       )
     : [];
@@ -225,6 +237,7 @@ async function fetchDiscordMedia(
       ssrfPolicy: endpointGuard?.ssrfPolicy ?? operation.ssrfPolicy,
       ...(endpointGuard ? { maxRedirects: endpointGuard.maxRedirects } : {}),
       readIdleTimeoutMs: operation.readIdleTimeoutMs,
+      scope: operation.scope,
       ...(signal ? { requestInit: { signal } } : {}),
     });
   return operation.totalTimeoutMs

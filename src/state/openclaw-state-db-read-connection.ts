@@ -46,6 +46,7 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateSchemaReadAdmission,
 } from "./openclaw-state-db-contract.js";
+import { assertDirectReaderIntegrity } from "./openclaw-state-db-direct-reader-refusal.js";
 import { openTrackedStateDatabaseResult } from "./openclaw-state-db-handle.js";
 import {
   invalidateOpenClawStateRuntimeIntegrity,
@@ -153,14 +154,7 @@ export function prepareOpenClawStateDirectReader(context: OpenClawStateWorkerCon
     context.admission.assertCurrent();
     openClawStateDatabaseCache.assertOpenClawStateDatabaseOpenAllowed(pathname, "cached-read");
     assertExistingDatabaseIdentity(pathname, identity.key, identity.birthtime);
-    const integrity = context.stateIntegrity;
-    if (
-      (integrity && Atomics.load(new BigInt64Array(integrity.revision), 0) !== integrity.epoch) ||
-      (context.existingSchemaPath !== undefined &&
-        (!integrity || Atomics.load(new BigInt64Array(integrity.proof), 0) === -1n))
-    ) {
-      throw new Error("Direct shared-state reader requires current integrity admission");
-    }
+    assertDirectReaderIntegrity(context.stateIntegrity, context.existingSchemaPath);
   };
   const inContext = <T>(operation: () => T): T => {
     const run = () => runWithSqliteWorkerStateContext(context, operation);

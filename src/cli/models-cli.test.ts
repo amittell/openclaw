@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   modelsAliasesRemoveCommand: vi.fn().mockResolvedValue(undefined),
   modelsScanCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthAddCommand: vi.fn().mockResolvedValue(undefined),
+  modelsAuthCleanCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthListCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthLoginCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthLogoutCommand: vi.fn().mockResolvedValue(undefined),
@@ -83,6 +84,10 @@ vi.mock("../commands/models/auth-activate.js", () => ({
 }));
 vi.mock("../commands/models/auth-logout.js", () => ({
   modelsAuthLogoutCommand: mocks.modelsAuthLogoutCommand,
+}));
+vi.mock("../commands/models/auth-clean.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../commands/models/auth-clean.js")>()),
+  modelsAuthCleanCommand: mocks.modelsAuthCleanCommand,
 }));
 vi.mock("../commands/models/auth-order.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../commands/models/auth-order.js")>()),
@@ -251,6 +256,8 @@ describe("models cli", () => {
       label: "login-github-copilot",
       args: ["models", "auth", "--agent", "poe", "login-github-copilot", "--yes"],
       command: modelsAuthLoginCommand,
+      // login-github-copilot routes through modelsAuthLoginCommand with the
+      // github-copilot provider and device method preselected.
       expected: { agent: "poe", provider: "github-copilot", method: "device", yes: true },
     },
   ])("passes parent --agent to models auth $label", async ({ args, command, expected }) => {
@@ -385,6 +392,22 @@ describe("models cli", () => {
       }
     },
   );
+
+  it("rejects invalid --profile-id for paste-token", async () => {
+    await expect(
+      runModelsCommand([
+        "models",
+        "auth",
+        "paste-token",
+        "--provider",
+        "anthropic",
+        "--profile-id",
+        "bad id",
+      ]),
+    ).rejects.toThrow(/process\.exit unexpectedly called with "1"/);
+
+    expect(modelsAuthPasteTokenCommand).not.toHaveBeenCalled();
+  });
 
   it("shows help for models auth without error exit", async () => {
     const program = new Command();

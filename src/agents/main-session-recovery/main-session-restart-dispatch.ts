@@ -3,7 +3,10 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
+} from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
 import {
   applySessionEntryReplacements,
@@ -19,7 +22,6 @@ import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
-import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
 import {
   buildSubagentRestartRecoveryRoster,
@@ -61,8 +63,27 @@ import {
 } from "./main-session-restart-recovery-delivery.js";
 import { mainSessionRecoveryLog as log } from "./main-session-restart-recovery-shared.js";
 
+// Used only when a Gateway close recorded the "gateway_restart" cause. 10.7 made the shared
+// RESTART_RECOVERY_INTERRUPTION_NOTE cause-neutral, so this variant states the restart itself.
 const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
-  `${RESTART_RECOVERY_INTERRUPTION_NOTE} The restart did not cancel the user's task. ` +
+  "Your previous turn was interrupted by a gateway restart while " +
+    "OpenClaw was waiting on tool/model work. " +
+    "Treat tool results marked interrupted, missing, or aborted as having an unknown outcome " +
+    "from the restart, not proof of tool failure. Verify what happened before repeating an action. " +
+    "The restart did not cancel the user's task. " +
+    "Continue from the existing transcript: check the current state, recover interrupted work, " +
+    "and finish the task without asking the user to repeat the request. " +
+    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
+);
+
+// Used whenever no restart is on record: an explicit operator recovery, a pre-upgrade
+// cycle, or any cycle without the "gateway_restart" cause. It never claims a restart.
+// Mirrors the restart variant above without claiming the restart.
+const INTERRUPT_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
+  "Your previous turn was interrupted while OpenClaw was waiting on tool/model work. " +
+    "Treat tool results marked interrupted, missing, or aborted as having an unknown outcome, " +
+    "not proof of tool failure. Verify what happened before repeating an action. " +
+    "The interruption did not cancel the user's task. " +
     "Continue from the existing transcript: check the current state, recover interrupted work, " +
     "and finish the task without asking the user to repeat the request. " +
     `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
@@ -93,11 +114,16 @@ function buildResumeMessage(
   pendingFinalDeliveryText: string,
   forceRestartSafeTools?: boolean,
   childRecoveryRoster?: string,
+  cause?: MainRestartRecoveryCause,
 ): string {
   const sanitizedPendingText = sanitizePendingFinalDeliveryText(pendingFinalDeliveryText);
+  const resumeMessage =
+    cause === "gateway_restart"
+      ? RESTART_RECOVERY_RESUME_MESSAGE
+      : INTERRUPT_RECOVERY_RESUME_MESSAGE;
   const instructions = forceRestartSafeTools
-    ? `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
-    : RESTART_RECOVERY_RESUME_MESSAGE;
+    ? `${resumeMessage}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
+    : resumeMessage;
   const base = childRecoveryRoster ? `${instructions}\n\n${childRecoveryRoster}` : instructions;
   return sanitizedPendingText
     ? `${base}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`
@@ -423,6 +449,7 @@ async function resumeMainSessionWithinAdmission(
             requesterStorePath,
           }),
         ),
+        params.entry.mainRestartRecovery?.cause,
       ),
       sessionKey: dispatchSessionKey,
       expectedExistingSessionId: params.entry.sessionId,
@@ -571,6 +598,7 @@ async function resumeMainSessionWithinAdmission(
         lifecycleGeneration,
         deliveryContext,
         cfg: params.cfg,
+        cause: params.entry.mainRestartRecovery?.cause,
         shouldContinue: () =>
           !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
         gatewayRuntime: params.gatewayRuntime,

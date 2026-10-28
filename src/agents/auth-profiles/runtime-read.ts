@@ -74,6 +74,12 @@ export type LoadAuthProfileStoreOptions = {
   syncExternalCli?: boolean;
   externalCliProviderIds?: Iterable<string>;
   externalCliProfileIds?: Iterable<string>;
+  // Documented intent flag for callers (e.g. `models auth clean`) that want to
+  // load only the agent-local store without merging main-agent profiles.
+  // loadAuthProfileStoreForAgent is already agent-local (inheritance lives in
+  // loadAuthProfileStoreForRuntime); flag retained for clarity and call-site
+  // documentation.
+  skipInheritance?: boolean;
 };
 
 export type AuthProfileReadOwner = {

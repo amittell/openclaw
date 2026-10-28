@@ -87,7 +87,7 @@ function hasExplicitAttachmentPayload(
   );
 }
 
-function hasExplicitSendMediaSource(
+export function hasExplicitSendMediaSource(
   args: Record<string, unknown>,
   extraParamKeys?: readonly string[],
 ): boolean {
