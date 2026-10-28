@@ -77,9 +77,6 @@ function createHistoryToolWithMessage(content: unknown, sessionLinkBase?: string
   });
 }
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-describe("sessions_history", () => {
-=======
 function readMessageSeq(message: unknown): number | undefined {
   if (!message || typeof message !== "object" || Array.isArray(message)) {
     return undefined;
@@ -92,8 +89,7 @@ function readMessageSeq(message: unknown): number | undefined {
   return typeof seq === "number" ? seq : undefined;
 }
 
-describe("sessions_history redaction", () => {
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+describe("sessions_history", () => {
   beforeAll(async () => {
     previousConfigPath = process.env.OPENCLAW_CONFIG_PATH;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sessions-history-redact-"));
@@ -327,7 +323,7 @@ describe("sessions_history redaction", () => {
     ).rejects.toThrow("compactionId and messageId cannot be used together");
   });
 
-  it("reads a compaction span with default-mode redaction, tool filtering, and paging", async () => {
+  it("reads a compaction span with tool filtering and paging", async () => {
     useLoggingConfig("span-redaction-off.json", { redactSensitive: "off" });
     const requests: CallGatewayRequest[] = [];
     const span = [
@@ -375,9 +371,10 @@ describe("sessions_history redaction", () => {
       limit: 3,
     });
     expect(details.messages).toHaveLength(2);
-    expect(JSON.stringify(details)).not.toContain("sk-or-v1-abcdef0123456789");
+    // #169063: recalled transcript text is preserved; masking stays at log boundaries.
+    expect(JSON.stringify(details)).toContain("sk-or-v1-abcdef0123456789");
     expect(details).toMatchObject({
-      contentRedacted: true,
+      contentRedacted: false,
       truncated: false,
       shadowedCount: 5,
       returnedCount: 2,

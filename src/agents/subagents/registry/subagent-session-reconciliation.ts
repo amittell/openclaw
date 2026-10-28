@@ -1,17 +1,11 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { getRuntimeConfig } from "../../../config/config.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type { InternalSessionEntry as SessionEntry } from "../../../config/sessions.js";
-=======
 import {
-  resolveAgentIdFromSessionKey,
   resolveSessionFilePathCore,
   resolveSessionFilePathOptions,
-  resolveSessionStorePathCore,
   type InternalSessionEntry as SessionEntry,
 } from "../../../config/sessions.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   readSessionEntryReadOnlyInWorker,
   withSessionEntryReadOnlyInWorker,
@@ -261,11 +255,8 @@ function resolveTranscriptCompletion(params: {
       return null;
     }
     const cfg = params.cfg ?? getRuntimeConfig();
-    const agentId = resolveAgentIdFromSessionKey(
-      params.childSessionKey.trim(),
-      params.childAgentId,
-    );
-    const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
+    // Same owner as the entry read, so the transcript comes from the entry's store.
+    const { agentId, storePath } = resolveSubagentChildSessionOwner(params, cfg);
     const transcriptPath = resolveSessionFilePathCore(
       sessionId,
       sessionEntry,

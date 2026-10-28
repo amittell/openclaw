@@ -34,11 +34,8 @@ import {
   getActiveAgentRingZeroTools,
   mergeAgentRingZeroTools,
 } from "./agent-tools.ring-zero-context.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { runtimeToolAllowlistIncludesMessage } from "./agent-tools.runtime-allowlist.js";
-=======
 import { assembleTurnToolSurface } from "./agent-tools.turn-surface.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { resolveProcessToolScopeKey } from "./bash-process-scope.js";
 import { listChannelAgentTools } from "./channel-tools.js";
@@ -49,14 +46,6 @@ import {
 } from "./conversation-capability-profile.js";
 import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.js";
 import { createCoreCodingTools } from "./core-coding-tools.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { applyDelegationCapability } from "./delegation-capability.js";
-=======
-import {
-  bindActiveCronCreatorAuthorityResolver,
-  bindCronManagementGrant,
-} from "./cron-creator-authority-context.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveExecToolConfig } from "./lazy-exec-tool.js";
@@ -561,33 +550,9 @@ function* assembleOpenClawCodingTools(
     toolDenylist: pluginToolDenylist,
   });
   // Sender identity is primarily command/action auth, with one Gateway parity exception:
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  // explicit non-owner callers never receive owner-only control-plane core tools.
-  const subagentFiltered = messageInvocationPolicy.filter(capabilityProfile, onPolicyFilter);
-  // Host-bound ring-zero tools carry their own authority checks. Agent policy
-  // must not deadlock setup, but the tools still receive schema/hook wrappers.
-  const inheritableTools = applySwarmCollectorToolContract(
-    applyDelegationCapability(
-      mergeAgentRingZeroTools(ringZeroTools, subagentFiltered),
-      options?.delegationCapability,
-    ),
-    {
-      swarmCollector: options?.swarmCollector,
-      structuredOutputTool: swarmStructuredOutputTool,
-    },
-  );
-  const authorizedTools = unavailablePublicationTool
-    ? inheritableTools.filter((tool) => tool !== unavailablePublicationTool)
-    : inheritableTools;
-  if (options?.inheritedPublicationToolRef) {
-    options.inheritedPublicationToolRef.current = inheritableTools.find(
-      (tool) => tool === unavailablePublicationTool,
-    );
-  }
-=======
   // explicit non-owner callers never receive owner-only control-plane core tools. They
   // see refusing stubs in their place, so every grant below reads `authorizedTools`.
-  const { authorizedTools, modelFacingTools } = assembleTurnToolSurface({
+  const { authorizedTools: inheritableTools, modelFacingTools: shaped } = assembleTurnToolSurface({
     policy: messageInvocationPolicy,
     ringZeroTools,
     delegationCapability: options?.delegationCapability,
@@ -596,7 +561,15 @@ function* assembleOpenClawCodingTools(
     stubContext: { runId: options?.runId, sessionKey: executionSessionKey },
     onPolicyFilter,
   });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+  // The unavailable publication tool is captured for children, never exposed to this turn.
+  const exposed = (tool: AnyAgentTool) => tool !== unavailablePublicationTool;
+  const authorizedTools = inheritableTools.filter(exposed);
+  const modelFacingTools = shaped.filter(exposed);
+  if (options?.inheritedPublicationToolRef) {
+    options.inheritedPublicationToolRef.current = inheritableTools.find(
+      (tool) => tool === unavailablePublicationTool,
+    );
+  }
   assertMemoryFlushPersistenceToolAvailable(authorizedTools, options?.memoryFlushTools);
   authorizedTools.forEach(bindAssembledAgentToolActionDescriptor);
   if (shouldInheritEffectiveToolAllowlist) {

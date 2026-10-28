@@ -873,13 +873,7 @@ export function resetEmbeddedAttemptHarness(
   hoisted.embeddedSystemPromptInputs.length = 0;
   hoisted.trajectoryEvents.length = 0;
   resetSessionManagerMocks(hoisted.sessionManager, params.sessionMessages);
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
   hoisted.sessionManager.setCompactionCheckpointHandleFormatter.mockReset();
-  if (params.subscribeImpl) {
-    hoisted.subscribeEmbeddedAgentSessionMock.mockImplementation(params.subscribeImpl);
-  }
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 }
 
 export async function cleanupTempPaths(tempPaths: string[]) {

@@ -21,11 +21,8 @@ import { buildRuntimeContextCustomMessage } from "../embedded-agent-runner/run/r
 import { estimateToolResultTextChars } from "../embedded-agent-runner/tool-result-text-budget.js";
 import { MAX_AGENT_HOOK_HISTORY_MESSAGES } from "../harness/hook-history.js";
 import { SessionManager } from "../sessions/session-manager.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { buildAssistantMessage, buildUsageWithNoCost } from "../stream-message-shared.js";
-=======
 import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { cliBackendLog } from "./log.js";
 import {
   buildCliSessionHistoryPrompt,

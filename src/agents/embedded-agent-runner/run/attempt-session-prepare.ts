@@ -17,6 +17,12 @@ import {
   shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
+import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
+import {
+  applyAgentAutoCompactionGuard,
+  isSilentOverflowProneModel,
+  resolveEffectiveCompactionMode,
+} from "../../agent-settings.js";
 import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
@@ -55,12 +61,6 @@ import {
   type SystemPromptUpdatePreparation,
 } from "./attempt-permission-prompt.js";
 import { buildAfterTurnRuntimeContext } from "./attempt-prompt-helpers.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-import type { EmbeddedAttemptSessionPreparationInput } from "./attempt-session-prepare-input.js";
-import { openSessionAfterProjectionRecovery } from "./attempt-session-projection-recovery.js";
-import { prepareEmbeddedAttemptSettingsManager } from "./attempt-session-settings.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { resolveExistingAttemptTranscriptState } from "./attempt-transcript-helpers.js";
 import type { EmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
 import { createUserTranscriptContextRegistry } from "./attempt-user-transcript-context-registry.js";
@@ -112,19 +112,12 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   prepareSystemPromptUpdate?: SystemPromptUpdatePreparation;
 }) {
   const { attempt, prepareSystemPromptUpdate } = input;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const settingsManager = createPreparedEmbeddedAgentSettingsManager({
     sessionId: attempt.sessionId,
     cwd: input.effectiveCwd,
-=======
-  const settingsManager = prepareEmbeddedAttemptSettingsManager({
-    attempt,
-    activeContextEngineInfo: input.activeContextEngineInfo,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     agentDir: input.agentDir,
-    effectiveCwd: input.effectiveCwd,
+    cfg: attempt.config,
     pluginMetadataSnapshot: input.getCurrentAttemptPluginMetadataSnapshot(),
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     contextTokenBudget: attempt.contextTokenBudget,
   });
   // Preserve the actual user setting before the SDK guard transfers ownership.
@@ -140,8 +133,6 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     }),
     // The finalizer's result gate rejects any compaction, so never start one.
     compactionForbidden: attempt.operation === "settled-tool-finalization",
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.

@@ -59,13 +59,10 @@ result and continue after the answer enters conversation history. An unrelated
 new user turn, a changed transcript branch, or revoked run authority still
 prevents that older turn from appending a response.
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 If a standalone question link cannot refresh after reconnecting, use **Retry**
 to load it again without losing the answer you typed in that page. A question
 that is no longer available remains unavailable.
 
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 OpenClaw always enables a free-text **Other** answer. The agent must not add an
 `Other` option to the authored option list.
 

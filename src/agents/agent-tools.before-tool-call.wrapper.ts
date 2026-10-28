@@ -671,15 +671,6 @@ export function rewrapToolWithBeforeToolCallHook(
   }
   return rebuilt;
 }
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-
-function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {
-  if (!toolCallId) {
-    return;
-  }
-  preExecutionBlockedToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
-  pruneTrackedToolCallIds(preExecutionBlockedToolCallIds);
-}
 
 function pruneTrackedToolCallIds(ids: Set<string>): void {
   while (ids.size > MAX_TRACKED_ADJUSTED_PARAMS) {
@@ -690,5 +681,3 @@ function pruneTrackedToolCallIds(ids: Set<string>): void {
     ids.delete(oldest);
   }
 }
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31

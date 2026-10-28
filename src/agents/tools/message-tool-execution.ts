@@ -50,11 +50,8 @@ import {
   resolveMessageToolDiscoveryAsync,
   supportsMessageToolPromptReactions,
 } from "./message-tool-discovery.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+import { checkMessageToolSendGuards } from "./message-tool-execution.send-guards.js";
 import type { MessageToolOptions } from "./message-tool-execution.types.js";
-=======
-import { checkDuplicateSend } from "./message-tool-execution.send-guards.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
 import { prepareMessageToolGroupThread } from "./message-tool-group-thread.js";
@@ -79,13 +76,8 @@ import { createMessageToolTurnAuthority } from "./message-tool-turn-authority.js
 import {
   hasSanitizedSendPayloadContent,
   sanitizeMessageToolVisiblePayload,
-  type VisibleTextSuppressionReason,
 } from "./message-tool-visible-content.js";
-import {
-  recordPollVote,
-  resolvePollVoteEchoRoute,
-  suppressPollVoteEcho,
-} from "./poll-vote-echo.js";
+import { resolvePollVoteEchoRoute } from "./poll-vote-echo.js";
 
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const steps = createMessageToolSteps(options);
@@ -496,31 +488,18 @@ function* createMessageToolSteps(
         currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
         preparedMessageToolCatalog,
       });
-      if (
-        sourceReplySinkDeliveryMode === "message_tool_only" &&
-        suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)
-      ) {
-        decisions.recordPollVoteEchoSuppressed();
-        return jsonResult({
-          status: "suppressed",
-          reason: "poll_vote_echo" satisfies VisibleTextSuppressionReason,
-          message: "Suppressed outbound text because it only restated the poll vote just cast.",
-        });
+      const sendGuards = checkMessageToolSendGuards({
+        action,
+        args: params,
+        runId: options?.runId,
+        route: pollVoteEchoRoute,
+        pollEchoSessionKey,
+        onPollVoteEchoSuppressed: () => decisions.recordPollVoteEchoSuppressed(),
+      });
+      if (sendGuards.suppressed) {
+        return sendGuards.suppressed;
       }
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-      const duplicateSend = checkDuplicateSend(action, params, options?.runId, pollVoteEchoRoute);
-      if (duplicateSend?.suppressed) {
-        return duplicateSend.suppressed;
-      }
-
-      const hasCurrentMessageId =
-        typeof options?.currentMessageId === "number" ||
-        (typeof options?.currentMessageId === "string" &&
-          options.currentMessageId.trim().length > 0);
-
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       const toolContext =
         effectiveCurrentChannel.currentChannelId ||
         effectiveCurrentChannel.currentChatType ||
@@ -734,19 +713,7 @@ function* createMessageToolSteps(
               )?.markSourceReplyDelivered();
             }
           }
-          if (
-            action === "poll-vote" &&
-            pollVoteEchoRoute &&
-            pollEchoSessionKey &&
-            sourceReplySinkDeliveryMode === "message_tool_only"
-          ) {
-            // SAFETY: details is provider-supplied and untyped; pollVotedOption stays unknown and is accepted only when typeof is string.
-            const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
-            recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
-          }
-          // Record only after a non-throwing send so a failed delivery can still
-          // be retried with the same text.
-          duplicateSend?.recordDelivered();
+          sendGuards.recordDelivered(toolResult);
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

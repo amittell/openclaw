@@ -19,16 +19,12 @@ import {
 } from "../sessions/user-turn-transcript.js";
 import type { AssistantErrorTranscript } from "./assistant-error-transcript.js";
 import { isMidTurnPrecheckAssistantError } from "./embedded-agent-runner/run/midturn-precheck.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { readPersistedImageBlockFactIndexes } from "./embedded-agent-runner/run/prompt-image-metadata.js";
 import {
   resolveLiveToolResultMaxChars,
   truncateToolResultMessage,
 } from "./embedded-agent-runner/tool-result-truncation.js";
-=======
-import { resolveLiveToolResultMaxChars } from "./embedded-agent-runner/tool-result-truncation.js";
 import { recordToolResultLocalMediaReplayAuthorization } from "./embedded-agent-tool-media.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { runAgentHarnessBeforeMessageWriteHook } from "./harness/hook-helpers.js";
 import { projectAgentHarnessTranscriptMessageForDisplay } from "./harness/transcript-visibility.js";
 import type { EmbeddedRunTrigger } from "./run-trigger.js";

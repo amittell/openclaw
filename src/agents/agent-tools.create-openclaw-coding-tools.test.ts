@@ -33,16 +33,7 @@ import {
   wrapReadToolWithSkillContent,
 } from "./agent-tools.read.js";
 import { runWithAgentRingZeroTools } from "./agent-tools.ring-zero-context.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { prepareConversationCapabilityProfile } from "./conversation-capability-profile.js";
-import {
-  createCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapabilityResolver,
-} from "./cron-creator-authority-context.js";
-=======
-import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import * as openClawPluginTools from "./openclaw-plugin-tools.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { expectReadWriteEditTools } from "./test-helpers/agent-tools-fs-helpers.js";

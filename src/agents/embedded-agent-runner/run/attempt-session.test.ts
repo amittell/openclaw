@@ -221,11 +221,7 @@ function createInput(options?: { terminalHookError?: Error }) {
     },
     onDeliveredSourceReply: () => onDeliveredSourceReply?.(),
     resourceLoader,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
     sessionManager,
-    setActiveToolsByName,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     sessionToolAllowlist,
     settingsManager,
   };

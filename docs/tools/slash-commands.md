@@ -24,16 +24,10 @@ command handling is enabled for the surface.
     only content in the message.
   </Card>
   <Card title="Directives" icon="sliders">
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-    `/think`, `/fast`, `/verbose`, `/trace`, `/reasoning`, `/elevated`,
-    `/exec`, `/model`, `/queue` — interpreted before the model processes a
-    message. Most persist session settings when sent alone. The command and
-    delivered acknowledgement remain in conversation history. `/exec` security
-=======
     `/think`, `/temperature`, `/fast`, `/verbose`, `/trace`, `/reasoning`,
-    `/elevated`, `/exec`, `/model`, `/queue` — stripped from the message before the model
-    sees it. Most persist session settings when sent alone. `/exec` security
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+    `/elevated`, `/exec`, `/model`, `/queue` — interpreted before the model
+    processes a message. Most persist session settings when sent alone. The
+    command and delivered acknowledgement remain in conversation history. `/exec` security
     and approval options apply only to their message.
   </Card>
   <Card title="Inline shortcuts" icon="bolt">

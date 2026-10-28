@@ -60,7 +60,6 @@ export function createEmbeddedMessageInvocationPolicy(params: {
   };
   isAvailable: () => boolean;
 }) {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const resolvePolicies = (capabilityProfile: ResolvedConversationCapabilityProfile) =>
     resolveConversationToolPolicies({
       capabilityProfile,
@@ -68,19 +67,12 @@ export function createEmbeddedMessageInvocationPolicy(params: {
       additionalPolicyAllow: params.toolSearchControlAllowlist,
     });
   const policies = resolvePolicies(params.capabilityProfile);
-=======
-  const policies = resolveConversationToolPolicies({
-    capabilityProfile: params.capabilityProfile,
-    additionalProfileAllow: params.runtimeProfileAlsoAllow,
-    additionalPolicyAllow: params.toolSearchControlAllowlist,
-  });
   const ownerOnlyStep = (unavailableCoreToolReason?: string): ToolPolicyPipelineStep => ({
     policy: params.ownerOnlyCoreToolPolicy,
     source: { kind: "session" },
     label: "gateway sender owner-only tools",
     unavailableCoreToolReason,
   });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   const filter = (
     currentProfile = params.capabilityProfile,
     onFilter?: (event: ToolPolicyFilterEvent) => void,
