@@ -4318,7 +4318,9 @@ describe("main-session-restart-recovery", () => {
       ],
       safeTools: "required",
       promptIncludes: [
-        "Gateway restart or a tool execution timeout",
+        // Fork: a recorded gateway restart names its cause (main-session-restart-dispatch.ts) instead of
+        // upstream's cause-neutral "Gateway restart or a tool execution timeout" note.
+        "interrupted by a gateway restart",
         "marked interrupted, missing, or aborted",
         "unknown outcome",
         "not proof of tool failure",
