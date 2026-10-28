@@ -19,11 +19,16 @@ import {
 } from "../sessions/user-turn-transcript.js";
 import type { AssistantErrorTranscript } from "./assistant-error-transcript.js";
 import { isMidTurnPrecheckAssistantError } from "./embedded-agent-runner/run/midturn-precheck.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { readPersistedImageBlockFactIndexes } from "./embedded-agent-runner/run/prompt-image-metadata.js";
 import {
   resolveLiveToolResultMaxChars,
   truncateToolResultMessage,
 } from "./embedded-agent-runner/tool-result-truncation.js";
+=======
+import { resolveLiveToolResultMaxChars } from "./embedded-agent-runner/tool-result-truncation.js";
+import { recordToolResultLocalMediaReplayAuthorization } from "./embedded-agent-tool-media.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { runAgentHarnessBeforeMessageWriteHook } from "./harness/hook-helpers.js";
 import { projectAgentHarnessTranscriptMessageForDisplay } from "./harness/transcript-visibility.js";
 import type { EmbeddedRunTrigger } from "./run-trigger.js";
@@ -63,6 +68,8 @@ type GuardedSessionManager = SessionManager &
         replayKey: string | undefined;
       },
     ) => void;
+    /** Replace the tools whose local media this run may authorize for replay. */
+    setTrustedLocalMediaToolNames?: (names: ReadonlySet<string>) => void;
   };
 
 function publishPersistedUserEnvelope(
@@ -106,6 +113,7 @@ export function guardSessionManager(
     allowSyntheticToolResults?: boolean;
     missingToolResultText?: string;
     allowedToolNames?: Iterable<string>;
+    trustedLocalMediaToolNames?: ReadonlySet<string>;
     trigger?: EmbeddedRunTrigger;
     preparedUserTurnMessage?: PersistedUserTurnMessage;
     preparedUserTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
@@ -160,10 +168,15 @@ export function guardSessionManager(
         replayKey: preparedUserReplayKey,
       },
     );
+    // Same-run helpers such as compaction reuse the manager without a set and keep the run's.
+    if (opts?.trustedLocalMediaToolNames) {
+      guardedSessionManager.setTrustedLocalMediaToolNames?.(opts.trustedLocalMediaToolNames);
+    }
     return guardedSessionManager;
   }
 
   const hookRunner = getGlobalHookRunner();
+  let trustedLocalMediaToolNames = opts?.trustedLocalMediaToolNames;
   let queuedUserTurnTranscriptRecorder: UserTurnTranscriptRecorder | undefined;
   const runtimeUserMessageByPersistedMessage = new WeakMap<
     AgentMessage,
@@ -225,6 +238,14 @@ export function guardSessionManager(
     const sanitized = sanitizeTranscriptMessage(message);
     if (sanitized !== message) {
       message = sanitized;
+      changed = true;
+    }
+    if (message.role === "toolResult" && trustedLocalMediaToolNames) {
+      message = recordToolResultLocalMediaReplayAuthorization(
+        message,
+        message.toolName,
+        trustedLocalMediaToolNames,
+      );
       changed = true;
     }
     const projectedMessage = projectAgentHarnessTranscriptMessageForDisplay({
@@ -395,6 +416,9 @@ export function guardSessionManager(
     pendingPreparedUserTurnMessage = preparedUserTurn.message;
     preparedUserTurnTranscriptRecorder = preparedUserTurn.recorder;
     preparedUserReplayKey = preparedUserTurn.replayKey;
+  };
+  guardedSessionManager.setTrustedLocalMediaToolNames = (names) => {
+    trustedLocalMediaToolNames = names;
   };
   return guardedSessionManager;
 }

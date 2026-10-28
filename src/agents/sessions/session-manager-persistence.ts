@@ -8,10 +8,13 @@ import type {
   SessionMetadataWorkerOperations,
 } from "../../config/sessions/session-manager-write-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import {
   captureSessionTranscriptQuestionAnswers,
   resolveSessionTranscriptReadFence,
 } from "../../config/sessions/session-transcript-read-fence.js";
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import {
   captureSessionTranscriptTargetBinding,
@@ -30,10 +33,20 @@ import type { AgentMessage } from "../runtime/index.js";
 import { getSessionCompactionPersistenceAsync } from "./session-compaction-persistence.js";
 import { appendSessionManagerActor } from "./session-manager-actor-append.js";
 import {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   withSessionManagerAppend,
   type SessionManagerAppendAdmission,
 } from "./session-manager-append-admission.js";
 import { SessionManagerNativePersistence } from "./session-manager-native-persistence.js";
+=======
+  getSessionCompactionPersistence,
+  getSessionCompactionPersistenceAsync,
+} from "./session-compaction-persistence.js";
+import { captureAppendCustody } from "./session-manager-append-custody.js";
+import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
+import { SessionManagerCore } from "./session-manager-core.js";
+import { prepareSessionManagerSync } from "./session-manager-incognito-scope.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   adoptCommittedMessagePayload,
   canonicalizeSessionEntry,
@@ -85,6 +98,7 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
       ...writeTarget,
       storePath: database?.path ?? resolveOpenClawAgentSqlitePath(options),
     };
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     const initialWriter = this.initialTranscriptWriter;
     const admission = resolveSessionTranscriptReadFence(captured);
     const questionAnswers = message?.validateTurn
@@ -94,6 +108,13 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
           admission?.entryId,
         )
       : undefined;
+=======
+    if ("db" in database && database.db.isTransaction) {
+      throw new Error("Asynchronous session writes must own their transaction");
+    }
+    const initialWriter = this.#initialWriter;
+    const { questionAnswers, view: custodyView } = captureAppendCustody(captured, message);
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     const assertOwned = captureOwnedTranscriptWriteAssertion(identity);
     const assertBinding = () => {
       const current = this.persistenceTarget;
@@ -444,8 +465,12 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
                       view: {
                         loadedVersion: this.transcriptVersion,
                         limits: this.boundedContextLimits,
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
                         admission,
                         questionAnswers: questionAnswers?.answers,
+=======
+                        ...custodyView,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
                       },
                     }
                   : {}),

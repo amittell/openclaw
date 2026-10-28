@@ -1,5 +1,6 @@
 import { isAnthropicOAuthApiKey, isDirectAnthropicModel } from "@openclaw/ai/internal/anthropic";
 import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core";
+import { formatCompactionCheckpointHandle } from "../../../../packages/agent-core/src/index.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
@@ -16,12 +17,6 @@ import {
   shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
-import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
-import {
-  applyAgentAutoCompactionGuard,
-  isSilentOverflowProneModel,
-  resolveEffectiveCompactionMode,
-} from "../../agent-settings.js";
 import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
@@ -39,6 +34,7 @@ import { createAgentSession } from "../../sessions/sdk.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
 import { sessionManagerOpenTranscriptCohort } from "../../sessions/session-manager-core.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
+import { SESSIONS_HISTORY_CHECKPOINT_READ_HINT } from "../../tool-description-presets.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
@@ -59,6 +55,12 @@ import {
   type SystemPromptUpdatePreparation,
 } from "./attempt-permission-prompt.js";
 import { buildAfterTurnRuntimeContext } from "./attempt-prompt-helpers.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+import type { EmbeddedAttemptSessionPreparationInput } from "./attempt-session-prepare-input.js";
+import { openSessionAfterProjectionRecovery } from "./attempt-session-projection-recovery.js";
+import { prepareEmbeddedAttemptSettingsManager } from "./attempt-session-settings.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { resolveExistingAttemptTranscriptState } from "./attempt-transcript-helpers.js";
 import type { EmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
 import { createUserTranscriptContextRegistry } from "./attempt-user-transcript-context-registry.js";
@@ -110,12 +112,19 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   prepareSystemPromptUpdate?: SystemPromptUpdatePreparation;
 }) {
   const { attempt, prepareSystemPromptUpdate } = input;
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const settingsManager = createPreparedEmbeddedAgentSettingsManager({
     sessionId: attempt.sessionId,
     cwd: input.effectiveCwd,
+=======
+  const settingsManager = prepareEmbeddedAttemptSettingsManager({
+    attempt,
+    activeContextEngineInfo: input.activeContextEngineInfo,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     agentDir: input.agentDir,
-    cfg: attempt.config,
+    effectiveCwd: input.effectiveCwd,
     pluginMetadataSnapshot: input.getCurrentAttemptPluginMetadataSnapshot(),
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     contextTokenBudget: attempt.contextTokenBudget,
   });
   // Preserve the actual user setting before the SDK guard transfers ownership.
@@ -131,6 +140,8 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     }),
     // The finalizer's result gate rejects any compaction, so never start one.
     compactionForbidden: attempt.operation === "settled-tool-finalization",
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.
@@ -159,6 +170,12 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     ...input.clientToolPreparation,
   });
   const { allCustomTools, sessionToolAllowlist, ...clientToolRuntime } = preparedClientTools;
+  // The checkpoint line may name sessions_history only when this run registers it.
+  input.sessionManager.setCompactionCheckpointHandleFormatter(
+    sessionToolAllowlist.includes("sessions_history")
+      ? (handle) => formatCompactionCheckpointHandle(handle, SESSIONS_HISTORY_CHECKPOINT_READ_HINT)
+      : undefined,
+  );
 
   const { session: activeSession } = await createAgentSession({
     systemPrompt: input.initialSystemPrompt.trim(),
@@ -621,6 +638,8 @@ export async function prepareEmbeddedAttemptSessionManager(input: {
     allowSyntheticToolResults: transcriptPolicy.allowSyntheticToolResults,
     missingToolResultText: isOpenAIResponsesApi ? "aborted" : undefined,
     allowedToolNames: input.replayAllowedToolNames,
+    // Deny local-media replay authority until the agent session supplies its trust set.
+    trustedLocalMediaToolNames: new Set<string>(),
     trigger: attempt.trigger,
     suppressNextUserMessagePersistence:
       prepareInitialUserTurnReplay !== undefined || attempt.suppressNextUserMessagePersistence,

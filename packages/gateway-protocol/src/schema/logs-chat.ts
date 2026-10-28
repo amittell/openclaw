@@ -50,6 +50,7 @@ export const ChatHistoryParamsSchema = closedObject({
     }),
   ),
   messageId: Type.Optional(NonEmptyString),
+  compactionId: Type.Optional(NonEmptyString),
   sessionId: Type.Optional(NonEmptyString),
   maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 500_000 })),
   toolResultMaxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 500_000 })),

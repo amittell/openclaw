@@ -11,8 +11,11 @@ export function createMockCronService(
   makeCronJob: (input: Partial<CronJob> & { id: string }) => CronJob,
 ): CronServiceContract {
   return {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     readEventSources: vi.fn<CronServiceContract["readEventSources"]>(async () => []),
     runEvent: vi.fn<CronServiceContract["runEvent"]>(async () => ({ kind: "invalidated" })),
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
     status: vi.fn(async () => ({
@@ -22,6 +25,10 @@ export function createMockCronService(
       storage: "sqlite" as const,
       sqlitePath: "/tmp/openclaw-test-state/state/openclaw.sqlite",
       jobs: 0,
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+      reauthorizationRequired: 0,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       nextWakeAtMs: null,
     })),
     list: vi.fn(async () => []),
@@ -47,6 +54,10 @@ export function createMockCronService(
     getJob: vi.fn(() => undefined),
     readJob: vi.fn(async () => undefined),
     getDefaultAgentId: vi.fn(() => undefined),
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     wake: vi.fn<CronServiceContract["wake"]>(async () => ({ ok: true })),
+=======
+    wake: vi.fn<CronServiceContract["wake"]>(() => ({ ok: true })),
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   };
 }

@@ -77,10 +77,14 @@ Use the returned `sessionId` as `expectedSessionId` when the `sessions` tool arc
 
 `sessions_history` fetches the conversation transcript for a specific session. By default, tool results are excluded; pass `includeTools: true` to see them. Use `limit` for the newest bounded tail. Pass `offset: 0` when you need pagination metadata, then pass returned `nextOffset` values to page backward through older OpenClaw transcript windows without reading raw transcript files. When an eligible bound external CLI transcript contributes messages, history returns a merged snapshot instead of a numeric offset page—even with an explicit `offset`. The Gateway treats these as terminal snapshots (`hasMore: false`); oversized snapshots remain byte-bounded, so terminal does not imply complete. Local offset paging applies when no external import survives. Unanchored reads stay the current reset-relative view. An explicit `messageId` that remains in that current view, including a pre-reset row kept after reset, keeps current-view behavior. An explicit `messageId` for a retained active-path row outside the current view opens that original closed interval and does not mix later post-reset turns; a missing or off-path `messageId` returns empty history rather than the newest messages.
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 Display history limits raw pages to 8 MiB before loading message bodies. A larger
 message returns an error instead of exhausting a transcript worker. If an anchored
 page exceeds this limit, request a smaller `limit`. The tool's text and response
 byte caps still apply.
+=======
+After a compaction, the summary the model sees ends with a `[compaction checkpoint <id>: shadows N earlier entries]` line. Pass that id as `compactionId` to read the rows the summary replaced (from the previous compaction's kept tail up to this one's), with the same `offset`/`limit` paging, redaction, and byte cap; the result adds `shadowedCount` and `returnedCount`, and `truncated` says whether the page was cut. An id that is not a compaction checkpoint is rejected with an error that says how to find one.
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 Durably admitted inputs from `sessions_send` or the Gateway `agent` method
 appear separately in `pendingInputs`, not in transcript `messages`. Each row

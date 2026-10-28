@@ -31,7 +31,11 @@ import {
 } from "./code-mode-control-tools.js";
 import { sanitizeForConsole } from "./console-sanitize.js";
 import type { ClientToolDefinition } from "./embedded-agent-runner/run/params.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { readNodePermissionError } from "./node-permission-error.js";
+=======
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { projectAgentToolDefinition } from "./prepared-tool-surface.js";
 import type { AgentTool as AnyAgentTool, AgentToolResult } from "./runtime/index.js";
 import {
@@ -346,7 +350,9 @@ export function toToolDefinitions(
     const name = tool.name || "tool";
     const toolOwnerPluginId = getPluginToolMeta(tool)?.pluginId;
     const normalizedName = normalizeToolPolicyName(name);
-    const beforeHookWrapped = isToolWrappedWithBeforeToolCallHook(tool);
+    // An owner-only stub refuses every call itself; hooks and approvals must never see it.
+    const beforeHookWrapped =
+      isToolWrappedWithBeforeToolCallHook(tool) || isOwnerOnlyToolStub(tool);
     const sourcePreparer = getInternalToolExecutionPreparer(tool);
     const definition = {
       ...projectAgentToolDefinition(tool),

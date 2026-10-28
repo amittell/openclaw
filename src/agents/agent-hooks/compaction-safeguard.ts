@@ -49,6 +49,7 @@ import {
   nestRequiredSummaryHeadings,
   resolveSummaryReserveTokens,
   wrapUntrustedInstructionBlock,
+  wrapUntrustedQualityFeedbackBlock,
 } from "./compaction-safeguard-quality.js";
 import {
   getCompactionSafeguardRuntime,
@@ -58,13 +59,27 @@ import {
   collectToolFailures,
   formatToolFailuresSection,
 } from "./compaction-safeguard-tool-failures.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { readWorkspaceContextForSummary } from "./compaction-workspace-context.js";
+=======
+import {
+  assembleCompactionSuffix,
+  capCompactionSuffix,
+  type CompactionLoss,
+  type CompactionSuffix,
+  type ContextSection,
+  CONTEXT_TRUNCATED_MARKER,
+} from "./compaction-suffix.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 const log = createSubsystemLogger("compaction-safeguard");
 
 const missedModelWarningSessions = new WeakSet<object>();
 const SPLIT_TURN_SECTION_HEADING = "**Turn Context (split turn):**";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to fit budget]\n\n";
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 // Split-turn context supplements the generated summary and must not claim its
 // guaranteed half of the final artifact before common finalization runs.
 const MAX_SPLIT_TURN_CONTEXT_CHARS = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 2);
@@ -131,6 +146,7 @@ function readSessionBranch(
   sessionManager: ExtensionContext["sessionManager"],
 ): CoreSessionTreeEntry[] {
   try {
+    // SAFETY: re-labels the host branch entries as the core tree entries the projector reads; every consumer projects through projectBranchEntries, whose try/catch returns [] on a malformed entry.
     return sessionManager.getBranch() as CoreSessionTreeEntry[];
   } catch {
     return [];
@@ -139,6 +155,7 @@ function readSessionBranch(
 
 function projectBranchEntries(entries: CoreSessionTreeEntry[]): AgentMessage[] {
   try {
+    // SAFETY: re-labels core session messages as this module's AgentMessage; the enclosing try/catch returns [] if the projection throws.
     return buildCoreSessionContext(entries).messages as AgentMessage[];
   } catch {
     return [];
@@ -174,6 +191,7 @@ type CompactionSuffix = {
 
 type SummaryQualityRetention = Parameters<typeof createSummaryQualityRetentionPlan>[2];
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 function assembleSuffix(
   parts: {
     splitTurnSection?: ContextSection;
@@ -224,6 +242,8 @@ function assembleSuffix(
   return { text, contextRanges, ...(reservedChars > 0 ? { reservedChars } : {}) };
 }
 
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 async function resolveModelAuth(
   ctx: ExtensionContext,
   model: NonNullable<ExtensionContext["model"]>,
@@ -267,6 +287,7 @@ function buildCompactionSummaryHeaders(params: {
   if (params.model.provider !== "github-copilot") {
     return params.headers;
   }
+  // SAFETY: bridges this module's message list to the structurally identical messages parameter of buildCopilotDynamicHeaders, which is declared in another package.
   const messages = params.messages as unknown as Parameters<
     typeof buildCopilotDynamicHeaders
   >[0]["messages"];
@@ -296,6 +317,7 @@ function resolveQualityGuardMaxRetries(value: unknown): number {
   );
 }
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 function resolveSuffixTailStart(suffix: CompactionSuffix, tailBudget: number): number {
   const desiredStart = Math.max(0, suffix.text.length - tailBudget);
   const containingRange = suffix.contextRanges.find(
@@ -346,6 +368,8 @@ function capCompactionSuffix(suffix: CompactionSuffix, maxChars: number): string
     : CONTEXT_TRUNCATED_MARKER;
 }
 
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 function budgetCompactionSummary(
   summaryBody: string,
   suffix: CompactionSuffix,
@@ -496,6 +520,7 @@ function formatContextMessage(message: AgentMessage): string | null {
   } else if (message.role === "user") {
     roleLabel = formatCompactionUserLabel(message);
   } else if (message.role === "toolResult") {
+    // SAFETY: role === toolResult is established on this branch; toolName stays unknown and falls back to "tool" unless it is a non-empty string.
     const toolName = (message as { toolName?: unknown }).toolName;
     const safeToolName = typeof toolName === "string" && toolName.trim() ? toolName : "tool";
     roleLabel = `Tool result (${safeToolName})`;
@@ -504,7 +529,12 @@ function formatContextMessage(message: AgentMessage): string | null {
   }
   const rendered = [
     extractMessageText(message),
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     formatNonTextPlaceholder((message as { content?: unknown }).content),
+=======
+    // SAFETY: reads an optional content field off a typed message; the value stays unknown and formatCompactionNonTextPlaceholder validates it.
+    formatCompactionNonTextPlaceholder((message as { content?: unknown }).content),
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   ]
     .filter(Boolean)
     .join("\n");
@@ -718,7 +748,14 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       },
       producerLosses: ReadonlySet<CompactionLoss> = new Set(),
       qualityRetention?: SummaryQualityRetention,
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       // Lossy recovery reserves the active split turn before older preserved turns.
+=======
+      // The degrade path exists BECAUSE required facts would not fit. Retaining them
+      // there is best-effort and must not throw, or the branch re-strands the session it
+      // exists to rescue. Its split-turn summary is the only generated context left, so
+      // the suffix cap trims older verbatim turns before it.
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       degraded = false,
     ) => {
       workspaceContextPromise ??= readWorkspaceContextForSummary(
@@ -737,6 +774,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         degraded,
       );
       const fit = (retention?: SummaryQualityRetention) =>
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) =>
           budgetCompactionSummary(body, suffix, maxChars, retention),
         );
@@ -744,19 +782,45 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const losses = new Set(producerLosses);
       const qualityRetentionInfeasible = !fitted.ok && Boolean(qualityRetention);
       if (qualityRetention && !fitted.ok) {
+=======
+        fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) => {
+          const candidate = budgetCompactionSummary(body, suffix, maxChars, retention);
+          // Below the owner's cap the fit bisects on maxChars and assumes cost grows with it.
+          // A candidate under the plan's minimum is one the audited path cancels on, usually a
+          // head cut without the required facts. Leading dense CJK prose can price that cut
+          // above retained candidates just over the minimum, so the search settled on a smaller
+          // cut. Report those candidates as too small so the search stays above the minimum.
+          return candidate.qualityRetentionInfeasible && maxChars < MAX_COMPACTION_SUMMARY_CHARS
+            ? undefined
+            : candidate;
+        });
+      let fitted = fit(qualityRetention);
+      const losses = new Set(producerLosses);
+      const retained = () => fitted.ok && !fitted.value.qualityRetentionInfeasible;
+      if (degraded && qualityRetention && !retained()) {
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         // The request context is bounded; identifiers are not. Shed the longest
         // identifiers first so one oversized URL cannot take the request with it.
         const { identifiers } = qualityRetention;
         const byLength = identifiers.toSorted((left, right) => left.length - right.length);
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         for (let kept = byLength.length - 1; kept >= 0 && !fitted.ok; kept -= 1) {
+=======
+        for (let kept = byLength.length - 1; kept >= 0 && !retained(); kept -= 1) {
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
           const keep = new Set(byLength.slice(0, kept));
           fitted = fit({
             ...qualityRetention,
             identifiers: identifiers.filter((identifier) => keep.has(identifier)),
           });
         }
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         losses.add(fitted.ok ? "identifier-retention" : "quality-retention");
         if (!fitted.ok) {
+=======
+        losses.add(retained() ? "identifier-retention" : "quality-retention");
+        if (!retained()) {
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
           fitted = fit();
         }
       }
@@ -1070,7 +1134,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             ? "Fix all issues and include every required section with exact identifiers preserved."
             : "Fix all issues and include every required section while following the configured identifier policy.";
         const budgetInstruction = `Keep the complete summary body within ${finalized.bodyBudget} UTF-16 code units so the finalized artifact remains valid after required suffixes.`;
-        const qualityFeedbackReasons = wrapUntrustedInstructionBlock(
+        const qualityFeedbackReasons = wrapUntrustedQualityFeedbackBlock(
           "Quality check feedback",
           `Previous summary failed quality checks (${reasons}).`,
         );
@@ -1120,6 +1184,7 @@ const testing = {
 } as const;
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.compactionSafeguardTestApi")] =
     testing;
 }

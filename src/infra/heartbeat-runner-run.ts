@@ -227,6 +227,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
         replyOptions: withReplySystemEventContext<InternalGetReplyOptions>(
           {
             isHeartbeat: true,
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
             useHeartbeatFailureCopy: prepared.useHeartbeatFailureCopy,
             requireExplicitMessageTarget: !internalSource,
             // Isolated heartbeats mint a fresh session ID per run, so nothing later
@@ -278,6 +279,19 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
                     updatedAt: startedAt,
                   },
                 };
+=======
+          }),
+          [REPLY_OPERATION_RUN_STATE]: state,
+          heartbeatModelOverride: heartbeat?.model?.trim(),
+          // Carried from the fork, which set this in heartbeat-runner-execution.ts before
+          // 9.3 replaced that file. See the note on the type: it is intent, not yet wiring.
+          disableMessageTool: true,
+          ...(prepared.usesHeartbeatResponseTool
+            ? {
+                enableHeartbeatTool: true,
+                forceHeartbeatTool: true,
+                sourceReplyDeliveryMode: "message_tool_only",
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
               }
             },
           },

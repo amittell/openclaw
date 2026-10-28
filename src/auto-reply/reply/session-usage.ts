@@ -3,8 +3,24 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { ModelRef } from "../../agents/model-ref-shared.js";
 import { hasBillableUsage, hasNonzeroUsage, type NormalizedUsage } from "../../agents/usage.js";
 import { getRuntimeConfig } from "../../config/config.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import type { SessionEntryUsageUpdate } from "../../config/sessions/session-entry-usage.js";
 import type { SessionEntry, SessionSystemPromptReport } from "../../config/sessions/types.js";
+=======
+import { accountSessionGoalUsage } from "../../config/sessions/goals-transitions.js";
+import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
+import {
+  projectSessionEntryUsageUpdate,
+  type SessionEntryUsageUpdate,
+} from "../../config/sessions/session-entry-usage.js";
+import {
+  type InternalSessionEntry,
+  SESSION_TOTAL_TOKENS_VERSION,
+  type SessionEntry,
+  type SessionSystemPromptReport,
+} from "../../config/sessions/types.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { estimateAggregateUsageCost } from "../../utils/usage-format.js";
 
@@ -103,4 +119,57 @@ export function prepareSessionUsageUpdate(params: SessionUsageUpdateParams) {
           }),
         );
   return { update, estimateCost };
+}
+
+/**
+ * Publishes one settled model call's context snapshot while its turn is still
+ * running, so status readers see a long turn's context grow. The latest settled
+ * call wins, including a smaller one after compaction; turn-completion
+ * accounting stays authoritative and lands after the caller has stopped writing.
+ */
+export async function persistSessionContextTotalTokens(params: {
+  agentId?: string;
+  storePath: string;
+  sessionKey: string;
+  /** Admission facts. Reset keeps the session id, so the writer claim is always checked. */
+  expectedSession: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision"> & {
+    activeWriterRunId: string;
+  };
+  /** Prompt-token context snapshot of the latest settled model call. */
+  totalTokens: number;
+}): Promise<void> {
+  const { agentId, storePath, sessionKey, expectedSession, totalTokens } = params;
+  try {
+    await patchSessionEntryCore(
+      { agentId, storePath, sessionKey },
+      (entry) => {
+        if (
+          entry.sessionId !== expectedSession.sessionId ||
+          entry.activeWriterRunId !== expectedSession.activeWriterRunId ||
+          (expectedSession.lifecycleRevision !== undefined &&
+            entry.lifecycleRevision !== expectedSession.lifecycleRevision) ||
+          (entry.totalTokens === totalTokens &&
+            entry.totalTokensFresh === true &&
+            entry.totalTokensVersion === SESSION_TOTAL_TOKENS_VERSION)
+        ) {
+          return null;
+        }
+        const updatedAt = Date.now();
+        const patch: Partial<SessionEntry> = {
+          totalTokens,
+          totalTokensFresh: true,
+          totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+          updatedAt,
+        };
+        const accountedGoal = accountSessionGoalUsage({ ...entry, ...patch }, updatedAt);
+        if (accountedGoal) {
+          patch.goal = accountedGoal;
+        }
+        return patch;
+      },
+      { skipMaintenance: true, workerGuard: {} },
+    );
+  } catch (err) {
+    logVerbose(`failed to persist per-call context total: ${String(err)}`);
+  }
 }

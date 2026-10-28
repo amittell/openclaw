@@ -22,7 +22,12 @@ import {
   createSwarmCollectorWriteAuthority,
   resolveSwarmCollectorToolContext,
 } from "../agents/openclaw-tools.swarm.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { resolveSandboxRuntimeStatusAsync } from "../agents/sandbox/runtime-status.js";
+=======
+import { isOwnerOnlyToolStub } from "../agents/owner-only-tool-stub-marker.js";
+import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { createScheduledMessageInvocationAdmission } from "../agents/scheduled-message-invocation.js";
 import { resolveScheduledToolCallerContext } from "../agents/scheduled-tool-policy.js";
 import { buildDeclaredToolAllowlistContext } from "../agents/tool-policy-declared-context.js";
@@ -517,9 +522,12 @@ export async function resolveGatewayScopedTools(
   assertCurrent();
   // CLI backends already own their local shell. This extra surface is deliberately
   // fixed to node so it cannot become a second path to Gateway-local execution.
-  const baseTools = nodeExecSurface
-    ? openClawTools.filter((tool) => tool.name.trim().toLowerCase() !== "exec")
-    : openClawTools;
+  // Owner-only stubs keep an agent turn's prompt owner-shaped; this surface omits
+  // owner-only tools for non-owners instead, as it does the core ones.
+  const baseTools = openClawTools.filter(
+    (tool) =>
+      !isOwnerOnlyToolStub(tool) && !(nodeExecSurface && tool.name.trim().toLowerCase() === "exec"),
+  );
   const toolsWithMediatedCoding = [
     // Once a name is server-minted as mediated, only the canonical coding
     // factory may supply it. A policy-filtered tool must not fall back to a

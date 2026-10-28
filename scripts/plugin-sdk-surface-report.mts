@@ -265,6 +265,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +24: approved async approval-routing replacements and delivery facts across four public facades.
       // +2: async sandbox lookup and pure prepared-session classification.
       // +1: deprecated createSessionHeaderLink retained from shipped 2026.10.1.
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       // +2: approved async transcript event/stat read replacements.
       // +1: approved PreparedAgentRunStart contract.
       // +2: readRuntimeConfig and captureRuntimeConfigAsyncReader on runtime-config-snapshot.
@@ -274,6 +275,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: async auth-provider preparation for Codex and voice model-session patches.
       // +1: isHostNoticePayload for agent-to-agent reply filtering.
       3760,
+=======
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      3648,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -301,6 +306,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +22: the same async approval-routing functions; two delivery-fact exports are types.
       // +2: the same sandbox replacements.
       // +1: the same deprecated createSessionHeaderLink.
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       // +2: the same transcript read replacement pairs.
       // +2: the same prepared runtime reader and asynchronous config preparation functions.
       // +5: shared database-engine host and worker operations.
@@ -309,6 +315,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: the same prepareAuthProfileProvider operation on model-session-runtime.
       // +1: the same host-notice classifier on reply-payload.
       2195,
+=======
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      2118,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

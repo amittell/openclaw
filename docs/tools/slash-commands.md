@@ -24,10 +24,16 @@ command handling is enabled for the surface.
     only content in the message.
   </Card>
   <Card title="Directives" icon="sliders">
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     `/think`, `/fast`, `/verbose`, `/trace`, `/reasoning`, `/elevated`,
     `/exec`, `/model`, `/queue` — interpreted before the model processes a
     message. Most persist session settings when sent alone. The command and
     delivered acknowledgement remain in conversation history. `/exec` security
+=======
+    `/think`, `/temperature`, `/fast`, `/verbose`, `/trace`, `/reasoning`,
+    `/elevated`, `/exec`, `/model`, `/queue` — stripped from the message before the model
+    sees it. Most persist session settings when sent alone. `/exec` security
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     and approval options apply only to their message.
   </Card>
   <Card title="Inline shortcuts" icon="bolt">
@@ -263,6 +269,7 @@ plugins, and installed skills.
     | Command | Description |
     | --- | --- |
     | `/think <level\|default>` | Set the thinking level or clear the session override. Aliases: `/thinking`, `/t` |
+    | `/temperature <0-2\|default>` | Set the sampling temperature or clear the session override. Alias: `/temp` |
     | `/verbose on\|off\|full` | Toggle verbose output. Alias: `/v` |
     | `/trace on\|off` | Toggle plugin trace output for the current session |
     | `/fast [status\|auto\|on\|off\|ultrafast\|default]` | Show, set, or clear fast mode |

@@ -50,7 +50,11 @@ import {
   resolveMessageToolDiscoveryAsync,
   supportsMessageToolPromptReactions,
 } from "./message-tool-discovery.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import type { MessageToolOptions } from "./message-tool-execution.types.js";
+=======
+import { checkDuplicateSend } from "./message-tool-execution.send-guards.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
 import { prepareMessageToolGroupThread } from "./message-tool-group-thread.js";
@@ -228,9 +232,11 @@ function* createMessageToolSteps(
     execute: async (toolCallId, args, signal) => {
       const assertCaller = turnAuthority.captureCaller(signal, captureGatewayToolCallerAssertion);
       // Shallow-copy so we don't mutate the original event args (used for logging/dedup).
+      // SAFETY: args is the tool-call payload; the shallow copy is only read through readToolStringParam/readToolParam helpers that validate each field.
       const params = { ...(args as Record<string, unknown>) };
       const action = readToolStringParam(params, "action", {
         required: true,
+        // SAFETY: readToolStringParam with required: true returns a non-empty string; the assertion only names the action union, and every use is an equality check or a by-name dispatch.
       }) as ChannelMessageActionName;
       const {
         authorization: trustedTurnContext,
@@ -490,7 +496,10 @@ function* createMessageToolSteps(
         currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
         preparedMessageToolCatalog,
       });
-      if (suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)) {
+      if (
+        sourceReplySinkDeliveryMode === "message_tool_only" &&
+        suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)
+      ) {
         decisions.recordPollVoteEchoSuppressed();
         return jsonResult({
           status: "suppressed",
@@ -499,6 +508,19 @@ function* createMessageToolSteps(
         });
       }
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+      const duplicateSend = checkDuplicateSend(action, params, options?.runId, pollVoteEchoRoute);
+      if (duplicateSend?.suppressed) {
+        return duplicateSend.suppressed;
+      }
+
+      const hasCurrentMessageId =
+        typeof options?.currentMessageId === "number" ||
+        (typeof options?.currentMessageId === "string" &&
+          options.currentMessageId.trim().length > 0);
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       const toolContext =
         effectiveCurrentChannel.currentChannelId ||
         effectiveCurrentChannel.currentChatType ||
@@ -712,10 +734,19 @@ function* createMessageToolSteps(
               )?.markSourceReplyDelivered();
             }
           }
-          if (action === "poll-vote" && pollVoteEchoRoute && pollEchoSessionKey) {
+          if (
+            action === "poll-vote" &&
+            pollVoteEchoRoute &&
+            pollEchoSessionKey &&
+            sourceReplySinkDeliveryMode === "message_tool_only"
+          ) {
+            // SAFETY: details is provider-supplied and untyped; pollVotedOption stays unknown and is accepted only when typeof is string.
             const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
             recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
           }
+          // Record only after a non-throwing send so a failed delivery can still
+          // be retried with the same text.
+          duplicateSend?.recordDelivered();
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

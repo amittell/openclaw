@@ -2,6 +2,16 @@ import type { AgentMessage, SessionTreeEntry } from "@openclaw/agent-core";
 import { sql, type AliasableExpression } from "kysely";
 import { iterateSessionContextMessages } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+  iterateSessionContextEntries,
+  iterateSessionContextMessages,
+  projectSessionEntryMessage,
+  withCompactionCheckpointHandle,
+} from "../../../packages/agent-core/src/harness/session/session.js";
+import {
+  classifyToolUseResultPairing,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   isSyntheticMissingToolResult,
   SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY,
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
@@ -265,7 +275,12 @@ export function readSessionTranscriptContextMessages<T>(
   ) => T,
 ): T {
   const result = withTranscriptContextSnapshot(scope, ({ header, entries, readEntry, version }) => {
-    const messages = iterateSessionContextMessages(entries, readEntry);
+    // The detached reader renders the same read-time checkpoint line as buildSessionContext;
+    // without it a Codex-backed context read shows a compaction summary naming no handle.
+    const messages = iterateSessionContextMessages(
+      entries,
+      withCompactionCheckpointHandle(entries, readEntry),
+    );
     try {
       return read(messages, header, version);
     } finally {

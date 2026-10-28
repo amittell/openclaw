@@ -26,32 +26,27 @@ import {
   readSessionArchiveContentSync,
 } from "./archive-compression.js";
 import { isSessionArchiveArtifactName } from "./artifacts.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+import {
+  publicAccessorAdapter,
+  sqliteAdapter,
+  type TestPaths,
+} from "./session-accessor.conformance-adapters.test-support.js";
+import { closeSessionAccessorConformanceFixture } from "./session-accessor.conformance.test-support.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
-  cleanupSessionLifecycleArtifactsCore,
-  listSessionEntriesCore,
-  loadExactSessionEntry,
   loadSessionEntry,
   loadTranscriptEvents,
   onSessionIdentityMutation,
   patchSessionEntryCore,
-  publishTranscriptUpdate,
-  readSessionUpdatedAtCore,
   replaceSessionEntry,
   resolveSessionTranscriptRuntimeTarget,
-  updateSessionEntry,
   upsertSessionEntryCore,
-  type ExactSessionEntry,
   type SessionAccessScope,
-  type SessionEntrySummary,
   type SessionTranscriptAccessScope,
-  type SessionTranscriptReadScope,
-  type SessionTranscriptWriteScope,
-  type TranscriptEvent,
-  type TranscriptMessageAppendOptions,
-  type TranscriptMessageAppendResult,
-  type TranscriptUpdatePayload,
 } from "./session-accessor.js";
 import { listSessionEntryRows, replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { observeSessionMaintenanceCompletion } from "./session-accessor.sqlite-maintenance-completion.test-support.js";
@@ -71,6 +66,7 @@ vi.mock("../config.js", async () => ({
 
 import { getRuntimeConfig } from "../config.js";
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 type TestPaths = {
   sqlitePath: string;
   stateDir: string;
@@ -177,6 +173,8 @@ const sqliteAdapter: AccessorAdapter = {
   updateSessionEntry: patchSessionEntryCore,
 };
 
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 beforeEach(() => {
   vi.mocked(getRuntimeConfig).mockReturnValue({});
 });

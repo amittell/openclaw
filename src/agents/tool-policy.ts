@@ -4,6 +4,7 @@ import {
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
 import { sanitizeServerName, TOOL_NAME_SEPARATOR } from "./agent-bundle-mcp-names.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { IMPLICIT_ALLOW_ALL_FROM_ALSO_ALLOW } from "./sandbox-tool-policy.js";
 import {
   attachToolAllowlistIntersection,
@@ -125,7 +126,9 @@ export function replaceWithEffectiveToolAllowlist(
   tools: ReadonlyArray<{ name: string }>,
 ): void {
   target.length = 0;
-  for (const name of uniqueStrings(normalizeToolList(tools.map((tool) => tool.name)))) {
+  // A stub only declares an owner-only tool this turn may not run; never pass it on.
+  const grantedNames = tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
+  for (const name of uniqueStrings(normalizeToolList(grantedNames))) {
     target.push(name);
   }
 }

@@ -42,7 +42,6 @@ const hookMocks = vi.hoisted(() => ({
     content: [],
     details: {},
   })),
-  resolveToolLoopDetectionConfig: vi.fn(() => ({ warnAt: 3 })),
   runBeforeToolCallHook: vi.fn(
     async (args: RunBeforeToolCallHookArgs): Promise<RunBeforeToolCallHookResult> => ({
       blocked: false,
@@ -269,10 +268,6 @@ vi.mock("../agents/openclaw-tools.js", async () => {
   };
 });
 
-vi.mock("../agents/agent-tools.js", () => ({
-  resolveToolLoopDetectionConfig: hookMocks.resolveToolLoopDetectionConfig,
-}));
-
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: hookMocks.runBeforeToolCallHook,
 }));
@@ -300,8 +295,6 @@ beforeEach(() => {
   lastCreateOpenClawToolsContext = undefined;
   hookMocks.uploadToolExecute.mockClear();
   sessionEntries.clear();
-  hookMocks.resolveToolLoopDetectionConfig.mockClear();
-  hookMocks.resolveToolLoopDetectionConfig.mockImplementation(() => ({ warnAt: 3 }));
   hookMocks.runBeforeToolCallHook.mockClear();
   hookMocks.runBeforeToolCallHook.mockImplementation(
     async (args: RunBeforeToolCallHookArgs): Promise<RunBeforeToolCallHookResult> => ({

@@ -1,3 +1,4 @@
+import "./server-close.mocks.test-support.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -7,8 +8,15 @@ import { isProcessAlive } from "../../test/helpers/process-wait.js";
 import { registerPreparedModelRuntimeClose } from "../agents/prepared-model-runtime.lifecycle.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { registerDispatcher } from "../auto-reply/reply/dispatcher-registry.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { memorySessionActorOwners } from "../config/sessions/session-actor-memory-owner.js";
 import type { InternalHookEvent } from "../hooks/internal-hooks.js";
+=======
+import {
+  createReplyOperation,
+  type ReplyOperation,
+} from "../auto-reply/reply/reply-run-registry.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { PluginInstance } from "../plugins/plugin-instance.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -37,7 +45,9 @@ import {
   type GatewayCloseParams,
   createTestChatRunState,
 } from "./server-close.test-support.js";
+const { mocks, resetServerCloseMocks } = await import("./server-close.mocks.test-support.js");
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 type TriggerInternalHookMock = (event: InternalHookEvent) => Promise<void>;
 
 const mocks = vi.hoisted(() => ({
@@ -59,6 +69,8 @@ const sharedStateLifecycle = resolveGlobalMap<string, boolean>(
   Symbol("gateway-close-shared-state"),
   "shared-state",
 );
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 const WEBSOCKET_CLOSE_GRACE_MS = 1_000;
 const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;
 const HTTP_CLOSE_GRACE_MS = 1_000;
@@ -67,6 +79,7 @@ const GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS = 5_000;
 const GATEWAY_PRE_RESTART_HOOK_TIMEOUT_MS = 10_000;
 const AGENT_HARNESS_CLOSE_GRACE_MS = 5_000;
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 vi.mock("../channels/plugins/index.js", async () => ({
   ...(await vi.importActual<typeof import("../channels/plugins/index.js")>(
     "../channels/plugins/index.js",
@@ -136,9 +149,18 @@ vi.mock("../logging/subsystem.js", () => ({
 }));
 
 const closeGateway = createGatewayCloseTestHandlerFactory(await import("./server-close.js"));
+=======
+const serverClose = await import("./server-close.js");
+const { resetGatewayShuttingDownForTest } = serverClose;
+const closeGateway = createGatewayCloseTestHandlerFactory(serverClose);
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 const { createChatRunState, isChatAbortMarkerCurrent } = await import("./server-chat-state.js");
-const { finishGatewayRestartTrace, formatGatewayPendingCloseSteps, startGatewayRestartTrace } =
-  await import("./restart-trace.js");
+const {
+  finishGatewayRestartTrace,
+  formatGatewayPendingCloseSteps,
+  resetGatewayRestartTraceForTest,
+  startGatewayRestartTrace,
+} = await import("./restart-trace.js");
 type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
 type MarkMainSessionsAbortedForRestart = NonNullable<
   GatewayCloseParams["markMainSessionsAbortedForRestart"]
@@ -189,6 +211,7 @@ describe("createGatewayCloseHandler", () => {
     sharedStateLifecycle.set("open", true);
     resetPluginRuntimeStateForTest();
     vi.useRealTimers();
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     mocks.logInfo.mockClear();
     mocks.logWarn.mockClear();
     mocks.listChannelPlugins.mockReset();
@@ -208,6 +231,9 @@ describe("createGatewayCloseHandler", () => {
       mock.mockReset();
       mock.mockResolvedValue(undefined);
     }
+=======
+    resetServerCloseMocks();
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   });
 
   afterEach(() => {
@@ -215,6 +241,8 @@ describe("createGatewayCloseHandler", () => {
     resetPluginRuntimeStateForTest();
     memorySessionActorOwners.reset();
     vi.useRealTimers();
+    resetGatewayRestartTraceForTest();
+    resetGatewayShuttingDownForTest();
     if (originalRestartTraceEnv === undefined) {
       delete process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
     } else {

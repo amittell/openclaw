@@ -20,6 +20,7 @@ import {
   removeMainSessionRecoveryForegroundClaim,
 } from "./main-session-recovery-clear.js";
 import { isMainRestartRecoveryAggregateEmptyAndUnowned } from "./main-session-recovery-empty-aggregate.js";
+import { isMainRestartRecoveryTerminalOnly } from "./main-session-recovery-terminal-only.js";
 import type {
   MainSessionRecoveryCommand,
   MainSessionRecoveryConflict,
@@ -33,6 +34,7 @@ import {
   resolveRestartRecoveryTerminalClientRunId,
 } from "./main-session-restart-recovery-shared.js";
 
+export { isMainRestartRecoveryTerminalOnly };
 export type {
   MainSessionRecoveryCommand,
   MainSessionRecoveryObservation,
@@ -193,24 +195,6 @@ export function inspectMainRestartRecoveryRolloverEligibility(
   return { eligible: true };
 }
 
-// Retire only proven terminal fences without remaining execution or delivery
-// custody; treating unfinished fences as residue loses crash recovery (#118873).
-export function isMainRestartRecoveryTerminalOnly(entry: SessionEntry): boolean {
-  const state = entry.mainRestartRecovery;
-  if (state?.tombstone || state?.reservation || state?.foregroundClaims) {
-    return false;
-  }
-  if (entry.restartRecoveryDeliveryRunId !== undefined || entry.pendingFinalDelivery) {
-    return false;
-  }
-  const runs = entry.restartRecoveryRuns;
-  return (
-    runs !== undefined &&
-    runs.length > 0 &&
-    runs.every((run) => hasRestartRecoveryTerminalRun(entry, run.runId))
-  );
-}
-
 function inspectMainSessionRecovery(params: {
   entry: SessionEntry;
   lifecycleGeneration: string;
@@ -311,14 +295,17 @@ export function transitionMainSessionRecovery(
       entry.restartRecoveryDeliverySourceRunId ??=
         entry.restartRecoveryDeliveryRunId ?? entry.lifecycleRunId;
       const state = entry.mainRestartRecovery;
+      // A mark without a cause (operator recovery) keeps a restart already on record.
+      const cause = command.cause ?? state?.cause;
       if (!state) {
-        entry.mainRestartRecovery = createCycle(command.cycleId);
-      } else if (state.foregroundClaims || state.reservation) {
+        entry.mainRestartRecovery = { ...createCycle(command.cycleId), ...(cause && { cause }) };
+      } else if (state.foregroundClaims || state.reservation || cause !== state.cause) {
         // Restart owns continuation now. Process-bound foreground and reservation
         // leases cannot authorize the old lifecycle after this durable handoff.
         updateRecoveryState(entry, state, {
           foregroundClaims: undefined,
           reservation: undefined,
+          ...(cause ? { cause } : {}),
         });
       }
       entry.activeWriterRunId = undefined;
@@ -385,7 +372,7 @@ export function transitionMainSessionRecovery(
       }
       if (
         isMainRestartRecoveryAggregateEmptyAndUnowned(entry) ||
-        isMainRestartRecoveryTerminalOnly(entry) ||
+        isMainRestartRecoveryTerminalOnly(entry, command.lifecycleGeneration) ||
         (hasCompletedMainSessionRecoveryOutcome(entry) &&
           !state?.tombstone &&
           !state?.reservation &&
@@ -599,7 +586,7 @@ export function transitionMainSessionRecovery(
       if (
         entry.sessionId === command.sessionId &&
         isMainRestartRecoveryCandidate(entry, command.sessionKey) &&
-        (isMainRestartRecoveryTerminalOnly(entry) ||
+        (isMainRestartRecoveryTerminalOnly(entry, command.lifecycleGeneration) ||
           isMainRestartRecoveryAggregateEmptyAndUnowned(entry))
       ) {
         Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));

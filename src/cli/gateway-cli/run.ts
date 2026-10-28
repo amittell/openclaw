@@ -82,6 +82,12 @@ import { getGatewayStartGuardErrors } from "./pre-bootstrap.js";
 import { runGatewayLoop } from "./run-loop.js";
 import { resolveGatewayPasswordOption, toOptionString } from "./run-option-values.js";
 import type { GatewayRunOpts } from "./run-options.js";
+import {
+  createGatewayZombieDetectionLog,
+  EXIT_CONFIG_ERROR,
+  resolveGatewayLockErrorExitCode,
+  SupervisedGatewayLockError,
+} from "./run-supervised-lock.js";
 import type { GatewayRunRuntimeHooks } from "./runtime-hooks.js";
 import {
   resolveGatewayStartupFailureExitCode,
@@ -96,13 +102,6 @@ const SUPERVISED_GATEWAY_LOCK_RETRY_MS = 5000;
 const SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 1000;
 
 type GatewayRunLogger = Pick<ReturnType<typeof createSubsystemLogger>, "info" | "warn">;
-
-/**
- * EX_CONFIG (78) from sysexits.h — used for configuration errors so systemd
- * (via RestartPreventExitStatus=78) stops restarting instead of entering a
- * restart storm that can render low-resource hosts unresponsive.
- */
-const EXIT_CONFIG_ERROR = 78;
 
 const GATEWAY_AUTH_MODES: readonly GatewayAuthMode[] = [
   "none",
@@ -249,20 +248,6 @@ function isGatewayRetryableLockError(err: unknown): boolean {
   );
 }
 
-class SupervisedGatewayLockError extends GatewayLockError {
-  constructor(
-    message: string,
-    cause: unknown,
-    readonly exitCode: 1 | typeof EXIT_CONFIG_ERROR,
-  ) {
-    super(message, cause);
-  }
-}
-
-function resolveGatewayLockErrorExitCode(err: unknown): number {
-  return err instanceof SupervisedGatewayLockError ? err.exitCode : 1;
-}
-
 function isGatewayHealthzResponse(statusCode: number | undefined, body: string): boolean {
   if (statusCode !== 200) {
     return false;
@@ -281,6 +266,10 @@ function createConfiguredGatewayHealthProbe(cfg: OpenClawConfig) {
     const result = await probe.requestHttp({
       ...params,
       pathname: "/healthz",
+      // This is the probe supervised-lock recovery actually runs in production
+      // (wired at the runGatewayCommandOnce call site); without the strict marker a
+      // draining gateway answers 200 and the zombie/drain detection never fires.
+      strictLiveProbe: true,
       timeoutMs: SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS,
     });
     return isGatewayHealthzResponse(result?.statusCode, result?.body ?? "");
@@ -310,6 +299,7 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
   const retryMs = params.retryMs ?? SUPERVISED_GATEWAY_LOCK_RETRY_MS;
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS;
   const startedAt = now();
+  const logZombieDetected = createGatewayZombieDetectionLog(supervisor, params);
 
   for (;;) {
     try {
@@ -340,7 +330,9 @@ async function runGatewayLoopWithSupervisedLockRecovery(params: {
       }
 
       const elapsedMs = now() - startedAt;
-      if (elapsedMs >= timeoutMs) {
+      const shouldRetry = elapsedMs < timeoutMs;
+      logZombieDetected(elapsedMs, shouldRetry);
+      if (!shouldRetry) {
         if (lifecycleContention) {
           throw err;
         }
@@ -894,6 +886,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
           auth: authOverride,
           tailscale: tailscaleOverride,
           ...startupOptions,
+          // This CLI daemon path owns the node process, so it alone opts into
+          // the post-shutdown force-exit watchdog.
+          postShutdownExitWatchdog: true,
           prepareConfigSnapshot: snapshotPreparation.prepareHostConfigSnapshot,
           ...(requestHotReloadRecovery ? { hotReloadRecovery: requestHotReloadRecovery } : {}),
           startupConfigSnapshotRead: startupConfigSnapshotReadForThisStart,

@@ -6,6 +6,46 @@ import {
   isProviderRequestSizeCeilingError,
 } from "./classify.js";
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+describe("isLikelyContextOverflowError", () => {
+  it("detects Codex promptError wording for a full context window", () => {
+    expect(
+      isLikelyContextOverflowError(
+        "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not mistake LM Studio prompt-template override guidance for overflow", () => {
+    expect(
+      isLikelyContextOverflowError(
+        'Error rendering prompt with jinja template: "Cannot apply filter upper to type UndefinedValue". You can override the prompt template in model settings.',
+      ),
+    ).toBe(false);
+  });
+
+  it("treats Anthropic long-context 429 as context overflow (not rate limit)", () => {
+    // Anthropic returns HTTP 429 for this message, but it is semantically a context
+    // overflow — the session is too large. It should route to compact+retry, not
+    // model fallback.
+    expect(isLikelyContextOverflowError("Extra usage is required for long context requests.")).toBe(
+      true,
+    );
+    expect(isLikelyContextOverflowError("extra usage is required for long context requests")).toBe(
+      true,
+    );
+    expect(
+      isLikelyContextOverflowError(
+        "429 Extra usage is required for long context requests. Please contact support.",
+      ),
+    ).toBe(true);
+    // Standard rate limit messages must still be excluded
+    expect(isLikelyContextOverflowError("Rate limit exceeded")).toBe(false);
+  });
+});
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 // Groq states both numbers in the refusal, so the two shapes are separable by wording alone.
 const GROQ_OVERSIZED_REQUEST_413 =
   "413 Request too large for model `openai/gpt-oss-120b` in organization `org_x` " +

@@ -5,7 +5,12 @@ import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-con
 import { createRestartRecoveryOperatorSource } from "../../agents/operator-run-recovery-source.js";
 import {
   buildRestartRecoveryClaimCleanupPatch,
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   getRestartRecoveryPendingFinalSourceRunId,
+=======
+  canReplaceAbortedRestartRecoveryClaim,
+  hasLiveRestartRecoveryDeliveryClaim,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   hasRestartRecoverySourceClaim,
   hasRestartRecoveryTerminalRun,
   isMainRestartRecoveryCandidate,
@@ -52,6 +57,15 @@ import type { AgentTurnRestartClaimCleanup } from "./agent-runner-completion.typ
 import type { ReplyRestartRecoveryClaimController } from "./restart-recovery-claim.types.js";
 import { readReplyAdmissionSession } from "./restart-recovery-placement.js";
 import { retireTerminalRestartRecoverySourceClaim } from "./restart-recovery-source.js";
+
+/**
+ * Every minted claim carries a generation. Falling back to the running one keeps
+ * a claim from being born already-orphaned when the caller has no operation
+ * generation to hand, which would make it retirable by the very next admission.
+ */
+function mintedLifecycleGeneration(operationGeneration?: string): string {
+  return normalizeOptionalString(operationGeneration) ?? getAgentEventLifecycleGeneration();
+}
 
 export function createReplyRestartRecoveryClaimController(params: {
   agentId: string;
@@ -393,6 +407,11 @@ export function createReplyRestartRecoveryClaimController(params: {
                 restartRecoveryDeliveryRequestFingerprint: undefined,
               }),
           restartRecoverySourceIngress: entry.restartRecoverySourceIngress ?? "control-ui",
+          // Adoption moves ownership to this process, so the claim is re-minted
+          // under the running generation and becomes live authority again.
+          restartRecoveryDeliveryLifecycleGeneration: mintedLifecycleGeneration(
+            params.lifecycleGeneration,
+          ),
           updatedAt: Date.now(),
         },
         recorder,
@@ -450,7 +469,12 @@ export function createReplyRestartRecoveryClaimController(params: {
       activeClaimRunId &&
       !canTransferAbortedControlUiClaim &&
       (entry.abortedLastRun === true ||
-        !isTerminalSessionStatus(entry.status) ||
+        // Fork: liveness of a delivery claim comes from the generation that minted it,
+        // not from the absence of a recorded outcome. A row a Gateway restart left
+        // without an outcome and unmarked keeps a restart-orphaned claim; it falls
+        // through to the retirement patch below instead of failing closed forever
+        // against a process that no longer exists. Interrupted rows stay recovery-owned.
+        hasLiveRestartRecoveryDeliveryClaim(entry) ||
         entry.status === "interrupted" ||
         entry.restartRecoveryDeliveryReceiptState === "terminal-pending")
     ) {
@@ -477,6 +501,9 @@ export function createReplyRestartRecoveryClaimController(params: {
       restartRecoveryDeliveryContext: recoverableDeliveryContext,
       restartRecoveryDeliveryRequestFingerprint: undefined,
       restartRecoveryDeliveryRunId: hasDeliveryClaim ? recoveryRunId : undefined,
+      restartRecoveryDeliveryLifecycleGeneration: hasDeliveryClaim
+        ? mintedLifecycleGeneration(params.lifecycleGeneration)
+        : undefined,
       restartRecoveryOperatorSource: operatorSource,
       restartRecoveryDeliverySourceRunId:
         transfersControlUiClaim || operatorSource

@@ -48,10 +48,24 @@ describe("provider overflow messages", () => {
 
   it.each([
     "Context window exceeded: estimated input 35137 leaves only 0 output tokens within the 32768-token context.",
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     "Input validation error: `inputs` tokens + `max_new_tokens` must be <= 32768. Given: 28897 `inputs` tokens and 3872 `max_new_tokens`",
     "Input validation error: `inputs` must have less than 32768 tokens. Given: 40000",
     "Trying to keep the first 15857 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough. Try to load the model with a larger context length, or provide a shorter input.",
     "400 <400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 202745]",
+=======
+    "Error: 400 Input length (265330) exceeds model's maximum context length (262144).",
+    "Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131,040 tokens.",
+    "Input length 131393 exceeds maximum allowed input length of 131040 token",
+    "input length and `max_tokens` exceed context limit: 176312 + 32000 > 200000",
+    'HTTP 400: {"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 176312 + 32000 > 200000"}}',
+    "code 1210: tokens in request more than max tokens allowed",
+    "code 1261: Prompt exceeds max length",
+    "500 Context size has been exceeded.",
+    "Trying to keep the first 15857 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough. Try to load the model with a larger context length, or provide a shorter input.",
+    "422 Input validation error: `inputs` tokens + `max_new_tokens` must be <= 32768. Given: 28897 `inputs` tokens and 3872 `max_new_tokens`",
+    "422 Input validation error: `inputs` must have less than 32768 tokens. Given: 40000",
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   ])("detects %s", (text) => {
     expect(isContextOverflow(errorMessage(text), 262_144)).toBe(true);
   });

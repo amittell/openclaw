@@ -64,10 +64,16 @@ export type SubscribeEmbeddedAgentSessionParams = Pick<
   /** Reports source delivery observed through bridged tool lifecycle events. */
   onDeliveredMessageToolOnlySourceReply?: () => void;
   /** Assistant fragment usage before queued delivery; fragments may be intermediate. */
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   onModelUsage?: (
     usage: NormalizedUsage | undefined,
     identity?: Pick<AssistantMessage, "responseId" | "turnId">,
   ) => void;
+=======
+  onModelUsage?: (usage: NormalizedUsage | undefined) => void;
+  /** Fires synchronously for every successful provider response; must not block. */
+  onModelCallSettled?: (usage: NormalizedUsage | undefined) => void;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   onExecutionPhase?: (info: {
     phase: "tool_execution_started";
     tool?: string;

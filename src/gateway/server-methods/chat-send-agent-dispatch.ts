@@ -38,6 +38,7 @@ import { broadcastChatDelta } from "./chat-broadcast.js";
 import type { StartChatDispatchParams } from "./chat-send-agent-dispatch.types.js";
 import { scheduleChatDashboardSessionTitle } from "./chat-send-background.js";
 import { readChatSendReplyPayload } from "./chat-send-command-replies.js";
+import { bindChatSendCompletedTurn } from "./chat-send-completed-turn.js";
 import {
   createChatSendDispatchErrorLifecycle,
   formatReturnedAgentErrors,
@@ -109,7 +110,12 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     selectedAgent,
     sessionKey,
   } = session;
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const { clientInfo, p, supportsTaskSuggestions } = request;
+=======
+  const { clientInfo, p, reconnectResumeRequested, supportsTaskSuggestions } = request;
+  const turnTarget = { agentId, expectedSessionId: admittedSessionId, sessionKey, storePath };
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   const {
     accountId,
     ctx,
@@ -624,6 +630,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
+              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, turnTarget),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

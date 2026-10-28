@@ -2,9 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Model } from "openclaw/plugin-sdk/llm";
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isSecretValueRegisteredForRedaction } from "../../../logging/secret-redaction-registry.js";
 import { SecretSurfaceUnavailableError } from "../../../secrets/runtime-degraded-state.js";
 import {
@@ -17,7 +15,6 @@ import { OAuthRefreshFailureError } from "../../auth-profiles/oauth-refresh-fail
 import { resolveAuthProfileOrder } from "../../auth-profiles/order.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "../../auth-profiles/store-runtime.js";
 import { FailoverError } from "../../failover-error.js";
-import type { RuntimeAuthState } from "./helpers.js";
 
 const mocks = vi.hoisted(() => ({
   prepareProviderRuntimeAuth: vi.fn(),
@@ -42,7 +39,9 @@ vi.mock("../../model-auth.js", async () => {
   };
 });
 
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.js";
 import {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   createEmbeddedRunAuthController,
   resolveEmbeddedAuthCooldownProbePolicy,
   type EmbeddedRunAuthState,
@@ -136,6 +135,13 @@ function createMutableEmbeddedRunAuthController(params: {
     },
   });
 }
+=======
+  createMutableAuthControllerHarness,
+  createMutableEmbeddedRunAuthController,
+  createTestModel,
+  expectProtectedRuntimeValue,
+} from "./auth-controller.test-support.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 describe("createEmbeddedRunAuthController", () => {
   beforeEach(() => {
@@ -857,121 +863,6 @@ describe("createEmbeddedRunAuthController", () => {
     await expect(controller.initializeAuthProfile()).rejects.toThrow(
       /runtime auth request overrides do not allow proxy or tls/i,
     );
-  });
-
-  it("ignores stale scheduled refresh results after auth profile rotation", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createMutableAuthControllerHarness();
-      const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
-      const staleRefresh = createDeferred<{
-        apiKey: string;
-        baseUrl: string;
-        request: {
-          auth: {
-            mode: "header";
-            headerName: string;
-            value: string;
-          };
-        };
-        expiresAt: number;
-      }>();
-
-      mocks.getApiKeyForModelCore.mockImplementation(async ({ profileId }) => {
-        if (profileId === "backup") {
-          return {
-            apiKey: "backup-source-api-key",
-            mode: "api-key",
-            profileId: "backup",
-            source: "env",
-          };
-        }
-        return {
-          apiKey: "default-source-api-key",
-          mode: "api-key",
-          profileId: "default",
-          source: "env",
-        };
-      });
-      mocks.prepareProviderRuntimeAuth.mockImplementation(async ({ context }) => {
-        if (context.apiKey === "default-source-api-key" && context.profileId === "default") {
-          if (harness.runtimeAuthState?.refreshInFlight) {
-            return staleRefresh.promise;
-          }
-          return {
-            apiKey: "default-runtime-api-key",
-            baseUrl: "https://default-runtime.example.com/v1",
-            request: {
-              auth: {
-                mode: "header",
-                headerName: "api-key",
-                value: "default-runtime-header-token",
-              },
-            },
-            expiresAt: Date.now() + 60_000,
-          };
-        }
-        if (context.apiKey === "backup-source-api-key" && context.profileId === "backup") {
-          return {
-            apiKey: "backup-runtime-api-key",
-            baseUrl: "https://backup-runtime.example.com/v1",
-            request: {
-              auth: {
-                mode: "header",
-                headerName: "api-key",
-                value: "backup-runtime-header-token",
-              },
-            },
-            expiresAt: Date.now() + 120_000,
-          };
-        }
-        throw new Error(`Unexpected runtime auth request for ${String(context.profileId)}`);
-      });
-
-      const controller = createMutableEmbeddedRunAuthController({
-        harness,
-        setRuntimeApiKey,
-        profileCandidates: ["default", "backup"],
-      });
-
-      await controller.initializeAuthProfile();
-      expect(getRuntimeAuthSnapshot(harness.runtimeAuthState)?.profileId).toBe("default");
-
-      vi.advanceTimersByTime(5_000);
-      await Promise.resolve();
-      const refreshInFlight = getRuntimeAuthSnapshot(harness.runtimeAuthState)?.refreshInFlight;
-      expect(typeof refreshInFlight?.then).toBe("function");
-
-      await controller.advanceAuthProfile();
-      expect(getRuntimeAuthSnapshot(harness.runtimeAuthState)?.profileId).toBe("backup");
-      expect(harness.models.runtime.baseUrl).toBe("https://backup-runtime.example.com/v1");
-      const backupHeader = harness.models.runtime.headers?.["api-key"];
-      expectProtectedRuntimeValue(backupHeader, "backup-runtime-header-token");
-
-      staleRefresh.resolve({
-        apiKey: "default-runtime-api-key-refreshed",
-        baseUrl: "https://default-refresh.example.com/v1",
-        request: {
-          auth: {
-            mode: "header",
-            headerName: "api-key",
-            value: "default-refresh-header-token",
-          },
-        },
-        expiresAt: Date.now() + 30_000,
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(getRuntimeAuthSnapshot(harness.runtimeAuthState)?.profileId).toBe("backup");
-      expect(harness.models.runtime.baseUrl).toBe("https://backup-runtime.example.com/v1");
-      expect(harness.models.runtime.headers?.["api-key"]).toBe(backupHeader);
-      const storedBackupApiKey = setRuntimeApiKey.mock.calls.at(-1)?.[1];
-      expectProtectedRuntimeValue(storedBackupApiKey, "backup-runtime-api-key");
-      controller.stopRuntimeAuthRefreshTimer();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   describe("aws-sdk auth without explicit API key (IMDS / instance role)", () => {

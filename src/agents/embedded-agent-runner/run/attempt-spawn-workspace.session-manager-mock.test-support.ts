@@ -32,6 +32,7 @@ export type SessionManagerMocks = {
   reloadPersistedTranscriptAsync: UnknownMock;
   setNextUserMessagePersistence: UnknownMock;
   removeTrailingEntriesAsync: UnknownMock;
+  setCompactionCheckpointHandleFormatter: UnknownMock;
 };
 
 export function readMockSessionCacheTtlTimestamp(

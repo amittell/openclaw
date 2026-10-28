@@ -278,6 +278,7 @@ src/agents/model-selection-shared.ts
 src/agents/openai-model-routes.ts
 src/agents/openai-routing.ts
 src/agents/owner-display.ts
+src/agents/owner-only-tool-stub-marker.ts
 src/agents/plugin-model-catalog-repair.ts
 src/agents/plugin-model-catalog.kernel.ts
 src/agents/plugin-model-catalog.read-operation.ts
@@ -1846,6 +1847,7 @@ src/state/openclaw-state-db-cache.wal.ts
 src/state/openclaw-state-db-contract.ts
 src/state/openclaw-state-db-cron-delivery-migration.ts
 src/state/openclaw-state-db-delivery-queue-backfill.ts
+src/state/openclaw-state-db-direct-reader-refusal.ts
 src/state/openclaw-state-db-doctor-schema.ts
 src/state/openclaw-state-db-engine.ts
 src/state/openclaw-state-db-existing-schema.ts

@@ -1,10 +1,15 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
+=======
+import type { MainRestartRecoveryCause, SessionEntry } from "../../config/sessions.js";
+import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isTrustedMessageActionTurnIngress } from "../../gateway/message-action-turn-capability.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
@@ -170,10 +175,21 @@ export async function prepareRestartRecoveryDeliveryCurrent(
   };
 }
 
+const RESUMED_AFTER_RESTART_NOTICE =
+  "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!";
+// Unless restart marking recorded the cycle, the notice must not claim a restart.
+const RESUMED_NOTICE =
+  "I'm continuing your interrupted request now.  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!";
+
 export async function announceRestartRecoveryResumption(
   params: RestartRecoveryDeliveryScope & {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     gatewayRuntime: GatewayRecoveryRuntime;
     isCurrent?: (cfg?: OpenClawConfig) => boolean;
+=======
+    cause?: MainRestartRecoveryCause;
+    gatewayRuntime: GatewayRecoveryRuntime;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   },
 ): Promise<void> {
   let prepared: Awaited<ReturnType<typeof prepareRestartRecoveryDeliveryCurrent>> | undefined;
@@ -185,7 +201,7 @@ export async function announceRestartRecoveryResumption(
     }
     await params.gatewayRuntime.sendRecoveryNotice({
       ...params.deliveryContext,
-      text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
+      text: params.cause === "gateway_restart" ? RESUMED_AFTER_RESTART_NOTICE : RESUMED_NOTICE,
       idempotencyKey: `main-session-restart-recovery:${params.recoveryRunId}:resumed-notice`,
       liveOnly: true,
       isCurrent,

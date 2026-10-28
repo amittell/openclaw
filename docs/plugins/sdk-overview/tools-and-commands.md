@@ -28,7 +28,7 @@ operation continue to own their signal and work lifetime.
 
 | Method                                   | What it registers                                                                                                                        |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `api.registerTool(tool, opts?)`          | Agent tool (required or `{ optional: true }`)                                                                                            |
+| `api.registerTool(tool, opts?)`          | Agent tool (required or `{ optional: true }`; `{ ownerOnly: true }` keeps it declared but refusing on non-owner turns)                   |
 | `api.registerCommand(def)`               | Custom command (bypasses the LLM)                                                                                                        |
 | `api.registerNodeHostCommand(command)`   | Command handled by `openclaw node run`; optional `agentTool` metadata can expose it as an agent-visible tool while the node is connected |
 | `api.registerWidgetPresenter(presenter)` | Explicit or current-channel destination behind the core `show_widget` tool                                                               |

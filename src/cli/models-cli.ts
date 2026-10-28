@@ -1,9 +1,13 @@
 // Commander registration for model catalog, status, auth, alias, and fallback commands.
 import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import type { ModelsAuthSetApiKeyResult } from "../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+=======
+import { validateProfileId } from "../agents/auth-profiles/sanitize.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { formatDocsHelp } from "./help-format.js";
 import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { registerModelsAccountsCli } from "./models-accounts-cli.js";
@@ -546,7 +550,15 @@ export function registerModelsCli(program: Command) {
       runAuthModelCommand(
         command,
         (agent) => ({ ...opts, agent }),
-        async () => (await import("../commands/models/auth.js"))[handler],
+        async () => {
+          // Reject a malformed token profile id before it reaches the credential store.
+          const profileIdError =
+            name === "paste-token" && opts.profileId ? validateProfileId(opts.profileId) : null;
+          if (profileIdError) {
+            throw new Error(`Invalid --profile-id: ${profileIdError}`);
+          }
+          return (await import("../commands/models/auth.js"))[handler];
+        },
       ),
     );
   }
@@ -561,6 +573,22 @@ export function registerModelsCli(program: Command) {
         command,
         (agent) => ({ ...opts, provider: "github-copilot", method: "device", agent }),
         async () => (await import("../commands/models/auth.js")).modelsAuthLoginCommand,
+      ),
+    );
+
+  auth
+    .command("clean")
+    .description(
+      "Remove stale profiles from auth-profiles.json that are not configured in openclaw.json",
+    )
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .option("--dry-run", "Preview removals without writing changes")
+    .option("--json", "Output as JSON")
+    .action((opts: { dryRun?: boolean; json?: boolean }, command) =>
+      runAgentModelCommand(
+        command,
+        (agent) => ({ agent, dryRun: Boolean(opts.dryRun), json: Boolean(opts.json) }),
+        async () => (await import("../commands/models/auth-clean.js")).modelsAuthCleanCommand,
       ),
     );
 

@@ -30,8 +30,13 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   createServiceRegistration,
   createServiceCronHost as createCronHost,
+=======
+  createServiceCronHost,
+  createServiceRegistration,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 } from "../plugins/services.test-support.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import {
@@ -3416,8 +3421,8 @@ describe("startGatewayPostAttachRuntime", () => {
         hasHooks: vi.fn((hookName: string) => hookName === "gateway_start"),
         runGatewayStart,
       };
-      const initialCron = createCronHost();
-      const depsCron = closing === "close" ? initialCron : createCronHost();
+      const initialCron = createServiceCronHost();
+      const depsCron = closing === "close" ? initialCron : createServiceCronHost();
       let currentCron = initialCron;
       const params = createPostAttachParams({
         trackStartupWork: (run) => {
@@ -3459,7 +3464,7 @@ describe("startGatewayPostAttachRuntime", () => {
         .getCronService;
       expect(serviceGetter?.()).toBe(closing === "restart" ? initialCron : undefined);
 
-      const reloadedCron = createCronHost();
+      const reloadedCron = createServiceCronHost();
       currentCron = reloadedCron;
       params.deps.cron = (closing === "close" ? reloadedCron : depsCron) as never;
       expect(getCron()).toBe(reloadedCron);

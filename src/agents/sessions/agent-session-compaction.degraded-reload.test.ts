@@ -1,3 +1,4 @@
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
@@ -8,6 +9,20 @@ import {
   replaceSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+=======
+/**
+ * A degraded safeguard boundary is durable session state. These cases write it through the
+ * real SQLite transcript, reopen the session from disk, and send the next request, for a
+ * fresh session and for one that already carried a boundary from before `qualityDegraded`
+ * existed. The trigger is the oversized-identifier case: the retention plan cannot fit the
+ * identifier, and the request context must still reach the saved and replayed summary.
+ */
+import path from "node:path";
+import type { Context, Model } from "openclaw/plugin-sdk/llm";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
@@ -145,6 +160,7 @@ describe("AgentSession degraded compaction reload", () => {
         resourceLoader,
         settingsManager,
       });
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       const beforeCompaction = expectDefined(loadSessionEntry(target), "session fixture exists");
       expect(beforeCompaction.compactionQualityDegraded).toBeUndefined();
       const compactionEvents: unknown[] = [];
@@ -163,18 +179,34 @@ describe("AgentSession degraded compaction reload", () => {
       // A stale accounting snapshot cannot clear a loss already committed by the transcript owner.
       await replaceSessionEntry(target, { ...beforeCompaction, updatedAt: 2 });
       expect(loadSessionEntry(target)?.compactionQualityDegraded).toBe(true);
+=======
+      await session.compact();
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       session.dispose();
       sessionManager.flushPendingPersistence();
 
       // Reload: the boundary, its durable flag, and the request context come back from disk.
       const reopened = await reopen(target, dir);
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       expect(loadSessionEntry(target)?.compactionQualityDegraded).toBe(true);
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       const boundary = lastCompaction(reopened);
       expect(boundary.details).toMatchObject({ qualityDegraded: true });
       expect(boundary.summary).toContain("## Pending user asks\nLatest user request context:");
       expect(boundary.summary).toContain(LATEST_ASK);
       expect(boundary.summary).not.toContain(OVERSIZED_IDENTIFIER);
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       expect(boundary.summary).toContain("Summary without headings");
+=======
+      // 10.7 (a16ff7f3230) builds the fallback from the rejected draft, not the prior
+      // boundary (proxy ruling, room #221, 2026-10-26), so a prior boundary's facts survive
+      // only through the summarizer's own draft.
+      expect(boundary.summary).toContain("Summary without headings");
+      if (priorBoundary) {
+        expect(boundary.summary).not.toContain("Never restart the database during business hours.");
+      }
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       const replay = JSON.stringify(reopened.buildSessionContext().messages);
       expect(replay).toContain(LATEST_ASK);
       expect(replay).not.toContain(OVERSIZED_IDENTIFIER);
@@ -208,12 +240,15 @@ describe("AgentSession degraded compaction reload", () => {
         content: [{ type: "text", text: "continued answer" }],
       });
       expect(network).not.toHaveBeenCalled();
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       await replaceSessionEntry(target, {
         ...beforeCompaction,
         lifecycleRevision: "fresh-lifecycle",
         updatedAt: 3,
       });
       expect(loadSessionEntry(target)?.compactionQualityDegraded).toBeUndefined();
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     } finally {
       setCompactionSafeguardRuntime(sessionManager, null);
       eventBus.clear();

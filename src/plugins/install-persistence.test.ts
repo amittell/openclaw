@@ -17,6 +17,7 @@ import {
   resetPluginsCliTestState,
   pluginsCliRuntimeLogs,
   setInstalledPluginIndexInstallRecords,
+  setRecoveredPluginInstallRecords,
   configWriteMock,
   writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock,
   applyPluginUninstallDirectoryRemovalMock,
@@ -187,6 +188,89 @@ describe("persistPluginInstall", () => {
       expectedConfigPath: "/tmp/openclaw.json",
       ownedConfigPathForWrite: "/tmp/openclaw.json",
     });
+  });
+
+  it("adds installed plugins to restrictive allowlists before enabling", async () => {
+    const { persistPluginInstall } = await import("./install-persistence.js");
+    const baseConfig = {
+      plugins: {
+        allow: ["memory-core"],
+      },
+    } as OpenClawConfig;
+    const enabledConfig = {
+      plugins: {
+        allow: ["memory-core", "alpha"],
+        entries: {
+          alpha: { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+    const install = {
+      source: "npm" as const,
+      spec: "alpha@1.0.0",
+      installPath: "/tmp/alpha",
+    };
+    enablePluginInConfigMock.mockImplementation((...args: unknown[]) => {
+      const [cfg, pluginId] = args as [OpenClawConfig, string];
+      expect(pluginId).toBe("alpha");
+      expect(cfg.plugins?.allow).toEqual(["memory-core", "alpha"]);
+      return { config: enabledConfig, enabled: true };
+    });
+    setRecoveredPluginInstallRecords({ alpha: install });
+
+    const next = await persistPluginInstall({
+      snapshot: {
+        ...installSnapshot(baseConfig),
+        writeOptions: {
+          assertConfigPathForWrite: installWriteOptions.assertConfigPathForWrite,
+          expectedConfigPath: "/tmp/openclaw.json",
+          ownedConfigPathForWrite: "/tmp/openclaw.json",
+          includeFileHashesForWrite: { "/tmp/plugins.json5": "include-1" },
+          includeFileTargetsForWrite: { "/tmp/plugins.json5": "/tmp/plugins.json5" },
+        },
+      },
+      pluginId: "alpha",
+      install,
+    });
+
+    expect(next).toEqual(enabledConfig);
+    const persistedRecords = requireMockCallArg(
+      writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock,
+      "writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock",
+    );
+    expect(persistedRecords.alpha).toEqual({
+      source: "npm",
+      spec: "alpha@1.0.0",
+      installPath: "/tmp/alpha",
+      installedAt: "2026-04-25T00:00:00.000Z",
+    });
+    expect(configWriteMock).toHaveBeenCalledWith(enabledConfig);
+    expect(replaceConfigFileMock).toHaveBeenCalledWith({
+      nextConfig: enabledConfig,
+      baseHash: "config-1",
+      writeOptions: {
+        assertConfigPathForWrite: installWriteOptions.assertConfigPathForWrite,
+        expectedConfigPath: "/tmp/openclaw.json",
+        ownedConfigPathForWrite: "/tmp/openclaw.json",
+        includeFileHashesForWrite: { "/tmp/plugins.json5": "include-1" },
+        includeFileTargetsForWrite: { "/tmp/plugins.json5": "/tmp/plugins.json5" },
+        afterWrite: { mode: "restart", reason: "plugin source changed" },
+        unsetPaths: [["plugins", "installs"]],
+      },
+    });
+    const refreshParams = requireMockCallArg(
+      refreshPluginRegistryMock,
+      "refreshPluginRegistryMock",
+    );
+    expect(refreshParams.config).toEqual(enabledConfig);
+    expect(refreshParams.reason).toBe("source-changed");
+    expect((refreshParams.installRecords as Record<string, unknown>).alpha).toEqual({
+      source: "npm",
+      spec: "alpha@1.0.0",
+      installPath: "/tmp/alpha",
+      installedAt: "2026-04-25T00:00:00.000Z",
+    });
+    expect(clearPluginRegistryLoadCacheMock).toHaveBeenCalledTimes(1);
   });
 
   it("persists installs even when runtime cache invalidation fails", async () => {

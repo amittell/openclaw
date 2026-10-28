@@ -4,6 +4,10 @@ import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionTranscriptHistoryEventPageFromProjection } from "./session-accessor.sqlite-history-query.js";
 import type { SessionTranscriptMessageEventPage } from "./session-accessor.sqlite-projection-read.js";
+export {
+  readSessionTranscriptCompactionShadowPage,
+  type SessionTranscriptCompactionShadowPage,
+} from "./session-accessor.sqlite-history-query.js";
 
 export function readSessionTranscriptHistoryEventPage(
   scope: SessionTranscriptReadScope,

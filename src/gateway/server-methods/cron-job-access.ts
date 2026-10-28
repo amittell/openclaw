@@ -121,6 +121,11 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
     allowCurrentJob?: boolean;
     checkVisibility?: boolean;
     preserveCronGetWireMessage?: boolean;
+    /**
+     * Idempotent delete: an absent job is a no-op success. Only an unscoped caller sees every
+     * job, so only it may learn that an id is absent; a scoped caller still gets not-found.
+     */
+    missingIsAlreadyGoneForUnscopedCaller?: boolean;
   } = {},
 ): GatewayRequestHandler {
   return defineValidatedGatewayHandler(method, validate, async (options) => {
@@ -130,11 +135,52 @@ export function scopedCronJobHandler<P extends CronJobIdParams>(
       respondMissingCronJobId(respond, method);
       return;
     }
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     const visibilityRead = createCronSessionVisibility(client, context);
     const loaded = await context.cron.readJob(jobId);
     const prepareVisibility = scope.checkVisibility && visibilityRead.resolve() !== undefined;
     if (prepareVisibility) {
       await visibilityRead.prepare();
+=======
+    const visibilityRead = createCronSessionVisibility(client, () => context.getRuntimeConfig());
+    try {
+      const loaded = await context.cron.readJob(jobId);
+      const prepareVisibility = scope.checkVisibility && visibilityRead.resolve() !== undefined;
+      if (scope.checkVisibility) {
+        assertCronReadCurrent(options);
+      }
+      if (prepareVisibility) {
+        await visibilityRead.prepare([
+          cronJobVisibilityTarget(loaded, context.cron.getDefaultAgentId()),
+        ]);
+        assertCronReadCurrent(options);
+      }
+      const callerScope = readCronCallerScope(client);
+      const job = prepareVisibility ? context.cron.getJob(jobId) : loaded;
+      if (!job && !callerScope && scope.missingIsAlreadyGoneForUnscopedCaller) {
+        respond(true, { removed: false, reason: "already-gone" }, undefined);
+        return;
+      }
+      const visibility = scope.checkVisibility ? visibilityRead.resolve() : undefined;
+      if (
+        !job ||
+        (scope.checkVisibility &&
+          !cronJobIsVisible(job, visibility, context.cron.getDefaultAgentId())) ||
+        !cronJobMatchesCallerScope({
+          job,
+          callerScope,
+          defaultAgentId: context.cron.getDefaultAgentId(),
+          allowCurrentJob: scope.allowCurrentJob,
+        })
+      ) {
+        respondCronJobNotFound(respond, jobId, scope);
+        return;
+      }
+      // Consume authorized reads in this frame; mutations retain their lock-time commit guards.
+      return await run(options, { jobId, callerScope, job });
+    } finally {
+      visibilityRead.release();
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     }
     if (scope.checkVisibility) {
       assertCronReadCurrent(options);

@@ -10,12 +10,7 @@ import {
   readLatestConfigSnapshotAuditRecordAsync,
   upsertConfigSnapshotAuditRecordAsync,
 } from "../config/config-journal-snapshot.js";
-import {
-  appendConfigAuditRecord,
-  capConfigAuditIssues,
-  capConfigAuditPaths,
-  type ConfigExternalChangeAuditRecord,
-} from "../config/io.audit.js";
+import { capConfigAuditIssues, capConfigAuditPaths } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { hashRuntimeConfigValue, resolveConfigWriteFollowUp } from "../config/runtime-snapshot.js";
@@ -54,6 +49,9 @@ import {
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
 import { createConfigAppliedRevisionTracker } from "./config-applied-revision.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
+import { appendConfigExternalChangeAudit } from "./config-reload-external-audit.js";
+import { trackSourceReloadObservation, warnHybridRestart } from "./config-reload-observability.js";
+import { publishReloadObservation } from "./config-reload-observed.js";
 import {
   buildGatewayReloadPlan,
   isNoopGatewayReloadPlan,
@@ -194,9 +192,21 @@ export function startGatewayConfigReloader(
   const activeReloads = new Set<Promise<unknown>>();
   let pluginOperationTail: Promise<unknown> = Promise.resolve();
   let missingConfigRetries = 0;
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   let pendingInProcessConfig: GatewayConfigReloadCandidate | null = null;
   let activeConfigCandidate: GatewayConfigReloadCandidate | null = null;
   let retryCandidate: GatewayConfigReloadCandidate | null = null;
+=======
+  const observationReads = new WeakMap<
+    ConfigSourceObservation,
+    Promise<[ConfigFileSnapshot, PluginInstallRecords]>
+  >();
+  // The transaction begun at this revision proved the observation reads its own source.
+  const observationAcceptedFromRevision = new WeakMap<ConfigSourceObservation, number>();
+  let pendingInProcessConfig: InProcessConfigCandidate | null = null;
+  let activeInProcessConfig: InProcessConfigCandidate | null = null;
+  let retryWriteCandidate: InProcessConfigCandidate | null = null;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   let acceptedSourceSnapshot: ConfigFileSnapshot | undefined;
   let lastSourceOnly:
     | {
@@ -212,21 +222,6 @@ export function startGatewayConfigReloader(
     if (stopped) {
       throw new GatewayConfigReloadSupersededError();
     }
-  };
-  const appendExternalAudit = async (
-    record: Omit<ConfigExternalChangeAuditRecord, "ts" | "source" | "event" | "configPath">,
-  ) => {
-    await appendConfigAuditRecord({
-      env: process.env,
-      homedir,
-      record: {
-        ts: new Date().toISOString(),
-        source: "config-io",
-        event: "config.external",
-        configPath: opts.watchPath,
-        ...record,
-      },
-    });
   };
 
   // CAS token is the unfiltered slot: a slot owned by another config path must
@@ -395,6 +390,41 @@ export function startGatewayConfigReloader(
       assertReloadPublicationCurrent(isCurrent(), false);
     };
     const checkpointOwned = async (assertOwned: () => void) => {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+      if (stopped || rejected) {
+        throw new GatewayConfigReloadSupersededError();
+      }
+      assertOwned();
+      if (source.observation.revision !== transactionEpoch) {
+        const observed = source.observation;
+        if (observed.writerRevision > transactionEpoch) {
+          throw new GatewayConfigReloadSupersededError();
+        }
+        // Read under this observation, not the reload queue: the active transaction
+        // owns that queue and may already have stopped its plugin services.
+        let read = observationReads.get(observed);
+        if (!read) {
+          read = Promise.all([source.readSnapshot(observed), readPluginInstallRecords()]);
+          observationReads.set(observed, read);
+        }
+        const [snapshot, installs] = await read;
+        if (
+          stopped ||
+          source.observation !== observed ||
+          !snapshot.exists ||
+          !snapshot.valid ||
+          typeof persistedHash !== "string" ||
+          !configSourceSnapshotsMatch(snapshot, sourceSnapshot) ||
+          !isDeepStrictEqual(installs, nextPluginInstallRecords)
+        ) {
+          throw new GatewayConfigReloadSupersededError();
+        }
+        assertOwned();
+        transactionEpoch = observed.revision;
+        observationAcceptedFromRevision.set(observed, initialEpoch);
+      }
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       assertOwned();
       assertReloadPublicationCurrent(isCurrent(), false);
     };
@@ -713,6 +743,12 @@ export function startGatewayConfigReloader(
       );
     }
     if (plan.restartGateway) {
+      // Read nextSettings, not the stale `settings` binding: the incoming
+      // config owns this decision (same source as the mode==="off" check
+      // above), otherwise a config that switches modes logs nothing.
+      // "hybrid" is the hot-capable mode (legacy "hot" resolves to it), so a
+      // restart-required plan here is the case operators need explained.
+      warnHybridRestart(opts.log, nextSettings.mode, plan.restartReasons);
       await opts.onConfigChange?.(plan, nextConfig);
       await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
@@ -875,18 +911,25 @@ export function startGatewayConfigReloader(
     running = true;
     pending = false;
     clearReloadTimer();
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     let attemptedCandidate: GatewayConfigReloadCandidate | null = null;
+=======
+    let attemptedCandidate: InProcessConfigCandidate | null = null;
+    const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     try {
       assertLeaseOwned();
       if (pendingInProcessConfig) {
         const pendingWrite = pendingInProcessConfig;
         attemptedCandidate = pendingWrite;
+        observation.observe(pendingWrite.epoch, null);
         pendingInProcessConfig = null;
         activeConfigCandidate = pendingWrite;
         missingConfigRetries = 0;
         try {
           await runAcceptedTransaction(async () => {
             const snapshot = pendingWrite.snapshot;
+            observation.observeSnapshot(pendingWrite.epoch, snapshot);
             assertLeaseOwned();
             assertConfigReloadWriteSnapshot(snapshot);
             if (
@@ -924,9 +967,15 @@ export function startGatewayConfigReloader(
         return;
       }
       const transactionEpoch = source.observation.revision;
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       const intentCandidate = retryCandidate;
+=======
+      observation.observe(transactionEpoch, null);
+      const intentCandidate = retryWriteCandidate;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       attemptedCandidate = intentCandidate;
       const snapshot = await source.readSnapshot();
+      observation.observeSnapshot(transactionEpoch, snapshot);
       assertLeaseOwned();
       if (source.observation.revision !== transactionEpoch) {
         throw new GatewayConfigReloadSupersededError();
@@ -993,7 +1042,7 @@ export function startGatewayConfigReloader(
       acceptedSourceSnapshot = undefined;
       if (!snapshot.valid) {
         if (newObservedRawHash) {
-          await appendExternalAudit({
+          await appendConfigExternalChangeAudit(opts.watchPath, {
             detectedBy: "watch",
             previousHash: previousObservedRawHash,
             nextHash: observedRawHash,
@@ -1029,7 +1078,7 @@ export function startGatewayConfigReloader(
       ) {
         // Returning to accepted bytes after a rejected edit is still an observed transition.
         // A slot upsert can race awaitWriteFinish; the rare duplicate still carries exact hashes.
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "watch",
           previousHash: previousObservedRawHash,
           nextHash: observedRawHash,
@@ -1095,9 +1144,13 @@ export function startGatewayConfigReloader(
         );
       }
     } finally {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
       if (activeConfigCandidate === attemptedCandidate) {
         activeConfigCandidate = null;
       }
+=======
+      observation.publishIfCurrent();
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       running = false;
     }
   };
@@ -1196,6 +1249,8 @@ export function startGatewayConfigReloader(
       const retriedCandidate = retryCandidate;
       let candidate = pendingInProcessConfig ?? retriedCandidate;
       let committed = false;
+      // Same per-transaction tracker as runReload: publish this read while it is current.
+      const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
       try {
         const expectedSourceConfig = params.write
           ? params.write.persistedSourceConfig
@@ -1203,7 +1258,11 @@ export function startGatewayConfigReloader(
         // Refresh identity and bytes without inventing independent passive reload work.
         source.observe(undefined, false);
         const epoch = source.observation.revision;
+        // This read can consume a pending write and its echo; no follow-up reload publishes it.
+        // A failed read publishes as unavailable rather than keeping the prior source.
+        observation.observe(epoch, null);
         const snapshot = await source.readSnapshot();
+        observation.observeSnapshot(epoch, snapshot);
         params.assertInvokerOwned?.();
         if (!snapshot.valid || !snapshot.exists) {
           throw new Error("Plugin runtime application requires a valid persisted config.");
@@ -1291,8 +1350,14 @@ export function startGatewayConfigReloader(
           { cause: error },
         );
       } finally {
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         if (activeConfigCandidate === candidate) {
           activeConfigCandidate = null;
+=======
+        observation.publishIfCurrent();
+        if (activeInProcessConfig === candidate) {
+          activeInProcessConfig = null;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         }
         running = false;
         if (pending || pendingInProcessConfig) {
@@ -1424,7 +1489,7 @@ export function startGatewayConfigReloader(
       if (priorSnapshot && opts.initialSnapshotRawHash === null) {
         currentRawHash = priorSnapshot.rawHash;
         currentFingerprintedAuthoredConfig = priorSnapshot.fingerprintedAuthoredConfig;
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "startup",
           previousHash: priorSnapshot.rawHash,
           nextHash: null,
@@ -1445,7 +1510,7 @@ export function startGatewayConfigReloader(
               }),
             )
           : [];
-        await appendExternalAudit({
+        await appendConfigExternalChangeAudit(opts.watchPath, {
           detectedBy: "startup",
           previousHash: priorSnapshot.rawHash,
           nextHash: opts.initialSnapshotRawHash,
@@ -1463,6 +1528,8 @@ export function startGatewayConfigReloader(
       }
       if (opts.initialSnapshotRawHash !== null && opts.initialSnapshotValid) {
         await updateAcceptedSnapshot(opts.initialSnapshotRawHash, opts.initialAuthoredConfig);
+        // A write or watcher event during preparation publishes through its own transaction.
+        publishReloadObservation(initialSourceConfig);
       }
     }
     currentPluginInstallRecords = initialPluginInstallRecords;

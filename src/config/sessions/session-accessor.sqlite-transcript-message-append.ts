@@ -54,6 +54,69 @@ class TranscriptTurnAdmissionConflictError extends Error {
   }
 }
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+function messagesMatchForIdempotentReplay(stored: unknown, candidate: unknown): boolean {
+  const storedDelivery = isRecord(stored) ? stored.openclawDelivery : undefined;
+  // v2026.9.4 mirrors did not retain URLs. Compare their original representation
+  // without rewriting accepted bytes; an explicit mediaUrls field stays strict.
+  const legacyMediaMirror =
+    isRecord(stored) &&
+    isOpenClawDeliveryMirrorAssistantMessage(stored) &&
+    stored.api === OPENCLAW_TRANSCRIPT_ARTIFACT_API &&
+    (storedDelivery === undefined ||
+      (isRecord(storedDelivery) && !Object.hasOwn(storedDelivery, "mediaUrls")));
+  const serializedShape = (message: unknown, projectLegacyMedia = false): unknown => {
+    if (!isRecord(message)) {
+      return message;
+    }
+    const { timestamp: _timestamp, ...stable } = message;
+    if (
+      projectLegacyMedia &&
+      isRecord(stable.openclawDelivery) &&
+      Array.isArray(stable.openclawDelivery.mediaUrls) &&
+      stable.openclawDelivery.mediaUrls.every((url) => typeof url === "string")
+    ) {
+      const { mediaUrls: _mediaUrls, ...delivery } = stable.openclawDelivery;
+      if (storedDelivery === undefined && Object.keys(delivery).length === 0) {
+        delete stable.openclawDelivery;
+      } else {
+        stable.openclawDelivery = delivery;
+      }
+    }
+    const serialized = JSON.stringify(stable);
+    return serialized === undefined ? undefined : JSON.parse(serialized);
+  };
+  return isDeepStrictEqual(serializedShape(stored), serializedShape(candidate, legacyMediaMirror));
+}
+
+// Fork-only (upstream #169154; main fixed it in #169237, which needs #167938's prompt projection).
+// Storage redaction is not idempotent for every rule: a value the first pass hints (`eyJhbG…2C31`)
+// a second pass masks (`***`). A run's copy of an admitted user turn can arrive one pass further
+// than its stored copy, so a keyed user replay also matches the stored copy redacted once more.
+function userReplayMatchesAdmittedMessage(
+  stored: unknown,
+  candidate: unknown,
+  options: Pick<TranscriptMessageAppendOptions<unknown>, "config">,
+): boolean {
+  if (messagesMatchForIdempotentReplay(stored, candidate)) {
+    return true;
+  }
+  if (
+    !isRecord(stored) ||
+    stored.role !== "user" ||
+    !isRecord(candidate) ||
+    candidate.role !== "user"
+  ) {
+    return false;
+  }
+  return messagesMatchForIdempotentReplay(
+    redactTranscriptMessageForStorage(stored, options),
+    candidate,
+  );
+}
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 type TranscriptMessageEnvelope = {
   type: "message";
   id: string;
@@ -164,10 +227,13 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     if (existing) {
       if (
         !options.prepareMessageAfterIdempotencyCheck &&
-        !messagesMatchForIdempotentReplay(
-          existing.message,
-          pending?.message ?? serializeForStorage(options.message),
-        )
+        !(pending
+          ? messagesMatchForIdempotentReplay(existing.message, pending.message)
+          : userReplayMatchesAdmittedMessage(
+              existing.message,
+              serializeForStorage(options.message),
+              options,
+            ))
       ) {
         throw new TranscriptTurnAdmissionConflictError(idempotencyKey);
       }
@@ -253,7 +319,9 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     if (existing) {
       if (
         !options.prepareMessageAfterIdempotencyCheck &&
-        !messagesMatchForIdempotentReplay(existing.message, finalMessage)
+        !(pending
+          ? messagesMatchForIdempotentReplay(existing.message, finalMessage)
+          : userReplayMatchesAdmittedMessage(existing.message, finalMessage, options))
       ) {
         throw new TranscriptTurnAdmissionConflictError(idempotencyKey ?? `event:${messageId}`);
       }

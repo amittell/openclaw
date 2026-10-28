@@ -61,6 +61,14 @@ export async function updateSessionStoreAfterAgentRun(params: {
   preserveUserFacingSessionModelState?: boolean;
   /** Clear the durable replay-safe recovery guard after this recovery run terminates. */
   clearRestartRecoveryForceSafeTools?: boolean;
+  /**
+   * When true, this run was served by a fallback model. The fallback is an
+   * in-flight transient choice, not a durable session setting, so runtime
+   * model/context persistence is skipped and the configured primary is retried
+   * once it recovers. Defaults to comparing the run's model/provider against
+   * the configured defaults.
+   */
+  isFromFallback?: boolean;
 }) {
   const {
     cfg,
@@ -110,20 +118,34 @@ export async function updateSessionStoreAfterAgentRun(params: {
   if (!preserveUserFacingRunState && expectedSession.sessionId !== sessionId) {
     return;
   }
+  // Treat contextTokens as part of the runtime-model snapshot: when this run
+  // was served by a fallback we must not persist the fallback model's context
+  // window alongside the preserved primary model, otherwise status %used and
+  // compaction heuristics desync from the configured model.
+  const isFromFallback = preserveRuntimeModel
+    ? false
+    : (params.isFromFallback ?? (modelUsed !== defaultModel || providerUsed !== defaultProvider));
   const next: SessionEntry = {
     ...entry,
     updatedAt: now,
     sessionStartedAt: entry.sessionStartedAt ?? now,
     lastInteractionAt: touchInteraction ? now : entry.lastInteractionAt,
     lastActivityAt: touchActivity ? now : entry.lastActivityAt,
-    ...(preserveRuntimeModel
+    ...(preserveRuntimeModel || isFromFallback
       ? {}
       : {
           contextTokens,
           contextTokensSource,
         }),
   };
-  if (!preserveRuntimeModel) {
+  if (isFromFallback) {
+    // Do not persist a fallback model as the session's runtime model. If we did,
+    // resolveSessionModelRef would return the fallback on every subsequent request
+    // and the configured primary model would never be retried after it recovers.
+    // Preserve the existing entry's contextTokens too so status/compaction stay
+    // aligned with the unchanged primary model.
+    next.contextTokens = entry.contextTokens;
+  } else if (!preserveRuntimeModel) {
     setSessionRuntimeModel(next, {
       provider: providerUsed,
       model: modelUsed,
@@ -157,21 +179,25 @@ export async function updateSessionStoreAfterAgentRun(params: {
     );
     Object.assign(next, projectSessionUsageSnapshot(usage, runEstimatedCostUsd));
   }
+  let contextSnapshot:
+    | Pick<SessionEntry, "totalTokens" | "totalTokensFresh" | "totalTokensVersion">
+    | undefined;
   if (!preserveUserFacingRunState) {
     const currentContextSnapshot = params.compactionAccounting?.currentContextSnapshot;
     if (currentContextSnapshot || hasUsage) {
       const totalTokens = currentContextSnapshot
         ? currentContextSnapshot.tokens
         : deriveSessionTotalTokens({ lastCallUsage, contextTokens, promptTokens });
-      next.totalTokens = totalTokens;
-      next.totalTokensFresh = totalTokens !== undefined;
-      next.totalTokensVersion =
-        totalTokens !== undefined ? SESSION_TOTAL_TOKENS_VERSION : undefined;
+      contextSnapshot = {
+        totalTokens,
+        totalTokensFresh: totalTokens !== undefined,
+        totalTokensVersion: totalTokens !== undefined ? SESSION_TOTAL_TOKENS_VERSION : undefined,
+      };
     } else {
       // Empty-session zero is no longer current after a turn without usage.
-      next.totalTokensFresh = false;
-      next.totalTokensVersion = undefined;
+      contextSnapshot = { totalTokensFresh: false, totalTokensVersion: undefined };
     }
+    Object.assign(next, contextSnapshot);
   }
   const metadataPatch = preserveUserFacingRunState
     ? {
@@ -201,6 +227,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       }
       const patch: Partial<SessionEntry> = preserveUserFacingRunState
         ? metadataPatch
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         : projectSessionSnapshotChanges({
             initial: entry,
             next,
@@ -216,6 +243,19 @@ export async function updateSessionStoreAfterAgentRun(params: {
           ),
         );
       }
+=======
+        : {
+            ...projectSessionSnapshotChanges({
+              initial: entry,
+              next,
+              current: currentEntry,
+              reassertAbortedLastRun: result.meta.aborted === true,
+            }),
+            // The run's own per-call totals (attempt-context-total-tokens) changed these
+            // fields under its snapshot; its final accounting supersedes them.
+            ...contextSnapshot,
+          };
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       if (touchActivity && !preserveUserFacingRunState && currentEntry.snoozedUntil !== undefined) {
         // Clear the current snooze, including one set while this run was in flight.
         patch.snoozedUntil = undefined;

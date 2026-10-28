@@ -1,3 +1,12 @@
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+/**
+ * The compaction-provider failure boundary: what a session is left with when a
+ * registered provider's summarize() throws. Split out of agent-session-compaction.test.ts
+ * to keep both files under the max-lines cap; this half owns the provider-failure
+ * outcomes and the degraded-fallback contract.
+ */
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { Context, Model, SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -23,6 +32,36 @@ import { SettingsManager } from "./settings-manager.js";
 
 registerAgentSessionLoopTestLifecycle();
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+/**
+ * The structured artifact the safeguard commits when quality validation is exhausted.
+ *
+ * The pending ask is CARRIED here rather than dropped: the degrade is lossy on purpose, but
+ * the active request is the one fact a later turn cannot recover from the transcript, and
+ * earlier this section read "None." while the user was still waiting on that prompt.
+ */
+// 10.7 (a16ff7f3230) builds the degraded fallback from the rejected draft, not the
+// empty previous summary (proxy ruling, room #221, 2026-10-26).
+const DEGRADED_FALLBACK_SUMMARY = [
+  "## Decisions",
+  "Core summary without required safeguard headings",
+  "",
+  "## Open TODOs",
+  "None.",
+  "",
+  "## Constraints/Rules",
+  "None.",
+  "",
+  "## Pending user asks",
+  "Latest user request context:",
+  '"old prompt"',
+  "",
+  "## Exact identifiers",
+  "None captured.",
+].join("\n");
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 describe("AgentSession compaction provider boundary", () => {
   // A provider throw never cancels on its own: it is caught and retried through the
   // built-in summarizer. What the session ends up with is decided by that summary --
@@ -79,6 +118,15 @@ describe("AgentSession compaction provider boundary", () => {
             "## Exact identifiers\nNone.",
           ].join("\n\n")
         : "Core summary without required safeguard headings";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+      const recoveredSummary = [
+        "## Latest user request context",
+        JSON.stringify("old prompt"),
+        "",
+        summary,
+      ].join("\n");
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       const sessionManager = SessionManager.inMemory();
       sessionManager.appendMessage({ role: "user", content: "old prompt", timestamp: 1 });
       sessionManager.appendMessage({
@@ -183,7 +231,16 @@ describe("AgentSession compaction provider boundary", () => {
           streamMocks.streamSimple.mock.calls.length * 2,
         );
         subscription.unsubscribe();
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         const expectedCommit = !cancelCaller ? expect.stringContaining(summary) : undefined;
+=======
+        const expectedCommit =
+          outcome === "recovered"
+            ? recoveredSummary
+            : outcome === "degraded"
+              ? DEGRADED_FALLBACK_SUMMARY
+              : undefined;
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         expect.soft(observation).toMatchObject({
           providerCalls: 1,
           callerAbortedAtProviderEntry: false,
@@ -204,9 +261,15 @@ describe("AgentSession compaction provider boundary", () => {
               ]
             : [],
         });
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         if (!cancelCaller) {
           expect(streamMocks.streamSimple).toHaveBeenCalled();
           expect(appended[0]?.summary).toContain("old prompt");
+=======
+        // The guarded pipeline may chunk the history; do not pin its request count.
+        if (!cancelCaller) {
+          expect(streamMocks.streamSimple).toHaveBeenCalled();
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         }
         // Only a cancelled compaction leaves history untouched. A degraded one commits a
         // boundary on purpose: that is the whole point of degrading instead of cancelling.

@@ -27,6 +27,47 @@ it("skips provider hooks for unrelated context-overflow candidates", () => {
   expect(hoisted.classifyProviderFailoverSignalWithPlugin).not.toHaveBeenCalled();
 });
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+it.each(["ValidationException: The input is too long for the model", "context length exceeded"])(
+  "recognizes context overflow: %s",
+  (message) => {
+    expect(isContextOverflowError(message)).toBe(true);
+  },
+);
+
+it("detects Hugging Face TGI input validation overflow", () => {
+  // TGI wraps router/src/validation.rs errors as "Input validation error: ..." with HTTP 422.
+  const tgi = (message: string) => `422 Input validation error: ${message}`;
+  expect(
+    isContextOverflowError(
+      tgi(
+        "`inputs` tokens + `max_new_tokens` must be <= 32768. Given: 28897 `inputs` tokens and 3872 `max_new_tokens`",
+      ),
+    ),
+  ).toBe(true);
+  expect(
+    isContextOverflowError(tgi("`inputs` must have less than 32768 tokens. Given: 40000")),
+  ).toBe(true);
+  expect(isContextOverflowError(tgi("`max_new_tokens` must be <= 4096. Given: 8192"))).toBe(false);
+});
+
+it("recognizes a deactivated model", () => {
+  expect(classifyFailoverReason("model_is_deactivated: this model has been deactivated")).toBe(
+    "model_not_found",
+  );
+});
+
+it("prefers xAI billing evidence over resource-exhausted rate limits", () => {
+  expect(
+    classifyFailoverReason(
+      '429 {"code":"Some resource has been exhausted","error":"Your team team-redacted has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit."}',
+      { provider: "xai" },
+    ),
+  ).toBe("billing");
+});
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 const html = (body: string) => `<!doctype html><html><body>${body}</body></html>`;
 
 describe("CDN HTML classification", () => {

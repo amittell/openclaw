@@ -1,6 +1,7 @@
 // Cron validation tests cover channel target validation against plugin
 // prefixes/aliases and runtime config for cron delivery destinations.
 
+import "./cron.validation.mocks.test-support.js";
 import { performance } from "node:perf_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +24,6 @@ import { createCronStoreHarness, createNoopLogger } from "../../cron/service.tes
 import { loadCronStore, saveCronStore } from "../../cron/store.js";
 import { cronStoreKey } from "../../cron/store/key.js";
 import { loadCronRows } from "../../cron/store/row-codec.js";
-import type { CronRunRecord } from "../../cron/store/run-history.types.js";
 import type { CronDelivery, CronJob } from "../../cron/types.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -46,8 +46,11 @@ import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
 import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { registerCronRunWaitTests } from "./cron-run-wait.test-support.js";
 import { loadGatewaySessionEntry } from "./cron-session-reader.test-support.js";
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   createCronTestContext,
   callerClientWithCronCreatorAuthority,
@@ -73,6 +76,7 @@ import type { GatewayClient } from "./types.js";
 const cronLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness({ prefix: "cron-gateway-validation-" });
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 const getRuntimeConfig = vi.hoisted(() =>
   vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
 );
@@ -129,7 +133,16 @@ vi.mock("../../cron/delivery-preview.js", () => ({
   resolveCronDeliveryPreviews,
 }));
 
+=======
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { cronHandlers } from "./cron.js";
+const {
+  cronRunRecordsOverride,
+  getRuntimeConfig,
+  loadGatewaySessionEntry,
+  resetCronValidationMocks,
+  resolveCronDeliveryPreview,
+} = await import("./cron.validation.mocks.test-support.js");
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   return createCronTestContext(currentJobs, getRuntimeConfig);
@@ -377,21 +390,7 @@ describe("cron method validation", () => {
     },
   );
   beforeEach(() => {
-    getRuntimeConfig.mockReset().mockReturnValue({} as OpenClawConfig);
-    cronRunRecordsOverride.mockReset();
-    resolveCronDeliveryPreview
-      .mockReset()
-      .mockResolvedValue({ label: "not requested", detail: "not requested" });
-    resolveCronDeliveryPreviews
-      .mockReset()
-      .mockImplementation(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-        Object.fromEntries(
-          jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-        ),
-      );
-    loadGatewaySessionEntry
-      .mockReset()
-      .mockImplementation((sessionKey: string) => ({ canonicalKey: sessionKey, entry: undefined }));
+    resetCronValidationMocks();
     setCronValidationTestRegistry();
   });
 

@@ -311,6 +311,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/infra/update-run-abandonment.test.ts",
   "src/infra/update-run-interruption.worker.test.ts",
   "src/channels/turn/durable-delivery.reload.test.ts",
+  "src/channels/turn/durable-delivery.channel-reload.test.ts",
   "test/e2e/qa-lab/runtime/gateway-loopback-lan-access.test.ts",
   "src/channels/message/durable-receive.test.ts",
   "src/channels/message/ingress-drain-lanes.test.ts",
@@ -480,6 +481,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/code-mode.bridge.host-denial.test.ts",
   "src/agents/code-mode.bridge.lifecycle.test.ts",
   "src/agents/command/attempt-execution.shared.test.ts",
+  "src/agents/command/session-store.fallback-persistence.test.ts",
   "src/agents/command/session-store.snooze.test.ts",
   "src/agents/command/session-store.test.ts",
   "src/agents/core-coding-tools.exec-workdir.test.ts",
@@ -735,6 +737,10 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sessions/agent-session-code-mode-source.test.ts",
   "src/agents/sessions/agent-session-compaction.admission.test.ts",
   "src/agents/sessions/agent-session-compaction.degraded-reload.test.ts",
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+  "src/agents/sessions/agent-session-compaction.safeguard-budget.test.ts",
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   "src/agents/sessions/agent-session-compaction.test.ts",
   "src/agents/sessions/agent-session-runtime-projection.test.ts",
   "src/agents/sessions/agent-session.reclamation-admission.test.ts",

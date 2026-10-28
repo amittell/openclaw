@@ -9,6 +9,7 @@ type SecretValueRedactor = (text: string, mask: (value: string, index: number) =
 type SecretRedactionRegistryState = {
   registeredValues: Map<string, true>;
   registeredValueRedactor: SecretValueRedactor | undefined;
+  longestRegisteredValueLength: number | undefined;
 };
 
 // Native and source module copies share membership and matcher invalidation.
@@ -17,12 +18,37 @@ const state = resolveGlobalSingleton<SecretRedactionRegistryState>(
   () => ({
     registeredValues: new Map<string, true>(),
     registeredValueRedactor: undefined,
+    longestRegisteredValueLength: undefined,
   }),
 );
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 type SecretRedactionRegistrySnapshot = { values: readonly string[] };
+=======
+export type SecretRedactionRegistrySnapshot = { revision: number; values: readonly string[] };
+const registrySnapshots = resolveGlobalSingleton(
+  Symbol.for("openclaw.secretRedactionRegistrySnapshots"),
+  () =>
+    new AsyncLocalStorage<{
+      snapshot: SecretRedactionRegistrySnapshot;
+      values: ReadonlySet<string>;
+      redactor?: SecretValueRedactor;
+      longestValueLength?: number;
+    }>(),
+);
+
+/** A trusted worker task borrows captured policy without mutating its process registry. */
+export function withSecretRedactionRegistrySnapshot<T>(
+  snapshot: SecretRedactionRegistrySnapshot,
+  run: () => T,
+): T {
+  return registrySnapshots.run({ snapshot, values: new Set(snapshot.values) }, run);
+}
+
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 function invalidateMatcher(): void {
   state.registeredValueRedactor = undefined;
+  state.longestRegisteredValueLength = undefined;
 }
 
 function registerOneSecretValue(value: string): void {
@@ -63,6 +89,29 @@ export function isSecretValueRegisteredForRedaction(value: string): boolean {
 
 export function hasRegisteredSecretValuesForRedaction(): boolean {
   return state.registeredValues.size > 0;
+}
+
+/**
+ * Length of the longest registered surface form, or 0. Registered values only match whole, so
+ * text redacted without its tail must keep this much past a cut to mask a value that starts before it.
+ */
+export function getLongestRegisteredSecretLength(): number {
+  // A borrowed snapshot is the registry the redactor matches against inside its scope.
+  const scoped = registrySnapshots.getStore();
+  if (scoped) {
+    scoped.longestValueLength ??= longestValueLength(scoped.values);
+    return scoped.longestValueLength;
+  }
+  state.longestRegisteredValueLength ??= longestValueLength(state.registeredValues.keys());
+  return state.longestRegisteredValueLength;
+}
+
+function longestValueLength(values: Iterable<string>): number {
+  let longest = 0;
+  for (const value of values) {
+    longest = Math.max(longest, value.length);
+  }
+  return longest;
 }
 
 /** Exact surface forms are already expanded; snapshots must not register them again. */

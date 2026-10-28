@@ -138,3 +138,41 @@ export function readLoggingConfig(): LoggingConfig | undefined {
     return undefined;
   }
 }
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+=======
+
+/** Capture before dispatch; the returned guard never refreshes configuration or reads files. */
+export function captureLoggingRedactionPatternGuard(
+  explicitPatterns?: readonly string[],
+): () => boolean {
+  const captured = (explicitPatterns ?? readLoggingConfig()?.redactPatterns)?.slice();
+  return () => {
+    let current = explicitPatterns;
+    if (current === undefined) {
+      if (loggingState.appliedConfig !== APPLIED_LOGGING_CONFIG_UNOWNED) {
+        current = loggingState.appliedConfig?.redactPatterns;
+      } else {
+        if (
+          !cachedLoggingConfig ||
+          cachedLoggingConfig.selector !== resolveLoggingConfigSelector()
+        ) {
+          return false;
+        }
+        current = cachedLoggingConfig.logging?.redactPatterns;
+      }
+    }
+    return (
+      current?.length === captured?.length &&
+      !current?.some((pattern, index) => pattern !== captured?.[index])
+    );
+  };
+}
+
+/**
+ * Whether `logging.redactPatterns` replaces the default string rules. A nonempty list does, and a
+ * configured rule can need any amount of text after the start of its match.
+ */
+export function hasConfiguredRedactPatterns(): boolean {
+  return (readLoggingConfig()?.redactPatterns?.length ?? 0) > 0;
+}
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31

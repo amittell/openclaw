@@ -41,6 +41,7 @@ import type { TelegramBotOptions } from "./bot.types.js";
 import { buildTelegramOpaqueCallbackData } from "./native-command-callback-data.js";
 import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
+import { registerTelegramSpooledRetryTests } from "./test-support/bot-spooled-retry.js";
 
 vi.mock("openclaw/plugin-sdk/conversation-runtime", { spy: true });
 vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", { spy: true });
@@ -74,11 +75,8 @@ type BuildModelsProviderDataMock = ReturnType<
 const { defaultTelegramNativeCommandDeps } = await import("./bot-native-command-deps.runtime.js");
 const messageDispatchDedupe = await import("./message-dispatch-dedupe.js");
 const { createTelegramBotCore: createTelegramBotBase } = await import("./bot-core.js");
-const {
-  recordTelegramMessageProcessingResult,
-  runWithTelegramSpooledReplayUpdate,
-  TelegramSpooledReplayProcessingError,
-} = await import("./bot-processing-outcome.js");
+const { runWithTelegramSpooledReplayUpdate, TelegramSpooledReplayProcessingError } =
+  await import("./bot-processing-outcome.js");
 const {
   clearTelegramRuntimeForTest,
   resetTelegramAccountThrottlersForTest,
@@ -2189,6 +2187,7 @@ describe("createTelegramBot", () => {
     expect(replySpy).toHaveBeenCalledTimes(1);
   });
 
+<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   it("settles recorded dispatch failures during polling", async () => {
     const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 500,
@@ -2203,6 +2202,46 @@ describe("createTelegramBot", () => {
     await runMiddlewareChain({ update: { update_id: 502 } }, async () => {});
     await flushTelegramTestMicrotasks();
     expect(onUpdateId.mock.calls.map((call) => call[0])).toEqual([501, 502]);
+=======
+  it("retries a spooled message after dispatch fails before turn adoption", async () => {
+    configureOpenDm();
+    const dispatchError = new Error("failed before turn adoption");
+    replySpy.mockRejectedValueOnce(dispatchError).mockResolvedValueOnce({ text: "recovered" });
+
+    await createTelegramBot({ token: "tok" });
+    const messageHandler = getMessageHandler();
+    const replay = () =>
+      dispatchSpooledPrivateText(messageHandler, {
+        updateId: 8488603,
+        chatId: 123,
+        from: { id: 456, username: "testuser" },
+        text: "retry after pre-adoption failure",
+        messageId: 44,
+        downloadable: true,
+        replayUpdate: "full",
+      });
+    const firstReplay = await replay();
+    const firstDeferredWork = requireValue(firstReplay.deferredWork, "first replay deferred work");
+    await expect(firstDeferredWork.task).resolves.toEqual({
+      kind: "failed-retryable",
+      error: dispatchError,
+    });
+    await flushTelegramTestMicrotasks();
+
+    const secondReplay = await replay();
+    const secondDeferredWork = requireValue(
+      secondReplay.deferredWork,
+      "second replay deferred work",
+    );
+    await expect(secondDeferredWork.task).resolves.toEqual({ kind: "completed" });
+    expect(replySpy).toHaveBeenCalledTimes(2);
+  });
+
+  registerTelegramSpooledRetryTests({
+    setupUpdateOffsetTracker,
+    flushTelegramTestMicrotasks,
+    withTelegramSpooledReplayUpdate,
+>>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   });
 
   it("retries a deferred spooled update after its queued turn is abandoned", async () => {
