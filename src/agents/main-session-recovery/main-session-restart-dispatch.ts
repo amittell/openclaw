@@ -3,25 +3,16 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
+} from "../../config/sessions.js";
 import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import type { SessionEntryCurrentFacts } from "../../config/sessions/session-entry-current.types.js";
 import { withSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
-=======
-import type {
-  InternalSessionEntry as SessionEntry,
-  MainRestartRecoveryCause,
-} from "../../config/sessions.js";
-import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
-import {
-  applySessionEntryReplacements,
-  loadExactSessionEntry,
-} from "../../config/sessions/session-accessor.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { preparePhysicalSessionStorePath } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
@@ -31,11 +22,7 @@ import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
-import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
 import {
   buildSubagentRestartRecoveryRoster,
@@ -613,19 +600,12 @@ async function resumeMainSessionWithinAdmission(
         lifecycleGeneration,
         deliveryContext,
         cfg: params.cfg,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         shouldContinue: params.shouldContinue,
       }).catch((error: unknown) => {
         log.warn(
           `failed to prepare restart recovery notice ${params.sessionKey}: ${String(error)}`,
         );
         return undefined;
-=======
-        cause: params.entry.mainRestartRecovery?.cause,
-        shouldContinue: () =>
-          !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
-        gatewayRuntime: params.gatewayRuntime,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       });
       if (deliveryCurrent) {
         const isDeliveryCurrent = deliveryCurrent.isCurrent;
@@ -647,6 +627,7 @@ async function resumeMainSessionWithinAdmission(
           lifecycleGeneration,
           deliveryContext,
           cfg: params.cfg,
+          cause: params.entry.mainRestartRecovery?.cause,
           shouldContinue: () =>
             !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
           gatewayRuntime: params.gatewayRuntime,

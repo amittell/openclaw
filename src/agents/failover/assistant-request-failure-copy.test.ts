@@ -255,14 +255,6 @@ describe("renderAssistantRequestFailureCopy", () => {
     expect(renderAssistantRequestFailureCopy({ ...target, status: 0 })).toBe(runFailure);
     expect(renderAssistantRequestFailureCopy({ ...target, status: 400 })).toBe(runFailure);
   });
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-
-  it("retains classified guidance without an HTTP status", () => {
-    expect(renderAssistantRequestFailureCopy({ ...target, reason: "auth" })).toBe(
-      "⚠️ Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.",
-    );
-  });
 
   it("reports the classified reason for 5xx failures instead of re-deriving it", () => {
     // The classifier owns the reason. A gateway timeout really did time out,
@@ -275,5 +267,4 @@ describe("renderAssistantRequestFailureCopy", () => {
       renderAssistantRequestFailureCopy({ ...target, reason: "server_error", status: 502 }),
     ).toBe("⚠️ The AI service is having trouble. Please try again in a moment.");
   });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 });

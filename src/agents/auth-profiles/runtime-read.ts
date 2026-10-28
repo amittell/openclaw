@@ -41,43 +41,11 @@ import {
 } from "./sqlite.js";
 import type { AuthProfileStore, AuthProfileRowRead } from "./types.js";
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 export type {
   AuthProfileReadOwner,
   LoadAuthProfileStoreOptions,
   PreparedAuthProfileStoreReads,
 } from "./runtime-read.types.js";
-=======
-export type LoadAuthProfileStoreOptions = {
-  /** Limit a credential-read refusal to the provider being resolved; writes stay owner-wide. */
-  migrationProvider?: string;
-  deferScopedMigrationRefusals?: boolean;
-  onReadOwner?: (owner: AuthProfileReadOwner) => void;
-  /** Materialize only this explicitly selected personal account into the returned view. */
-  profileId?: string;
-  allowKeychainPrompt?: boolean;
-  config?: OpenClawConfig;
-  database?: AuthProfileDatabase;
-  externalCli?: ExternalCliAuthDiscovery;
-  inheritedAuthDir?: string;
-  readOnly?: boolean;
-  syncExternalCli?: boolean;
-  externalCliProviderIds?: Iterable<string>;
-  externalCliProfileIds?: Iterable<string>;
-  // Documented intent flag for callers (e.g. `models auth clean`) that want to
-  // load only the agent-local store without merging main-agent profiles.
-  // loadAuthProfileStoreForAgent is already agent-local (inheritance lives in
-  // loadAuthProfileStoreForRuntime); flag retained for clarity and call-site
-  // documentation.
-  skipInheritance?: boolean;
-};
-
-export type AuthProfileReadOwner = {
-  databasePath: string;
-  candidates: LegacyAuthProfileSource[];
-  readStore: () => AuthProfileStore | null;
-};
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 export function resolveExternalCliOverlayOptions(
   options: LoadAuthProfileStoreOptions | undefined,

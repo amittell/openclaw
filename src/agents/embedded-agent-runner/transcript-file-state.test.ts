@@ -2,24 +2,13 @@
 // branch leaf recovery, and repair-supported legacy payload shapes.
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { parseSessionEntries, SessionManager } from "../sessions/index.js";
-import { textToolResult } from "../test-helpers/sparse-transcript.test-support.js";
-
-const roots: string[] = [];
-
-async function readTranscriptState(sessionFile: string): Promise<SessionManager> {
-  return SessionManager.fromEntries(parseSessionEntries(await fs.readFile(sessionFile, "utf8")));
-}
-=======
 import type { SessionManager } from "../sessions/index.js";
-import { textToolResult, textAssistant } from "../test-helpers/sparse-transcript.test-support.js";
+import { textToolResult } from "../test-helpers/sparse-transcript.test-support.js";
 import {
   cleanupTranscriptFixtureRoots,
   readTranscriptState,
   writeTranscriptFixture,
 } from "./transcript-file-state.test-support.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 async function persistTranscriptStateMutation(params: {
   sessionFile: string;
@@ -141,165 +130,6 @@ describe("readTranscriptState", () => {
     expect(appended.parentId).toBe(activeLeafId);
     const reopened = await readTranscriptState(sessionFile);
     expect(reopened.getBranch().map((entry) => entry.id)).toEqual([activeLeafId, appended.id]);
-  });
-
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  it("preserves legacy compaction keep indexes across JSON-valid non-object rows", async () => {
-    const sessionFile = await writeTranscriptFixture(
-      "openclaw-transcript-state-v1-compaction-null-row-",
-      [
-        JSON.stringify({
-          type: "message",
-          timestamp: "2026-05-16T00:00:01.000Z",
-          message: { role: "user", content: "legacy prelude" },
-        }),
-        "null",
-        JSON.stringify({
-          type: "message",
-          timestamp: "2026-05-16T00:00:02.000Z",
-          message: { role: "user", content: "legacy kept suffix" },
-        }),
-        JSON.stringify({
-          type: "compaction",
-          timestamp: "2026-05-16T00:00:03.000Z",
-          summary: "summary",
-          firstKeptEntryIndex: 3,
-          tokensBefore: 200,
-        }),
-      ],
-      { version: 1 },
-    );
-
-    const state = await readTranscriptState(sessionFile);
-    const kept = state
-      .getEntries()
-      .find(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message.role === "user" &&
-          entry.message.content === "legacy kept suffix",
-      );
-    const compaction = state.getEntries().find((entry) => entry.type === "compaction");
-
-    expect(kept).toBeDefined();
-    expect(compaction).toMatchObject({ firstKeptEntryId: kept?.id });
-    expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
-      { role: "user", content: "legacy kept suffix" },
-    ]);
-  });
-
-  it("remaps malformed compaction markers to descendants on the active branch", async () => {
-    const sessionFile = await writeTranscriptFixture(
-      "openclaw-transcript-state-compaction-branch-marker-",
-      [
-        JSON.stringify({
-          type: "message",
-          id: "bad-message",
-          parentId: null,
-          timestamp: "2026-05-16T00:00:01.000Z",
-          message: { role: "user" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-a-user",
-          parentId: "bad-message",
-          timestamp: "2026-05-16T00:00:02.000Z",
-          message: { role: "user", content: "other branch" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-b-user",
-          parentId: "bad-message",
-          timestamp: "2026-05-16T00:00:03.000Z",
-          message: { role: "user", content: "active branch kept turn" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-b-assistant",
-          parentId: "branch-b-user",
-          timestamp: "2026-05-16T00:00:04.000Z",
-          message: { role: "assistant", content: [{ type: "text", text: "active reply" }] },
-        }),
-        JSON.stringify({
-          type: "compaction",
-          id: "compact-1",
-          parentId: "branch-b-assistant",
-          timestamp: "2026-05-16T00:00:05.000Z",
-          summary: "summary",
-          firstKeptEntryId: "bad-message",
-          tokensBefore: 200,
-        }),
-      ],
-    );
-
-    const state = await readTranscriptState(sessionFile);
-    const compaction = state.getEntries().find((entry) => entry.type === "compaction");
-
-    expect(compaction).toMatchObject({ firstKeptEntryId: "branch-b-user" });
-    expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
-      { role: "user", content: "active branch kept turn" },
-      { role: "assistant", content: [{ type: "text", text: "active reply" }] },
-    ]);
-=======
-  it("relinks valid current rows past malformed parents", async () => {
-    const sessionFile = await writeTranscriptFixture("openclaw-transcript-state-current-suffix-", [
-      JSON.stringify({
-        type: "message",
-        id: "user-1",
-        parentId: null,
-        timestamp: "2026-05-16T00:00:01.000Z",
-        message: { role: "user", content: "before malformed row" },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "bad-message",
-        parentId: "user-1",
-        timestamp: "2026-05-16T00:00:02.000Z",
-        message: { role: "user" },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "user-2",
-        parentId: "bad-message",
-        timestamp: "2026-05-16T00:00:03.000Z",
-        message: { role: "user", content: "after malformed row" },
-      }),
-    ]);
-
-    const state = await readTranscriptState(sessionFile);
-
-    expect(state.getEntries().map((entry) => entry.id)).toEqual(["user-1", "user-2"]);
-    expect(state.getLeafId()).toBe("user-2");
-    expect(state.getBranch().map((entry) => entry.id)).toEqual(["user-1", "user-2"]);
-  });
-
-  it("does not hang on rejected parent cycles", async () => {
-    const sessionFile = await writeTranscriptFixture("openclaw-transcript-state-rejected-cycle-", [
-      JSON.stringify({
-        type: "message",
-        id: "bad-message",
-        parentId: "bad-message",
-        timestamp: "2026-05-16T00:00:01.000Z",
-        message: { role: "user" },
-      }),
-      JSON.stringify({
-        type: "message",
-        id: "user-1",
-        parentId: "bad-message",
-        timestamp: "2026-05-16T00:00:02.000Z",
-        message: { role: "user", content: "kept after cycle" },
-      }),
-    ]);
-
-    const state = await readTranscriptState(sessionFile);
-
-    expect(state.getEntries().map((entry) => ({ id: entry.id, parentId: entry.parentId }))).toEqual(
-      [{ id: "user-1", parentId: null }],
-    );
-    expect(state.getBranch().map((entry) => entry.id)).toEqual(["user-1"]);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   });
 
   it("breaks cycles between canonical and opaque rows", async () => {

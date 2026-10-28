@@ -58,15 +58,7 @@ To reduce that, OpenClaw treats the auth profile store as a **token sink**:
 - the runtime reads credentials from one place per agent
 - multiple profiles can coexist and route by fixed rules
 - external CLI reuse is provider-specific: once OpenClaw owns a local OAuth
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   profile for a provider, the local refresh token is the source of truth. If that local
-  refresh token is rejected, OpenClaw reports the profile for
-  re-authentication instead of falling back to external CLI token material.
-  Codex CLI bootstrap is narrower still: it can only seed an empty
-  `openai:default`-style profile before OpenClaw owns OAuth for that
-  provider; after that, OpenClaw-owned refreshes stay the source of truth
-=======
-  profile for a provider, the local refresh token is canonical. If that local
   refresh token is rejected permanently, OpenClaw retains its fingerprint and
   reports the profile for re-authentication. The narrow Codex CLI recovery
   exception can re-seed that exact rejected profile from a different usable
@@ -75,8 +67,7 @@ To reduce that, OpenClaw treats the auth profile store as a **token sink**:
   account, or the same rejected grant stays blocked and
   requires re-authentication. Before OpenClaw owns OAuth, Codex CLI bootstrap
   can seed an empty `openai:default`-style profile; after that, OpenClaw-owned
-  refreshes stay canonical
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+  refreshes stay the source of truth
 - status/startup paths scope external CLI discovery to the provider set
   already configured, so an unrelated CLI login store is not checked for a
   single-provider setup

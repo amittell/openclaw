@@ -45,13 +45,8 @@ vi.mock("./doctor.js", () => ({
   formatAuthDoctorHint: async () => undefined,
 }));
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 vi.mock("./external-cli-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./external-cli-sync.js")>()),
-=======
-// mock-isolation: Host CLI credential files and env-backed tokens must not leak into OAuth store tests.
-vi.mock("./external-cli-sync.js", () => ({
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   areOAuthCredentialsEquivalent: (a: unknown, b: unknown) => a === b,
   hasUsableOAuthCredential: (credential: OAuthCredential | undefined, now = Date.now()) =>
     credential?.type === "oauth" &&
@@ -64,15 +59,10 @@ vi.mock("./external-cli-sync.js", () => ({
     params.credential.authFlow === "external-cli",
   readExternalCliBootstrapCredential: () => null,
   resolveExternalCliAuthProfiles: () => [],
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  shouldBootstrapFromExternalCliCredential: () => false,
-  // external-auth.ts reaches into this module for the fork's env-token sync. A
-  // factory mock must declare every member the code under test touches - vitest
-  // throws on the property ACCESS, so the `?.` at that call site does not save
-  // it. Identity is the real function's no-op result: the store unchanged.
+  // external-auth.ts runs the fork's env-token sync through this module. Keep it
+  // inert so host env-backed tokens cannot leak into OAuth store tests; identity
+  // matches the real function's no-change result at that call site (`?? store`).
   syncEnvBackedTokenCredentials: (store: unknown) => store,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 }));
 
 afterAll(() => {

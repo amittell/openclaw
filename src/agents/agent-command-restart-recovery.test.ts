@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   mergeRestartRecoveryTerminalDeliveryEvidence,
 } from "../config/sessions/restart-recovery-state.js";
-=======
-import { getRestartRecoveryTerminalDeliveryEvidence } from "../config/sessions/restart-recovery-state.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   buildCurrentRunRestartRecoveryClaim,
   buildRestartRecoveryTerminalDeliveryEvidence,

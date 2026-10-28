@@ -227,23 +227,6 @@ export async function updateSessionStoreAfterAgentRun(params: {
       }
       const patch: Partial<SessionEntry> = preserveUserFacingRunState
         ? metadataPatch
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-        : projectSessionSnapshotChanges({
-            initial: entry,
-            next,
-            current: currentEntry,
-            reassertAbortedLastRun: result.meta.aborted === true,
-          });
-      if (!preserveUserFacingRunState) {
-        Object.assign(
-          patch,
-          buildMainSessionRecoveryAfterAgentRunPatch(
-            { ...currentEntry, ...patch },
-            params.clearRestartRecoveryForceSafeTools,
-          ),
-        );
-      }
-=======
         : {
             ...projectSessionSnapshotChanges({
               initial: entry,
@@ -255,7 +238,15 @@ export async function updateSessionStoreAfterAgentRun(params: {
             // fields under its snapshot; its final accounting supersedes them.
             ...contextSnapshot,
           };
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+      if (!preserveUserFacingRunState) {
+        Object.assign(
+          patch,
+          buildMainSessionRecoveryAfterAgentRunPatch(
+            { ...currentEntry, ...patch },
+            params.clearRestartRecoveryForceSafeTools,
+          ),
+        );
+      }
       if (touchActivity && !preserveUserFacingRunState && currentEntry.snoozedUntil !== undefined) {
         // Clear the current snooze, including one set while this run was in flight.
         patch.snoozedUntil = undefined;

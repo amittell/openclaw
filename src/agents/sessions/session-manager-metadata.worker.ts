@@ -199,36 +199,7 @@ export function bindSqliteWorkerBackend(
       command.type === "session.metadata.append"
         ? prepareSessionMetadataAppend(context.database, command.input)
         : undefined;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     const event = prepared?.event;
-=======
-    let prepared: PreparedTranscriptMessageAppend<SessionMessageEntry["message"]> | undefined;
-    if (command.type === "session.metadata.append" && event?.type === "message") {
-      const { message } = command.input;
-      if (!message) {
-        throw new Error("Session message append requires prepared storage bytes");
-      }
-      const { message: _message, ...envelope } = event;
-      const eventJson = `${JSON.stringify(envelope).slice(0, -1)},"message":${message.messageJson}}`;
-      prepared = {
-        messageJson: message.messageJson,
-        persistedMessage: event.message,
-        physicalPayload: prepareTranscriptPayloadForReuse(context.database, eventJson, event),
-      };
-      if (message.validateTurn) {
-        const mutationAt = validatePreparedAssistantAppendSync(
-          scope,
-          event.parentId,
-          command.input.view?.admission?.entryId,
-          command.input.view?.questionAnswers,
-        );
-        if (mutationAt === undefined) {
-          throw new SqliteTranscriptMutationConflictError(scope.sessionId);
-        }
-        command.input.options.expectedMutationAt = mutationAt;
-      }
-    }
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     const messageControl =
       command.type === "session.metadata.append" ? command.input.message : undefined;
     const result = runWithMetadataMessageAdmission(

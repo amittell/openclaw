@@ -32,9 +32,6 @@ type LeafControlSelection = {
 };
 
 export class SessionManagerEntries extends SessionManagerAppend {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  private createEntry<T extends { type: SessionEntry["type"] }>(data: T, timestamp = Date.now()) {
-=======
   // Set per run from the registered tool set; every context build in that run must
   // render the same checkpoint bytes or the provider prompt cache breaks each turn.
   private checkpointHandleFormatter: BuildSessionContextOptions["formatCheckpointHandle"];
@@ -44,8 +41,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
   ): void {
     this.checkpointHandleFormatter = formatter;
   }
-  private createEntry<T extends { type: SessionEntry["type"] }>(data: T) {
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+  private createEntry<T extends { type: SessionEntry["type"] }>(data: T, timestamp = Date.now()) {
     return {
       ...data,
       id: generateSessionEntryId(),

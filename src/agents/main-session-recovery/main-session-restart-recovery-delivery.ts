@@ -1,15 +1,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type { SessionEntry } from "../../config/sessions.js";
+import type { MainRestartRecoveryCause, SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
-=======
-import type { MainRestartRecoveryCause, SessionEntry } from "../../config/sessions.js";
-import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isTrustedMessageActionTurnIngress } from "../../gateway/message-action-turn-capability.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
@@ -183,13 +178,9 @@ const RESUMED_NOTICE =
 
 export async function announceRestartRecoveryResumption(
   params: RestartRecoveryDeliveryScope & {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-    gatewayRuntime: GatewayRecoveryRuntime;
-    isCurrent?: (cfg?: OpenClawConfig) => boolean;
-=======
     cause?: MainRestartRecoveryCause;
     gatewayRuntime: GatewayRecoveryRuntime;
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+    isCurrent?: (cfg?: OpenClawConfig) => boolean;
   },
 ): Promise<void> {
   let prepared: Awaited<ReturnType<typeof prepareRestartRecoveryDeliveryCurrent>> | undefined;

@@ -86,7 +86,7 @@ export function createMutableEmbeddedRunAuthController(params: {
     attemptedThinking: new Set(),
     fallbackConfigured: params.fallbackConfigured ?? false,
     allowTransientCooldownProbe: params.allowTransientCooldownProbe ?? false,
-    provider: "custom-openai",
+    provider: params.harness.models.runtime.provider,
     modelId: "test-model",
     state: params.harness,
     ...(params.prepareModelForAuthProfile

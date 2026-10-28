@@ -97,6 +97,7 @@ describe("runtime context prompt submission", () => {
     (promptJoiner) => {
       const context = {
         text: "History\n\n#42:",
+        carrierText: "History\n\n#42:",
         resumableText: "#42:",
         promptJoiner,
       };
@@ -119,6 +120,7 @@ describe("runtime context prompt submission", () => {
         kind: "runtime-instruction",
         text: "Use the selected item.",
       });
+      expect(added.carrierText).toBe("History\n\n#42:\n\nUse the selected item.");
       expect(context.text).toBe("History\n\n#42:");
     },
   );

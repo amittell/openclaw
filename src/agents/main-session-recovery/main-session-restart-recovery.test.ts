@@ -4429,13 +4429,9 @@ describe("main-session-restart-recovery", () => {
       ],
       safeTools: "required",
       promptIncludes: [
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-        "interrupted while OpenClaw was waiting",
-=======
         // Fork: a recorded gateway restart names its cause (main-session-restart-dispatch.ts) instead of
-        // upstream's cause-neutral "Gateway restart or a tool execution timeout" note.
+        // upstream's cause-neutral "interrupted while OpenClaw was waiting" opening.
         "interrupted by a gateway restart",
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         "marked interrupted, missing, or aborted",
         "unknown outcome",
         "not proof of tool failure",

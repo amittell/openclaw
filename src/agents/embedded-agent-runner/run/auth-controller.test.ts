@@ -41,107 +41,11 @@ vi.mock("../../model-auth.js", async () => {
 
 import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.js";
 import {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  createEmbeddedRunAuthController,
-  resolveEmbeddedAuthCooldownProbePolicy,
-  type EmbeddedRunAuthState,
-} from "./auth-controller.js";
-
-function createTestModel(): Model {
-  return {
-    id: "test-model",
-    name: "test-model",
-    provider: "custom-openai",
-    api: "openai-responses",
-    baseUrl: "https://old.example.com/v1",
-    headers: {
-      Authorization: "Bearer stale-token",
-    },
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 8_000,
-    maxTokens: 4_000,
-  } as Model;
-}
-
-function getRuntimeAuthSnapshot(
-  state: RuntimeAuthState | null,
-): Pick<RuntimeAuthState, "profileId" | "refreshInFlight"> | null {
-  return state ? { profileId: state.profileId, refreshInFlight: state.refreshInFlight } : null;
-}
-
-type RuntimeApiKeySetter = Mock<(provider: string, apiKey: string) => void>;
-
-function expectProtectedRuntimeValue(value: string | undefined, plaintext: string): void {
-  expect(value).not.toBe(plaintext);
-  expect(looksLikeSecretSentinel(value ?? "")).toBe(true);
-  expect(resolveSecretSentinel(value ?? "")).toBe(plaintext);
-}
-
-function createMutableAuthControllerHarness(): EmbeddedRunAuthState {
-  return {
-    models: { runtime: createTestModel(), effective: createTestModel() },
-    apiKeyInfo: null,
-    lastProfileId: undefined,
-    runtimeAuthState: null,
-    runtimeAuthRefreshCancelled: false,
-    profileIndex: 0,
-    thinkLevel: "medium",
-  };
-}
-
-function createMutableEmbeddedRunAuthController(params: {
-  harness: EmbeddedRunAuthState;
-  setRuntimeApiKey: RuntimeApiKeySetter;
-  profileCandidates?: Array<string | undefined>;
-  authStore?: AuthProfileStore;
-  fallbackConfigured?: boolean;
-  lockedProfileId?: string;
-  allowTransientCooldownProbe?: boolean;
-  warn?: (message: string) => void;
-  agentDir?: string;
-  prepareModelForAuthProfile?: Parameters<
-    typeof createEmbeddedRunAuthController
-  >[0]["prepareModelForAuthProfile"];
-}) {
-  return createEmbeddedRunAuthController({
-    config: undefined,
-    agentDir: params.agentDir ?? "/tmp/agent",
-    workspaceDir: "/tmp/workspace",
-    authStore:
-      params.authStore ??
-      ({
-        version: 1,
-        profiles: {},
-      } as AuthProfileStore),
-    authStorage: { setRuntimeApiKey: params.setRuntimeApiKey },
-    profileCandidates: params.profileCandidates ?? ["default"],
-    lockedProfileId: params.lockedProfileId,
-    initialThinkLevel: "medium",
-    attemptedThinking: new Set(),
-    fallbackConfigured: params.fallbackConfigured ?? false,
-    allowTransientCooldownProbe: params.allowTransientCooldownProbe ?? false,
-    provider: params.harness.models.runtime.provider,
-    modelId: "test-model",
-    state: params.harness,
-    ...(params.prepareModelForAuthProfile
-      ? { prepareModelForAuthProfile: params.prepareModelForAuthProfile }
-      : {}),
-    log: {
-      debug: () => undefined,
-      info: () => undefined,
-      warn: params.warn ?? (() => undefined),
-    },
-  });
-}
-=======
   createMutableAuthControllerHarness,
   createMutableEmbeddedRunAuthController,
   createTestModel,
   expectProtectedRuntimeValue,
 } from "./auth-controller.test-support.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 describe("createEmbeddedRunAuthController", () => {
   beforeEach(() => {

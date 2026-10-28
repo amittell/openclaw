@@ -56,10 +56,14 @@ export function appendCurrentInboundContext(
   const inline = context?.promptJoiner === " ";
   const append = (text?: string) =>
     (inline ? [legacyText, text] : [text, legacyText]).filter(Boolean).join("\n\n");
+  // The carrier is rendered without a joiner, so its additions keep paragraph order.
+  const appendCarrier = (text: string) => [text, legacyText].filter(Boolean).join("\n\n");
   return {
     ...context,
     text: append(context?.text),
-    ...(context?.carrierText !== undefined ? { carrierText: append(context.carrierText) } : {}),
+    ...(context?.carrierText !== undefined
+      ? { carrierText: appendCarrier(context.carrierText) }
+      : {}),
     ...(context?.resumableText !== undefined
       ? { resumableText: append(context.resumableText) }
       : {}),

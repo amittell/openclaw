@@ -18,16 +18,12 @@ import {
   pickFallbackThinkingLevel,
 } from "../../embedded-agent-helpers.js";
 import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assistant-message-failures.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import {
   FailoverError,
   recordModelFallbackStop,
   resolveFailoverStatus,
 } from "../../failover-error.js";
-=======
-import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
 import { isPreDispatchToolCallRejectionMessage } from "../../failover/message-patterns.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import {
   classifyRateLimitWindow,

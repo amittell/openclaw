@@ -489,20 +489,6 @@ export function createEmbeddedRunAuthController(params: {
     forceRefresh = false,
   ): Promise<void> => {
     const preparedModel = await params.prepareModelForAuthProfile?.(candidate, attemptIndex);
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-    const apiKeyInfo = await getApiKeyForModelCore({
-      model: preparedModel?.runtimeModel ?? state.models.runtime,
-      cfg: params.config,
-      profileId: candidate,
-      store: params.authStore,
-      agentDir: params.agentDir,
-      workspaceDir: params.workspaceDir,
-      lockedProfile: forceRefresh || (candidate != null && candidate === params.lockedProfileId),
-      forceRefresh,
-      allowAuthProfileFallback: preparedModel?.allowAuthProfileFallback,
-      secretSentinels: true,
-    });
-=======
     const resolutionModel = preparedModel?.runtimeModel ?? state.models.runtime;
     // Hard-deadline credential resolution: a wedged keychain/OAuth call here
     // blocks every later model turn awaiting the same single-flight, which
@@ -515,13 +501,13 @@ export function createEmbeddedRunAuthController(params: {
         store: params.authStore,
         agentDir: params.agentDir,
         workspaceDir: params.workspaceDir,
-        lockedProfile: candidate != null && candidate === params.lockedProfileId,
+        lockedProfile: forceRefresh || (candidate != null && candidate === params.lockedProfileId),
+        forceRefresh,
         allowAuthProfileFallback: preparedModel?.allowAuthProfileFallback,
         secretSentinels: true,
       }),
       `${resolutionModel.provider} credential resolution`,
     );
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     if (
       preparedModel?.authRequirement &&
       !providerModelRouteAcceptsAuthMode({
