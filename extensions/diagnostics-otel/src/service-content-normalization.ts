@@ -122,7 +122,9 @@ function redactWindow(
   return {
     text: `${beforeSecret}${OPEN_SECRET_MASK}${openSecret.closing}`,
     clipped: true,
-    settled: true,
+    // Earlier masks can move a partial registered value into the export. Keep
+    // its lookahead reserve until the value is complete.
+    settled: getLongestRegisteredSecretLength() === 0,
   };
 }
 

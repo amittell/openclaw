@@ -32,4 +32,32 @@ describe("diagnostics-otel export of a registered value that reads as an open se
       expect(exported).toContain("oooo");
     },
   );
+
+  it.each([false, true])(
+    "keeps registered prefixes masked after earlier masks shrink the export, registered=%s",
+    (registered) => {
+      if (registered) {
+        registerSecretValueForRedaction(REGISTERED);
+      }
+      // Five synthetic tokens shrink 4,980 input characters to 60. The first
+      // window contains only the first 40 characters of the registered value;
+      // that partial value moves inside the export after the earlier masks.
+      const head = `${Array.from({ length: 5 }, () => `sk-${"A1b2C3d4".repeat(124)}`).join(" ")} `;
+      const text = `${head}${"x".repeat(8152 - head.length)}${REGISTERED}${"z".repeat(100_000)}`;
+
+      const exported = normalizeOtelLogString(text, MAX_OTEL_LOG_BODY_CHARS);
+
+      expect(exported.length).toBeLessThanOrEqual(
+        MAX_OTEL_LOG_BODY_CHARS + "...(truncated)".length,
+      );
+      expect(exported).toContain("x".repeat(100));
+      if (registered) {
+        expect(exported).not.toContain("private-prefix");
+        expect(exported).toContain("synthe…alue");
+      } else {
+        // This prefix is ordinary content when it has not been registered.
+        expect(exported).toContain("private-prefix");
+      }
+    },
+  );
 });
