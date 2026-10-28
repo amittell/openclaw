@@ -3751,6 +3751,8 @@ previous one, so each carry is a squash of the previous fork tip onto the tag (a
 | porting notes for the 10.6 and 10.7 carries                                | `a9baeb4e4d3`  |
 | diagnostic: name the integrity condition that refuses a direct reader (#1) | `676c2e35a57`  |
 | `intent` for non-owner turns adopted from 10.7 (Alex's ruling, #3)         | `7ba03bd5ebd`  |
+| porting notes: intent, diagnostic, deploy state                            | `e97eba53bd3`  |
+| upstream #138415 carried in full at the fork's feedback sizing (room #259) | `9cf2e71d2f9`  |
 
 ## Method
 
@@ -3771,6 +3773,8 @@ the carry, the bare tag, and the previous carry.
   `qualityDegraded` provenance on `compactionResult`, and the `quality_guard_degraded_fallback` path (now with a
   best summary across attempts).
 - Still not in either tag: #174884 (merged to main 10-18), #138415 (merged to main 10-23 02:54Z), #178677.
+  The carry has #174884 in full (22/22 added lines, measured in room #259) and #138415 in full since
+  `9cf2e71d2f9` (below).
 
 ## Divergences kept
 
@@ -3796,6 +3800,12 @@ the carry, the bare tag, and the previous carry.
   `ownerOnly` registration for `intent` are gone; plugin `ownerOnly` stays for other plugin tools), and
   `owner-only-tool-stubs.test.ts` uses a synthetic `plugin_owner_only_probe` as its plugin stand-in
   (`7ba03bd5ebd`).
+- **#138415 at the fork's sizing** (Alex, room #259 and this carry's question tool, 2026-10-27):
+  `missingIdentifierAuditReasons()` is byte-identical to upstream's merged `e44fb5c340bf`. The fork keeps its
+  identifier budget, `MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS - 800` (7200), because its defect list travels in
+  the 8000-char `wrapUntrustedQualityFeedbackBlock`. Upstream uses `MAX_UNTRUSTED_INSTRUCTION_CHARS - 600`
+  (3400) for its 4000-char block. Upstream's docs paragraph and final test cases are carried, sized to 7200/800.
+  Setting the budget to upstream's fails exactly the two sizing cases.
 - **Integrity-refusal diagnostic (fork-only, #1):** `assertSource` logs which condition refused a direct
   shared-state reader before it throws the unchanged error (`676c2e35a57`; `openclaw-state-db-direct-reader-refusal.ts`).
 
