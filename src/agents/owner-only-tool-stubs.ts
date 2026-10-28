@@ -162,3 +162,21 @@ export function restoreOwnerOnlyToolShape(params: {
   }
   return shaped;
 }
+
+/**
+ * A plugin tool registered owner-only: the owner gets it, a non-owner turn gets its refusing
+ * stub, and a turn with no known sender gets nothing, as the factory's null used to give it.
+ */
+export function gateOwnerOnlyPluginTool(
+  entry: { ownerOnly?: true },
+  tool: AnyAgentTool,
+  factoryContext: { senderIsOwner?: boolean },
+  context: { sessionKey?: string },
+): AnyAgentTool | undefined {
+  if (!entry.ownerOnly || factoryContext.senderIsOwner === true) {
+    return tool;
+  }
+  return factoryContext.senderIsOwner === false
+    ? createOwnerOnlyToolStub(tool, { sessionKey: context.sessionKey })
+    : undefined;
+}

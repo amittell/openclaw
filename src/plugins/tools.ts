@@ -1,7 +1,7 @@
 /** Builds agent tools registered by plugins, preserving plugin scope around callbacks and descriptors. */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { compileGlobPatterns, matchesAnyGlobPattern } from "../agents/glob-pattern.js";
-import { createOwnerOnlyToolStub } from "../agents/owner-only-tool-stubs.js";
+import { gateOwnerOnlyPluginTool } from "../agents/owner-only-tool-stubs.js";
 import { normalizeToolPolicyName } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import { captureAgentWorkspaceReadiness } from "../agents/workspace-readiness.js";
@@ -699,16 +699,10 @@ function* resolvePluginToolsFromRegistry(
           reportError(entry, `plugin tool is malformed (${entry.pluginId}): ${inspected.error}`);
           continue;
         }
-        // Owner-only tools keep their declaration on a non-owner turn but can never run;
-        // without a known sender they stay absent, as the factory's null used to make them.
-        const senderIsOwner = factoryContext.senderIsOwner;
-        if (entry.ownerOnly && senderIsOwner === undefined) {
+        const tool = gateOwnerOnlyPluginTool(entry, inspected.tool, factoryContext, params.context);
+        if (!tool) {
           continue;
         }
-        const tool =
-          entry.ownerOnly && senderIsOwner === false
-            ? createOwnerOnlyToolStub(inspected.tool, { sessionKey: params.context.sessionKey })
-            : inspected.tool;
         if (entry.declaredNames && !entry.declaredNames.has(toolName)) {
           const message = `plugin tool is undeclared (${entry.pluginId}): ${toolName}`;
           reportError(entry, message);

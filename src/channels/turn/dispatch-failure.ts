@@ -8,7 +8,12 @@
 import type { DispatchFromConfigResult } from "../../auto-reply/reply/dispatch-from-config.types.js";
 import { toErrorObject } from "../../infra/errors.js";
 import { recordAgentRunTerminalOutcome } from "./agent-run-terminal-outcome.js";
-import { failureAlreadyDeliveredVisible } from "./delivery-visibility.js";
+import {
+  type AnyChannelDeliveryAdapter,
+  CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
+  deliverChannelTurnDispatchFallback,
+  failureAlreadyDeliveredVisible,
+} from "./delivery-visibility.js";
 import { hasVisibleChannelTurnDispatch } from "./dispatch-result.js";
 import type { ChannelTurnDispatchResultLike } from "./dispatch-result.js";
 import { throwIfDurableInboundReplyDeliveryFailed } from "./durable-delivery.js";
@@ -66,6 +71,24 @@ export function shouldDeliverDispatchFailureFallback(
     );
   }
   return false;
+}
+
+/** Delivers the visible non-outcome fallback when it is owed; the dispatch error is kept. */
+export async function deliverDispatchFailureFallbackIfNeeded(
+  turn: Pick<AssembledChannelTurn, "admission" | "ctxPayload">,
+  delivery: AnyChannelDeliveryAdapter,
+  outcome: Parameters<typeof shouldDeliverDispatchFailureFallback>[1],
+): Promise<void> {
+  if (!shouldDeliverDispatchFailureFallback(turn, outcome)) {
+    return;
+  }
+  try {
+    await deliverChannelTurnDispatchFallback(delivery, {
+      text: CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
+    });
+  } catch {
+    // Preserve the original dispatch error.
+  }
 }
 
 /**

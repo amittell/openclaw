@@ -135,16 +135,10 @@ vi.mock("../logging/subsystem.js", () => ({
   })),
 }));
 
-const serverClose = await import("./server-close.js");
-const { resetGatewayShuttingDownForTest } = serverClose;
-const closeGateway = createGatewayCloseTestHandlerFactory(serverClose);
+const closeGateway = createGatewayCloseTestHandlerFactory(await import("./server-close.js"));
 const { createChatRunState, isChatAbortMarkerCurrent } = await import("./server-chat-state.js");
-const {
-  finishGatewayRestartTrace,
-  formatGatewayPendingCloseSteps,
-  resetGatewayRestartTraceForTest,
-  startGatewayRestartTrace,
-} = await import("./restart-trace.js");
+const { finishGatewayRestartTrace, formatGatewayPendingCloseSteps, startGatewayRestartTrace } =
+  await import("./restart-trace.js");
 type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
 type MarkMainSessionsAbortedForRestart = NonNullable<
   GatewayCloseParams["markMainSessionsAbortedForRestart"]
@@ -221,8 +215,6 @@ describe("createGatewayCloseHandler", () => {
     resetPluginRuntimeStateForTest();
     memorySessionActorOwners.reset();
     vi.useRealTimers();
-    resetGatewayRestartTraceForTest();
-    resetGatewayShuttingDownForTest();
     if (originalRestartTraceEnv === undefined) {
       delete process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
     } else {

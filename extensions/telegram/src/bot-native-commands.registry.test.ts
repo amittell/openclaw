@@ -339,10 +339,7 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
       }),
     ).toEqual({ ok: true });
 
-    registerTelegramNativeCommands({
-      ...createNativeCommandTestParams({}),
-      bot,
-    });
+    await registerTelegramNativeCommands({ ...createNativeCommandTestParams({}), bot });
 
     const registeredCommands = await waitForRegisteredCommands(setMyCommands);
 

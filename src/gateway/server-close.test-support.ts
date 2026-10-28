@@ -1,5 +1,7 @@
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
+import { resetGatewayShuttingDownForTest } from "./gateway-shutdown-state.js";
+import { resetGatewayRestartTraceForTest } from "./restart-trace.js";
 import { createChatRunState } from "./server-chat-state.js";
 import type {
   GatewayCloseParams as GatewayTeardownParams,
@@ -18,6 +20,14 @@ type GatewayCloseFixtureMocks = Pick<
   drainRetainedEmbeddingProviders: GatewayCloseParams["drainRetainedOpenAiEmbeddingProviders"];
 };
 type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
+
+// Fork: a close marks the process-global shutdown state (gateway-shutdown-state.ts) and
+// may leave a restart trace open. Every close suite that imports this fixture registers
+// this reset, so its next case, and the next file in a shared worker, starts clean.
+afterEach(() => {
+  resetGatewayRestartTraceForTest();
+  resetGatewayShuttingDownForTest();
+});
 
 export function createGatewayCloseTestHandlerFactory({
   prepareGatewayClose,

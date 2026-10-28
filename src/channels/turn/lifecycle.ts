@@ -46,8 +46,6 @@ import {
 } from "./delivery-result.js";
 import {
   type AnyChannelDeliveryAdapter,
-  CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
-  deliverChannelTurnDispatchFallback,
   markChannelDeliveryErrorVisible,
 } from "./delivery-visibility.js";
 import {
@@ -58,7 +56,7 @@ import {
   toCoreManagedDeliveryInfo,
 } from "./direct-delivery-custody.js";
 import {
-  shouldDeliverDispatchFailureFallback,
+  deliverDispatchFailureFallbackIfNeeded,
   throwIfTerminalDurableDeliveryFailed,
   toSurfacedDispatchError,
 } from "./dispatch-failure.js";
@@ -696,20 +694,11 @@ async function dispatchChannelTurnWithDeliveryOwner(
         }
         // Visible non-outcome (Bug 2): a failed user-visible turn with nothing
         // visible settled still ends in a visible outcome before rethrowing.
-        const fallbackNeeded = shouldDeliverDispatchFailureFallback(params, {
+        await deliverDispatchFailureFallbackIfNeeded(params, delivery, {
           dispatchError,
           dispatchResult,
           settlementError,
         });
-        if (fallbackNeeded) {
-          try {
-            await deliverChannelTurnDispatchFallback(delivery, {
-              text: CHANNEL_TURN_DISPATCH_FALLBACK_TEXT,
-            });
-          } catch {
-            // Preserve the original dispatch error.
-          }
-        }
         if (dispatchError !== undefined) {
           throw toSurfacedDispatchError(dispatchError);
         }

@@ -47,6 +47,7 @@ import {
   finalizeAcceptedChatSendMessageInjection,
   settleChatSendMessageInjection,
 } from "./chat-send-message-injection.js";
+import { createProviderLoginAuthorityAssertion } from "./chat-send-provider-login-authority.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
 import { createChatSendReplyDispatch } from "./chat-send-reply-dispatch.js";
 import { finalizeChatSendDispatchedReplies } from "./chat-send-reply-finalization.js";
@@ -424,12 +425,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 onTranscriptStartPreparation: () => diagnostics.scope("snapshot")?.finish,
                 abortSignal: activeRunAbort.controller.signal,
                 getProviderLoginConfig: context.getRuntimeConfig,
-                assertProviderLoginAuthority: () => {
-                  client?.connectionSignal?.throwIfAborted();
-                  if (client?.invalidated || !client?.connect.scopes?.includes("operator.admin")) {
-                    throw new Error("Provider login authority is no longer active.");
-                  }
-                },
+                assertProviderLoginAuthority: createProviderLoginAuthorityAssertion(client),
                 // Retain this input identity while followup/collect owns its execution.
                 onFollowupQueueDisposition: queuedFollowup.onQueueDisposition,
                 onQueuedFollowupReplyBatch: queuedFollowup.onQueuedFollowupReplyBatch,
