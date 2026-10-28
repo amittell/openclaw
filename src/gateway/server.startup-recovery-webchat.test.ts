@@ -85,8 +85,11 @@ it(
     const readRecoveryPrompt = (payload: string) => {
       const prompts = readPromptFrames(payload).filter(
         (text) =>
-          text.includes("Your previous turn was interrupted while OpenClaw was waiting") &&
-          text.includes("Unfinished child sessions to reconcile:"),
+          // Fork: after a recorded Gateway restart the resume prompt names its cause
+          // (main-session-restart-dispatch.ts) instead of upstream's cause-neutral opening.
+          text.includes(
+            "Your previous turn was interrupted by a gateway restart while OpenClaw was waiting",
+          ) && text.includes("Unfinished child sessions to reconcile:"),
       );
       expect(prompts).toHaveLength(1);
       return prompts[0] ?? "";
