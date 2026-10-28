@@ -3917,3 +3917,111 @@ and stays gated on #5 (a forge-CI build on the arm64 lane, proven against a bot'
       upstream expects the cause-neutral recovery note, but after a recorded Gateway restart the fork names the cause
       (`7bb739a7242`). Both are pinned to the fork's wording (`f7fb7ed55db`, `f71bbed49eb`): 154/154 and 1/1, twice
       each. 7bb739a7242's own qualification did not re-run either file.
+
+# Carrying onto v2026.10.10-beta.4 (2026-10-28, sessions 68acf50e and 6da8934d)
+
+Alex's rulings (alexm/openclaw room #277): carry onto `v2026.10.10-beta.4` now instead of deploying the 10.8 carry,
+and build the bot dist through CI on mega-mini (#5). Every 10.8 deferral under PROXY-RULING #269 is native in beta.4,
+so this carry replaces those backports. The squash was a 3-way merge with base `v2026.10.8`: 110 content conflicts,
+6 add/add, 1 modify/delete. The Air and the M4 resolved disjoint file sets and pushed fast-forwards to
+`wip/beta4-carry` in turn.
+
+| step                                                                           | commit        |
+| ------------------------------------------------------------------------------ | ------------- |
+| v2026.10.10-beta.4^{commit} (10-26; merge-base with 10.8 is `3dac10b9`, 10-09) | `5a94eab2146` |
+| WIP squash of `upgrade-v2026.10.8` (`eb8762e1109`): 117 conflicted files       | `5ea7b9585cc` |
+| state: beta.4's read connection; the fork's #1 diagnostic dropped (M4)         | `dbace93fec4` |
+| compaction (Air)                                                               | `5f12ad29984` |
+| gateway, auto-reply, config, plugins, cli, logging: 41 files (M4)              | `f33f1417f3b` |
+| auth, failover, sessions, restart recovery (Air)                               | `5aa08da5fd6` |
+| config-reload #89526, transcript grounding, gateway close, cron, ingress (M4)  | `13dc53311ee` |
+| tools, runner, tool docs (Air)                                                 | `830b0bb7b43` |
+| cron attribution, compaction-span visibility, tests, baselines (M4); 0 markers | `6fbe0ac5c1b` |
+
+## Native on beta.4 (fork copies dropped)
+
+- **#169584 (`d502f1aac87a`):** beta.4 deletes the direct shared-state reader and its "requires current integrity
+  admission" throw. The fork's #1 diagnostic, its test and its `wrapper-components.txt` line are dropped as
+  superseded.
+- **#130393 (`83b5f5425eab`) and #138416 (`a5a92cd2231b`):** the fork carried older revisions of both. The
+  safeguard's structure, fit and degrade logic, agent-core `compaction.ts` and `compaction-details.ts`, the six
+  compaction tests and the three compaction docs are all beta.4's. The 10.8 line's `compaction-suffix.ts` is deleted.
+  Upstream's `degrade(...)` commits a `qualityDegraded` summary on exhausted checks, which covers the fork's #722
+  divergence.
+- **#158161 (`177b090d8f4a`):** replaces the fork's port `57d604fb5ce`.
+  `classify.legacy-provider-predicates.test.ts` is beta.4's.
+- **#169306 (`e353566c506d`):** replaces the fork's pull-forward. `session-manager-append-custody.ts` is deleted,
+  and `session-manager-persistence.ts` and `-metadata.worker.ts` are beta.4's.
+- **#169237:** supersedes the fork's double-redaction replay helper (#169154). The fork's `conformance.redaction-replay`
+  test stays as the check.
+- **#168169 and #169237:** FrenChat prompt-cache drop causes 1 and 4. Native; nothing was carried for them.
+
+## Still carried (not in beta.4: ancestry and the `(#N)` subject grep both negative)
+
+- **#174884 (`fbe01bba4ae8`):** 41/41 substantive added lines present at `6fbe0ac5c1b`; bare beta.4 has 10/41.
+- **#138415 (`e44fb5c340bf`):** carried as the fork's variant (`wrapUntrustedQualityFeedbackBlock`, 8000-char
+  budget, 800 reserve). Both its test files equal the 10.8 carry's. The 18 upstream lines not present are the
+  narrower wrapper and test that the variant replaces.
+- **#183006 (`c6770abf7036`):** 28/30. The two absent lines are main's required-`status` form, which the fork
+  does not take (see the 10.8 section).
+- **#155000 port and #130400:** unchanged files. `subagent-reasoning-only-retry.ts` is present; beta.4 has
+  neither PR.
+
+## Resolutions
+
+- **Compaction (Air):** the fork keeps only the #138415-variant feedback wrapper, the SAFETY comments and agent-core's
+  I1 open-tool-call cut guard (`createToolCallOccurrenceQueue`, `extractToolCallsFromAssistant`,
+  `extractToolResultId`). The fork's `compact.hooks.codex-plans.test-support.ts` is removed, because beta.4 defines
+  the helper inline.
+- **Auth, failover, sessions, restart recovery (Air):**
+  - `skipInheritance` moves to `runtime-read.types.ts`, where beta.4 now defines `LoadAuthProfileStoreOptions`.
+  - #93952's `withAuthDeadline` wraps beta.4's `forceRefresh` argument object. The cooldown-probe extraction stays.
+  - beta.4's runtime-provider change moves into the fork's split-out `auth-controller.test-support.ts`, because
+    beta.4's SIWC tests need it.
+  - `session-store.ts`: the fork's per-attempt `contextSnapshot` goes ahead of beta.4's recovery patch.
+  - The restart-cause wording is threaded through beta.4's `prepareRestartRecoveryDeliveryCurrent` and `isCurrent`.
+  - 3 of the 5 tests in `transcript-file-state.compaction-checkpoint.test.ts` follow upstream's #170532 removal.
+- **Tools, runner, tool docs (Air):**
+  - `agent-tools.ts`: the fork's `assembleTurnToolSurface` stubs combined with beta.4's unavailable-publication-tool
+    filter.
+  - `recordPreExecutionBlockedToolCall` has one owner, the fork's `before-tool-call.state.ts`.
+  - `message-tool-execution.ts`: beta.4's poll-vote echo check and record, together with the fork's duplicate-send
+    guard, sit behind one `checkMessageToolSendGuards` call in `message-tool-execution.send-guards.ts`. That takes it
+    from 713 to 695 counted lines; the cap is 700, and beta.4's own file counts 699.
+  - The fork's two `message_tool_only` gates are dropped: `pollEchoSessionKey` is already undefined outside that
+    mode (#167979).
+  - `attempt-session-prepare.ts` is beta.4's inline settings block plus the fork's three changes, at 699 counted
+    lines. The `attempt-session-settings.ts` split is deleted.
+- **Telegram version-3 carrier:** a clean-merge bug, caught in review. `runtime-context-prompt.ts` ran the fork's
+  `carrierText` through #166869's joiner-aware `append`, which puts late context first for a space joiner. The
+  carrier is rendered without a joiner, so it gets its own paragraph-order append. beta.4's joiner `it.each` pins
+  `carrierText` for both joiners.
+- **M4 areas** (each commit body has the detail):
+  - the heartbeat dedupe on the worker read (#169622);
+  - #89526 hooked onto beta.4's serialized reload transaction;
+  - the transcript grounding on beta.4's bounded-tail pages;
+  - the fork's shutdown state on beta.4's server close;
+  - cron fallback attribution, moved to `run-prompt-executor.ts`;
+  - the secret-redaction registry without beta.4's removed snapshot scope (#169063);
+  - the compaction-span reader, whose subagent facts now come from the history worker's `inline-visibility`
+    lookups, because #170712 (`3de654bfc844`) deleted the host projection; it fails closed;
+  - the baselines, by merge-base arithmetic.
+
+## Known gaps and follow-ups
+
+- **Compaction span page (room #292):**
+  - A quoted reply to a message outside the span can fail that page on every retry. This happens when the quoted
+    message is a `sessions_send` input whose source session no span message asks about: its lookup was never
+    prepared, so `requireFact` throws.
+  - Preparation also makes one sequential worker request per missing fact, for up to 4 passes.
+  - The owner-correct fix is to read the span inside the worker.
+- **Tests edited by reading only, to be confirmed by the M4 run:**
+  - `attempt-prompt-context`, `agent-tools.construction-routing`, `sessions-history-tool`,
+    `main-session-restart-recovery` (the restart-cause pin needs `cause: "gateway_restart"` in the fixture);
+  - `config-reload.observation` (two echo cases);
+  - the prompt-snapshot fixtures (beta.4's until regenerated).
+
+## Qualification
+
+Pending on the M4: `tsgo`, the build, the compaction suite, the fork's degrade-fallback test and the fast gate. The
+CI dist build runs on `megamini-checks` (#5).
