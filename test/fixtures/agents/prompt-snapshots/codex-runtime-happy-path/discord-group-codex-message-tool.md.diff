@@ -1,10 +1,5 @@
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 --- telegram-direct-codex-message-tool.md	sha256=5c8bce95cec255e7fb00f4aa145501bcc8d1afec6b2df5d3b5704721e5ef7c4d
 +++ discord-group-codex-message-tool.md	sha256=e19f6c47d04d45d003675f298abd5a75babf74d0496114d311f7efd82f18b799
-=======
---- telegram-direct-codex-message-tool.md	sha256=bbae774bffc4bde07f1ef2dc659a275568d3be40861107663f9faf4f6355d9dc
-+++ discord-group-codex-message-tool.md	sha256=4f2fd16dd68edc6864c54e19530065c7fd82667f5174399fd09bdb55635294c2
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 @@ -1,1 +1,1 @@
 -# Telegram Direct Codex Message Tool Turn
 +# Discord Group Codex Message Tool Turn
@@ -37,24 +32,16 @@
 -    "chars": 1338,
 +    "chars": 1337,
 @@ -259,2 +259,2 @@
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 -    "chars": 73008,
 -    "roughTokens": 18252
 +    "chars": 73606,
 +    "roughTokens": 18402
-=======
--    "chars": 73248,
--    "roughTokens": 18312
-+    "chars": 73846,
-+    "roughTokens": 18462
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 @@ -263,2 +263,2 @@
--    "chars": 3264,
--    "roughTokens": 816
-+    "chars": 4437,
-+    "roughTokens": 1110
+-    "chars": 3194,
+-    "roughTokens": 799
++    "chars": 4142,
++    "roughTokens": 1036
 @@ -271,2 +271,2 @@
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 -    "chars": 27570,
 -    "roughTokens": 6893
 +    "chars": 28887,
@@ -64,17 +51,6 @@
 -    "roughTokens": 25145
 +    "chars": 102495,
 +    "roughTokens": 25624
-=======
--    "chars": 27650,
--    "roughTokens": 6913
-+    "chars": 29192,
-+    "roughTokens": 7298
-@@ -275,2 +275,2 @@
--    "chars": 100900,
--    "roughTokens": 25225
-+    "chars": 103040,
-+    "roughTokens": 25760
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 @@ -279,2 +279,2 @@
 -    "chars": 879,
 -    "roughTokens": 220
@@ -90,8 +66,8 @@
 +  "surface": "discord",
 +  "chat_type": "group"
 @@ -515,1 +515,3 @@
--You are in a Telegram direct conversation. In this conversation the message tool with action=send is your only way to be heard; the target defaults to this conversation. Your normal final answer is private and is never posted to this conversation. If this turn needs no visible direct response, do not call message(action=send) and end the turn. If it does, deliver it with message(action=send) before the turn ends; a reply left in your final answer reaches nobody.
-+You are in a Discord group chat. In this group chat the message tool with action=send is your only way to be heard; the target defaults to this group chat. Your normal final answer is private and is never posted to this group chat. Be a good group participant: mostly lurk and follow the conversation; reply only when directly addressed or you can add clear value. Emoji reactions are welcome when available. Write like a human. Avoid Markdown tables. Minimize empty lines and use normal chat conventions, not document-style spacing. Don't type literal \n sequences; use real line breaks sparingly. If addressed to someone else, stay silent unless invited or correcting key facts. Discord: wrap bare URLs like <https://example.com> to suppress embeds. When subagent or session-spawn tools are available and a directly requested group-chat task will require several tool calls, prefer delegating bounded side investigations early so the channel gets a responsive path forward. Keep the critical path local, avoid subagents for simple one-step work, and only surface concise group-visible updates when they add value. Selectivity governs whether you reply, never how you deliver it. If this turn needs no visible group response, do not call message(action=send) and end the turn. If it does, deliver it with message(action=send) before the turn ends; a reply left in your final answer reaches nobody. Be extremely selective: reply only when directly addressed or clearly helpful.
+-You are in a Telegram direct conversation. Normal final replies are private and are not automatically sent to this conversation. To post visible output here, use the message tool with action=send; the target defaults to this conversation. If no visible direct response is needed, do not call message(action=send). Your normal final answer stays private and will not be posted to the conversation.
++You are in a Discord group chat. Normal final replies are private and are not automatically sent to this group chat. To post visible output here, use the message tool with action=send; the target defaults to this group chat. Be a good group participant: mostly lurk and follow the conversation; reply only when directly addressed or you can add clear value. Emoji reactions are welcome when available. Write like a human. Avoid Markdown tables. Minimize empty lines and use normal chat conventions, not document-style spacing. Don't type literal \n sequences; use real line breaks sparingly. If addressed to someone else, stay silent unless invited or correcting key facts. Discord: wrap bare URLs like <https://example.com> to suppress embeds. When subagent or session-spawn tools are available and a directly requested group-chat task will require several tool calls, prefer delegating bounded side investigations early so the channel gets a responsive path forward. Keep the critical path local, avoid subagents for simple one-step work, and only surface concise group-visible updates when they add value. If no visible group response is needed, do not call message(action=send).
 +
 +Activation: trigger-only (you are invoked only when explicitly mentioned; recent context may be included). Address the specific sender noted in the message context.
 @@ -531,1 +533,1 @@

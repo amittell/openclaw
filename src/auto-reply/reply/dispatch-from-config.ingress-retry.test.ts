@@ -235,7 +235,6 @@ describe("dispatch retry after queued ingress abandonment", () => {
   );
 });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 it.each(["completed", "cancelled", "adoption-rejected", "non-finalized-context"] as const)(
   "retains ACP ingress ownership through %s without replaying its input",
   async (outcome) => {
@@ -333,63 +332,10 @@ it.each(["completed", "cancelled", "adoption-rejected", "non-finalized-context"]
           } finally {
             dispatched.resolve();
           }
-=======
-// Fork #11 asked for a re-dispatched or re-steered inbound to be suppressed once its reply
-// landed. On this base the inbound dedupe claim, the durable ingress row and turn
-// admission provide that; these cases pin the behaviour #11 relied on.
-describe("re-presented inbound after its reply landed", () => {
-  const ctxFor = (key: string, messageId: string | undefined, timestamp?: number) =>
-    buildTestCtx({
-      Provider: "discord",
-      Surface: "discord",
-      ChatType: "direct",
-      From: "user:redispatch-fixture",
-      To: "channel:redispatch-fixture",
-      SessionKey: key,
-      MessageSid: messageId,
-      Timestamp: timestamp,
-      BodyForAgent: "Please answer once",
-    });
-
-  it("does not re-run an ingress retry of a turn whose reply already landed", async () => {
-    await withTempState(async (stateDir) => {
-      let clock = Date.now();
-      const key = "agent:main:discord:direct:redispatch-after-reply";
-      const messageId = "redispatch-after-reply";
-      const ctx = ctxFor(key, messageId);
-      const queue = createTestIngressQueue(stateDir, { now: () => clock });
-      const released = observeChannelIngressQueueWrite(queue, "release");
-      await queue.enqueue(messageId, { text: "Please answer once" }, { laneKey: key });
-      const dispatchers: Array<ReturnType<typeof createDispatcher>> = [];
-      const outcomes: Array<DispatchProcessedNote | undefined> = [];
-      const resolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
-        await options?.onBlockReply?.({ text: "Already answered" });
-        throw new Error("provider failed after the reply landed");
-      });
-      const drain = createChannelIngressDrain({
-        queue,
-        now: () => clock,
-        adoptionStallTimeoutMs: 1_000,
-        retryPolicy: { baseMs: 1, maxMs: 1 },
-        dispatchClaimedEvent: async (_event, lifecycle) => {
-          const dispatcher = createDispatcher();
-          dispatchers.push(dispatcher);
-          const { processedOutcome } = await withDispatchProcessedOutcomeSink(() =>
-            dispatchReplyFromConfig({
-              ctx,
-              cfg: automaticDirectReplyConfig,
-              dispatcher,
-              replyOptions: bindIngressLifecycleToReplyOptions(lifecycle),
-              replyResolver: resolver,
-            }),
-          );
-          outcomes.push(processedOutcome);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         },
       });
       try {
         await drain.drainOnce();
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
         if (outcome === "adoption-rejected") {
           await dispatched.promise;
           await released;
@@ -448,7 +394,61 @@ describe("re-presented inbound after its reply landed", () => {
     });
   },
 );
-=======
+
+// Fork #11 asked for a re-dispatched or re-steered inbound to be suppressed once its reply
+// landed. On this base the inbound dedupe claim, the durable ingress row and turn
+// admission provide that; these cases pin the behaviour #11 relied on.
+describe("re-presented inbound after its reply landed", () => {
+  const ctxFor = (key: string, messageId: string | undefined, timestamp?: number) =>
+    buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      ChatType: "direct",
+      From: "user:redispatch-fixture",
+      To: "channel:redispatch-fixture",
+      SessionKey: key,
+      MessageSid: messageId,
+      Timestamp: timestamp,
+      BodyForAgent: "Please answer once",
+    });
+
+  it("does not re-run an ingress retry of a turn whose reply already landed", async () => {
+    await withTempState(async (stateDir) => {
+      let clock = Date.now();
+      const key = "agent:main:discord:direct:redispatch-after-reply";
+      const messageId = "redispatch-after-reply";
+      const ctx = ctxFor(key, messageId);
+      const queue = createTestIngressQueue(stateDir, { now: () => clock });
+      const released = observeChannelIngressQueueWrite(queue, "release");
+      await queue.enqueue(messageId, { text: "Please answer once" }, { laneKey: key });
+      const dispatchers: Array<ReturnType<typeof createDispatcher>> = [];
+      const outcomes: Array<DispatchProcessedNote | undefined> = [];
+      const resolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+        await options?.onBlockReply?.({ text: "Already answered" });
+        throw new Error("provider failed after the reply landed");
+      });
+      const drain = createChannelIngressDrain({
+        queue,
+        now: () => clock,
+        adoptionStallTimeoutMs: 1_000,
+        retryPolicy: { baseMs: 1, maxMs: 1 },
+        dispatchClaimedEvent: async (_event, lifecycle) => {
+          const dispatcher = createDispatcher();
+          dispatchers.push(dispatcher);
+          const { processedOutcome } = await withDispatchProcessedOutcomeSink(() =>
+            dispatchReplyFromConfig({
+              ctx,
+              cfg: automaticDirectReplyConfig,
+              dispatcher,
+              replyOptions: bindIngressLifecycleToReplyOptions(lifecycle),
+              replyResolver: resolver,
+            }),
+          );
+          outcomes.push(processedOutcome);
+        },
+      });
+      try {
+        await drain.drainOnce();
         await drain.waitForIdle();
         expect(resolver).toHaveBeenCalledOnce();
         expect(dispatchers[0]?.sendBlockReply).toHaveBeenCalledWith({ text: "Already answered" });
@@ -547,4 +547,3 @@ describe("re-presented inbound after its reply landed", () => {
     expect(resolver).toHaveBeenCalledTimes(2);
   });
 });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31

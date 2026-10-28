@@ -138,8 +138,6 @@ describe("syncCronSessionLiveSelection", () => {
 });
 
 describe("createPersistCronSessionEntry", () => {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
   it("lets run finalization, not a stale snapshot, replace per-call context totals", async () => {
     const lifecycleRevision = "00000000-0000-4000-8000-000000000003";
     const totals = { totalTokensFresh: true, totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION };
@@ -171,95 +169,6 @@ describe("createPersistCronSessionEntry", () => {
     expect(persistedStore[sessionKey]).toMatchObject({ totalTokens: 120_000, ...totals });
   });
 
-  it("commits a pending reset boundary with the guarded session row", async () => {
-    resetBoundaryMocks.clearBootstrap.mockClear();
-    const lifecycleRevision = "00000000-0000-4000-8000-000000000001";
-    const existingEntry = makeSessionEntry({ lifecycleRevision });
-    const cronSession = {
-      ...makeCronSession(existingEntry),
-      initialSessionEntry: existingEntry,
-      lifecycleRevision,
-      resetBoundaryPending: {
-        reason: "cron-stale" as const,
-        sessionFile: "sqlite:main:run-session-id:/tmp/sessions.json",
-      },
-    } as MutableCronSession;
-    const store: Record<string, SessionEntry> = {
-      "agent:main:cron:job": existingEntry,
-    };
-    const persistSessionEntry = makeGuardedPersistSessionEntry(store);
-    const persist = createPersistCronSessionEntry({
-      cronSession,
-      agentSessionKey: "agent:main:cron:job",
-      workspaceDir: "/tmp/workspace",
-      persistSessionEntry,
-    });
-
-    await persist();
-
-    expect(persistSessionEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resetBoundary: { context: "preserve-tail", reason: "cron-stale", cwd: "/tmp/workspace" },
-      }),
-    );
-    expect(resetBoundaryMocks.clearBootstrap).toHaveBeenCalledWith({
-      boundaryAppended: true,
-      sessionKey: "agent:main:cron:job",
-    });
-    expect(cronSession.resetBoundaryPending).toBeUndefined();
-  });
-
-  it("forwards the cron workspace alongside a pending reset boundary", async () => {
-    const lifecycleRevision = "00000000-0000-4000-8000-000000000002";
-    const existingEntry = makeSessionEntry({ lifecycleRevision });
-    const cronSession = {
-      ...makeCronSession(existingEntry),
-      initialSessionEntry: existingEntry,
-      lifecycleRevision,
-      resetBoundaryPending: {
-        reason: "cron-stale" as const,
-        sessionFile: "sqlite:main:run-session-id:/tmp/sessions.json",
-      },
-    } as MutableCronSession;
-    const persistSessionEntry = makeGuardedPersistSessionEntry({
-      "agent:main:cron:job": existingEntry,
-    });
-
-    await createPersistCronSessionEntry({
-      cronSession,
-      agentSessionKey: "agent:main:cron:job",
-      workspaceDir: "/tmp/cron-run-workspace",
-      persistSessionEntry,
-    })();
-
-    expect(persistSessionEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resetBoundary: {
-          context: "preserve-tail",
-          reason: "cron-stale",
-          cwd: "/tmp/cron-run-workspace",
-        },
-      }),
-    );
-  });
-
-  it("does not forward a workspace when no reset boundary is pending", async () => {
-    const cronSession = makeCronSession();
-    const persistSessionEntry = makeGuardedPersistSessionEntry({});
-
-    await createPersistCronSessionEntry({
-      cronSession,
-      agentSessionKey: "agent:main:cron:job",
-      workspaceDir: "/tmp/cron-run-workspace",
-      persistSessionEntry,
-    })();
-
-    expect(persistSessionEntry).toHaveBeenCalledWith(
-      expect.not.objectContaining({ resetBoundary: expect.anything() }),
-    );
-  });
-
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   // Regression (review P1): a stale cron reset landing on an empty prior
   // transcript used to create the header from process.cwd(), so the window
   // persisted the gateway process directory as its workspace.

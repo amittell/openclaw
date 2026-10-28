@@ -14,9 +14,10 @@ import {
   projectForwardedMessages,
 } from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
-import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import { createSessionActorTranscriptReader } from "../session-transcript-memory-reader.js";
+import type { SubagentCoordinationDisplayResolver } from "../session-transcript-read.types.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
+import { prepareCompactionSpanSubagentCoordination } from "./chat-history-compaction-span-visibility.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
 import { projectChatHistoryWithReplies } from "./chat-history-reply-messages.js";
 import { encodeChatHistoryResponsePage } from "./chat-history-response-page.js";
@@ -167,16 +168,17 @@ export async function readChatHistoryCompactionSpanPage(
     });
     return { ...page, messages: await refreshForwardedLabels(page.messages) };
   }
-  const subagentCoordination =
-    !params.entry?.incognito && !isIncognitoSessionKey(params.canonicalKey)
-      ? createSessionHistorySubagentProjection({
-          agentId: params.sessionAgentId,
-          sessionId: params.sessionId,
-          sessionKey: params.canonicalKey,
-          storePath: params.storePath,
-          sessionEntry: params.entry,
-        })
-      : undefined;
+  const durable = !params.entry?.incognito && !isIncognitoSessionKey(params.canonicalKey);
+  // Prepared from the span's own messages before the kernel projects them (see the module).
+  let prepared: SubagentCoordinationDisplayResolver | undefined;
+  const subagentCoordination: SubagentCoordinationDisplayResolver | undefined = durable
+    ? {
+        assertCurrent: () => prepared?.assertCurrent?.(),
+        isSubagentSession: (sessionKey) => prepared?.isSubagentSession(sessionKey) ?? false,
+        isSubagentRunMessage: (runId, messageSeq) =>
+          prepared?.isSubagentRunMessage(runId, messageSeq) ?? false,
+      }
+    : undefined;
   let found = false;
   const page = await readChatHistoryPageKernel(params, {
     readers: { ...sessionTranscriptReaders, subagentCoordination },
@@ -188,6 +190,9 @@ export async function readChatHistoryCompactionSpanPage(
         opts,
       );
       found = span !== undefined;
+      if (span && durable) {
+        prepared = await prepareCompactionSpanSubagentCoordination(readScope, span.messages);
+      }
       return span;
     },
   });

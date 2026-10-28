@@ -208,27 +208,6 @@ describe("buildExternalRunFailureReply", () => {
     expect(verbose.isGenericRunnerFailure).toBe(false);
   });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  it("points unclassified failures to logs without exposing raw detail", () => {
-    const message = "opaque-private-provider-detail";
-    const reply = buildExternalRunFailureReply(
-      {
-        message,
-        error: new FailoverError(message, {
-          reason: "unclassified",
-          provider: "openai",
-          model: "test-model",
-        }),
-      },
-      { includeDetails: false },
-    );
-
-    expect(reply.isGenericRunnerFailure).toBe(false);
-    expect(reply.text).toContain("openclaw logs --follow");
-    expect(reply.text).not.toContain(message);
-  });
-
   // 10.1 (#163381) rewrote the copy these three pin: every transport phrase now renders
   // one "Couldn't connect" sentence, and a classified timeout no longer names the model
   // or a status. The fork pins the ROUTING (transport is not a timeout; a genuine timeout
@@ -308,7 +287,6 @@ describe("buildExternalRunFailureReply", () => {
     expect(reply.text).toBe(TIMEOUT_FAILURE_REPLY);
   });
 
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   it.each([
     {
       name: "wrapped local worker timeout",

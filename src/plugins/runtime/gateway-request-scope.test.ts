@@ -108,12 +108,6 @@ describe("gateway request scope", () => {
     expect(runtimeScope.getGatewayContextLifetime(second).signal.aborted).toBe(false);
   });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  it("attaches plugin id to the active scope", async () => {
-    await expectPluginIdScopedGatewayScope("voice-call");
-  });
-
   // The shared resolver matches on the RESOLVED GATEWAY INSTANCE, not on resolver
   // identity: separate caller wrappers may legitimately own one gateway. (Through
   // v2026.8.1 this compared resolver identity and rejected distinct wrappers; these
@@ -159,20 +153,6 @@ describe("gateway request scope", () => {
     expect(() => rejected?.()).toThrow("incompatible Gateway bindings");
   });
 
-  it("resolves the owned registry while preserving gateway request facts", async () => {
-    const activeRegistry = createEmptyPluginRegistry();
-    const requestRegistry = createEmptyPluginRegistry();
-    setActivePluginRegistry(activeRegistry);
-
-    await withTestGatewayScope(async (runtimeScope) => {
-      await runtimeScope.withPluginRuntimeRegistryScope(requestRegistry, async () => {
-        expect(requireActivePluginRegistry()).toBe(requestRegistry);
-        expectGatewayScope(runtimeScope, { ...TEST_SCOPE, pluginRegistry: requestRegistry });
-      });
-      expect(requireActivePluginRegistry()).toBe(activeRegistry);
-    });
-  });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   it("drops generation ownership for re-admission and restores the caller afterward", async () => {
     const generation = await import("./generation-scope.js");
     const { getCurrentPluginMetadataSnapshot } =

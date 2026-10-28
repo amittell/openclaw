@@ -127,51 +127,6 @@ describe("Mattermost durable ingress", () => {
     });
   });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  it("propagates durable append failure before handler scheduling", async () => {
-    await withQueue(async (queue) => {
-      const appendError = new Error("sqlite unavailable");
-      const failingQueue = {
-        ...queue,
-        enqueue: vi.fn().mockRejectedValue(appendError),
-      } satisfies MattermostIngressQueue;
-      const dispatch = vi.fn();
-      const monitor = startMonitor(failingQueue, dispatch);
-      try {
-        await expect(monitor.receive(postedEvent())).rejects.toBe(appendError);
-        expect(dispatch).not.toHaveBeenCalled();
-      } finally {
-        await monitor.stop();
-      }
-    });
-  });
-
-  it("recovers an uncompleted post with a fresh drain and dispatches exactly once", async () => {
-    await withQueue(async (queue) => {
-      const interruptedDispatch = vi.fn((_post, _payload, lifecycle) => {
-        lifecycle.onDeferred();
-        return { kind: "deferred" } as const;
-      });
-      const interrupted = startMonitor(queue, interruptedDispatch);
-      await interrupted.receive(postedEvent({ postId: "post-restart" }));
-      await interrupted.waitForIdle();
-      expect(await queue.listClaims()).toHaveLength(1);
-      await interrupted.stop();
-
-      const recoveredDispatch = vi.fn(async (_post, _payload, lifecycle) => {
-        await lifecycle.onAdopted();
-      });
-      const recovered = startMonitor(queue, recoveredDispatch);
-      try {
-        await recovered.waitForIdle();
-        expect(recoveredDispatch).toHaveBeenCalledTimes(1);
-      } finally {
-        await recovered.stop();
-      }
-    });
-  });
-
   it("keeps unrelated channels moving while a watchdog-stalled claim stays fenced", async () => {
     await withQueue(async (queue) => {
       const runtime = { error: vi.fn(), log: vi.fn() };
@@ -269,7 +224,6 @@ describe("Mattermost durable ingress", () => {
     });
   });
 
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   it("settles only the restarted account and recovers its durable row exactly once", async () => {
     await withStateDir(async (stateDir) => {
       const queueA = createQueue(stateDir, "account-a");

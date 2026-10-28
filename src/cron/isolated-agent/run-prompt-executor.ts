@@ -60,6 +60,7 @@ import {
   runCliAgent,
 } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
+import { captureCronFallbackAttribution } from "./run-fallback-attribution.js";
 import {
   prepareCronModelResolveInput,
   resolveCronFallbacksOverride,
@@ -165,6 +166,7 @@ export function createCronPromptExecutor(
   const resolveCandidateExecution = createCronCandidateExecutionResolver(params);
 
   return async (promptText: string, runStartedAt: number): Promise<CronCompletedPromptRun> => {
+    const attributeFallback = captureCronFallbackAttribution(params.liveSelection);
     using inferenceLease = new DisposableStack();
     const binding = params.job.inferenceBinding;
     const inferenceAuthorization = binding
@@ -689,15 +691,13 @@ export function createCronPromptExecutor(
     }
     params.liveSelection.provider = fallbackResult.provider;
     params.liveSelection.model = fallbackResult.model;
-    setCronSessionRuntimeModel({
-      entry: params.cronSession.sessionEntry,
-      provider: fallbackResult.provider,
-      model: fallbackResult.model,
-    });
+    // Not setCronSessionRuntimeModel: a fallback is transient, and writing it to the entry
+    // outlives the primary's recovery (run-finalize's guard); liveSelection keeps the tuple.
     const completed = {
       runResult: fallbackResult.result,
       fallbackProvider: fallbackResult.provider,
       fallbackModel: fallbackResult.model,
+      ...attributeFallback(fallbackResult),
       runStartedAt,
       runEndedAt: Date.now(),
     };
