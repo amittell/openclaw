@@ -186,6 +186,8 @@ In safeguard mode, provider timeouts and rate limits from built-in summarization
 
 Compaction summarization preserves opaque identifiers by default (`agents.defaults.compaction.identifierPolicy: "strict"`). Set `agents.defaults.compaction.identifierPolicy: "off"` to disable. Custom guidance belongs in a compaction provider's `summarize()` implementation.
 
+When a quality audit finds missing identifiers, corrective feedback names only complete values that fit its bounded request and reports how many were omitted. It does not send a cut-off identifier as if it were an exact value.
+
 ### Active transcript byte guard
 
 When `agents.defaults.compaction.maxActiveTranscriptBytes` is set, OpenClaw

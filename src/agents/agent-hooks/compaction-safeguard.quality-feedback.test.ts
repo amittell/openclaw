@@ -51,6 +51,19 @@ const REQUIRED_HEADINGS = [
   "## Exact identifiers",
 ];
 const OVER_OPERATOR_CAP_TEXT = "y".repeat(4200);
+/**
+ * The fork's identifier budget: MAX_QUALITY_FEEDBACK_INSTRUCTION_CHARS (8000) minus its 800-char
+ * reserve, in compaction-safeguard-quality.ts. Upstream #138415 sizes the same budget to its
+ * 4000-char block (3400 and 600); the fork routes the defect list through its 8000-char block.
+ */
+const IDENTIFIER_BUDGET_CHARS = 7200;
+/** The reserve compaction-safeguard-quality.ts keeps outside the identifier budget. */
+const NON_IDENTIFIER_RESERVE_CHARS = 800;
+/** One value that fills the identifier budget exactly, then eleven that cannot fit. */
+const BUDGET_FILLING_IDENTIFIERS = [
+  `https://example.com/fill/${"f".repeat(IDENTIFIER_BUDGET_CHARS - "https://example.com/fill/".length)}`,
+  ...Array.from({ length: 11 }, (_, index) => `id-${String(index).padStart(2, "0")}`),
+];
 
 function structuredSummary(sections: { pendingAsks: string; identifiers: string }): string {
   return [
@@ -91,6 +104,8 @@ function namedMissingIdentifiers(reasons: string[]): string[] {
 }
 
 /** Drives every audit reason at once so the reason budget is measured at its true maximum. */
+// latest_user_ask_not_foregrounded and latest_user_ask_not_reflected are exclusive; an
+// unresolved request drives the longer one, so the reason budget is measured at its maximum.
 function auditWorstCase(identifiers: string[]): { ok: boolean; reasons: string[] } {
   return auditSummaryQuality({
     summary: "Nothing preserved.",
@@ -98,6 +113,7 @@ function auditWorstCase(identifiers: string[]): { ok: boolean; reasons: string[]
     sourceSummaries: [REQUIRED_HEADINGS.flatMap((heading) => [heading, heading]).join("\n")],
     identifiers,
     latestAsk: LATEST_ASK,
+    latestUnresolvedUserRequest: LATEST_ASK,
     retainedTurnSummary: `## Pending user asks\n${LATEST_ASK}`,
   });
 }
@@ -228,10 +244,35 @@ describe("compaction-safeguard corrective quality feedback", () => {
   it("keeps the whole worst-case defect list inside the untrusted feedback block", () => {
     const { reasons } = auditWorstCase(LONG_IDENTIFIERS);
 
-    // Every reason code fires here, so this is the maximum text the corrective pass can
-    // carry. If the wrapper cap ever cuts it, an identifier is delivered half-written.
+    // Every reason code that can co-occur fires here, so this is the maximum text the
+    // corrective pass can carry. If the wrapper cap ever cuts it, an identifier is delivered
+    // half-written.
     expect(reasons.length).toBeGreaterThanOrEqual(13);
+    expect(reasons).toContain("latest_user_ask_not_foregrounded");
     expect(wrapQualityFeedback(reasons)).toContain(reasons.join(", "));
+  });
+
+  it("keeps everything except the named identifiers inside the 800-char reserve", () => {
+    const { reasons } = auditWorstCase(BUDGET_FILLING_IDENTIFIERS);
+    const feedback = `Previous summary failed quality checks (${reasons.join(", ")}).`;
+    const named = namedMissingIdentifiers(reasons).join(",");
+
+    // The first value fills the identifier budget exactly, so nothing after it fits.
+    expect(named).toBe(BUDGET_FILLING_IDENTIFIERS[0]);
+    expect(reasons).toContain("missing_identifiers_omitted:11");
+    // This overhead is what the reserve in compaction-safeguard-quality.ts must cover.
+    expect(feedback.length - named.length).toBeLessThanOrEqual(NON_IDENTIFIER_RESERVE_CHARS);
+    expect(wrapQualityFeedback(reasons)).toContain(feedback);
+  });
+
+  it("skips an oversized identifier without hiding later complete values", () => {
+    const identifiers = [
+      `https://example.com/${"x".repeat(IDENTIFIER_BUDGET_CHARS + 100)}`,
+      ...SHORT_IDENTIFIERS.slice(0, 11),
+    ];
+    const { reasons } = auditWorstCase(identifiers);
+    expect(namedMissingIdentifiers(reasons)).toStrictEqual(identifiers.slice(1));
+    expect(reasons).toContain("missing_identifiers_omitted:1");
   });
 
   it("leaves no partial identifier in the corrective instruction", () => {
