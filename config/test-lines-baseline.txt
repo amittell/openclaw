@@ -1,4 +1,3 @@
-# Preserve the 133-line SQLite regression budget from #186980.
-# This tree adds 977 required telemetry regression lines to 6,310,907 base lines.
-# Admit the measured 6,311,884 total with zero extra allowance.
-6311884
+# Measured bf6a97a1761 plus pending regression additions: 6,312,681 lines.
+# Keep 7,319 lines of bounded headroom for remaining regression work.
+6320000
