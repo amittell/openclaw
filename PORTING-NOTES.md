@@ -3843,3 +3843,68 @@ Alex, 2026-10-26 (#5): "CI on mega-mini first". 10.7 deploys only after a forge-
 and a Linux-built dist is proven against a bot's macOS build. Two macOS builds of one commit already differ in the
 build stamps and in `control-ui/` content-hash names, so the comparison is CORE plus a normalized control-ui
 digest (`bot-dist-ci` branch on alexm/openclaw, `.writhub/scripts/dist-digest.mjs`).
+
+# Carrying onto v2026.10.8 (2026-10-28, session 6da8934d)
+
+Alex's ruling (alexm/openclaw room #261): create `upgrade-v2026.10.8`. It replaces the held 10.7 deploy. Scope by
+PROXY-RULING #269 (option 1 of #266): the 10.7 carry plus one pull-forward. The deploy follows the existing process
+and stays gated on #5 (a forge-CI build on the arm64 lane, proven against a bot's macOS build).
+
+| step                                                                        | commit                       |
+| --------------------------------------------------------------------------- | ---------------------------- |
+| v2026.10.8^{commit} (+188 on 10.7; agent 25 / state 20, same Node and pnpm) | `dc2523e5a5c7`               |
+| `upgrade-v2026.10.8` squash of `upgrade-v2026.10.7` (`210bba9ef05`)         | `2a408342e3f`                |
+| #183006 pull-forward (failover: redaction-destroyed 400/422 body)           | `da2a0af4c64`                |
+| line-cap split of attempt-session-prepare.ts (attempt-session-settings.ts)  | `e160396b8c6`                |
+| #1 diagnostic listed in the PR wrapper inventory                            | `3f505693c78`                |
+| restart-cause test pins (restart-recovery prompt, WebChat startup recovery) | `f7fb7ed55db`, `f71bbed49eb` |
+
+## Resolutions
+
+- **Squash:** one conflict, in `src/auto-reply/reply/restart-recovery-claim.ts`. The import list takes both sides:
+  10.8's #178888 `canReplaceAbortedRestartRecoveryClaim` and the fork's `hasLiveRestartRecoveryDeliveryClaim`. In
+  the claim guard the auto-merge keeps 10.8's aborted-claim gate around the fork's liveness clause, which had
+  replaced `!isTerminalSessionStatus(entry.status)` in the 10.7 carry.
+- **#183006:**
+  - `isExplicitNoBodyHttpMessage` keeps 10.8's form. Its `status` is optional on the 10.7/10.8 line; main made it
+    required earlier, and upstream's one-line form would reject a leading status when `status` is undefined.
+  - The fix itself (`REDACTION_DESTROYED_BODY_RE`) applies unchanged.
+  - `classify.test.ts` gains main's `noPlugin`, `validation` and `validationSignal` helpers.
+
+## Deferred (PROXY-RULING #269), with the trial cherry-picks measured on `da2a0af4c64`
+
+- **#138416 (`a5a92cd2231b`):**
+  - 2 conflicts, plus a design change. The fork carries an earlier revision (its own `summary-budget` test).
+  - Merged #138416 removes the `qualityRetentionInfeasible` flag (search budgets, then fail closed). The fork's
+    retention-aware fit and degrade path read that flag in 5 places, so taking it would disable the fork's
+    degrade-on-infeasible path. That is Alex's design call.
+- **#130393 (`83b5f5425eab`):** 16 conflicts across the compaction subsystem. Five are add/add: the fork has an
+  older revision of this PR.
+- **10.10 backports:**
+  - #168169 `6a9bccad9eca`: 5 conflicts.
+  - #169237 `56d559212a09`: 15 conflicts.
+  - #169584 `d502f1aac87a`: 12 conflicts.
+  - Their modify/delete conflicts show they assume main's later file layout.
+- **Where they come from instead:** all five are native in `v2026.10.10-beta.4`. Until a 10.10 carry, the bots keep
+  the FrenChat prompt-cache drop causes 1 and 4 (#168169, #169237) and the #177656 exec error (#169584, issue #1).
+- **Candidate drops still to line-check:** #158161 (cherry-picked into 10.8 as `e05ca71024a`), #155000, #130400.
+
+## Qualification (M4, Node 26.12.1, at `e160396b8c6`, then the three fixes above)
+
+- **Static checks:** build rc=0 (152 s), `tsgo:all` rc=0, assertion-safety OK (6,707 grandfathered), line-cap OK
+  (after the split: bare 10.8 is already at exactly 700 in `attempt-session-prepare.ts`), oxlint and oxfmt clean on
+  the resolved files.
+- **Fast gate:** 946 targets (the `--changed v2026.10.8` plan, 567 files, plus the compaction, memory-core, failover,
+  restart-recovery, cron, tool-resolution, state-db and exec-approval suites). Result: 954 files, 17,488 tests, 17,330 pass,
+  139 fail, 19 skip. Every failing file was then run ALONE on the 10.8 carry, bare v2026.10.8 and the 10.7 carry.
+  - **Inherited, identical on bare 10.8:** `local-state-owner.process` (3), `ci-workflow-guards` (7),
+    `ci-workflow-planning` (97), `crabbox-staging` (21), `release-workflow-matrix-plan` (1).
+  - **Load-related, passes alone everywhere:** `server.chat.gateway-server-chat`.
+  - **Fork-caused, all already failing on the pushed 10.7 carry `210bba9ef05` and now fixed:**
+    - `eager-import-closure` (5), `pr-wrapper-source-closure` (1) and `pr-wrappers` (1, a SIGILL in the extracted
+      wrapper's source scan): the #1 diagnostic module was missing from `scripts/pr-lib/wrapper-components.txt`
+      (`3f505693c78`). Now 17/17, 3/3 and 73/73.
+    - `main-session-restart-recovery` ("interrupted native tool outcome") and `server.startup-recovery-webchat`:
+      upstream expects the cause-neutral recovery note, but after a recorded Gateway restart the fork names the cause
+      (`7bb739a7242`). Both are pinned to the fork's wording (`f7fb7ed55db`, `f71bbed49eb`): 154/154 and 1/1, twice
+      each. 7bb739a7242's own qualification did not re-run either file.
