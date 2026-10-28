@@ -34,13 +34,7 @@ export function createDiagnosticsTraceRuntime(
   // Keeps a completed lifecycle span's real OTel context for late children.
   // Ended contexts remain valid parents without changing their span duration.
   // Entries live until capacity eviction or service stop.
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const retainedTrustedSpanContexts = new Map<string, SpanContext>();
-=======
-  const retainedTrustedSpanContexts = new Map<
-    string,
-    { spanContext: SpanContext; owner?: TrustedSpanAliasOwner }
-  >();
   // Long-lived spans (lifecycle roots openclaw.run / openclaw.harness.run /
   // openclaw.message.processed, and materialized scope spans openclaw.turn.root /
   // openclaw.turn.scope) only export when they end. If a turn is interrupted or
@@ -90,7 +84,6 @@ export function createDiagnosticsTraceRuntime(
       staleSpanWatchdog = null;
     }
   };
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   const stopActiveTrustedSpans = () => {
     const stopAt = Date.now();
     stopStaleSpanWatchdog();

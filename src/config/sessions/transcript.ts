@@ -68,23 +68,19 @@ import {
   resolveMirroredTranscriptText,
   type SessionTranscriptDeliveryMirror,
 } from "./transcript-mirror.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type {
-  ReadRecentSessionConversationTextOptions,
-  SessionRecentConversationText,
-} from "./transcript-recent-text.js";
-=======
 import {
   groundRecentConversationRows,
   selectRecentConversationRows,
 } from "./transcript-recent-grounding.js";
 import {
+  extractRecentConversationText,
+  type ReadRecentSessionConversationTextOptions,
+  type SessionRecentConversationText,
+} from "./transcript-recent-text.js";
+import {
   isWithinTranscriptWindow,
   normalizeRecentTranscriptLimit,
-  normalizeTranscriptTimestamp,
-  readPreferredUpstreamUserText,
 } from "./transcript-recent-window.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 import { captureOwnedTranscriptWriteAssertion } from "./transcript-write-context.js";
 
@@ -128,31 +124,7 @@ export type SessionTranscriptAssistantMessage = Parameters<SessionManager["appen
   [ASSISTANT_DISPLAY_CONTENT_FIELD]?: Array<Record<string, unknown>>;
 };
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 export type { SessionRecentConversationText } from "./transcript-recent-text.js";
-=======
-export type SessionRecentConversationText = {
-  id?: string;
-  role: "user" | "assistant";
-  text: string;
-  timestamp?: number;
-  sourceChannel?: string;
-};
-
-type ReadRecentSessionConversationTextOptions = {
-  beforeTimestampMs?: number;
-  includeCronDirectDeliveryContext?: boolean;
-  limit?: number;
-  minTimestampMs?: number;
-  role?: "user" | "assistant";
-  preferUpstreamUserText?: boolean;
-  /**
-   * Channel replay only: clamp each entry to 32 KiB and the whole read to 128 KiB. Provenance
-   * readers such as session-upstream-monitor.ts compare complete text and leave this unset.
-   */
-  boundReplayBytes?: boolean;
-};
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 type ReadRecentSessionConversationTextParams = ReadRecentSessionConversationTextOptions & {
   agentId: string;
@@ -192,12 +164,9 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
   assertCurrent: () => void,
   options: ReadRecentSessionConversationTextOptions = {},
 ): Promise<SessionRecentConversationText[]> {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
   const limit = normalizeRecentTranscriptLimit(options.limit);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   try {
-    const { readRecentSessionConversationTextAsync } =
+    const { readSessionTranscriptBoundedMessageTailPageAsync } =
       await import("../../gateway/session-transcript-readers.js");
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
     // Pages go through 10.5's reader (history worker, or the captured incognito actor); a
@@ -205,9 +174,6 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
     // the same-turn provenance gathered with them.
     const rows = await readRestoredSessionTranscript(
       scope,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-      () => readRecentSessionConversationTextAsync(scope, options),
-=======
       () =>
         selectRecentConversationRows(
           (offset, maxMessages) =>
@@ -223,7 +189,6 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
             return entry && isWithinTranscriptWindow(entry.timestamp, options) ? entry : undefined;
           },
         ),
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       { assertCurrent },
     );
     return await groundRecentConversationRows(rows, {

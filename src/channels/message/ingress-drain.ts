@@ -497,26 +497,6 @@ export function createChannelIngressDrain<
     const releaseRootWork = retainGatewayRootWorkAdmissionContinuation();
     state.task = runOutsideAsyncWorkScope(async () => {
       try {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-        const result = await (releaseRootWork
-          ? options.dispatchClaimedEvent(claim, lifecycle)
-          : runOutsideGatewayRootWorkAdmission(() =>
-              options.dispatchClaimedEvent(claim, lifecycle),
-            ));
-        if (result?.kind === "transferred") {
-          // The downstream owner atomically tombstoned this exact claim. Do not
-          // complete it again or turn a shutdown race into a replayable failure.
-          clearStallTimer(state);
-          await state.settleOnce(async () => {});
-          return;
-        }
-        if (result?.kind === "pending") {
-          clearStallTimer(state);
-          await state.settleOnce(async () => {
-            await releaseClaim(claim, { recordAttempt: false });
-          });
-          return;
-=======
         let result: ChannelIngressDrainDispatchResult | void;
         try {
           result = await (releaseRootWork
@@ -532,7 +512,20 @@ export function createChannelIngressDrain<
           // The callback itself is gone before any result settlement joins the
           // watchdog-owned release; deferred participation remains separate.
           state.quiescence.markDispatchSettled();
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+        }
+        if (result?.kind === "transferred") {
+          // The downstream owner atomically tombstoned this exact claim. Do not
+          // complete it again or turn a shutdown race into a replayable failure.
+          clearStallTimer(state);
+          await state.settleOnce(async () => {});
+          return;
+        }
+        if (result?.kind === "pending") {
+          clearStallTimer(state);
+          await state.settleOnce(async () => {
+            await releaseClaim(claim, { recordAttempt: false });
+          });
+          return;
         }
         // dispose() leaves claims for recovery. Session abort mid-flight
         // (skipped/void) also leaves the claim; a terminal completed/failed

@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => ({
   stopGmailWatcher: vi.fn(async () => undefined),
   disposeAcpSessionManager: vi.fn(async (_reason: string) => undefined),
   fenceSessionSuspensionWritesForGatewayShutdown: vi.fn(),
-  closePluginStateDatabaseAsync: vi.fn<() => Promise<void>>(async () => undefined),
 }));
 
 vi.mock("../channels/plugins/index.js", async () => ({
@@ -89,13 +88,6 @@ vi.mock("../acp/control-plane/manager.js", () => ({
   disposeAcpSessionManager: mocks.disposeAcpSessionManager,
 }));
 
-vi.mock("../plugin-state/plugin-state-store.js", async () => ({
-  ...(await vi.importActual<typeof import("../plugin-state/plugin-state-store.js")>(
-    "../plugin-state/plugin-state-store.js",
-  )),
-  closePluginStateDatabaseAsync: mocks.closePluginStateDatabaseAsync,
-}));
-
 // mock-isolation: Capture close-path log lines without the real subsystem logger sinks.
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: vi.fn(() => ({
@@ -124,7 +116,6 @@ export function resetServerCloseMocks(): void {
     mocks.stopGmailWatcher,
     mocks.closeProviderTransportDispatcherPool,
     mocks.disposeAcpSessionManager,
-    mocks.closePluginStateDatabaseAsync,
   ]) {
     mock.mockReset();
     mock.mockResolvedValue(undefined);

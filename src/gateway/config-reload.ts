@@ -192,21 +192,9 @@ export function startGatewayConfigReloader(
   const activeReloads = new Set<Promise<unknown>>();
   let pluginOperationTail: Promise<unknown> = Promise.resolve();
   let missingConfigRetries = 0;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   let pendingInProcessConfig: GatewayConfigReloadCandidate | null = null;
   let activeConfigCandidate: GatewayConfigReloadCandidate | null = null;
   let retryCandidate: GatewayConfigReloadCandidate | null = null;
-=======
-  const observationReads = new WeakMap<
-    ConfigSourceObservation,
-    Promise<[ConfigFileSnapshot, PluginInstallRecords]>
-  >();
-  // The transaction begun at this revision proved the observation reads its own source.
-  const observationAcceptedFromRevision = new WeakMap<ConfigSourceObservation, number>();
-  let pendingInProcessConfig: InProcessConfigCandidate | null = null;
-  let activeInProcessConfig: InProcessConfigCandidate | null = null;
-  let retryWriteCandidate: InProcessConfigCandidate | null = null;
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   let acceptedSourceSnapshot: ConfigFileSnapshot | undefined;
   let lastSourceOnly:
     | {
@@ -390,41 +378,6 @@ export function startGatewayConfigReloader(
       assertReloadPublicationCurrent(isCurrent(), false);
     };
     const checkpointOwned = async (assertOwned: () => void) => {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-      if (stopped || rejected) {
-        throw new GatewayConfigReloadSupersededError();
-      }
-      assertOwned();
-      if (source.observation.revision !== transactionEpoch) {
-        const observed = source.observation;
-        if (observed.writerRevision > transactionEpoch) {
-          throw new GatewayConfigReloadSupersededError();
-        }
-        // Read under this observation, not the reload queue: the active transaction
-        // owns that queue and may already have stopped its plugin services.
-        let read = observationReads.get(observed);
-        if (!read) {
-          read = Promise.all([source.readSnapshot(observed), readPluginInstallRecords()]);
-          observationReads.set(observed, read);
-        }
-        const [snapshot, installs] = await read;
-        if (
-          stopped ||
-          source.observation !== observed ||
-          !snapshot.exists ||
-          !snapshot.valid ||
-          typeof persistedHash !== "string" ||
-          !configSourceSnapshotsMatch(snapshot, sourceSnapshot) ||
-          !isDeepStrictEqual(installs, nextPluginInstallRecords)
-        ) {
-          throw new GatewayConfigReloadSupersededError();
-        }
-        assertOwned();
-        transactionEpoch = observed.revision;
-        observationAcceptedFromRevision.set(observed, initialEpoch);
-      }
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       assertOwned();
       assertReloadPublicationCurrent(isCurrent(), false);
     };
@@ -911,12 +864,8 @@ export function startGatewayConfigReloader(
     running = true;
     pending = false;
     clearReloadTimer();
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     let attemptedCandidate: GatewayConfigReloadCandidate | null = null;
-=======
-    let attemptedCandidate: InProcessConfigCandidate | null = null;
-    const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+    const observation = trackSourceReloadObservation(source);
     try {
       assertLeaseOwned();
       if (pendingInProcessConfig) {
@@ -967,12 +916,8 @@ export function startGatewayConfigReloader(
         return;
       }
       const transactionEpoch = source.observation.revision;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-      const intentCandidate = retryCandidate;
-=======
       observation.observe(transactionEpoch, null);
-      const intentCandidate = retryWriteCandidate;
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+      const intentCandidate = retryCandidate;
       attemptedCandidate = intentCandidate;
       const snapshot = await source.readSnapshot();
       observation.observeSnapshot(transactionEpoch, snapshot);
@@ -1144,13 +1089,10 @@ export function startGatewayConfigReloader(
         );
       }
     } finally {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+      observation.publishIfCurrent();
       if (activeConfigCandidate === attemptedCandidate) {
         activeConfigCandidate = null;
       }
-=======
-      observation.publishIfCurrent();
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
       running = false;
     }
   };
@@ -1250,7 +1192,7 @@ export function startGatewayConfigReloader(
       let candidate = pendingInProcessConfig ?? retriedCandidate;
       let committed = false;
       // Same per-transaction tracker as runReload: publish this read while it is current.
-      const observation = trackSourceReloadObservation(source, observationAcceptedFromRevision);
+      const observation = trackSourceReloadObservation(source);
       try {
         const expectedSourceConfig = params.write
           ? params.write.persistedSourceConfig
@@ -1350,14 +1292,9 @@ export function startGatewayConfigReloader(
           { cause: error },
         );
       } finally {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+        observation.publishIfCurrent();
         if (activeConfigCandidate === candidate) {
           activeConfigCandidate = null;
-=======
-        observation.publishIfCurrent();
-        if (activeInProcessConfig === candidate) {
-          activeInProcessConfig = null;
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
         }
         running = false;
         if (pending || pendingInProcessConfig) {

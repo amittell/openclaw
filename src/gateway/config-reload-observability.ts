@@ -5,17 +5,14 @@ import type { GatewayConfigReloaderOptions } from "./config-reload.types.js";
 
 /**
  * Tracks one reloader transaction's source read against the reloader's live
- * observation. `acceptedFromRevision` records the revision whose transaction
- * accepted a same-source watcher echo, so that read stays publishable.
+ * observation. The reload queue serializes passes, so a watcher event (including
+ * a write's own echo) that lands mid-transaction is read and published by its
+ * own next pass; this read publishes only while its revision is still current.
  */
-export function trackSourceReloadObservation(
-  source: { readonly observation: ConfigSourceObservation },
-  acceptedFromRevision: WeakMap<ConfigSourceObservation, number>,
-) {
-  return trackReloadObservation(() => ({
-    epoch: source.observation.revision,
-    acceptedFromEpoch: acceptedFromRevision.get(source.observation),
-  }));
+export function trackSourceReloadObservation(source: {
+  readonly observation: ConfigSourceObservation;
+}) {
+  return trackReloadObservation(() => source.observation.revision);
 }
 
 /** Explains why a hot-capable (hybrid) reload ended in a scheduled gateway restart. */

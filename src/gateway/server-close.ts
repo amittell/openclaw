@@ -24,9 +24,6 @@ import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import { settlesWithin } from "../shared/settle-within.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-import { withAgentDatabaseCloseFence } from "../state/openclaw-agent-db-resources.js";
 // Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers that
 // only need the running / shutting-down distinction (gateway startup, HTTP probe
 // handler) do not pull in this close module's dependency graph. Re-exported below
@@ -37,7 +34,6 @@ import {
   resetGatewayShuttingDownForTest,
   resetGatewayShuttingDownState,
 } from "./gateway-shutdown-state.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   collectGatewayProcessMemoryUsageMb,
   measureGatewayCloseStep,
@@ -347,19 +343,6 @@ export async function prepareGatewayClose(
       shutdownLog.warn(`memory preparation failed during shutdown: ${formatErrorMessage(error)}`);
       recordShutdownWarning(warnings, "memory-managers");
     });
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-    return { start, notice, restart, warnings, cleanupWork };
-=======
-    if (opts?.onProcessExitReady) {
-      await measureCloseStep("terminal-persistence", params.drainPersistence);
-      await memoryPreparation;
-      // Keep every path fenced through host lock release and exit: a per-path
-      // idle receipt alone does not prevent accepted cleanup from reopening it.
-      await withAgentDatabaseCloseFence({}, async () => {
-        await measureCloseStep("agent-databases", () => closeOpenClawAgentDatabasesAsync());
-        await measureCloseStep("process-exit", opts.onProcessExitReady!);
-      });
-    }
     return {
       start,
       notice,
@@ -368,7 +351,6 @@ export async function prepareGatewayClose(
       cleanupWork,
       postShutdownExitCode: opts?.postShutdownExitCode,
     };
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   } catch (error) {
     await measureCloseStep("preparation-cleanup", () => cleanupWork.drain());
     throw error;
