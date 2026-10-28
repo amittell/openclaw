@@ -14,10 +14,6 @@ import { buildEmbeddedExtensionFactories } from "../embedded-agent-runner/extens
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import { timestampedTextAssistant } from "../test-helpers/sparse-transcript.test-support.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../workspace-bootstrap-read.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import * as compactionQualityModule from "./compaction-safeguard-quality.js";
 import {
   consumeCompactionSafeguardCancellation,

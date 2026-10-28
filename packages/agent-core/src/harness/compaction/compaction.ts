@@ -3,11 +3,7 @@ import {
   CHARS_PER_TOKEN_ESTIMATE,
   estimateStringChars,
 } from "@openclaw/normalization-core/cjk-chars";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-=======
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { AgentCoreCompletionRuntimeDeps } from "../../runtime-deps.js";
 import type { AgentMessage, ThinkingLevel } from "../../types.js";
 import { isRuntimeContextCarrier } from "../messages.js";
@@ -19,21 +15,8 @@ import {
   selectResetKeptEntries,
 } from "../session/tool-result-pairing.js";
 import { CompactionError, err, ok, type Result, type SessionTreeEntry } from "../types.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { type CompactionDetails, parseCompactionDetails } from "./compaction-details.js";
 import { formatSplitTurnSourceAsk, resolveLatestUnresolvedUserRequest } from "./request-context.js";
-=======
-import {
-  type CompactionDetails,
-  extractLatestUserRequest,
-  parseCompactionDetails,
-} from "./compaction-details.js";
-import {
-  formatSplitTurnSourceAsk,
-  selectCompactionRequestMessages,
-  stripPreviousCompactionMetadata,
-} from "./request-scope.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { runSummarizationCompletion } from "./summarization-completion.js";
 import { buildSummaryCheckpointPrompt } from "./summary-checkpoint-prompt.js";
 import {
@@ -49,10 +32,7 @@ import {
 } from "./utils.js";
 
 export type { CompactionDetails } from "./compaction-details.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 export { formatRequiredAskContext } from "./request-context.js";
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 function getMessageFromEntryForCompaction(entry: SessionTreeEntry): AgentMessage | undefined {
   if (entry.type === "compaction") {
@@ -77,24 +57,6 @@ export interface CompactionResult<T = unknown> {
 export const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
 export const SUMMARY_TRUNCATED_MARKER = "\n\n[Compaction summary truncated to fit budget]";
 const TURN_CONTEXT_PREFIX = "\n\n---\n\n**Turn Context (split turn):**\n\n";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
-const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
-
-/** Bounds a split turn's source ask; the safeguard summary and the no-summary reduction share it. */
-export function formatRequiredAskContext(rawAsk: string): string {
-  const source = rawAsk.trim();
-  if (source.length <= MAX_REQUIRED_ASK_CONTEXT_CHARS) {
-    return source;
-  }
-  const contentBudget =
-    MAX_REQUIRED_ASK_CONTEXT_CHARS - REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER.length;
-  const headBudget = Math.floor(contentBudget / 2);
-  const tailBudget = contentBudget - headBudget;
-  return `${truncateUtf16Safe(source, headBudget)}${REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(source, -tailBudget)}`;
-}
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 export function capCompactionSummary(
   summary: string,
