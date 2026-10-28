@@ -3,16 +3,16 @@ import { vi } from "vitest";
 // Module mocks shared by the sessions.patch suites; import this file first so the mocks
 // register before the patch applier loads.
 const acpSessionMetaMocks = vi.hoisted(() => ({
-  readAcpSessionMetaForEntry: vi.fn(),
+  readAcpSessionMetaForEntryAsync: vi.fn(),
 }));
 const providerThinkingMocks = vi.hoisted(() => ({
   resolveProviderThinkingProfile:
     vi.fn<typeof import("../plugins/provider-thinking.js").resolveEffectiveThinkingProfile>(),
 }));
 
-// mock-isolation: Script ACP session metadata without reading the OpenClaw state database.
+// mock-isolation: Patch projection fixtures provide ACP metadata without opening real session stores.
 vi.mock("../acp/runtime/session-meta-readonly.js", () => ({
-  readAcpSessionMetaForEntry: acpSessionMetaMocks.readAcpSessionMetaForEntry,
+  readAcpSessionMetaForEntryAsync: acpSessionMetaMocks.readAcpSessionMetaForEntryAsync,
 }));
 
 // This suite owns patch projection; provider policy artifacts have dedicated contract coverage.

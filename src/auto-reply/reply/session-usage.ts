@@ -3,25 +3,17 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { ModelRef } from "../../agents/model-ref-shared.js";
 import { hasBillableUsage, hasNonzeroUsage, type NormalizedUsage } from "../../agents/usage.js";
 import { getRuntimeConfig } from "../../config/config.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type { SessionEntryUsageUpdate } from "../../config/sessions/session-entry-usage.js";
-import type { SessionEntry, SessionSystemPromptReport } from "../../config/sessions/types.js";
-=======
 import { accountSessionGoalUsage } from "../../config/sessions/goals-transitions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
-import {
-  projectSessionEntryUsageUpdate,
-  type SessionEntryUsageUpdate,
-} from "../../config/sessions/session-entry-usage.js";
+import type { SessionEntryUsageUpdate } from "../../config/sessions/session-entry-usage.js";
 import {
   type InternalSessionEntry,
   SESSION_TOTAL_TOKENS_VERSION,
   type SessionEntry,
   type SessionSystemPromptReport,
 } from "../../config/sessions/types.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { logVerbose } from "../../globals.js";
 import { estimateAggregateUsageCost } from "../../utils/usage-format.js";
 
 function resolveNonNegativeTokenCount(value: number | undefined): number | undefined {

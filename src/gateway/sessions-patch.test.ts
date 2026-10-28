@@ -1,12 +1,8 @@
 // Session patch tests cover model/provider edits, subagent patching, provider
 // aliases, model catalog validation, and rejected invalid patch payloads.
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+import "./sessions-patch.mocks.test-support.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { prepareSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
-=======
-import "./sessions-patch.mocks.test-support.js";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -28,29 +24,8 @@ import {
   expectPatchError,
   mainStoreEntry,
 } from "./sessions-patch.test-support.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-
-const acpSessionMetaMocks = vi.hoisted(() => ({
-  readAcpSessionMetaForEntryAsync: vi.fn(),
-}));
-const providerThinkingMocks = vi.hoisted(() => ({
-  resolveProviderThinkingProfile:
-    vi.fn<typeof import("../plugins/provider-thinking.js").resolveEffectiveThinkingProfile>(),
-}));
-
-// mock-isolation: Patch projection fixtures provide ACP metadata without opening real session stores.
-vi.mock("../acp/runtime/session-meta-readonly.js", () => ({
-  readAcpSessionMetaForEntryAsync: acpSessionMetaMocks.readAcpSessionMetaForEntryAsync,
-}));
-
-// This suite owns patch projection; provider policy artifacts have dedicated contract coverage.
-vi.mock("../plugins/provider-thinking.js", () => ({
-  resolveEffectiveThinkingProfile: providerThinkingMocks.resolveProviderThinkingProfile,
-}));
-=======
 const { acpSessionMetaMocks, providerThinkingMocks, resetSessionsPatchProviderThinking } =
   await import("./sessions-patch.mocks.test-support.js");
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 const SUBAGENT_MODEL = "synthetic/hf:moonshotai/Kimi-K2.7-Code";
 const KIMI_SUBAGENT_KEY = "agent:kimi:subagent:child";

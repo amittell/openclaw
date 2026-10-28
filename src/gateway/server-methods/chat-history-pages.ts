@@ -14,12 +14,8 @@ import {
   projectForwardedMessages,
 } from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { createSessionActorTranscriptReader } from "../session-transcript-memory-reader.js";
-=======
-import type { IncognitoSessionHistoryReader } from "../session-history-snapshot.js";
 import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+import { createSessionActorTranscriptReader } from "../session-transcript-memory-reader.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
 import { projectChatHistoryWithReplies } from "./chat-history-reply-messages.js";

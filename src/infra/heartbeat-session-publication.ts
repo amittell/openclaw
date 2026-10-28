@@ -6,12 +6,7 @@ import { makeZeroUsageSnapshot } from "../agents/usage.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  loadExactSessionEntryReadOnly,
-  loadSessionEntryReadOnly,
   patchSessionEntryCore,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   persistSessionTranscriptTurn,
   publishTranscriptUpdate,
 } from "../config/sessions/session-accessor.js";
@@ -316,6 +311,7 @@ export async function prepareHeartbeatTargetAwareness(params: {
     if (!entry?.sessionId) {
       return undefined;
     }
+    const expectedSessionId = entry.sessionId;
     const idempotencyKey = `${HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX}${params.startedAt}:${params.runSessionKey}`;
     return (payload) => {
       try {
@@ -335,13 +331,14 @@ export async function prepareHeartbeatTargetAwareness(params: {
         // in the originating conversation, so a repeated projection is a
         // self-reinforcing re-presentation loop (2026-09-11 incident). The
         // idempotencyKey above is per-execution and cannot dedupe across
-        // runs. The pre-send lifecycle gate already pins target identity, so
-        // the 24h window here is the whole additional policy.
+        // runs. The prepare-time read is this run's snapshot of the target and
+        // the bookkeeping patch below pins its session id, so the 24h window
+        // here is the whole additional policy.
         if (
-          latest.lastHeartbeatAwarenessText === text &&
-          typeof latest.lastHeartbeatAwarenessSentAt === "number" &&
-          latest.lastHeartbeatAwarenessSentAt <= params.startedAt &&
-          params.startedAt - latest.lastHeartbeatAwarenessSentAt < 24 * 60 * 60 * 1000
+          entry.lastHeartbeatAwarenessText === text &&
+          typeof entry.lastHeartbeatAwarenessSentAt === "number" &&
+          entry.lastHeartbeatAwarenessSentAt <= params.startedAt &&
+          params.startedAt - entry.lastHeartbeatAwarenessSentAt < 24 * 60 * 60 * 1000
         ) {
           return;
         }
@@ -357,7 +354,10 @@ export async function prepareHeartbeatTargetAwareness(params: {
         // snapshot predates this run's projection.
         void (async () => {
           try {
-            const current = loadExactSessionEntryReadOnly(scope)?.entry;
+            const current = await readSessionEntryReadOnlyInWorker({
+              ...scope,
+              readConsistency: "latest",
+            });
             if (current?.sessionId !== expectedSessionId) {
               return;
             }

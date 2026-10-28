@@ -28,12 +28,9 @@ export function startPluginServices(
 }
 
 export const createServiceCronHost = (): PluginServiceCronHost => ({
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   readEventSources: vi.fn<PluginServiceCronHost["readEventSources"]>(async () => []),
   runEvent: vi.fn<PluginServiceCronHost["runEvent"]>(async () => ({ kind: "invalidated" })),
   getJob: vi.fn<PluginServiceCronHost["getJob"]>(),
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   enqueueRun: vi.fn<PluginServiceCronHost["enqueueRun"]>(),
   status: vi.fn<PluginServiceCronHost["status"]>(async () => ({
     enabled: true,
@@ -42,10 +39,7 @@ export const createServiceCronHost = (): PluginServiceCronHost => ({
     storage: "sqlite",
     sqlitePath: "/synthetic/openclaw.sqlite",
     jobs: 0,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
     reauthorizationRequired: 0,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     nextWakeAtMs: null,
   })),
   list: vi.fn<PluginServiceCronHost["list"]>(),

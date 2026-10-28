@@ -5,12 +5,8 @@ import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-con
 import { createRestartRecoveryOperatorSource } from "../../agents/operator-run-recovery-source.js";
 import {
   buildRestartRecoveryClaimCleanupPatch,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   getRestartRecoveryPendingFinalSourceRunId,
-=======
-  canReplaceAbortedRestartRecoveryClaim,
   hasLiveRestartRecoveryDeliveryClaim,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   hasRestartRecoverySourceClaim,
   hasRestartRecoveryTerminalRun,
   isMainRestartRecoveryCandidate,

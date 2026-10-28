@@ -55,12 +55,8 @@ import {
   resolveDirectiveTouchedSessionFields,
   withOptions,
 } from "./directive-handling.shared.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
 import { resolveTemperatureQueryReply } from "./directive-handling.temperature-query.js";
 import { appendTemperatureAck } from "./directive-handling.temperature.js";
-import type { ThinkLevel } from "./directives.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   findSelectedCatalogEntry,
   prepareModelSelectionRuntime,
@@ -655,33 +651,9 @@ export async function handleDirectiveOnly(
       parts.push(`Runtime set to ${modelRuntimeResolution.runtime} for this session.`);
     }
   }
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  if (directives.hasQueueDirective && directives.queueMode) {
-    addSystemAck(`Queue mode set to ${directives.queueMode}.`);
-  } else if (directives.hasQueueDirective && directives.queueReset) {
-    addSystemAck("Queue mode reset to default.");
-  }
-  if (directives.hasQueueDirective && typeof directives.debounceMs === "number") {
-    addSystemAck(`Queue debounce set to ${directives.debounceMs}ms.`);
-  }
-  if (directives.hasQueueDirective && typeof directives.cap === "number") {
-    addSystemAck(`Queue cap set to ${directives.cap}.`);
-  }
-  if (directives.hasQueueDirective && directives.dropPolicy) {
-    addSystemAck(`Queue drop set to ${directives.dropPolicy}.`);
-  }
-=======
-  // Report the model change before the thinking remap it triggered: the remap is a
-  // consequence of the model switch, so the cause should be announced first.
-  if (shouldRemapUnsupportedThinkLevel && remappedUnsupportedThinkLevel) {
-    parts.push(
-      `Thinking level set to ${remappedUnsupportedThinkLevel} (${nextThinkLevel} not supported for ${resolvedProvider}/${resolvedModel}).`,
-    );
-  }
   // Fork: queue acks live in directive-handling.queue-ack.ts (line cap); each is
   // prefixSystemMessage(...), the same as 10.5's inline addSystemAck.
   appendQueueDirectiveAcks(directives, parts);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   if (fastModeChanged && !params.persistenceState) {
     const nextFastMode = directives.clearFastMode ? fastModeState.mode : sessionEntry.fastMode;
     enqueueSystemEvent(formatFastModeConfirmation(nextFastMode), {

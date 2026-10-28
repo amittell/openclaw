@@ -12,11 +12,8 @@ import { resolveInternalTurnTranscript } from "../internal-turn-source.js";
 import { buildInboundMediaNoteProjection } from "../media-note.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import { appendChannelPromptContext } from "./channel-prompt-context.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { CURRENT_MESSAGE_MARKER } from "./history.js";
-=======
 import { projectTelegramCurrentMessageCarrier } from "./inbound-meta.current-message.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 
 const ROOM_EVENT_PROMPT = "[OpenClaw room event]";
 const ROOM_EVENT_PARTICIPATION_RULE =
@@ -153,28 +150,24 @@ export function buildReplyPromptEnvelopeBase(
   const resumableRoomEventContext = isRoomEvent
     ? buildRoomEventContext(buildResumableRoomContext(inboundUserContext), deliveryDirective)
     : undefined;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  const currentInboundContextText = isRoomEvent
-    ? buildRoomEventContext(inboundUserContext, deliveryDirective)
-    : (params.inboundUserContextPromptJoiner === " "
-        ? [deliveryDirective, inboundUserContext]
-        : [inboundUserContext, deliveryDirective]
-      )
-        .filter(Boolean)
-        .join("\n\n");
-=======
-  const renderCurrentInboundContext = (userContext: string) =>
+  // A space joiner binds the context's trailing inline header to the user body,
+  // so the delivery directive goes first there (#166869).
+  const renderCurrentInboundContext = (userContext: string, promptJoiner?: string) =>
     isRoomEvent
       ? buildRoomEventContext(userContext, deliveryDirective)
-      : [userContext, deliveryDirective].filter(Boolean).join("\n\n");
-  const currentInboundContextText = renderCurrentInboundContext(inboundUserContext);
+      : (promptJoiner === " " ? [deliveryDirective, userContext] : [userContext, deliveryDirective])
+          .filter(Boolean)
+          .join("\n\n");
+  const currentInboundContextText = renderCurrentInboundContext(
+    inboundUserContext,
+    params.inboundUserContextPromptJoiner,
+  );
   // Version-3 sessions send the legacy text as its own carrier message, where
   // no prompt joiner completes Telegram's bare "#<id>:" header.
   const carrierText =
     carrierUserContext === inboundUserContext
       ? undefined
       : renderCurrentInboundContext(carrierUserContext);
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   const resetModelBody = params.isBareSessionReset
     ? [
         params.inboundUserContext,

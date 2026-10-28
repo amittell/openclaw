@@ -4,12 +4,8 @@ import type {
   SessionTranscriptDisplayDeltaResult,
   SessionTranscriptMessageByIdOptions,
 } from "../../gateway/session-transcript-read.types.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { SOURCE_PAGE_MAX_BYTES } from "../../gateway/session-transcript-source-pages.js";
 import { registerNodeSqliteDisposeCallback } from "../../infra/kysely-sync-cache-state.js";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { hasUncommittedSqliteWrites } from "../../infra/sqlite-schema-facts.js";
 import {

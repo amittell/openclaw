@@ -737,10 +737,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sessions/agent-session-code-mode-source.test.ts",
   "src/agents/sessions/agent-session-compaction.admission.test.ts",
   "src/agents/sessions/agent-session-compaction.degraded-reload.test.ts",
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
   "src/agents/sessions/agent-session-compaction.safeguard-budget.test.ts",
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   "src/agents/sessions/agent-session-compaction.test.ts",
   "src/agents/sessions/agent-session-runtime-projection.test.ts",
   "src/agents/sessions/agent-session.reclamation-admission.test.ts",

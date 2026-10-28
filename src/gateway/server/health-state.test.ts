@@ -63,15 +63,6 @@ vi.mock("../../config/io.js", async (importOriginal) => ({
   getRuntimeConfig: getRuntimeConfigMock,
 }));
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-vi.mock("../../config/runtime-snapshot.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/runtime-snapshot.js")>()),
-  getRuntimeConfigAppliedHash: () => "internal-applied-hash",
-  getRuntimeConfigSourceSnapshot: () => null,
-}));
-
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateAvailable: getUpdateAvailableMock,
   getUpdateSchedule: getUpdateScheduleMock,

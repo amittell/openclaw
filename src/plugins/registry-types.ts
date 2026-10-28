@@ -117,12 +117,9 @@ export type PluginToolRegistration = PluginRegistrationOwner & {
   names: string[];
   declaredNames?: ReadonlySet<string>;
   optional: boolean;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   workspaceAccess?: boolean | "execute";
-=======
   /** Registered owner-only: non-owner turns receive refusing stubs of these tools. */
   ownerOnly?: true;
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   /** Loader-owned provenance. Missing values are conservative legacy registrations. */
   origin?: PluginOrigin;
 };

@@ -1,17 +1,10 @@
 import type { AgentMessage, SessionTreeEntry } from "@openclaw/agent-core";
 import { sql, type AliasableExpression } from "kysely";
-import { iterateSessionContextMessages } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-  iterateSessionContextEntries,
   iterateSessionContextMessages,
-  projectSessionEntryMessage,
   withCompactionCheckpointHandle,
 } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
-  classifyToolUseResultPairing,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   isSyntheticMissingToolResult,
   SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY,
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";

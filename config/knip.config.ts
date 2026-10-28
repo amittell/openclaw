@@ -856,7 +856,6 @@ const config = {
     // asserted by the focused Beam mirror tests; production wires only the service.
     "extensions/beam/src/mirror.ts": ["exports", "types"],
     "src/infra/heartbeat-wake.ts": ["exports"],
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
     // Lazy loaders import these modules opaquely (media-understanding runner, config model
     // validation), which Knip counts as using every export until a bare namespace reference
     // disables that shortcut: plugin-test-runtime's isolated-completion fixture passes these
@@ -866,13 +865,11 @@ const config = {
     "src/agents/model-auth-runtime.ts": ["nsExports"],
     "src/agents/model-auth-runtime-shared.ts": ["nsExports"],
     "src/agents/prepared-model-runtime.ts": ["nsExports"],
-=======
     // Module-global reset helpers exist only to isolate the restart-trace and
     // healthz-shutdown-log singletons between focused gateway tests; there is
     // no production caller, but the state they reset is production state.
     "src/gateway/restart-trace.ts": ["exports"],
     "src/gateway/server-http.ts": ["exports"],
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   },
   workspaces: {
     ".": {

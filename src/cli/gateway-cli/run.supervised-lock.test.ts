@@ -1,14 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConfiguredGatewayLocalProbe } from "../../gateway/local-http-probe.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
 import {
   resetGatewayRestartTraceForTest,
   startGatewayRestartTrace,
 } from "../../gateway/restart-trace.js";
-import { resolveGatewayRuntimeConfig } from "../../gateway/server-runtime-config.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { GatewayLockError } from "../../infra/gateway-lock.js";
 import { GatewayStateOwnerContentionError } from "../../infra/gateway-state-owner.js";
 import { testing } from "./run.test-support.js";

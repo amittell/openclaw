@@ -6,6 +6,7 @@ import { readAssistantDisplayContent } from "../../shared/assistant-display-cont
 import { appendChatCanvasBlocksToMessage } from "../chat-display-projection.canvas.js";
 import { attachManagedOutgoingMediaToMessage } from "../managed-image-attachments.js";
 import { loadGatewaySessionEntryReadOnlyInWorker } from "../session-utils-store-worker.js";
+import { formatForLog } from "../ws-log.js";
 import {
   combineNonStreamingReplyParts,
   extractAssistantDisplayText,

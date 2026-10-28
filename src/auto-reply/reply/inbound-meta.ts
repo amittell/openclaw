@@ -12,17 +12,8 @@ import type { EnvelopeFormatOptions } from "../envelope.js";
 import { formatAgentEnvelopeTimestamp } from "../envelope.js";
 import { getRequesterProfile } from "../requester-profile.js";
 import type { TemplateContext } from "../templating.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import {
-  formatContextJsonBlock,
-  MAX_CONTEXT_JSON_STRING_CHARS,
-  neutralizeMarkdownFences,
-  selectInboundHistoryContext,
-} from "./channel-prompt-context.js";
-import { CURRENT_MESSAGE_MARKER } from "./history.js";
-=======
 import { formatContextJsonBlock, selectInboundHistoryContext } from "./channel-prompt-context.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+import { CURRENT_MESSAGE_MARKER } from "./history.js";
 import { markInboundContextLabel } from "./inbound-context-marker.js";
 import { formatTelegramCurrentMessageContext } from "./inbound-meta.current-message.js";
 import {

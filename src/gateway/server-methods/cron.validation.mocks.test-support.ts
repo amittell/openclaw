@@ -1,18 +1,13 @@
 import { vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CronRunRecord } from "../../cron/store/run-history.types.js";
-import type { CronCreatorSessionLookup } from "./cron-creator-session.test-support.js";
+import { loadGatewaySessionEntry } from "./cron-session-reader.test-support.js";
 
 // Module mocks shared by the cron method validation suites; import this file first so
-// the mocks register before the cron handlers load.
+// the mocks register before the cron handlers load. The session lookup mock is
+// cron-session-reader.test-support.ts's, re-exported here.
 const getRuntimeConfig = vi.hoisted(() =>
   vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
-);
-const loadGatewaySessionEntry = vi.hoisted(() =>
-  vi.fn((sessionKey: string): CronCreatorSessionLookup => ({
-    canonicalKey: sessionKey,
-    entry: undefined,
-  })),
 );
 const cronRunRecordsOverride = vi.hoisted(() =>
   vi.fn<
@@ -52,10 +47,12 @@ vi.mock("../../config/config.js", async () => {
   };
 });
 
-// mock-isolation: Validation fixtures supply session rows; real session stores stay unread.
-vi.mock("../session-utils.js", () => ({
-  loadSessionEntry: loadGatewaySessionEntry,
-  loadGatewaySessionEntryReadOnly: loadGatewaySessionEntry,
+// Credential capture is exercised by cron.inference-binding.test.ts and
+// isolated-agent.auth-continuity.integration.test.ts. These delivery/management
+// validation fixtures intentionally have no inference account.
+vi.mock("../../cron/inference-binding.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../cron/inference-binding.runtime.js")>()),
+  captureCronInferenceBinding: async () => undefined,
 }));
 
 // mock-isolation: Validation fixtures do not read live session delivery metadata.

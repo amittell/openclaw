@@ -15,23 +15,13 @@ import type {
   SessionArtifactReadQuery,
   SessionArtifactReadResult,
 } from "./session-artifact-read.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import { aggregateSessionTranscriptUsage } from "./session-transcript-derived-readers.js";
 import { createSessionActorTranscriptReader } from "./session-transcript-memory-reader.js";
-=======
-import {
-  createIncognitoSessionHistoryReader,
-  type IncognitoSessionHistoryReader,
-} from "./session-history-snapshot.js";
-import {
-  createSessionTranscriptReader,
-  projectSqliteHistoryEvents,
-} from "./session-transcript-read-kernel.js";
+import { projectSqliteHistoryEvents } from "./session-transcript-read-kernel.js";
 import {
   resolveTranscriptReadTarget,
   toTranscriptReadScope,
 } from "./session-transcript-read-target.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type {
   ReadRecentSessionMessagesResult,
   ReadSessionMessagesAsyncOptions,

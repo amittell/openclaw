@@ -28,7 +28,7 @@ import type { PluginInstallLogger } from "./install-types.js";
 import {
   clearLoadInstalledPluginIndexInstallRecordsCache,
   loadInstalledPluginIndexInstallRecords,
-  readPersistedInstalledPluginIndexInstallRecords,
+  readPersistedInstalledPluginIndexInstallRecordsAsync,
   recordPluginInstallInRecords,
   withoutPluginInstallRecords,
 } from "./installed-plugin-index-records.js";
@@ -224,7 +224,7 @@ async function persistPluginInstallOwned(
       async () => {
         const [records, persisted] = await Promise.all([
           loadInstalledPluginIndexInstallRecords(),
-          Promise.resolve(readPersistedInstalledPluginIndexInstallRecords()),
+          readPersistedInstalledPluginIndexInstallRecordsAsync(),
         ]);
         return { installRecords: records, persistedInstallRecords: persisted };
       },

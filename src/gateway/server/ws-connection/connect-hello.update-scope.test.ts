@@ -2,17 +2,10 @@ import { EventEmitter, once } from "node:events";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import type { HelloOk } from "../../../../packages/gateway-protocol/src/index.js";
-=======
 import { GATEWAY_CLIENT_CAPS } from "../../../../packages/gateway-protocol/src/client-info.js";
-import {
-  GATEWAY_SERVER_CAPS,
-  type HelloOk,
-} from "../../../../packages/gateway-protocol/src/index.js";
+import type { HelloOk } from "../../../../packages/gateway-protocol/src/index.js";
 import { closedObject } from "../../../../packages/gateway-protocol/src/schema/closed-object.js";
 import { SnapshotSchema } from "../../../../packages/gateway-protocol/src/schema/snapshot.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import * as systemPresence from "../../../infra/system-presence.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -26,22 +19,16 @@ import type { GatewayWsClient } from "../ws-types.js";
 const {
   buildGatewaySnapshotMock,
   emitGatewayAuthSecurityEventMock,
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  getSessionRowProjectionMock,
-=======
   getHealthCacheMock,
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+  getSessionRowProjectionMock,
   listControlUiPluginTabsMock,
   listControlUiPluginWidgetKindsMock,
   readCurrentRuntimeConfigHealthMock,
   redeemDeviceBootstrapTokenProfileMock,
 } = vi.hoisted(() => ({
   emitGatewayAuthSecurityEventMock: vi.fn(),
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  getSessionRowProjectionMock: vi.fn(),
-=======
   getHealthCacheMock: vi.fn<() => HelloOk["snapshot"]["health"] | null>(() => null),
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+  getSessionRowProjectionMock: vi.fn(),
   listControlUiPluginTabsMock: vi.fn((_scopes: readonly string[]) => []),
   listControlUiPluginWidgetKindsMock: vi.fn((_scopes: readonly string[]) => []),
   readCurrentRuntimeConfigHealthMock: vi.fn<() => HelloOk["snapshot"]["health"]["runtimeConfig"]>(

@@ -27,10 +27,7 @@ import {
   type PendingInputRequest,
 } from "./session-accessor.pending-input-request.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import {
-  loadSessionEntryReadOnly,
-  patchSessionEntryCore,
-} from "./session-accessor.sqlite-entry.js";
+import { patchSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import {
   prepareCurrentSessionPendingInputDedupeRecovery,
   hasRegisteredSessionPendingInputOwner,
@@ -54,6 +51,7 @@ import {
   captureSessionActorStorageOwner,
   runWithSessionActorStorage,
 } from "./session-actor-storage-binding.js";
+import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { getSessionInputActor } from "./session-input-actor.js";
 import {
   withCurrentPendingInputAuthority,
@@ -258,31 +256,19 @@ export async function recordSessionPendingInputCompletedTurn(
 }
 
 /**
- * The session row the committed-turn terminal test reads after the stage snapshot. A captured
- * incognito actor owns its namespace, so its row is read through that actor; the host must not
- * open the private database itself.
+ * The session row the committed-turn terminal test reads after the stage snapshot. The worker
+ * reader answers a captured session actor from its memory owner, so the host never opens an
+ * actor-owned namespace itself.
  */
-async function readCommittedTurnSessionEntry(
+function readCommittedTurnSessionEntry(
   scope: PendingInputScope,
   sessionKey: string,
   assertCurrent: () => void,
 ): Promise<SessionEntry | undefined> {
-  const incognito = scope.incognito;
-  if (!incognito) {
-    return loadSessionEntryReadOnly({ ...scope, readConsistency: "latest" });
-  }
-  const read = await incognito.actor.sessions.read(
-    {
-      assertCurrent: () => {
-        assertCurrent();
-        incognito.authority.assertCurrent();
-      },
-    },
-    { sessionKey },
-    incognito.admissionSignal,
+  return readSessionEntryReadOnlyInWorker(
+    { ...scope, sessionKey, readConsistency: "latest" },
+    assertCurrent,
   );
-  read.snapshot.assertCurrent();
-  return read.entry;
 }
 
 type PendingInputStageOptions = PendingInputRequest & {

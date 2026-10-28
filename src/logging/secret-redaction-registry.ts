@@ -22,30 +22,7 @@ const state = resolveGlobalSingleton<SecretRedactionRegistryState>(
   }),
 );
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 type SecretRedactionRegistrySnapshot = { values: readonly string[] };
-=======
-export type SecretRedactionRegistrySnapshot = { revision: number; values: readonly string[] };
-const registrySnapshots = resolveGlobalSingleton(
-  Symbol.for("openclaw.secretRedactionRegistrySnapshots"),
-  () =>
-    new AsyncLocalStorage<{
-      snapshot: SecretRedactionRegistrySnapshot;
-      values: ReadonlySet<string>;
-      redactor?: SecretValueRedactor;
-      longestValueLength?: number;
-    }>(),
-);
-
-/** A trusted worker task borrows captured policy without mutating its process registry. */
-export function withSecretRedactionRegistrySnapshot<T>(
-  snapshot: SecretRedactionRegistrySnapshot,
-  run: () => T,
-): T {
-  return registrySnapshots.run({ snapshot, values: new Set(snapshot.values) }, run);
-}
-
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 function invalidateMatcher(): void {
   state.registeredValueRedactor = undefined;
   state.longestRegisteredValueLength = undefined;
@@ -96,12 +73,6 @@ export function hasRegisteredSecretValuesForRedaction(): boolean {
  * text redacted without its tail must keep this much past a cut to mask a value that starts before it.
  */
 export function getLongestRegisteredSecretLength(): number {
-  // A borrowed snapshot is the registry the redactor matches against inside its scope.
-  const scoped = registrySnapshots.getStore();
-  if (scoped) {
-    scoped.longestValueLength ??= longestValueLength(scoped.values);
-    return scoped.longestValueLength;
-  }
   state.longestRegisteredValueLength ??= longestValueLength(state.registeredValues.keys());
   return state.longestRegisteredValueLength;
 }

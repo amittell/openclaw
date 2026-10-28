@@ -46,11 +46,8 @@ import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
 import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
+import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
 import { registerCronRunWaitTests } from "./cron-run-wait.test-support.js";
-import { loadGatewaySessionEntry } from "./cron-session-reader.test-support.js";
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import {
   createCronTestContext,
   callerClientWithCronCreatorAuthority,
@@ -76,65 +73,6 @@ import type { GatewayClient } from "./types.js";
 const cronLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness({ prefix: "cron-gateway-validation-" });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-const getRuntimeConfig = vi.hoisted(() =>
-  vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
-);
-const cronRunRecordsOverride = vi.hoisted(() =>
-  vi.fn<
-    (
-      ...args: Parameters<typeof import("../../cron/store/read-only.js").readCronRunRecords>
-    ) => Promise<CronRunRecord[]> | undefined
-  >(),
-);
-const resolveCronDeliveryPreview = vi.hoisted(() =>
-  vi.fn(async () => ({ label: "not requested", detail: "not requested" })),
-);
-const resolveCronDeliveryPreviews = vi.hoisted(() =>
-  vi.fn(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-    Object.fromEntries(
-      jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-    ),
-  ),
-);
-
-vi.mock("../../cron/store/read-only.js", async () => {
-  const actual = await vi.importActual<typeof import("../../cron/store/read-only.js")>(
-    "../../cron/store/read-only.js",
-  );
-  return {
-    ...actual,
-    readCronRunRecords: (...args: Parameters<typeof actual.readCronRunRecords>) =>
-      cronRunRecordsOverride(...args) ?? actual.readCronRunRecords(...args),
-  };
-});
-
-vi.mock("../../config/config.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../config/config.js")>("../../config/config.js");
-  return {
-    ...actual,
-    getRuntimeConfig,
-  };
-});
-
-// Credential capture is exercised by cron.inference-binding.test.ts and
-// isolated-agent.auth-continuity.integration.test.ts. These delivery/management
-// validation fixtures intentionally have no inference account.
-vi.mock("../../cron/inference-binding.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../cron/inference-binding.runtime.js")>()),
-  captureCronInferenceBinding: async () => undefined,
-}));
-
-// mock-isolation: Validation fixtures do not read live session delivery metadata.
-vi.mock("../../cron/delivery-preview.js", () => ({
-  resolveCronDeliveryFailurePreview: async () => undefined,
-  resolveCronDeliveryPreview,
-  resolveCronDeliveryPreviews,
-}));
-
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { cronHandlers } from "./cron.js";
 const {
   cronRunRecordsOverride,

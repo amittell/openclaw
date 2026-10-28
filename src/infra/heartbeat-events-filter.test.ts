@@ -98,20 +98,6 @@ describe("heartbeat event prompts", () => {
       ],
       unexpected: ["no command output was found"],
     },
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-=======
-    {
-      name: "keeps timeout retry guidance after captured output",
-      events: [
-        appendExecTimeoutRetryGuidance(
-          "Exec failed (abc12345, signal SIGTERM) :: partial output",
-          "overall-timeout",
-        ),
-      ],
-      opts: undefined,
-      expected: ["partial output", "Verify the resulting state before retrying"],
-      unexpected: ["without captured stdout/stderr"],
-    },
     {
       name: "suppresses metadata-only signal-killed exec completions",
       events: ["Exec failed (abc12345, signal SIGTERM)"],
@@ -119,7 +105,6 @@ describe("heartbeat event prompts", () => {
       expected: ["no command output was found", "Reply NO_REPLY only"],
       unexpected: ["Please relay the command output to the user", "abc12345"],
     },
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   ])("$name", ({ events, opts, expected, unexpected }) => {
     const prompt = buildExecEventPrompt(events, opts);
     for (const part of expected) {
@@ -162,18 +147,7 @@ describe("heartbeat event classification", () => {
     expect(isCronSystemEvent({ text: value })).toBe(expected);
   });
 
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-  it.each([{ value: "exec finished: ok", expected: true }])(
-    "classifies relayable exec completion events for %j",
-    ({ value, expected }) => {
-      expect(isRelayableExecCompletionEvent(value)).toBe(expected);
-    },
-  );
-=======
   it.each([
-    { value: "Exec completed (abc12345, code 0)", expected: false },
-    { value: "Exec completed (abc12345, code 0) :: some output", expected: true },
-    { value: "Exec failed (abc12345, code 1)", expected: true },
     { value: "Exec failed (abc12345, signal SIGTERM)", expected: false },
     { value: "Exec failed (abc12345, signal SIGTERM) :: error output", expected: true },
     { value: "Exec failed (abc12345, signal 15)", expected: false },
@@ -181,7 +155,6 @@ describe("heartbeat event classification", () => {
   ])("classifies relayable exec completion events for %j", ({ value, expected }) => {
     expect(isRelayableExecCompletionEvent(value)).toBe(expected);
   });
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 });
 
 describe("isExecCompletionEvent", () => {

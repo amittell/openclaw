@@ -16,7 +16,6 @@ import { readSessionActorTransactionState } from "./session-actor-transaction.js
 import { projectTranscriptNavigationSql } from "./session-model-context-projection.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import {
   PREPARED_ASSISTANT_MAX_NEWER_MESSAGES,
   PREPARED_ASSISTANT_MAX_NEWER_BYTES,
@@ -24,8 +23,6 @@ import {
   preparedAssistantMessagesPreserveTurn,
   resolveTranscriptAppendParent,
 } from "./transcript-append-parent.js";
-=======
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { transcriptEventNavigationSql } from "./transcript-payload.js";
 import {
   isSessionTranscriptLeafControl,
@@ -177,26 +174,7 @@ export function canRebasePreparedAssistantInTransaction(
         .limit(PREPARED_ASSISTANT_MAX_NEWER_MESSAGES),
     ),
   );
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   return preparedAssistantMessagesPreserveTurn(newerRoles, admittedUserId, (row) => {
-=======
-  return newerRoles.every((row) => {
-    if (
-      row.message_role !== "user" ||
-      row.event_id === admittedUserId ||
-      row.context_free_command === 1
-    ) {
-      return true;
-    }
-    // Final Talk speech records history without admitting another agent turn.
-    // Both writer markers must match; other provenance still faces the fence.
-    if (
-      row.provenance_kind === REALTIME_VOICE_PROVENANCE.kind &&
-      row.provenance_source_channel === REALTIME_VOICE_PROVENANCE.sourceChannel
-    ) {
-      return true;
-    }
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
     const answer = questionAnswers.find((input) => input.entryId === row.event_id);
     return (
       answer !== undefined &&

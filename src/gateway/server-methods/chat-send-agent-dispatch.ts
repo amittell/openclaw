@@ -110,12 +110,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     selectedAgent,
     sessionKey,
   } = session;
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
   const { clientInfo, p, supportsTaskSuggestions } = request;
-=======
-  const { clientInfo, p, reconnectResumeRequested, supportsTaskSuggestions } = request;
   const turnTarget = { agentId, expectedSessionId: admittedSessionId, sessionKey, storePath };
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
   const {
     accountId,
     ctx,

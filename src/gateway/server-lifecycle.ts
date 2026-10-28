@@ -27,11 +27,8 @@ import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { prepareControlUiSessionPrRead } from "./control-ui-session-pr-read.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import { retireDeviceTokenClients } from "./device-token-client-lifecycle.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { publishHooksTokenEnvKey } from "./hooks.js";
-=======
 import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+import { publishHooksTokenEnvKey } from "./hooks.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-method-policy.js";
 import { startNodeConnectionNotifications } from "./node-connection-notifications.js";
 import { waitForNodeWorkerSupervisor } from "./node-registry-private.js";

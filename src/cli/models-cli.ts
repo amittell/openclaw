@@ -1,13 +1,10 @@
 // Commander registration for model catalog, status, auth, alias, and fallback commands.
 import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
 import type { ModelsAuthSetApiKeyResult } from "../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
-=======
 import { validateProfileId } from "../agents/auth-profiles/sanitize.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
 import { formatDocsHelp } from "./help-format.js";
 import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { registerModelsAccountsCli } from "./models-accounts-cli.js";

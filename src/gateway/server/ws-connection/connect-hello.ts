@@ -40,11 +40,8 @@ import {
   type SetupHandoff,
 } from "../../device-pair-setup-completion.js";
 import { canReadDetailedUpdateMetadata } from "../../events.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { getRemoteControlUiIngressContext } from "../../ingress-attribution.js";
-=======
 import { omitRuntimeConfigHealthForClient } from "../../health/runtime-config-cap.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+import { getRemoteControlUiIngressContext } from "../../ingress-attribution.js";
 import { ADMIN_SCOPE } from "../../method-scopes.js";
 import { scheduleNodeConnectionNotification } from "../../node-connection-notifications.js";
 import { operatorSessionCap } from "../../operator-role-policy.js";

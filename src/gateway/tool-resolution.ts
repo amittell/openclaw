@@ -22,12 +22,8 @@ import {
   createSwarmCollectorWriteAuthority,
   resolveSwarmCollectorToolContext,
 } from "../agents/openclaw-tools.swarm.js";
-<<<<<<< 5a94eab2146e558b3ebcd41cb174fc5adc469c2a
-import { resolveSandboxRuntimeStatusAsync } from "../agents/sandbox/runtime-status.js";
-=======
 import { isOwnerOnlyToolStub } from "../agents/owner-only-tool-stub-marker.js";
-import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
->>>>>>> eb8762e11097ab2b75dbb0e571348998a9d2ea31
+import { resolveSandboxRuntimeStatusAsync } from "../agents/sandbox/runtime-status.js";
 import { createScheduledMessageInvocationAdmission } from "../agents/scheduled-message-invocation.js";
 import { resolveScheduledToolCallerContext } from "../agents/scheduled-tool-policy.js";
 import { buildDeclaredToolAllowlistContext } from "../agents/tool-policy-declared-context.js";
