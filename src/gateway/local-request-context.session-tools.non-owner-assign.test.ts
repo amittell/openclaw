@@ -12,6 +12,7 @@ import {
 } from "../agents/tools/gateway-caller-context.js";
 import { createSessionsTool } from "../agents/tools/sessions-tool.js";
 import type { CliDeps } from "../cli/deps.types.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
@@ -90,6 +91,8 @@ function withChannelTurnFixture(
       ...(tools ? { tools } : {}),
     };
     await state.writeConfig(cfg);
+    // beta.4 reads a prepared runtime config, as local-request-context.session-archive.test.ts sets.
+    setRuntimeConfigSnapshot(cfg);
     for (const [{ agentId, sessionKey }, sessionId] of [
       [REQUESTER, REQUESTER_ID],
       [SAME_AGENT, SAME_AGENT_ID],

@@ -394,6 +394,11 @@ describe("models cli", () => {
   );
 
   it("rejects invalid --profile-id for paste-token", async () => {
+    // The same exit spy as beta.4's "rejects parent --agent" cases.
+    vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation((code) => {
+      throw new ExitError(code);
+    });
     await expect(
       runModelsCommand([
         "models",
@@ -404,8 +409,9 @@ describe("models cli", () => {
         "--profile-id",
         "bad id",
       ]),
-    ).rejects.toThrow(/process\.exit unexpectedly called with "1"/);
+    ).rejects.toMatchObject({ code: 1 });
 
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(modelsAuthPasteTokenCommand).not.toHaveBeenCalled();
   });
 

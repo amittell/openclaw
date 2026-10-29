@@ -8,7 +8,10 @@ import {
 } from "./restart-recovery-state.js";
 import { preparePendingInputMessage } from "./session-accessor.pending-input-request.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import { patchSessionEntryCore } from "./session-accessor.sqlite-entry.js";
+import {
+  loadSessionEntryReadOnly,
+  patchSessionEntryCore,
+} from "./session-accessor.sqlite-entry.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import type { PendingInputScope } from "./session-pending-input-store.js";
 import type { SessionEntry } from "./types.js";
@@ -58,19 +61,23 @@ export async function recordSessionPendingInputCompletedTurn(
 }
 
 /**
- * The session row the committed-turn terminal test reads after the stage snapshot. The worker
- * reader answers a captured session actor from its memory owner, so the host never opens an
- * actor-owned namespace itself.
+ * The session row the committed-turn terminal test reads after the stage snapshot, at the
+ * latest committed state: a writer outside this admission (another process) may have moved it.
+ * A session actor's namespace is read through its memory owner (the worker reader serves it),
+ * so the host never opens an actor-owned store itself.
  */
-function readCommittedTurnSessionEntry(
+async function readCommittedTurnSessionEntry(
   scope: PendingInputScope,
   sessionKey: string,
   assertCurrent: () => void,
 ): Promise<SessionEntry | undefined> {
-  return readSessionEntryReadOnlyInWorker(
-    { ...scope, sessionKey, readConsistency: "latest" },
-    assertCurrent,
-  );
+  if (scope.sessionActor) {
+    return await readSessionEntryReadOnlyInWorker(
+      { ...scope, sessionKey, readConsistency: "latest" },
+      assertCurrent,
+    );
+  }
+  return loadSessionEntryReadOnly({ ...scope, sessionKey, readConsistency: "latest" });
 }
 
 /**

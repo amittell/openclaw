@@ -47,6 +47,7 @@ import { createDirectChatContext } from "../server-chat.agent-events.test-helper
 import * as cronCallerScope from "./cron-caller-scope.js";
 import { registerCronCreatorSessionTests } from "./cron-creator-session.test-support.js";
 import { registerCronRunWaitTests } from "./cron-run-wait.test-support.js";
+import { loadGatewaySessionEntry } from "./cron-session-reader.test-support.js";
 import {
   createCronTestContext,
   callerClientWithCronCreatorAuthority,
@@ -76,7 +77,6 @@ import { cronHandlers } from "./cron.js";
 const {
   cronRunRecordsOverride,
   getRuntimeConfig,
-  loadGatewaySessionEntry,
   resetCronValidationMocks,
   resolveCronDeliveryPreview,
 } = await import("./cron.validation.mocks.test-support.js");

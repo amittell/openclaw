@@ -12,6 +12,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { isRestartRecoveryClaimChangedError } from "../../infra/agent-lifecycle-error.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
+import { ReplyRunAlreadyActiveError } from "./reply-run-registry.contracts.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
 import { createReplyRecoveryActorFixture } from "./restart-recovery-claim.test-support.js";
 
@@ -93,7 +94,12 @@ describe("createReplyRestartRecoveryClaimController restart-orphaned claims", ()
 
     if (live) {
       const outcome = await controller.admitUserTurn(recorder).catch((error: unknown) => error);
-      expect(isRestartRecoveryClaimChangedError(outcome)).toBe(true);
+      // beta.4 refuses the competing message one step earlier, at the live run's reply
+      // admission; 10.8 refused it at the claim. Either way the claim row is left as it was.
+      expect(
+        isRestartRecoveryClaimChangedError(outcome) ||
+          outcome instanceof ReplyRunAlreadyActiveError,
+      ).toBe(true);
       expect(loadSessionEntry(scope)).toMatchObject({
         restartRecoveryDeliveryRunId: "claimed-run",
         restartRecoveryDeliverySourceRunId: "telegram-update-old",

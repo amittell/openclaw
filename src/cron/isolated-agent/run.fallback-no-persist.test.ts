@@ -22,6 +22,8 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
         skillsSnapshot: undefined,
         model: "gpt-5.4",
         modelProvider: "openai",
+        // The runtime preparation resolves; beta.4 drops context facts on a harness change.
+        agentHarnessId: "openclaw",
         contextTokens: 256_000,
       },
     });
@@ -37,6 +39,7 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
             agentMeta: {
               provider: "anthropic",
               model: "claude-sonnet-4-20250514",
+              agentHarnessId: "openclaw",
               usage: { input: 100, output: 50 },
             },
           },
@@ -72,6 +75,8 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
         skillsSnapshot: undefined,
         model: "gpt-5.4",
         modelProvider: "openai",
+        // The runtime preparation resolves; beta.4 drops context facts on a harness change.
+        agentHarnessId: "openclaw",
         contextTokens: 256_000,
       },
     });
@@ -87,6 +92,7 @@ describe("runCronIsolatedAgentTurn — fallback model not persisted", () => {
             agentMeta: {
               provider: "openai",
               model: "gpt-5.4",
+              agentHarnessId: "openclaw",
               usage: { input: 100, output: 50 },
             },
           },

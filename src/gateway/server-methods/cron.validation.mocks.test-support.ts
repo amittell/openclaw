@@ -5,7 +5,8 @@ import { loadGatewaySessionEntry } from "./cron-session-reader.test-support.js";
 
 // Module mocks shared by the cron method validation suites; import this file first so
 // the mocks register before the cron handlers load. The session lookup mock is
-// cron-session-reader.test-support.ts's, re-exported here.
+// cron-session-reader.test-support.ts's: suites import it from there (a re-export of an
+// import does not survive vitest's mock hoisting), and the reset below covers it.
 const getRuntimeConfig = vi.hoisted(() =>
   vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
 );
@@ -65,7 +66,6 @@ vi.mock("../../cron/delivery-preview.js", () => ({
 export {
   cronRunRecordsOverride,
   getRuntimeConfig,
-  loadGatewaySessionEntry,
   resolveCronDeliveryPreview,
   resolveCronDeliveryPreviews,
 };
