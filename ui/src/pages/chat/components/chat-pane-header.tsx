@@ -34,7 +34,10 @@ import { ChatPaneMobileComposition } from "./chat-pane-mobile-composition.tsx";
 import { ChatPanePlacement } from "./chat-pane-placement.tsx";
 import { ChatPaneVersionsMenu } from "./chat-pane-versions-menu.tsx";
 import { ChatSessionPublicIndicator } from "./chat-session-sharing-shared.tsx";
-import { ChatSessionSharing } from "./chat-session-sharing.solid.tsx";
+import {
+  ChatSessionSharing,
+  ChatSessionSharingPlaceholder,
+} from "./chat-session-sharing.solid.tsx";
 
 registerEnglishCatalog(registerChatSessionEnglish);
 
@@ -170,7 +173,8 @@ function ChatPaneHeaderChrome(
     props.session.placement.runner?.kind === "device" &&
     props.session.placement.runner.status === "offline";
   const drawerLabel = () => (props.navDrawerOpen ? t("nav.collapse") : t("nav.expand"));
-  const hasSharingControl = () => props.sharingControl !== undefined;
+  const hasSharingControl = () =>
+    props.sharingControl !== undefined || (!props.narrow && props.sharingPlaceholder !== undefined);
   const presented = usePanePresentation(() => props.presented);
   const incognito = () =>
     (props.incognito ?? props.session?.incognito) || isIncognitoSessionKey(props.session?.key);
@@ -266,7 +270,11 @@ function ChatPaneHeaderChrome(
                   />
                 </Show>
               </Show>
-              <Show when={props.gatewayStatus?.kind}>
+              <Show
+                when={
+                  props.gatewayStatus?.kind ?? (props.savedConversation ? "reconnecting" : null)
+                }
+              >
                 {(kind) => (
                   <openclaw-tooltip
                     prop:content={
@@ -319,7 +327,9 @@ function ChatPaneHeaderChrome(
                             />
                           </Show>
                         </span>
-                        {t(`connection.${kind()}`)}
+                        {props.savedConversation
+                          ? t("chat.savedConversation", { status: t(`connection.${kind()}`) })
+                          : t(`connection.${kind()}`)}
                       </span>
                       <Show when={canRetryGatewayStatus(kind()) && props.gatewayStatus?.onRetry}>
                         <span class="chat-pane__connection-divider" aria-hidden="true" />
@@ -457,7 +467,14 @@ function ChatPaneHeaderChrome(
                 {(presence) => <PaneHeaderPresence {...presence()} />}
               </Show>
             </Show>
-            <Show when={props.sharingControl}>
+            <Show
+              when={props.sharingControl}
+              fallback={
+                <Show when={!props.narrow && props.sharingPlaceholder}>
+                  {(display) => <ChatSessionSharingPlaceholder display={display()} />}
+                </Show>
+              }
+            >
               {(sharing) => <ChatSessionSharing {...sharing()} />}
             </Show>
             {props.details}

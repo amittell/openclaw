@@ -45,8 +45,10 @@ import {
 import { markReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createEnteredGate } from "../../entered-gate.test-support.js";
+import { observeSettlement } from "../../promise-settlement.test-support.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import * as subagentKillSettlement from "./subagent-control-kill-settlement.js";
+import { killSessionSubagentRuns } from "./subagent-control-kill.js";
 import {
   createControlRunFixture,
   expectControlIdle as expectIdle,
@@ -265,11 +267,52 @@ async function startSourceExecution(
   return { completion };
 }
 
+it("lifecycle cleanup joins terminal controller disposal before completing", async () => {
+  const target = await seedExecutionTarget("terminal-disposal", "original-revision");
+  const { owner, releaseTail, execution, registration } = await holdExecution(target);
+  let pending: ReturnType<typeof killSessionSubagentRuns> | undefined;
+  const joined = createDeferred();
+  const settlement = observeExecutionJoin(owner, joined.resolve);
+  try {
+    emitAgentEvent({
+      runId: target.runId,
+      stream: "lifecycle",
+      data: {
+        phase: "end",
+        endedAt: Date.now(),
+        terminalReply: { disposition: "visible", text: "completed" },
+      },
+    });
+    await fixture.settle();
+    const entry = expectDefined(subagentRuns.get(target.runId), "terminal child");
+    expect(entry.execution.status).toBe("terminal");
+    expect(entry.requesterSettleWake).toBeUndefined();
+    expect(getGatewayContextResolver(entry)).toBeUndefined();
+    pending = killSessionSubagentRuns({
+      cfg: getRuntimeConfig(),
+      sessionKey: entry.requesterSessionKey,
+      agentId: "main",
+    });
+    await awaitGateBeforeSettlement(
+      joined.promise,
+      pending,
+      "Reset did not join controller disposal",
+    );
+    expect(settlement.status).toBe("pending");
+    releaseTail.resolve();
+    await expect(pending).resolves.toMatchObject({ status: "ok", killed: 0 });
+    await execution;
+    expect(settlement.status).toBe("fulfilled");
+  } finally {
+    releaseTail.resolve();
+    await Promise.allSettled([pending, execution]);
+    registration.cleanup();
+  }
+});
+
 function observeExecutionJoin(entry: RpcSourceRef, selected: () => void) {
-  const settlement = entry.input.settlement;
-  const completion = settlement.promise;
   let state: "pending" | "fulfilled" | "rejected" = "pending";
-  void completion.then(
+  void entry.input.settlement.promise.then(
     () => {
       state = "fulfilled";
     },
@@ -532,7 +575,6 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
   let registration: ReturnType<typeof registerChatAbortController> | undefined;
   let execution: Promise<void> | undefined;
   let pending: ReturnType<typeof killSubagentRunAdmin> | undefined;
-  let stopSettled = false;
   const onResult = vi.fn(() => undefined);
   try {
     // The fence blocks new admission. This existing lease is adopted after capture.
@@ -577,14 +619,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
       expectedRunId: runId,
       onResult,
     });
-    void pending.then(
-      () => {
-        stopSettled = true;
-      },
-      () => {
-        stopSettled = true;
-      },
-    );
+    const stopSettled = observeSettlement(pending);
     await awaitGateBeforeSettlement(
       claimGate.entered,
       pending,
@@ -628,7 +663,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
     expect(owner.adapter.abortStopReason).toBe("rpc");
     expect(settlement.status).toBe("pending");
     expectIdle();
-    expect(stopSettled).toBe(false);
+    expect(stopSettled()).toBe(false);
     expect(onResult).not.toHaveBeenCalled();
     releaseTail.resolve();
     await expect(pending).resolves.toMatchObject({ found: true, killed: true });

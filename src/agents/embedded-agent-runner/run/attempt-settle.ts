@@ -76,7 +76,11 @@ export async function runEmbeddedAttemptSettledPhase(
     getBeforeAgentFinalizeRevisionEntryId,
   } = preparedStream;
   const { unsubscribe, waitForPendingEvents } = subscription;
-  const { getRunAbortDeadlineAtMs, clearTimers: clearAttemptTimeoutTimers } = attemptTimeout;
+  const {
+    getRunAbortDeadlineAtMs,
+    onRunAbortDeadlineChanged,
+    clearTimers: clearAttemptTimeoutTimers,
+  } = attemptTimeout;
   let settledStream: Awaited<ReturnType<typeof settleEmbeddedAttemptStream>>;
   let messagesSnapshot: AgentMessage[] = [];
   let sessionIdUsed = activeSession.sessionId;
@@ -180,6 +184,7 @@ export async function runEmbeddedAttemptSettledPhase(
           withOwnedTranscriptWrite: input.sessionLock.withOwnedTranscriptWrite,
           state: streamSettleState,
           getRunAbortDeadlineAtMs,
+          onRunAbortDeadlineChanged,
           shouldFlushForContextEngine: Boolean(
             input.activeContextEngine && !getBeforeAgentFinalizeRevisionReason(),
           ),

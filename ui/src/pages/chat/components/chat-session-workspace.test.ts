@@ -1,9 +1,10 @@
 import { createComponent, createSignal, flush } from "solid-js";
-import { assert, describe, expect, it, onTestFinished, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
-import { GatewayRequestError } from "../../../api/gateway.ts";
+import { GatewayRequestError } from "../../../api/gateway-connect-errors.ts";
 import type { SessionWorkspaceGetResult, SessionWorkspaceListResult } from "../../../api/types.ts";
+import { useFakeClock } from "../../../test-helpers/fake-clock.ts";
 import { gatewayHelloForMethods } from "../../../test-helpers/gateway-methods.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { SessionWorkspaceRail } from "./chat-session-workspace-rail-solid.tsx";
@@ -167,13 +168,6 @@ function nextWorkspaceUpdate(state: SessionWorkspaceHost, ready: () => boolean) 
     }
   });
   return next.promise.finally(stop);
-}
-
-function useFakeClock() {
-  vi.useFakeTimers();
-  onTestFinished(() => {
-    vi.useRealTimers();
-  });
 }
 
 describe("session workspace state", () => {
@@ -470,11 +464,15 @@ describe("openSessionWorkspaceFile", () => {
     const workspace = state.sessionWorkspaceState;
     expect(getFile).toHaveBeenCalledExactlyOnceWith(owner, path, { agentId: "research" });
     expect(workspace?.sessionKey).toBe(state.sessionKey);
-    expect(file.sessionFileSource).toEqual({ sessionKey: owner, agentId: "research", path });
+    expect(file.sessionFileSource).toEqual({
+      sessionKey: owner,
+      agentId: "research",
+      path: "/shared/index.html",
+    });
     await file.edit.fetchLatest();
-    expect(getFile).toHaveBeenLastCalledWith(owner, path, { agentId: "research" });
+    expect(getFile).toHaveBeenLastCalledWith(owner, "/shared/index.html", { agentId: "research" });
     await file.edit.save({ content: "changed", expectedHash: "old" });
-    expect(setFile).toHaveBeenCalledExactlyOnceWith(owner, path, "changed", {
+    expect(setFile).toHaveBeenCalledExactlyOnceWith(owner, "/shared/index.html", "changed", {
       agentId: "research",
       expectedHash: "old",
     });

@@ -4,7 +4,6 @@ import { registerListener } from "../../../../src/shared/listeners.js";
 import type { SessionsListResult } from "../../api/types.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { type SelectedAgentSource, watchSelectedAgent } from "../agents/watch-selected-agent.ts";
-import { formatUiError } from "../format-error.ts";
 import { createGatewayConnectionLifecycle } from "../gateway-connection-lifecycle.ts";
 import { isSessionRunStateActive } from "../session-run-state.ts";
 import type { SessionCreateOutcome } from "./create.ts";
@@ -356,18 +355,11 @@ export function createSessionCapability(
     retire: mutations.retireDeletedSession,
   });
 
-  const {
-    dispose: disposeOperations,
-    retireConnection: retireOperationConnection,
-    ...operations
-  } = createSessionScopedOperations({
+  const { dispose, retireConnection, ...operations } = createSessionScopedOperations({
     connection,
+    gateway,
     reconcileMutation: roster.reconcileMutation,
-    notifyCreated,
-    reportError: (error) => publish({ ...state, error: formatUiError(error) }, "operation"),
   });
-
-  const pullRequestSummary = (key: string) => pullRequestSummaries.get(key.trim());
 
   const capturePullRequestEpoch = (key: string): object => {
     const epoch = {};
@@ -429,6 +421,7 @@ export function createSessionCapability(
     const identityChanged =
       (previousClient !== null && previousClient !== next.client) || !samePresentationScope;
     presentationKey = presentationScope.key;
+    const wasConnected = connection.capture() !== null;
     const transportChanged = connection.transition(next);
     if (identityChanged && !transportChanged) {
       connection.invalidate();
@@ -462,7 +455,9 @@ export function createSessionCapability(
       roster.reset(identityChanged && !retainDeferredIntents);
       sessionEventSubscription.reset();
       sessionEventSubscriptionError = null;
-      retireOperationConnection(previousClient);
+      if (!connected || previousClient !== next.client || wasConnected) {
+        retireConnection(previousClient);
+      }
       groups.invalidate();
       swarmActivity.clear();
       mutations.retireConnection(retainDeferredIntents);
@@ -685,6 +680,7 @@ export function createSessionCapability(
     ...operations,
     patch: mutations.patch,
     patchMany: mutations.patchMany,
+    acknowledgeHiddenRuns: mutations.acknowledgeHiddenRuns,
     archiveVisibility: mutations.archiveVisibility,
     beginArchive: mutations.beginArchive,
     assignOwner: mutations.assignOwner,
@@ -693,7 +689,7 @@ export function createSessionCapability(
     settingsPreview: mutations.settingsPreview,
     patchRowLocal: mutations.patchRowLocal,
     isPreparedWorkSession: mutations.isPreparedWorkSession,
-    pullRequestSummary,
+    pullRequestSummary: (key) => pullRequestSummaries.get(key.trim()),
     capturePullRequestEpoch,
     setPullRequestSummary(key, summary, epoch) {
       const normalizedKey = key.trim();
@@ -728,7 +724,7 @@ export function createSessionCapability(
       cacheLifecycle.dispose();
       githubPublication.clear();
       roster.dispose();
-      disposeOperations();
+      dispose();
       connection.dispose();
       groups.dispose();
       hydratedClient = null;

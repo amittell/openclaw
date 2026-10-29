@@ -269,6 +269,49 @@ its managed handles. Already admitted calls and streams have a bounded chance
 to finish before disposal; retaining an old function does not make it a current
 runtime handle.
 
+### Reload-safe plugins
+
+By default, `openclaw plugins reload` waits for every running agent turn that
+loaded the plugin to finish. A long turn can make the reload wait out its drain
+budget and roll back.
+
+A plugin that declares `reload.turnHandover` in `openclaw.plugin.json` lets
+the reload hand those turns over instead: each running turn stops at its next
+model step, the swap happens, and the same turn continues on the new plugin
+version. The reload usually completes in seconds.
+
+```json
+{
+  "id": "my-plugin",
+  "reload": { "turnHandover": true },
+  "configSchema": { "type": "object" }
+}
+```
+
+We recommend declaring it for new plugins and for any plugin that already meets
+these rules:
+
+- **No in-memory state that a later call in the same turn depends on.** Keep
+  cross-call state in `api.runtime.state` or the plugin's own database.
+- **Disposal releases everything the plugin started.** Register cleanup with
+  `api.lifecycle.onDispose` and wait for your own workers and timers there.
+- **A context engine keeps turn state durable.** At handover OpenClaw disposes
+  the old version's engine and creates one from the new version for the rest
+  of the turn. The new engine finishes the turn: it receives `commitTurn` for
+  the whole turn and runs its maintenance once.
+
+In return, OpenClaw never runs calls on two versions of the plugin at once,
+stops and disposes the old version only after its admitted calls finish, and
+makes calls that arrive during the swap wait for the new version instead of
+failing.
+
+Handover happens only between model steps. A long-running tool call keeps the
+reload waiting until it returns. A turn hands over only when every plugin the
+reload replaces declares the field; one undeclared plugin keeps the whole turn
+waiting. If the new version no longer registers the turn's context engine, the
+turn ends with an error instead of switching engines mid-turn. Reload status and
+logs name the plugins that kept a turn waiting.
+
 ### Plugin value boundary
 
 OpenClaw admits native plugins when it loads and registers them, using the
@@ -344,13 +387,16 @@ to close before registering its successor. Disabling or removing a plugin can
 report their cleanup as deferred; starting engine disposal closes normal engine
 callbacks while cleanup finishes.
 
-Replacement validates metadata and configuration first, then stops services and
-channels, drains admitted work, runs `gateway_stop`, and disposes the old instance
+Replacement validates metadata and configuration first, then closes admission to
+the old instance and waits for in-flight work while its services and channels
+keep running. If that work does not finish in time, the reload fails once and
+resumes admission. Otherwise, replacement stops services and channels, drains
+remaining admitted work, runs `gateway_stop`, and disposes the old instance
 before invoking the new registration. Session-extension and runtime-lifecycle
 `cleanup` callbacks receive `reason: "restart"` before the replacement registers,
 so they can unsubscribe observers and release in-memory buffers. Persistent
 session-state and scheduler reconciliation remain part of registry retirement.
-Pre-publication failure triggers automatic
+Once services and channels begin stopping, a pre-publication failure triggers automatic
 recovery by registering the captured previous code with its previous config;
 a stopped instance is not assumed to be restartable. A plugin cannot synchronously
 replace itself from its own active call: the operation rejects before shutdown
@@ -553,6 +599,15 @@ recipes in the worker/admission-only
 are opened through `openEngineStore`, without a public connection constructor.
 See [Database engine adapters](/plugins/sdk-overview/infrastructure#database-engine-adapters-experimental)
 for the contracts and boundary.
+
+Core worker transports carry PostgreSQL I/O pool endpoints into their children.
+An externally constructed worker, including one created with `createCpuTrackedWorker`,
+can still open PostgreSQL without that private capability: on first use it starts
+its own four I/O services through the same pool owner. This emits a once-per-thread
+warning and `openclaw.postgres.pool.self-root` diagnostic (`threadId`, `owner`), and
+increments `postgresPoolSelfRootCount` in worker diagnostics. The public worker
+constructor and connection ownership contracts are unchanged. Prefer the existing
+core worker transports when available to share the process pool.
 
 `readSqliteDatabaseWriteTokenForPath` from `openclaw/plugin-sdk/sqlite-runtime`
 reads the existing physical database identity and in-process writer receipt without
@@ -927,3 +982,19 @@ attempt-scoped snapshot or cold-start facts. Environment status and session
 placement expose these facts as `startStatus`; the host closes the callback when
 the attempt finishes or loses authority. Report capture progress only when capture
 is claimed. These display facts do not change allocation or enrollment ownership.
+
+## Runtime schema validation
+
+`openclaw/plugin-sdk/runtime-profile` exports `getRuntimeExecutionProfile()` and
+`RuntimeExecutionProfile` for choosing an implementation appropriate to the host.
+The profile is a process-stable build fact, not execution authorization.
+
+`openclaw/plugin-sdk/json-schema-validator` exports
+`createJsonSchemaValidatorProvider({ dialect, formats, validateSchema?, duplicateIds? })`
+for codegen-free JSON Schema checks. The provider owns schema preparation, reference
+registration, and cached checks. `formats` defines assertion formats; an empty map
+keeps formats as annotations. Set `validateSchema: true` when a consumer requires
+metaschema admission, and `duplicateIds: "reject"` when a new schema cannot reuse a
+registered root ID. The defaults preserve MCP's existing schema-admission behavior.
+Keep one provider per reference namespace; use a new provider when schemas must not
+retain references to previously registered IDs.

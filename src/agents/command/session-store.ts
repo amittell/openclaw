@@ -21,7 +21,6 @@ import { resolveContextTokensForModel } from "../context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import type { CompactionAccountingFact } from "../embedded-agent-runner/run/internal-params.js";
 import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
-import { buildMainSessionRecoveryAfterAgentRunPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { deriveSessionTotalTokens, hasNonzeroUsage } from "../usage.js";
 
 type RunResult = Awaited<ReturnType<(typeof import("../embedded-agent.js"))["runEmbeddedAgent"]>>;
@@ -55,8 +54,6 @@ export async function updateSessionStoreAfterAgentRun(params: {
    */
   preserveRuntimeModel?: boolean;
   preserveUserFacingSessionModelState?: boolean;
-  /** Clear the durable replay-safe recovery guard after this recovery run terminates. */
-  clearRestartRecoveryForceSafeTools?: boolean;
 }) {
   const {
     cfg,
@@ -206,21 +203,11 @@ export async function updateSessionStoreAfterAgentRun(params: {
               initial: entry,
               next,
               current: currentEntry,
-              reassertAbortedLastRun: result.meta.aborted === true,
             }),
             // The run's own per-call totals (attempt-context-total-tokens) changed these
             // fields under its snapshot; its final accounting supersedes them.
             ...contextSnapshot,
           };
-      if (!preserveUserFacingRunState) {
-        Object.assign(
-          patch,
-          buildMainSessionRecoveryAfterAgentRunPatch(
-            { ...currentEntry, ...patch },
-            params.clearRestartRecoveryForceSafeTools,
-          ),
-        );
-      }
       if (touchActivity && !preserveUserFacingRunState && currentEntry.snoozedUntil !== undefined) {
         // Clear the current snooze, including one set while this run was in flight.
         patch.snoozedUntil = undefined;

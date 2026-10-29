@@ -36,8 +36,8 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
+import { runWithoutOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context-store.js";
 import {
-  runWithoutOwnedSessionTranscriptWrites,
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWrites,
 } from "../config/sessions/transcript-write-context.js";
@@ -219,6 +219,8 @@ describe("durable pre-reply run failure", () => {
               ...target,
               runId: attemptRunId,
               messageChannel: "internal",
+              // Parent completion inputs are optional unless this turn owes a result.
+              terminalReplyExpectation: "result-required",
               inputProvenance: {
                 kind: "inter_session",
                 sourceTool: "subagent_settle",
