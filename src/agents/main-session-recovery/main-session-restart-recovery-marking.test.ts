@@ -309,6 +309,7 @@ it.each(["before", "after"] as const)(
 // marks the row recoverable without claiming one, and keeps a restart already recorded.
 it("records a restart cause for boot marking but not for operator recovery", async () => {
   await withOpenClawTestState({ label: "recovery-mark-cause" }, async (state) => {
+    await captureRuntimeConfigAsyncReader()();
     const booted = "agent:main:main";
     await replaceSessionEntry(
       { sessionKey: booted },

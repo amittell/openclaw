@@ -4,9 +4,10 @@ import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { mergeSessionTranscriptContext } from "../channels/inbound-event/session-transcript-context.runtime.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import {
   extractToolResultMediaArtifact,
   recordToolResultLocalMediaReplayAuthorization,
@@ -107,6 +108,13 @@ async function openPersistedSessionManager() {
 }
 
 describe("persisted local-media replay authority", () => {
+  beforeEach(() => {
+    setRuntimeConfigSnapshot({});
+  });
+  afterEach(() => {
+    clearRuntimeConfigSnapshot();
+  });
+
   it("bounds and refreshes persisted media authority through channel context", async () => {
     const { root, sessionManager: sm, target } = await openPersistedSessionManager();
     const previousStateDir = process.env.OPENCLAW_STATE_DIR;

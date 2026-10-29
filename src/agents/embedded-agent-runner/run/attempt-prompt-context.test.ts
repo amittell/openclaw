@@ -499,16 +499,19 @@ describe("Telegram current-message carrier across session projection versions", 
     // The legacy text keeps the bare header its inline (CLI) consumers complete
     // with the prompt joiner; the separate carrier has no joiner, so it must
     // state the body, and nothing else in the v3 rendering changes.
-    expect(legacyText).toContain('[Replying to: "Earlier bot reply"]\n#19452:');
+    const header = '[Replying to: "Earlier bot reply"]\n#19452:';
+    expect(legacyText).toContain(header);
     expect(legacyText).not.toContain(body);
-    expect(legacyText.endsWith(`\n\n${systemEvent}`)).toBe(true);
-    // 10.1 (#163471) stores the carrier bare and labels it at the provider boundary;
-    // 10.10 appends the run's temporal facts after the inbound carrier.
+    // 10.10 (#166869): the space joiner binds the header to the body, so the system
+    // event goes ahead of the legacy text and the header stays last.
+    expect(legacyText.startsWith(`${systemEvent}\n\n`)).toBe(true);
+    expect(legacyText.endsWith("#19452:")).toBe(true);
+    // The carrier has no joiner and keeps paragraph order: the stated body, then the
+    // system event. 10.1 (#163471) stores it bare and labels it at the provider
+    // boundary; 10.10 appends the run's temporal facts after it.
+    const inbound = legacyText.slice(`${systemEvent}\n\n`.length);
     expect(carrier).toBe(
-      `${legacyText.replace(
-        '[Replying to: "Earlier bot reply"]\n#19452:',
-        `[Replying to: "Earlier bot reply"]\n#19452: ${body}`,
-      )}\n\n${temporalContext}`,
+      `${inbound.replace(header, `${header} ${body}`)}\n\n${systemEvent}\n\n${temporalContext}`,
     );
   });
 

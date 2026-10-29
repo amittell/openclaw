@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/io.js";
 import type { InternalSessionEntry } from "../../config/sessions.js";
 import {
   appendTranscriptMessage,
@@ -49,10 +50,12 @@ describe("restart recovery wording", () => {
     resetAgentEventsForTest();
     resetGatewayWorkAdmission();
     stateDir = tempDirs.make("openclaw-recovery-cause-");
+    setRuntimeConfigSnapshot({});
   });
 
   afterEach(async () => {
     dispatchSettlement.resolve();
+    clearRuntimeConfigSnapshot();
     resetGatewayWorkAdmission();
     await cleanupSessionStateForTest({ stateDir });
   });

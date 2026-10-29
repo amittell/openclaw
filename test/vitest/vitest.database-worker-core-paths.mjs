@@ -174,6 +174,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/provider-auth-runtime.test.ts",
   "src/agents/auth-profiles.sqlite-store.test.ts",
   "src/agents/auth-profiles.readonly-sync.test.ts",
+  "src/agents/auth-profiles.env-token-sync.test.ts",
   "src/agents/auth-profiles.provider-refresh-lifecycle.test.ts",
   "src/agents/embedded-agent-runner/model.auth-read-race.test.ts",
   "src/agents/embedded-agent-runner/openrouter-model-capabilities.test.ts",
