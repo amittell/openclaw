@@ -6,10 +6,10 @@ import {
   createOptimistic,
   createSignal,
   Errored,
-  flush,
   latest,
   onSettled,
 } from "solid-js";
+import type { UpdateRunServingIdentity } from "../../../src/infra/update-run-history-projection.ts";
 import type { UpdateRunRecord } from "../../../src/infra/update-run-record.ts";
 import type { UpdateAvailable, UpdateScheduleState } from "../api/types.ts";
 import {
@@ -51,6 +51,7 @@ export type SidebarUpdateCardProps = {
   updateRun: UpdateRunRecord | null;
   updateRunAcknowledged: boolean;
   connected: boolean;
+  serving?: UpdateRunServingIdentity;
   onCheckStatus?: () => Promise<boolean>;
   prepareRetry?: ConfirmAndStartUpdateParams["prepareRetry"];
   onAcknowledge?: () => void;
@@ -163,7 +164,11 @@ export function SidebarUpdateCard(
   const expansionChecksTarget = () =>
     Boolean(props.onCheckStatus) &&
     !nativeUpdateAvailable() &&
-    !isUpdateRunAttentionVisible(props.updateRun ?? null, props.updateRunAcknowledged ?? false);
+    !isUpdateRunAttentionVisible(
+      props.updateRun ?? null,
+      props.updateRunAcknowledged ?? false,
+      props.connected ? props.serving : undefined,
+    );
 
   const checkStatus = action(async function* (pending: Promise<boolean>) {
     setCheckingTarget(true);
@@ -185,10 +190,7 @@ export function SidebarUpdateCard(
     const completion = (async () => check())().catch(() => false);
     setTargetCompletion({ result: completion });
     try {
-      const refreshed = await checkStatus(completion);
-      // The action has settled; commit the overlay's fresh props before live checks.
-      flush();
-      return refreshed;
+      return await checkStatus(completion);
     } finally {
       targetCheckPending = false;
     }
@@ -279,7 +281,11 @@ export function SidebarUpdateCard(
       };
     }
     if (
-      isUpdateRunAttentionVisible(props.updateRun ?? null, props.updateRunAcknowledged ?? false) &&
+      isUpdateRunAttentionVisible(
+        props.updateRun ?? null,
+        props.updateRunAcknowledged ?? false,
+        props.connected ? props.serving : undefined,
+      ) &&
       props.updateRun
     ) {
       const view = projectUpdateRun(props.updateRun, props.connected ?? true);
@@ -624,7 +630,11 @@ export function SidebarUpdateCard(
 
   function Card() {
     const run = createMemo(() =>
-      isUpdateRunAttentionVisible(props.updateRun ?? null, props.updateRunAcknowledged ?? false)
+      isUpdateRunAttentionVisible(
+        props.updateRun ?? null,
+        props.updateRunAcknowledged ?? false,
+        props.connected ? props.serving : undefined,
+      )
         ? props.updateRun
         : null,
     );

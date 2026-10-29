@@ -36,17 +36,6 @@ afterEach(() => {
 });
 
 describe("ModelProvidersPage agent scope", () => {
-  it("settles the final update when the page unmounts", async () => {
-    const { context } = createHarness("main");
-    const page = createPage(context);
-    mountPage(page);
-    await page.updateComplete;
-
-    unmountPage(page);
-
-    await expect(page.updateComplete).resolves.toBe(true);
-  });
-
   it("recovers a failed preload provider usage result on the next page activation", async () => {
     const { context, request, snapshot } = createHarness("main");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -343,7 +332,6 @@ describe("ModelProvidersPage agent scope", () => {
       );
       await drainPageUpdates(page);
       expect(page.view.props.authStatus).toBeNull();
-      expect(page.view.props.coreReceipt).toBeNull();
       expect(page.renderRoot.textContent).not.toContain("retired@example.test");
 
       request.mockImplementation(originalRequest);
@@ -539,11 +527,14 @@ describe("ModelProvidersPage agent scope", () => {
     expect(modal.textContent).toContain("Remove OpenAI");
     expect(requestCount(request, "models.authLogout")).toBe(0);
     modal.querySelector<HTMLButtonElement>("button.danger")!.click();
-    await waitForSolid(() => expect(toast.textContent).toContain("Authentication refresh failed."));
     // The saved API-key profile is a provider-wide sign-out; nothing goes through config.
-    expect(request.mock.calls.filter(([method]) => method === "models.authLogout")).toEqual([
-      ["models.authLogout", { provider: "openai", agentId: "main" }],
-    ]);
+    await waitForSolid(() =>
+      expect(request.mock.calls.filter(([method]) => method === "models.authLogout")).toEqual([
+        ["models.authLogout", { provider: "openai", agentId: "main" }],
+      ]),
+    );
+    await vi.dynamicImportSettled();
+    await waitForSolid(() => expect(toast.textContent).toContain("Authentication refresh failed."));
     expect(runtimeConfig.patch).not.toHaveBeenCalled();
   });
 

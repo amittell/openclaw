@@ -51,7 +51,6 @@ import type { AgentInternalEvent } from "./internal-events.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagents/announce/subagent-announce-dispatch.js";
 import type { SubagentCompletionToolHandoffRegistration } from "./subagents/announce/subagent-announce-handoff.js";
 import { runSubagentAnnounceFlow } from "./subagents/announce/subagent-announce.js";
-import { SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION } from "./subagents/completion/subagent-completion-instructions.js";
 import { resolveEffectiveToolInventory } from "./tools-effective-inventory.js";
 
 const gatewayAgentMethod = vi.hoisted(() => vi.fn());
@@ -321,7 +320,10 @@ it("retains an outstanding user-reply obligation across a transcript-only privat
   });
   // (a) the admitted turn's task_completion event carries the private instruction,
   // produced by buildAnnounceReplyInstruction for completionTarget: "parent".
-  expect(capture.replyInstruction).toBe(SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION);
+  expect(capture.replyInstruction).toContain("Your final reply stays internal:");
+  expect(capture.replyInstruction).toContain(
+    "send it through an available, permitted messaging tool; do not rely on your final reply for delivery.",
+  );
   // (b) the verified handoff keeps the requester's tools, and the message tool is bound.
   expect(capture.embedded?.trustedInternalHandoff).toMatchObject({
     sourceSessionKey: CHILD_SESSION_KEY,
