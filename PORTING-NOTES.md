@@ -3952,8 +3952,9 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
   `classify.legacy-provider-predicates.test.ts` is beta.4's.
 - **#169306 (`e353566c506d`):** replaces the fork's pull-forward. `session-manager-append-custody.ts` is deleted,
   and `session-manager-persistence.ts` and `-metadata.worker.ts` are beta.4's.
-- **#169237:** supersedes the fork's double-redaction replay helper (#169154). The fork's `conformance.redaction-replay`
-  test stays as the check.
+- **#169237:** supersedes the fork's double-redaction replay helper (#169154). The conformance redaction-replay
+  test and its adapters module are deleted (`63a2759b28d`), because beta.4 stores the bearer token unredacted (there
+  is no first pass), so #169154's case cannot arise.
 - **#168169 and #169237:** FrenChat prompt-cache drop causes 1 and 4. Native; nothing was carried for them.
 
 ## Still carried (not in beta.4: ancestry and the `(#N)` subject grep both negative)
@@ -4032,18 +4033,38 @@ so this carry replaces those backports. The squash was a 3-way merge with base `
     view reaches an unasked `isSubagentRunMessage` and reads `not_visible` (room #299).
   - Preparation also makes one sequential worker request per missing fact, for up to 4 passes.
   - The owner-correct fix is to read the span inside the worker.
-- **Tests edited by reading only, to be confirmed by the M4 run:**
-  - `attempt-prompt-context`, `agent-tools.construction-routing`, `sessions-history-tool`,
-    `main-session-restart-recovery` (the restart-cause pin needs `cause: "gateway_restart"` in the fixture);
-  - `config-reload.observation` (two echo cases);
-  - the prompt-snapshot fixtures (beta.4's until regenerated).
+- **Committed-turn replay read (`63a2759b28d`).** The fork's answered-turn rule reads the committed session row
+  with the synchronous host `loadSessionEntryReadOnly` for durable scopes; session-actor scopes still read through
+  the worker. Cause: the worker read with `readConsistency: "latest"` missed another process's write in
+  `pending-inputs.entry-race` (9 of 9). beta.4 has 19 non-test callers of the same read, but this adds one in fork
+  code against AGENTS.md's main-thread rule (room #314). The stale worker "latest" read is an upstream-shaped issue.
+- **The prompt-snapshot fixtures** are beta.4's until the snapshot tests regenerate them.
 
 ## Qualification
 
-On the M4 at `84760e8fb48` (Node 26.12.1, room #298 and #300):
+**Deploy route, Alex's ruling (M4 question tool, about 00:5xZ on 10-29):** "M4 build for this deploy". beta.4
+deploys from the M4's qualified macOS build of the qualified sha, which needs no LanceDB re-point. Shipping from
+the mega-mini CI dist (#5) follows as separate work: a forge artifact blob is capped at 25 MiB, the dist is 416 MiB
+unpacked, and the CI job has no write credential.
 
-- `tsgo:all`: rc=0 in 186 s. That covers core, ui, the core-test shards, extensions, scripts and root tests.
-- `pnpm build`: rc=0 in 22m37s (tsdown-packages 18m42s).
-- Compaction suite: 32 files, 335 tests, 335 pass, in 48 s. It includes the fork's `degrade-fallback` test.
-- Pending: the ratchets with `--base` beta.4, oxlint and oxfmt, the PR-wrapper inventory, and the fast gate (718
-  files). The CI dist build runs on `megamini-checks` (#5).
+On the M4 (Node 26.12.1):
+
+- **At `84760e8fb48`** (room #298 and #300):
+  - `tsgo:all` rc=0 in 186 s;
+  - `pnpm build` rc=0 in 22m37s;
+  - the compaction suite at 335/335, including the fork's `degrade-fallback` test.
+- **At `81b7e06e072`, after the line-cap fixes** (room #310, no edits during the run):
+  - `pnpm build` rc=0 in 1520 s;
+  - `tsgo:all` rc=0 in 467 s;
+  - both ratchets OK with `--base` beta.4 (assertion-safety: 2682 files, 6259 grandfathered; line-cap: 551 changed
+    source files, no new violations);
+  - oxlint and oxfmt clean over the 548 changed TS files;
+  - the PR-wrapper inventory test passes.
+- **Fast gate at `81b7e06e072`** (room #311): 779 files, 11217 tests, 11073 pass, 138 fail, 6 skip.
+  - 97 of the failures are `ci-workflow-planning`, an environment failure: it needs Bash 5+, and the host has
+    macOS's 3.2.
+  - The rest were 13 files, all the carry's own: bare beta.4 passes every one of those files it has (3-cell
+    check, room #315).
+  - After `a1314c6b96f` (the Air's 6 files) and `63a2759b28d` (the M4's 7 files), each of the 12 surviving files
+    passes alone. The 13th, redaction-replay, is deleted.
+- **Pending:** the full `qual-c1010.sh` rerun at `63a2759b28d`. Its build is the deploy bundle.
