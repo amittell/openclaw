@@ -398,6 +398,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     sessionCwd = preparedRoot?.value.sessionCwd;
     if (repository) {
       prepareLifecycle = prepareSessionRepositoryWorkspace(repository, {
+        branchPrefix: cfg.repositoryBranchPrefix,
         runSetupScript: clientScopes.includes(ADMIN_SCOPE),
         assertCurrent: commitGuard,
       });
@@ -483,10 +484,6 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     let sessionSourceAccepted = false;
     let runError: unknown;
     let runMeta: Record<string, unknown> | undefined;
-    const allowExistingModelSelection = authorizeOperatorScopesForRequiredScope(
-      ADMIN_SCOPE,
-      clientScopes,
-    ).allowed;
     const catalogWait = createSessionModelCatalogWait([signal, client?.connectionSignal]);
     const waitForModelCatalog = async <T>(operation: () => Promise<T>) =>
       catalogWait.run(operation, (await operatorCapture.preparation)?.authority.signal);
@@ -507,6 +504,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       personalAccountDefaults,
       contextWindow: p.contextWindow,
       thinkingLevel: p.thinkingLevel,
+      cyberAccessProgram: p.cyberAccessProgram,
       fastMode: p.fastMode,
       projectId: requestedProjectId,
       deviceFolder,
@@ -516,7 +514,10 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       ...(requestingOperatorProfileId ? { requestingOperatorProfileId } : {}),
       ...(operatorRoleActor ? { operatorRoleActor } : {}),
       visibility: p.visibility,
-      allowExistingModelSelection,
+      allowExistingModelSelection: authorizeOperatorScopesForRequiredScope(
+        ADMIN_SCOPE,
+        clientScopes,
+      ).allowed,
       parentSessionKey,
       spawnDepth: p.spawnDepth,
       ...resolveSessionCreateRootParameters(p, preparedRoot?.value),

@@ -7,6 +7,7 @@ import {
   clearNativeGatewayTestState,
   setNativeGatewayTestState,
 } from "../../../test-helpers/native-gateways.ts";
+import { stubResizeObserver } from "../../../test-helpers/resize-observer.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import * as diffSyntax from "./chat-diff-highlight.runtime.ts";
 import type { SessionDiffProps } from "./chat-sidebar-content-types.ts";
@@ -25,14 +26,7 @@ function settlePanel(panel: HTMLElement) {
 }
 
 function setupDesktopResizeObserver() {
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
+  stubResizeObserver();
   onTestFinished(() => {
     vi.unstubAllGlobals();
   });
@@ -145,7 +139,7 @@ describe("SessionDiffPanel", () => {
       setNativeGatewayTestState(null);
       setupDesktopResizeObserver();
       const { panel, update } = mountPanel();
-      const paths = ["first.ts", "second.ts"].map((name) => `${directory}/${name}`);
+      const paths = ["first.ts", "Cafe\u0301.ts"].map((name) => `${directory}/${name}`);
       update({ mobile: false, loader: async () => namedFileResult(paths) });
       await waitForSolid(() =>
         expect(panel.querySelectorAll(".session-diff__file")).toHaveLength(2),
@@ -166,7 +160,7 @@ describe("SessionDiffPanel", () => {
       panel.querySelector<HTMLButtonElement>('button[aria-label="Search changed files"]')!.click();
       flush();
       const search = panel.querySelector<HTMLInputElement>('input[type="search"]')!;
-      search.value = "second";
+      search.value = "CAFÉ";
       search.dispatchEvent(new Event("input", { bubbles: true }));
       await waitForSolid(() => {
         expect(folder.getAttribute("aria-expanded")).toBe("true");

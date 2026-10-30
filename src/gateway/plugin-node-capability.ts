@@ -144,6 +144,33 @@ export function reconcileClientPluginNodeCapabilities(
   return false;
 }
 
+/** Prepare one reload's credentials, then reconcile handshakes before swapping them. */
+export function preparePluginNodeCapabilityPublication(
+  clients: Iterable<Parameters<typeof reconcileClientPluginNodeCapabilities>[0]>,
+  surfaces: readonly PluginNodeCapabilitySurface[],
+  changedPluginIds: ReadonlySet<string>,
+): () => void {
+  const indexed = indexPluginNodeCapabilitySurfaces(surfaces);
+  const publications = [...clients].map((client) =>
+    prepareClientPluginNodeCapabilities({
+      client,
+      surfaces,
+      changedPluginIds,
+      ...(client.connect.role === "node"
+        ? { allowedSurfaces: new Set(client.connect.caps ?? []) }
+        : {}),
+    }),
+  );
+  return () => {
+    for (const client of clients) {
+      reconcileClientPluginNodeCapabilities(client, indexed);
+    }
+    for (const publish of publications) {
+      publish();
+    }
+  };
+}
+
 export type NormalizedPluginNodeCapabilityUrl = {
   pathname: string;
   capability?: string;
@@ -360,14 +387,7 @@ export function setClientPluginNodeCapability(params: {
 export function refreshClientPluginNodeCapability(params: {
   client: PluginNodeCapabilityClient;
   surface: PluginNodeCapabilitySurface;
-}):
-  | {
-      surface: string;
-      capability: string;
-      expiresAtMs: number;
-      scopedUrl: string;
-    }
-  | undefined {
+}) {
   const surface = normalizeOptionalString(params.surface.surface);
   if (!surface) {
     return undefined;

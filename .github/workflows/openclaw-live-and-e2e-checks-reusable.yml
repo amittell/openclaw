@@ -477,6 +477,8 @@ on:
         default: true
         type: boolean
     secrets:
+      ABLITERATION_API_KEY:
+        required: false
       AZURE_SPEECH_KEY:
         required: false
       AZURE_SPEECH_REGION:
@@ -3690,21 +3692,13 @@ jobs:
             local digest="$4"
             local run_id="$5"
             local run_attempt="$6"
-            bash .release-harness/scripts/docker/shared-image-artifact.sh \
-              verify-upload "$label" "$id" "$name" "$digest" "$run_id" "$run_attempt"
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" |
-              jq -er \
-                --arg id "$id" \
-                --arg name "$name" \
-                --arg digest "sha256:${digest}" \
-                --arg run_id "$run_id" \
-                'select(
-                  (.id | tostring) == $id and
-                  .name == $name and
-                  .digest == $digest and
-                  .expired == false and
-                  (.workflow_run.id | tostring) == $run_id
-                ) | .expires_at'
+            local artifact_json
+            # Bash clears errexit inside this substitution; preserve verifier failures explicitly.
+            artifact_json="$(
+              bash .release-harness/scripts/docker/shared-image-artifact.sh \
+                verify-upload "$label" "$id" "$name" "$digest" "$run_id" "$run_attempt" --json
+            )" || return
+            jq -er '.expires_at' <<< "$artifact_json"
           }
           package_expiry="$(
             artifact_expiry \
@@ -5069,6 +5063,7 @@ jobs:
             profile_env_only: false
             profiles: full
     env:
+      ABLITERATION_API_KEY: ${{ matrix.suite_id == 'native-live-extensions-a-k' && secrets.ABLITERATION_API_KEY || '' }}
       AZURE_SPEECH_KEY: ${{ matrix.suite_id == 'native-live-extensions-a-k' && secrets.AZURE_SPEECH_KEY || '' }}
       AZURE_SPEECH_REGION: ${{ matrix.suite_id == 'native-live-extensions-a-k' && secrets.AZURE_SPEECH_REGION || '' }}
       BASETEN_API_KEY: ${{ matrix.suite_id == 'native-live-extensions-a-k' && secrets.BASETEN_API_KEY || '' }}

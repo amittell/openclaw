@@ -2,7 +2,7 @@ import { isRequesterParentOfBackgroundAcpSession } from "@openclaw/acp-core/sess
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { isGatewayProtocolResponseError } from "../../../packages/gateway-client/src/protocol-request.js";
 import { getRuntimeConfig } from "../../config/config.js";
-import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
+import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context-store.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import type { GatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store.types.js";
@@ -46,25 +46,25 @@ export function startSessionsSendReplyFlow(
   }
   const { completion } = params;
   const continueOwned = async <T>(run: () => Promise<T>) =>
-    completion
-      ? completion.request.custody.run(run)
-      : runWithGatewayToolContinuationContext(
-          run,
-          params.replyMode === "peer" ? { retainRequester: true } : undefined,
-        );
+    params.replyMode === "peer"
+      ? runWithGatewayToolContinuationContext(run, { retainRequester: true })
+      : completion
+        ? completion.request.custody.run(run)
+        : runWithGatewayToolContinuationContext(run);
   const run = async () => {
     const settledReply = params.reply ?? (await completion?.take());
+    const requesterCompletion = params.replyMode === "peer" ? undefined : completion;
     const deliverRequesterReply: Parameters<
       typeof runSessionsSendA2AFlow
-    >[0]["deliverRequesterReply"] = completion
+    >[0]["deliverRequesterReply"] = requesterCompletion
       ? async ({ message, extraSystemPrompt }) => {
           const {
             runAnnounceAgentCall,
             isGatewayAgentRunPending,
             resolvePrivateCompletionDeliveryResult,
           } = await import("../subagents/announce/subagent-announce-completion-delivery.js");
-          completion.assertCurrent();
-          const request = completion.request;
+          requesterCompletion.assertCurrent();
+          const request = requesterCompletion.request;
           const idempotencyKey = `announce:sessions-send:${request.runId}:completion`;
           const timeoutMs = resolveSubagentAnnounceTimeoutMs(getRuntimeConfig());
           let accepted = false;

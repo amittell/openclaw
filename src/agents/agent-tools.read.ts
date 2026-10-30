@@ -59,6 +59,10 @@ import {
 } from "./sessions/tools/read-page.js";
 import type { ReadToolContinuation } from "./sessions/tools/tool-contracts.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "./sessions/tools/truncate.js";
+import {
+  createAlreadyDeliveredSkillResult,
+  rememberSkillInstructionDelivery,
+} from "./skill-instruction-result.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 import {
   resolveToolResultBudget,
@@ -66,7 +70,7 @@ import {
   type ToolResultBudget,
 } from "./tool-result-limits.js";
 import { toCanonicalRelativeWorkspacePath, writeHostWorkspaceFile } from "./workspace-file-ops.js";
-import { resolveHostWorkspaceRoot } from "./workspace-write-scope.js";
+import { resolveHostWorkspaceRoot, resolveHostRootAsync } from "./workspace-write-scope.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
 // to sanitize oversized images before they hit providers.
@@ -118,7 +122,7 @@ function eraseSessionFileTool<TParameters extends TSchema, TDetails>(
 type ReadTruncationDetails = {
   truncated: boolean;
   outputLines: number;
-  totalLines: number;
+  totalLines?: number;
   continuation?: ReadToolContinuation;
 };
 
@@ -266,7 +270,9 @@ async function executeReadWithAdaptivePaging(params: {
     const truncation = extractReadTruncationDetails(pageResult);
     const pageEndLine = next.offset - 1 + (truncation?.outputLines ?? 0);
     const reachedEof =
-      Boolean(truncation?.truncated) && pageEndLine >= (truncation?.totalLines ?? 0);
+      truncation !== null &&
+      truncation.totalLines !== undefined &&
+      pageEndLine >= truncation.totalLines;
     const pageContinuation = truncation?.continuation;
     const pageText =
       pageContinuation || reachedEof ? stripReadContinuationNotice(rawText) : rawText;
@@ -307,7 +313,7 @@ async function executeReadWithAdaptivePaging(params: {
         content: pageContent,
         startLine: next.offset,
         endLine: next.offset + lineCount - 1,
-        totalLines: truncation?.totalLines ?? next.offset + lineCount - 1,
+        totalLines: truncation ? truncation.totalLines : next.offset + lineCount - 1,
         continuation: pageContinuation,
         ...(next.kind === "cursor" ? { cursor: next.cursor } : {}),
         limit: next.limit,
@@ -1014,14 +1020,6 @@ export function wrapReadToolWithSkillContent(
     return tool;
   }
   const instructionDeliveryCache = options?.instructionDeliveryCache;
-  const alreadyDeliveredResult = (): AgentToolResult<ReadToolDetails> => {
-    const text =
-      "Skill instructions were already served whole earlier in the current model context. Reuse that content; the full document will be served again if compaction removes it.";
-    return {
-      content: [{ type: "text", text }],
-      details: { kind: "text", content: text },
-    };
-  };
   const readContent = (filePath: string): string => {
     const content = instructionContent.get(filePath);
     if (content === undefined) {
@@ -1053,7 +1051,7 @@ export function wrapReadToolWithSkillContent(
           continue;
         }
         if (delivered) {
-          return alreadyDeliveredResult();
+          return createAlreadyDeliveredSkillResult(priorDelivery);
         }
         instructionDeliveryCache?.delete(instructionPath);
       }
@@ -1113,6 +1111,9 @@ export function wrapReadToolWithSkillContent(
           resetDelivery();
           return result;
         }
+        if (!signal?.aborted) {
+          rememberSkillInstructionDelivery(result, details.content, delivery);
+        }
         settleDelivery(true);
         return result;
       } catch (error) {
@@ -1153,14 +1154,12 @@ function createSandboxMutationOperations(params: SandboxToolParams) {
     {
       resolveQueueKey: (absolutePath: string, signal?: AbortSignal) =>
         resolveSandboxFileQueueKey(params, absolutePath, signal),
-      mkdir: async (dir: string) => {
-        await params.bridge.mkdirp({ filePath: dir, cwd: params.root, signal: params.abortSignal });
-      },
       writeFile: async (absolutePath: string, content: string) => {
         await params.bridge.writeFile({
           filePath: absolutePath,
           cwd: params.root,
           data: content,
+          mkdir: true,
           signal: params.abortSignal,
         });
       },
@@ -1274,7 +1273,7 @@ function createHostMutationOperations(
     {
       mkdir: async (dir: string) => {
         const assertCurrent = captureAgentToolSourceExecutionGuard(options?.abortSignal);
-        const selectedRoot = resolveHostWorkspaceRoot(root, dir);
+        const selectedRoot = await resolveHostRootAsync(root, dir);
         const relative = toRelativeWorkspacePath(selectedRoot, dir, { allowRoot: true });
         // mkdir receives the file's parent, including directory links to the root itself.
         const resolved = await resolveRootPath({
@@ -1317,18 +1316,18 @@ function createHostMutationOperations(
         writeHostWorkspaceFile(root, getRoot, absolutePath, content, options?.abortSignal),
       readFile: async (absolutePath: string) => {
         // Reads retain the workspace contract of following only symlink parents.
-        const selectedRoot = resolveHostWorkspaceRoot(root, absolutePath);
+        const selectedRoot = await resolveHostRootAsync(root, absolutePath);
         const relative = await toCanonicalRelativeWorkspacePath(selectedRoot, absolutePath);
         const rootHandle = await getRoot(selectedRoot);
         return (await rootHandle.read(path.resolve(rootHandle.rootReal, relative))).buffer;
       },
       statFile: async (absolutePath: string) => {
-        const selectedRoot = resolveHostWorkspaceRoot(root, absolutePath);
+        const selectedRoot = await resolveHostRootAsync(root, absolutePath);
         const relative = toRelativeWorkspacePath(selectedRoot, absolutePath);
         return statHostFile(path.resolve(selectedRoot, relative));
       },
       access: async (absolutePath: string) => {
-        const selectedRoot = resolveHostWorkspaceRoot(root, absolutePath);
+        const selectedRoot = await resolveHostRootAsync(root, absolutePath);
         let relative: string;
         try {
           // Canonicalized like readFile so in-workspace symlink parents pass.

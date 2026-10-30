@@ -9,6 +9,7 @@ import {
 } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runOutsideAsyncWorkScope } from "../shared/async-work-scope.js";
+import { isReportableUpdateRun } from "../shared/update-outcome-classification.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
@@ -42,6 +43,7 @@ import {
   startedHandoff,
   idleActiveWorkInspectors,
   expectNoCalls,
+  type PersistedUpdateCheckState,
 } from "./update-startup-suite.test-support.js";
 
 const {
@@ -62,21 +64,6 @@ const UPDATE_CHECK_STATE_KEY = "update.checkState";
 function commandSuccess(stdout = "") {
   return { stdout, stderr: "", code: 0, signal: null, killed: false, termination: "exit" as const };
 }
-
-type PersistedUpdateCheckState = {
-  lastCheckedAt?: string;
-  lastCheckedChannel?: "stable" | "extended-stable" | "beta" | "dev";
-  lastNotifiedVersion?: string;
-  lastNotifiedTag?: string;
-  lastAvailableVersion?: string;
-  lastAvailableTag?: string;
-  autoInstallId?: string;
-  autoFirstSeenVersion?: string;
-  autoFirstSeenTag?: string;
-  autoFirstSeenAt?: string;
-  autoLastAttemptVersion?: string;
-  autoLastAttemptAt?: string;
-};
 
 describe("update-startup", () => {
   let tempDir: string;
@@ -1189,6 +1176,7 @@ describe("update-startup", () => {
         pending.resolve({
           ...startedHandoff({ logPath: "/tmp/late-handoff.log", handoffId: "late-handoff" }),
           status: joined ? "joined" : "started",
+          message: "Update blocked by another update lease.",
         });
       startHandoff.mockImplementationOnce(pauseAt(entered, pending));
       const log = { info: vi.fn() };
@@ -1370,6 +1358,13 @@ describe("update-startup", () => {
     await runAutoUpdateCheckWithDefaults({ cfg: autoConfig() });
 
     expectNoCalls(runCommandWithTimeout, startHandoff, restart);
+    expect(triage).not.toHaveBeenCalled();
+    const run = listUpdateRuns()[0]!;
+    expect(run).toMatchObject({
+      status: "skipped",
+      reason: "managed-service-handoff-unavailable",
+    });
+    expect(isReportableUpdateRun(run)).toBe(false);
     expect(getUpdateSchedule()?.campaign).toBeUndefined();
     expect(getUpdateAvailable()).toMatchObject({ latestVersion: "2.0.0-beta.1" });
     expect((await readRestartSentinel())?.payload).toMatchObject({
@@ -1425,7 +1420,11 @@ describe("update-startup", () => {
   it("does not schedule another restart when auto-update joins an active handoff", async () => {
     mockPackageUpdateStatus("beta", "2.0.0-beta.1");
     supervisor.mockReturnValue("launchd");
-    startHandoff.mockResolvedValueOnce({ ...startedHandoff(), status: "joined" });
+    startHandoff.mockResolvedValueOnce({
+      ...startedHandoff(),
+      status: "joined",
+      message: "Update blocked by another update lease.",
+    });
 
     await runAutoUpdateCheckWithDefaults({ cfg: autoConfig() });
 
@@ -1435,6 +1434,7 @@ describe("update-startup", () => {
         trigger: "campaign",
         status: "skipped",
         reason: "managed-service-handoff-already-running",
+        origin: expect.objectContaining({ nextAction: "Update blocked by another update lease." }),
         finishedAtMs: expect.any(Number),
       }),
     );
