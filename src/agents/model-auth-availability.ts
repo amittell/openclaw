@@ -3,19 +3,19 @@ import {
   findNormalizedProviderValue,
   normalizeProviderIdForAuth,
 } from "@openclaw/model-catalog-core/provider-id";
-import { hasNonEmptyString as hasSecret } from "@openclaw/normalization-core/string-coerce";
+import {
+  hasNonEmptyString as hasSecret,
+  normalizeLowercaseStringOrEmpty,
+} from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
 import { resolveMergedModelProviderConfig } from "../config/model-provider-config.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { parseSecretRef } from "../config/types.secrets.js";
+import { getRuntimeConfigCapture } from "../config/runtime-config-capture-state.js";
 import type {
   ProviderModelRouteAuthRequirement,
   ProviderModelRouteCandidate,
 } from "../plugin-sdk/provider-model-types.js";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { resolveProviderAuthScope } from "../plugins/provider-auth-scope.js";
 import { isValidSecretRef } from "../secrets/ref-contract.js";
-import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
-import { hasUsableOAuthCredential } from "./auth-profiles/credential-state.js";
 import {
   listExternalCliSyncProviderIds,
   resolveExternalCliAuthProfiles,
@@ -32,7 +32,6 @@ import {
   resolveSecretRefReadOnlyAvailability,
   resolveStoredCredentialReadOnlyAvailability,
 } from "./auth-profiles/read-only-availability.js";
-import { getRuntimeExternalCliProfileIds } from "./auth-profiles/runtime-external-profile-references.js";
 import type { RuntimeAuthMaterialization } from "./auth-profiles/runtime-materializations.js";
 import { getRuntimeAuthProfileStoreSnapshotCore } from "./auth-profiles/runtime-snapshots.js";
 import type {
@@ -44,12 +43,17 @@ import {
   isActiveUnusableWindow,
   isProfileInCooldown,
   readInlineProviderApiKeyUsage,
+  readAuthProfileUsageStats,
   resolveProfileUnusableUntil,
 } from "./auth-profiles/usage-state.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { createCliRuntimeModelAuthEvaluator } from "./model-auth-availability.cli-runtime.js";
+import { createRuntimeCredentialOverlay } from "./model-auth-availability.runtime-overlay.js";
 import type {
   ModelAuthAvailability,
+  CreateModelAuthAvailabilityResolverParams,
+  AuthTarget,
+  AuthSourceEvaluation,
   ModelAuthAvailabilityEvidence,
   ModelAuthAvailabilityEvaluation,
   ModelAuthAvailabilityRef,
@@ -72,8 +76,9 @@ import {
 import { resolveManagedSecretRefRuntimeProviderAuth } from "./model-auth-runtime-config.js";
 import { resolveSelectedModelCredential } from "./model-auth-selected-credential.js";
 import { hasAuthoredProviderRequestParams } from "./model-extra-params.js";
+import { resolveNativeCommandAuthRoute } from "./model-native-command-auth.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
-import type { CliRuntimeAuthDirectories } from "./model-runtime-aliases.js";
+import { resolveModelRuntimePolicy } from "./model-runtime-policy.js";
 import { resolveDefaultModelForAgent } from "./model-selection-config.js";
 import {
   createOpenAIModelRoutesResolver,
@@ -106,37 +111,6 @@ const OPENAI_CODEX_RESPONSES_API = "openai-chatgpt-responses";
 const EXTERNAL_CLI_REFRESH_PROVIDER_IDS = new Set(
   listExternalCliSyncProviderIds().map(normalizeProviderIdForAuth),
 );
-
-type CreateModelAuthAvailabilityResolverParams = {
-  cfg: OpenClawConfig;
-  preparedCliRuntimeAuthDirectories?: CliRuntimeAuthDirectories;
-  agentId?: string;
-  authStore: AuthProfileStore;
-  agentDir?: string;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  syntheticAuthProviderRefs?: readonly string[];
-  metadataSnapshot?: PluginMetadataSnapshot;
-  externalCliProviderIds?: readonly string[];
-  routeResolverFactory?: typeof createOpenAIModelRoutesResolver;
-  preparedRuntimeAuthStore?: AuthProfileStore;
-  preparedRuntimeAuthModes?: PreparedAgentCredentialModes;
-  preparedRuntimeAuthMaterializations?: readonly RuntimeAuthMaterialization[];
-  preparedSyntheticAuthComplete?: boolean;
-};
-
-type AuthTarget = ModelAuthAvailabilityRef & {
-  authRequirement?: ProviderModelRouteAuthRequirement;
-};
-type AuthSourceEvaluation = Pick<
-  ModelAuthAvailabilityEvaluation,
-  | "availability"
-  | "selectedAuthMode"
-  | "evidence"
-  | "selectedProfileId"
-  | "unavailableReason"
-  | "unavailableUntil"
->;
 
 function modeAllowed(
   provider: string,
@@ -175,6 +149,16 @@ function normalizeModelIdForProvider(provider: string, modelId: string): string 
 export function createModelAuthAvailabilityResolver(
   params: CreateModelAuthAvailabilityResolverParams,
 ): ModelAuthAvailabilityResolver {
+  // Captured catalog policy already owns its immutable authored source.
+  const sourceConfig = getRuntimeConfigCapture(params.cfg)?.source;
+  const isPluginAuthProvider = (provider: string) =>
+    resolveProviderAuthScope({
+      provider,
+      config: params.cfg,
+      env: params.env,
+      workspaceDir: params.workspaceDir,
+      pluginMetadataSnapshot: params.metadataSnapshot,
+    }) === "plugin";
   const env = params.env ?? process.env;
   const now = Date.now();
   const isExternalCliProvider = (provider: string) =>
@@ -199,62 +183,11 @@ export function createModelAuthAvailabilityResolver(
     : params.authStore;
   const runtimeStore =
     params.preparedRuntimeAuthStore ?? getRuntimeAuthProfileStoreSnapshotCore(params.agentDir);
-  const hydratedProfileIds = new Set<string>();
-  const sameSecretRef = (
-    left: ReturnType<typeof parseSecretRef>,
-    right: ReturnType<typeof parseSecretRef>,
-  ) =>
-    left !== null &&
-    right !== null &&
-    left.source === right.source &&
-    left.provider === right.provider &&
-    left.id === right.id;
-  const runtimeCredentialOverlay = (
-    profileId: string,
-    credential: AuthProfileCredential,
-  ): AuthProfileCredential => {
-    const runtime = runtimeStore?.profiles[profileId];
-    if (!runtime || credential.type !== runtime.type || credential.provider !== runtime.provider) {
-      return credential;
-    }
-    // The snapshot key plus profile id and provider/type establish runtime ownership.
-    // Only ref-only stubs bootstrap; inline persisted OAuth remains authoritative.
-    if (
-      credential.type === "oauth" &&
-      runtime.type === "oauth" &&
-      credential.oauthRef &&
-      !hasSecret(credential.access) &&
-      !hasSecret(credential.refresh) &&
-      hasUsableOAuthCredential(runtime, { now })
-    ) {
-      return runtime;
-    }
-    if (
-      credential.type === "api_key" &&
-      runtime.type === "api_key" &&
-      sameSecretRef(
-        parseSecretRef(credential.keyRef ?? credential.key, params.cfg.secrets?.defaults),
-        parseSecretRef(runtime.keyRef, params.cfg.secrets?.defaults),
-      ) &&
-      hasSecret(runtime.key)
-    ) {
-      hydratedProfileIds.add(profileId);
-      return { ...credential, key: runtime.key };
-    }
-    if (
-      credential.type === "token" &&
-      runtime.type === "token" &&
-      sameSecretRef(
-        parseSecretRef(credential.tokenRef ?? credential.token, params.cfg.secrets?.defaults),
-        parseSecretRef(runtime.tokenRef, params.cfg.secrets?.defaults),
-      ) &&
-      hasSecret(runtime.token)
-    ) {
-      hydratedProfileIds.add(profileId);
-      return { ...credential, token: runtime.token };
-    }
-    return credential;
-  };
+  const { overlay: runtimeCredentialOverlay, hydratedProfileIds } = createRuntimeCredentialOverlay({
+    cfg: params.cfg,
+    runtimeStore,
+    now,
+  });
   const orderProfiles = runtimeStore
     ? Object.fromEntries(
         Object.entries(store.profiles).map(([profileId, credential]) => [
@@ -263,16 +196,8 @@ export function createModelAuthAvailabilityResolver(
         ]),
       )
     : store.profiles;
-  const orderBaseStore =
+  const orderStore =
     orderProfiles === store.profiles ? store : { ...store, profiles: orderProfiles };
-  const orderStore: AuthProfileStore = orderBaseStore.usageStats
-    ? {
-        ...orderBaseStore,
-        usageStats: Object.fromEntries(
-          Object.entries(orderBaseStore.usageStats).map(([id, stats]) => [id, { ...stats }]),
-        ),
-      }
-    : orderBaseStore;
   const { aliasMap, envCandidateMap, authEvidenceMap } = resolveProviderEnvAuthLookupMaps({
     config: params.cfg,
     workspaceDir: params.workspaceDir,
@@ -311,14 +236,13 @@ export function createModelAuthAvailabilityResolver(
   };
   // Refresh authority follows exact profiles marked by the external-auth
   // lifecycle. Provider-wide authority could bless an unrelated stale profile.
-  const externalCliRefreshProfileIds = new Set([
-    ...external.map((profile) => profile.profileId),
-    ...getRuntimeExternalCliProfileIds(runtimeStore ?? store),
-  ]);
-  const readOnlyAuthConfig = params.cfg;
+  const externalCliRefreshProfileIds = new Set(external.map((profile) => profile.profileId));
   const providerInput = (provider: string) =>
-    resolveProviderConfigSecretInput(params.cfg, provider);
+    resolveProviderConfigSecretInput(params.cfg, provider, sourceConfig);
   const prepareAuthTarget = (provider: string, ref: ModelAuthAvailabilityRef): AuthTarget => {
+    if (ref.api != null && ref.baseUrl != null) {
+      return ref;
+    }
     const { providerConfig: configured } = providerInput(provider);
     const configuredModelId = ref.modelId
       ? normalizeModelIdForProvider(provider, ref.modelId)
@@ -337,6 +261,7 @@ export function createModelAuthAvailabilityResolver(
   const providerBinding = (provider: string) =>
     resolveProviderEntryApiKeyProfileReference({
       cfg: params.cfg,
+      sourceConfig,
       provider,
       store,
     });
@@ -366,7 +291,7 @@ export function createModelAuthAvailabilityResolver(
     }
     const resolution = prependAuthProfilePin(
       resolveAuthProfileOrderWithMetadata({
-        cfg: readOnlyAuthConfig,
+        cfg: params.cfg,
         store: orderStore,
         provider: normalized,
         preferredProfile: preferredProfileId,
@@ -419,7 +344,7 @@ export function createModelAuthAvailabilityResolver(
         ? store
         : { ...store, profiles: { ...store.profiles, [profileId]: credential } };
     const eligibility = resolveAuthProfileEligibility({
-      cfg: readOnlyAuthConfig,
+      cfg: params.cfg,
       store: effectiveStore,
       provider: normalizeProvider(provider),
       profileId,
@@ -434,7 +359,7 @@ export function createModelAuthAvailabilityResolver(
     return (
       profileId !== undefined &&
       !resolveAuthProfileEligibility({
-        cfg: readOnlyAuthConfig,
+        cfg: params.cfg,
         store: orderStore,
         provider: normalizeProvider(provider),
         profileId,
@@ -514,18 +439,14 @@ export function createModelAuthAvailabilityResolver(
   const hasProfileEvidence = (provider: string) => {
     const normalized = normalizeProvider(provider);
     const configuredOrder = findNormalizedProviderValue(params.cfg.auth?.order, normalized);
-    if (configuredOrder !== undefined) {
-      return true;
-    }
-    if (
+    return (
+      configuredOrder !== undefined ||
       Object.values(params.cfg.auth?.profiles ?? {}).some(
         (profile) => normalizeProvider(profile.provider) === normalized,
+      ) ||
+      Object.keys(store.profiles).some((profileId) =>
+        hasMatchingProfileEvidence(normalized, profileId),
       )
-    ) {
-      return true;
-    }
-    return Object.keys(store.profiles).some((profileId) =>
-      hasMatchingProfileEvidence(normalized, profileId),
     );
   };
   const firstProfileEvidenceId = (provider: string): string | undefined => {
@@ -711,7 +632,7 @@ export function createModelAuthAvailabilityResolver(
       if (profile.readiness === "unavailable" || profile.cooldown !== "active") {
         return [];
       }
-      const stats = store.usageStats?.[profile.profileId];
+      const stats = readAuthProfileUsageStats(store, profile.profileId);
       const until =
         stats && !hasPermanentAuthFailure(stats) ? resolveProfileUnusableUntil(stats, model) : null;
       return until !== null && until > now ? [until] : [];
@@ -738,6 +659,17 @@ export function createModelAuthAvailabilityResolver(
           target,
         )
       : { availability: false, unavailableReason: "auth-failed" };
+  const rejectedProfileEvaluation = (
+    decision: Extract<ReturnType<typeof selectProviderModelAuthSources>, { kind: "rejected" }>,
+    plan: ProviderModelAuthSourcePlan,
+    target: AuthTarget,
+  ): AuthSourceEvaluation => ({
+    ...rejectedSourceEvaluation(decision.reason, plan, target),
+    ...(decision.source
+      ? { selectedProfileId: decision.source.profileId, selectedAuthMode: decision.source.mode }
+      : {}),
+    evidence: "profile",
+  });
   const sourceEvaluation = (
     selection: ProviderModelAuthSourceSelection,
     provider: string,
@@ -877,16 +809,7 @@ export function createModelAuthAvailabilityResolver(
     const plan = sourcePlanForTarget(provider, ref, policy, orderResolution, () => target);
     const decision = selectProviderModelAuthSources({ provider, plan });
     return decision.kind === "rejected"
-      ? {
-          ...rejectedSourceEvaluation(decision.reason, plan, target),
-          evidence: "profile",
-          ...(decision.source
-            ? {
-                selectedAuthMode: decision.source.mode,
-                selectedProfileId: decision.source.profileId,
-              }
-            : {}),
-        }
+      ? rejectedProfileEvaluation(decision, plan, target)
       : undefined;
   };
   const resolveProviderEvaluation = (
@@ -894,6 +817,17 @@ export function createModelAuthAvailabilityResolver(
     ref: ModelAuthAvailabilityRef = {},
   ): AuthSourceEvaluation => {
     const provider = normalizeProviderIdForAuth(rawProvider);
+    if (resolveMergedModelProviderConfig(params.cfg, provider)?.auth === "native-command") {
+      return { availability: false, evidence: "runtime" };
+    }
+    if (isPluginAuthProvider(provider)) {
+      return (
+        params.evaluatePluginAuth?.(provider, ref) ?? {
+          availability: undefined,
+          evidence: "runtime",
+        }
+      );
+    }
     const target = prepareAuthTarget(provider, ref);
     const profileLock = ref.requiredProfileId?.trim();
     if (invalidProfilePin(provider, ref)) {
@@ -912,16 +846,7 @@ export function createModelAuthAvailabilityResolver(
     });
     const decision = selectProviderModelAuthSources({ provider, plan: sourcePlan });
     if (decision.kind === "rejected") {
-      return {
-        ...rejectedSourceEvaluation(decision.reason, sourcePlan, target),
-        ...(decision.source
-          ? {
-              selectedProfileId: decision.source.profileId,
-              selectedAuthMode: decision.source.mode,
-            }
-          : {}),
-        evidence: "profile",
-      };
+      return rejectedProfileEvaluation(decision, sourcePlan, target);
     }
     return sourceEvaluation(decision.selection, provider, target, policy.evaluation);
   };
@@ -934,6 +859,43 @@ export function createModelAuthAvailabilityResolver(
     ref: ModelAuthAvailabilityRef = {},
   ): ModelAuthAvailabilityEvaluation => {
     const provider = normalizeProviderIdForAuth(rawProvider);
+    const commandAuth = resolveNativeCommandAuthRoute({
+      config: params.cfg,
+      provider,
+      modelId: ref.modelId,
+      api: ref.api,
+      baseUrl: ref.baseUrl,
+      agentId: params.agentId,
+      workspaceDir: params.workspaceDir,
+      metadataSnapshot: params.metadataSnapshot,
+    });
+    if (commandAuth) {
+      const available =
+        commandAuth.supported &&
+        ref.runtimeId === commandAuth.runtimeId &&
+        synthetic.has(commandAuth.runtimeId) &&
+        !ref.requiredProfileId &&
+        !ref.pinnedProfileId &&
+        !ref.preferredProfileId &&
+        !ref.observedRoutes?.some(
+          (route) => route.api !== commandAuth.api || route.baseUrl !== commandAuth.baseUrl,
+        );
+      return {
+        availability: available,
+        availabilityAuthoritative: true,
+        routeResolution: null,
+        selectedAuthMode: "native-command",
+        evidence: "runtime",
+        ...(available ? { runtimeAuth: { id: "codex", source: "native" } as const } : {}),
+      };
+    }
+    if (isPluginAuthProvider(provider)) {
+      return {
+        ...resolveProviderEvaluation(provider, ref),
+        routeResolution: null,
+        availabilityAuthoritative: true,
+      };
+    }
     if (provider !== OPENAI_PROVIDER_ID) {
       return {
         ...resolveProviderEvaluation(provider, ref),
@@ -1111,6 +1073,47 @@ export function createModelAuthAvailabilityResolver(
         ? { allowNativeAuthOnSingleRoute: true }
         : {}),
     });
+    const subscriptionSelection =
+      routeResolution.routes.length > 1 &&
+      routeAuthDecision.kind === "selected" &&
+      routeAuthDecision.selection.kind === "selected" &&
+      routeAuthDecision.selection.route.authRequirement === "subscription"
+        ? routeAuthDecision.selection
+        : undefined;
+    const accountListedModelIds =
+      subscriptionSelection &&
+      params.accountListedModelIds?.(
+        provider,
+        subscriptionSelection.source.kind === "profile"
+          ? subscriptionSelection.source.profileId
+          : undefined,
+      );
+    if (
+      subscriptionSelection &&
+      accountListedModelIds &&
+      !accountListedModelIds.has(normalizeLowercaseStringOrEmpty(ref.modelId))
+    ) {
+      // The ready account listing did not return this dual-route id, so its subscription route
+      // is not entitled. A usable Platform credential keeps today's selection and preference.
+      const [firstPlatformRoute, ...restPlatformRoutes] = routeResolution.routes.filter(
+        (route) => route.authRequirement !== "subscription",
+      );
+      const platform = firstPlatformRoute
+        ? selectOpenAIModelRouteAuth({
+            resolution: { ...routeResolution, routes: [firstPlatformRoute, ...restPlatformRoutes] },
+            sourcePlan,
+            configuredAuthMode: automaticRouteAuthMode,
+          })
+        : undefined;
+      if (platform?.kind !== "selected" || platform.selection.kind !== "selected") {
+        // No reason code: the account is signed in, so sign-in or API-key guidance would mislead.
+        return {
+          availability: false,
+          routeResolution,
+          selectedRoute: subscriptionSelection.route,
+        };
+      }
+    }
     // Past route success proves readiness; the current selector still owns billing preference.
     const preferredSelection =
       routeAuthDecision.kind === "selected" &&
@@ -1275,10 +1278,7 @@ export function createModelAuthAvailabilityResolver(
   const evaluateModelAuth = (provider: string, ref?: ModelAuthAvailabilityRef) =>
     withSelectedCredential(provider, evaluateModelAuthSources(provider, ref));
   const providerDiscoveryProviderIds = new Set<string>();
-  const addProviderDiscoveryProviderId = (provider: string | undefined) => {
-    if (!provider) {
-      return;
-    }
+  const addProviderDiscoveryProviderId = (provider: string) => {
     const normalized = normalizeProvider(provider);
     if (normalized) {
       providerDiscoveryProviderIds.add(normalized);
@@ -1314,16 +1314,20 @@ export function createModelAuthAvailabilityResolver(
   if (synthetic.has("codex")) {
     addProviderDiscoveryProviderId(OPENAI_PROVIDER_ID);
   }
-  const evaluateCliRuntimeAuth = createCliRuntimeModelAuthEvaluator(params, evaluateModelAuth);
+  const evaluateCliRuntimeAuth = createCliRuntimeModelAuthEvaluator(
+    { ...params, authStore: orderStore },
+    evaluateModelAuth,
+  );
   return {
     providerDiscoveryProviderIds: [...providerDiscoveryProviderIds].toSorted((left, right) =>
       left.localeCompare(right),
     ),
     evaluateModelAuth,
     evaluateRuntimeModelAuth: (provider, ref = {}) => {
-      const runtimeId =
-        ref.runtimeId ??
-        resolveAgentHarnessPolicy({
+      let runtimeId = ref.runtimeId;
+      let configuredRuntimePolicy: ReturnType<typeof resolveModelRuntimePolicy> | undefined;
+      if (runtimeId === undefined) {
+        const policyParams = {
           config: params.cfg,
           agentId: params.agentId,
           provider,
@@ -1331,12 +1335,24 @@ export function createModelAuthAvailabilityResolver(
           modelApi: ref.api,
           modelBaseUrl: ref.baseUrl,
           env: params.env,
-        }).runtime;
+        };
+        configuredRuntimePolicy = resolveModelRuntimePolicy(policyParams);
+        runtimeId = resolveAgentHarnessPolicy(policyParams, configuredRuntimePolicy).runtime;
+      }
       const evaluation = evaluateModelAuth(provider, { ...ref, runtimeId });
-      if (ref.requiredProfileId?.trim()) {
+      if (
+        evaluation.selectedAuthMode === "native-command" ||
+        isPluginAuthProvider(provider) ||
+        ref.requiredProfileId?.trim()
+      ) {
         return evaluation;
       }
-      const runtimeEvaluation = evaluateCliRuntimeAuth(provider, { ...ref, runtimeId }, evaluation);
+      const runtimeEvaluation = evaluateCliRuntimeAuth(
+        provider,
+        { ...ref, runtimeId },
+        evaluation,
+        configuredRuntimePolicy,
+      );
       return runtimeEvaluation
         ? withSelectedCredential(provider, {
             ...runtimeEvaluation,

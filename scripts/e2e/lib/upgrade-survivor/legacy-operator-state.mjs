@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { assertAgentReplyContainsMarker } from "../agent-turn-output.mjs";
 import { readTcpPortEnv } from "../env-limits.mjs";
+import { readJson } from "../fixtures/common.mjs";
 import { readPluginInstallIndex } from "../plugin-index-sqlite.mjs";
+import {
+  prepareLegacyOperatorAuth,
+  seedLegacyOperatorAuth,
+} from "./legacy-operator-doctor-repairs.mjs";
+import { readDatabase } from "./observations.mjs";
 
 const MODEL = "survivor/gpt-5.6-luna";
 const JOBS = [
@@ -23,10 +28,6 @@ function requiredEnv(name) {
 
 function artifact(name) {
   return path.join(requiredEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"), name);
-}
-
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function writeJson(file, value) {
@@ -96,6 +97,7 @@ function approvalsCommand() {
 }
 
 export function seedLegacyOperatorState() {
+  prepareLegacyOperatorAuth();
   const workspace = requiredEnv("OPENCLAW_TEST_WORKSPACE_DIR");
   const mockPort = readTcpPortEnv("OPENCLAW_UPGRADE_SURVIVOR_MOCK_PORT");
   const set = (key, value) =>
@@ -142,6 +144,7 @@ export function seedLegacyOperatorState() {
     "legacy-operator-setup",
   );
   set("agents.defaults.model.primary", MODEL);
+  seedLegacyOperatorAuth();
   // Every fixture client shares this container's loopback network namespace.
   set("plugins.entries.device-pair", {
     enabled: true,
@@ -330,6 +333,11 @@ export function assertLegacyOperatorExternalPlugin(expectedVersion) {
 }
 
 function seedLegacyOperatorApprovals() {
+  // Keep the requested policy aligned with the restrictive host migration specimen.
+  cli(
+    ["config", "set", "tools.exec.mode", JSON.stringify("allowlist"), "--strict-json"],
+    "legacy-operator-exec-policy",
+  );
   const approvals = approvalsCommand();
   const policyInput = artifact("legacy-operator-policy-input.json");
   const nativeEligibility = artifact("native-assignment-eligibility.json");
@@ -602,16 +610,13 @@ export function assertLegacyOperatorApprovals(stage) {
   } else {
     const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
     assert(fs.existsSync(dbPath), "legacy operator approvals database missing");
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try {
+    readDatabase(dbPath, (db) => {
       const row = db
         .prepare("SELECT raw_json FROM exec_approvals_config WHERE config_key = ?")
         .get("current");
       assert(row, "legacy operator approvals canonical row missing");
       policy = JSON.parse(row.raw_json);
-    } finally {
-      db.close();
-    }
+    });
   }
   const observed = stage === "baseline" ? baselinePolicy(policy) : authoredPolicy(policy);
   writeJson(artifact(`legacy-operator-${stage}-approvals.json`), observed);
@@ -813,9 +818,11 @@ export function assertLegacyOperatorCronOwners(listing, baseline) {
       expected.agentId,
       `legacy operator cron owner unresolved or changed: ${expected.name}`,
     );
+    // Doctor may pin an ownerless legacy-roster job to its historical owner
+    // (docs/gateway/doctor/state-and-sessions.md); authored owners never move.
     assert.equal(
       after.agentId,
-      before.agentId,
+      before.agentId ?? after.agentId,
       `legacy operator cron explicit owner changed: ${expected.name}`,
     );
   }

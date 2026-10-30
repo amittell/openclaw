@@ -22,8 +22,7 @@ vi.mock("../daemon/launchd.js", () => ({ findStaleOpenClawUpdateLaunchdJobs: moc
 
 import {
   collectGatewayPlatformWarnings,
-  noteMacLaunchctlGatewayEnvOverrides,
-  noteMacStaleOpenClawUpdateLaunchdJobs,
+  noteMacGatewayPlatformWarnings,
   noteStartupOptimizationHints,
 } from "./doctor-platform-notes.js";
 
@@ -48,7 +47,7 @@ afterEach(() => {
   }
 });
 
-describe("noteMacLaunchctlGatewayEnvOverrides", () => {
+describe("macOS Gateway environment warnings", () => {
   it("prints clear unsetenv instructions for token override", async () => {
     mocks.runExec.mockImplementation(async (_command, [, name]) => ({
       stdout: name === "OPENCLAW_GATEWAY_TOKEN" ? " \tlaunchctl-token\n" : " \n",
@@ -62,7 +61,7 @@ describe("noteMacLaunchctlGatewayEnvOverrides", () => {
       },
     };
 
-    await noteMacLaunchctlGatewayEnvOverrides(cfg);
+    await noteMacGatewayPlatformWarnings(cfg);
 
     expect(mocks.note).toHaveBeenCalledTimes(1);
     expect(mocks.runExec).toHaveBeenCalledTimes(2);
@@ -96,7 +95,7 @@ describe("noteMacLaunchctlGatewayEnvOverrides", () => {
       },
     };
 
-    await noteMacLaunchctlGatewayEnvOverrides(cfg);
+    await noteMacGatewayPlatformWarnings(cfg);
 
     expect(mocks.note).toHaveBeenCalledTimes(1);
     const [message] = expectDefined<unknown[]>(mocks.note.mock.calls[0], "note call 0");
@@ -116,7 +115,7 @@ describe("noteMacLaunchctlGatewayEnvOverrides", () => {
       },
     };
 
-    await noteMacLaunchctlGatewayEnvOverrides(cfg);
+    await noteMacGatewayPlatformWarnings(cfg);
 
     expect(mocks.runExec).not.toHaveBeenCalled();
     expect(mocks.note).not.toHaveBeenCalled();
@@ -132,7 +131,7 @@ describe("noteMacLaunchctlGatewayEnvOverrides", () => {
       },
     };
 
-    await noteMacLaunchctlGatewayEnvOverrides(cfg);
+    await noteMacGatewayPlatformWarnings(cfg);
 
     expect(mocks.runExec).toHaveBeenNthCalledWith(
       1,
@@ -150,7 +149,38 @@ describe("noteMacLaunchctlGatewayEnvOverrides", () => {
   });
 });
 
-describe("noteMacStaleOpenClawUpdateLaunchdJobs", () => {
+describe("macOS stale updater warnings", () => {
+  it("scans the installed service without caller state selectors", async () => {
+    vi.stubEnv("OPENCLAW_HOME", "/tmp/caller-home");
+    vi.stubEnv("OPENCLAW_PROFILE", "caller");
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", "/tmp/caller.json");
+    mocks.readCommand.mockResolvedValue({
+      programArguments: ["node", "openclaw.mjs", "gateway"],
+      environment: { HOME: "/tmp/service-home" },
+    });
+    await collectGatewayPlatformWarnings({});
+    const [env] = expectDefined<NodeJS.ProcessEnv[]>(
+      mocks.findJobs.mock.calls[0],
+      "scan environment",
+    );
+    expect(
+      Object.fromEntries(
+        [
+          "HOME",
+          "OPENCLAW_HOME",
+          "OPENCLAW_STATE_DIR",
+          "OPENCLAW_PROFILE",
+          "OPENCLAW_CONFIG_PATH",
+        ].map((key) => [key, env?.[key]]),
+      ),
+    ).toEqual({
+      HOME: "/tmp/service-home",
+      OPENCLAW_HOME: undefined,
+      OPENCLAW_STATE_DIR: undefined,
+      OPENCLAW_PROFILE: undefined,
+      OPENCLAW_CONFIG_PATH: undefined,
+    });
+  });
   it("uses service env for gateway platform stale updater warnings", async () => {
     const serviceEnv = {
       OPENCLAW_STATE_DIR: "/tmp/openclaw-daemon",
@@ -187,7 +217,7 @@ describe("noteMacStaleOpenClawUpdateLaunchdJobs", () => {
       },
     ]);
 
-    await noteMacStaleOpenClawUpdateLaunchdJobs();
+    await noteMacGatewayPlatformWarnings({});
 
     expect(mocks.findJobs).toHaveBeenCalledTimes(1);
     const [message, title] = expectDefined<unknown[]>(mocks.note.mock.calls[0], "note call 0");
@@ -201,16 +231,32 @@ describe("noteMacStaleOpenClawUpdateLaunchdJobs", () => {
 });
 
 describe("collectGatewayPlatformWarnings", () => {
-  it("collects guidance when launch agent writes are disabled", async () => {
-    vi.mocked(fs.existsSync).mockImplementation(
-      (candidate) => candidate === "/tmp/openclaw-doctor-host/.openclaw/disable-launchagent",
-    );
-    mocks.readCommand.mockResolvedValue({ environment: { HOME: "/tmp/openclaw-doctor-service" } });
-    const warnings = await collectGatewayPlatformWarnings({});
+  it.each([false, true])(
+    "reports only the active state's launch-agent marker (present: %s)",
+    async (activeMarkerExists) => {
+      const activeMarker = "/tmp/openclaw-doctor-host-state/disable-launchagent";
+      const defaultMarker = "/tmp/openclaw-doctor-host/.openclaw/disable-launchagent";
+      vi.mocked(fs.existsSync).mockImplementation(
+        (candidate) =>
+          candidate === defaultMarker || (candidate === activeMarker && activeMarkerExists),
+      );
+      mocks.readCommand.mockResolvedValue({
+        environment: { HOME: "/tmp/openclaw-doctor-service" },
+      });
 
-    expect(warnings).toEqual([expect.stringContaining("LaunchAgent writes are disabled")]);
-    expect(warnings[0]).toContain("disable-launchagent");
-  });
+      const warnings = await collectGatewayPlatformWarnings({});
+      await noteMacGatewayPlatformWarnings({});
+
+      expect(fs.existsSync).not.toHaveBeenCalledWith(defaultMarker);
+      if (activeMarkerExists) {
+        expect(warnings).toEqual([expect.stringContaining(`disabled via ${activeMarker}`)]);
+        expect(mocks.note).toHaveBeenCalledWith(warnings[0], "Gateway (macOS)");
+      } else {
+        expect(warnings).toEqual([]);
+        expect(mocks.note).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 describe("noteStartupOptimizationHints", () => {

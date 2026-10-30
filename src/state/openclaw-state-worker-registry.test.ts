@@ -34,6 +34,9 @@ it("loads only the requested domain and routes exact operation names after prepa
     write: () => {
       throw new Error("The registry must leave transactions to its handler");
     },
+    writeAdmitted: () => {
+      throw new Error("The registry must leave transactions to its handler");
+    },
     stateOptions: () => ({ path: "synthetic-state.sqlite", env: {} }),
   };
   const command = { type: "apns.registration.read", input: "synthetic-node" } as const;
@@ -75,9 +78,18 @@ it("prepares exact operations without loading another kernel under the same name
   );
   const command = { type: "session.read", input: "entry" } as const;
   expect(() => registry.execute(command, { agentId: "agent" })).toThrow("not prepared");
-  await Promise.all([registry.prepare(command.type), registry.prepare(command.type)]);
+  const preparation = registry.prepare(command.type);
+  expect(registry.prepare(command.type)).toBe(preparation);
+  await preparation;
   expect(registry.execute(command, { agentId: "agent" })).toBe("agent:entry");
   expect(loadRead).toHaveBeenCalledOnce();
   expect(loadWrite).not.toHaveBeenCalled();
+  expect(registry.has({ type: "session.write", input: "entry" })).toBe(false);
+  const failure = new Error("worker module unavailable");
+  loadWrite.mockRejectedValue(failure);
+  const refused = registry.prepare("session.write");
+  await expect(refused).rejects.toBe(failure);
+  expect(registry.prepare("session.write")).toBe(refused);
+  expect(loadWrite).toHaveBeenCalledOnce();
   expect(registry.has({ type: "session.write", input: "entry" })).toBe(false);
 });

@@ -1,6 +1,5 @@
 import {
   ErrorCodes,
-  errorShape,
   validateSessionMemberAddParams,
   validateSessionMemberRemoveParams,
   validateSessionMembersListParams,
@@ -14,14 +13,25 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { addSessionMember, removeSessionMember } from "../../config/sessions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import { sessionCreatorProfileId } from "../../config/sessions/session-entry-provenance.js";
+import {
+  resolveSessionCreatorActor,
+  sessionCreatorProfileId,
+} from "../../config/sessions/session-entry-provenance.js";
+import type { SessionMember as StoredSessionMember } from "../../config/sessions/session-membership-facts.types.js";
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
 import { readSessionMembersInWorker } from "../../config/sessions/session-sharing-store.js";
-import type { SessionMember as StoredSessionMember } from "../../config/sessions/session-sharing-store.kernel.js";
-import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
-import { listProfiles } from "../../state/user-profiles.js";
 import {
+  composeSessionSourceAssertion,
+  sessionEntryCommitGuardOptions,
+} from "../../config/sessions/session-source-authority.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
+import { listResidentUserProfileDisplayFacts } from "../../state/user-profile-list.js";
+import {
+  encodePublicSessionShareLocator,
   loadPublicSessionShareTokenCodec,
   type PublicSessionShareTokenCodec,
 } from "../control-ui-public-session-token.js";
@@ -33,15 +43,16 @@ import { requireSessionRowProjection } from "../session-row-projection-access.js
 import type { SessionSharingTarget } from "../session-sharing-policy.js";
 import {
   allowedSessionVisibilities,
-  invalidateSessionSharingSnapshot,
   isSessionVisibilityAllowed,
   resolveSessionVisibility,
 } from "../session-sharing.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
+import { respondError } from "./response.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { measureSessionCollaborationPhase } from "./sessions-collaboration-diagnostics.js";
 import { prepareManagedSessionAccess, sharingExpectedEntry } from "./sessions-sharing-authority.js";
 import { knownSessionIdentities, type SharingActorFacts } from "./sessions-sharing-identities.js";
+import { projectSessionMemberPermissions } from "./sessions-sharing-permissions.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -52,14 +63,21 @@ import { defineValidatedGatewayHandler, type Validator } from "./validation.js";
 
 function runExclusiveSharingMutation<T>(
   target: SessionSharingTarget,
-  storePath: string,
+  lifecycleStorePath: string,
   run: () => Promise<T>,
 ): Promise<T> {
   // Sharing and lifecycle mutations share one exact-row fence so authorization
   // cannot change between archive's stop and commit boundaries.
-  return runExclusiveSessionLifecycleMutation("sharing", {
-    scope: storePath,
-    identities: [target.canonicalKey, target.storeKey, ...target.storeKeys, target.entry.sessionId],
+  return runSessionMutation({
+    diagnosticLabel: "sharing",
+    target: captureSessionTarget({
+      storeScope: lifecycleStorePath,
+      sessionKey: target.canonicalKey,
+      aliases: [target.storeKey, ...target.storeKeys],
+      incarnation: target.entry.sessionId,
+      agentId: target.agentId,
+    }),
+    policy: "allow-live",
     run,
   });
 }
@@ -138,7 +156,6 @@ function publishSharingChange(params: {
   event: Omit<SessionSharingEvidenceEvent, "actorState">;
 }): void {
   bumpGatewayAccessRevision();
-  invalidateSessionSharingSnapshot(params.event.sessionKey);
   const eventOptions = {
     sessionKeys: [params.event.sessionKey],
   };
@@ -195,14 +212,11 @@ function createSessionMembersListHandler(
       const managed = access.target;
       const projection = requireSessionRowProjection(context);
       await projection.withSelectionPreparation(async () => {
-        const profiles = await measureSessionCollaborationPhase(`${method}.profiles`, () =>
-          listProfiles(),
-        );
         do {
           await measureSessionCollaborationPhase(`${method}.projection`, () =>
-            Promise.resolve(projection.prepareSelection()),
+            Promise.resolve(projection.prepareSelection({ metadataOnly: true })),
           );
-        } while (projection.needsSelectionPreparation());
+        } while (projection.needsSelectionPreparation({ metadataOnly: true }));
         let tokenCodec = resolveSessionPublicShare(managed.entry)
           ? await loadPublicSessionShareTokenCodec()
           : undefined;
@@ -242,23 +256,21 @@ function createSessionMembersListHandler(
           ? evidenceMembers
           : evidenceMembers.map(projectLegacySessionMember);
         if (!evidenceAware && members.some((member) => member === null)) {
-          respond(
-            false,
-            undefined,
-            errorShape(
-              ErrorCodes.INVALID_REQUEST,
-              "session membership includes actor evidence this client cannot represent",
-              {
-                details: {
-                  code: "SESSION_MEMBER_ACTOR_EVIDENCE_UNSUPPORTED",
-                  recommendedMethod: "session.members.listEvidence",
-                },
+          respondError(
+            respond,
+            ErrorCodes.INVALID_REQUEST,
+            "session membership includes actor evidence this client cannot represent",
+            {
+              details: {
+                code: "SESSION_MEMBER_ACTOR_EVIDENCE_UNSUPPORTED",
+                recommendedMethod: "session.members.listEvidence",
               },
-            ),
+            },
           );
           return;
         }
         const projectedMembers = members.filter((member) => member !== null);
+        const profiles = listResidentUserProfileDisplayFacts();
         const identities = knownSessionIdentities({
           creators: projection.listCreatedActors(),
           actor,
@@ -276,7 +288,7 @@ function createSessionMembersListHandler(
         );
         // Persisted provenance deliberately has no current profile label or avatar.
         // Project it at the same display boundary as session rows; never change the access identity.
-        const storedOwner = entry.createdActor;
+        const storedOwner = resolveSessionCreatorActor(entry.createdActor);
         const owner = sessionCreatorProfileId(storedOwner)
           ? projectSessionActor(storedOwner, new Map(), currentCfg)
           : storedOwner
@@ -299,6 +311,18 @@ function createSessionMembersListHandler(
             ...(owner?.id ? { owner } : {}),
             members: projectedMembers,
             identities,
+            ...(evidenceAware
+              ? {
+                  permissions: projectSessionMemberPermissions({
+                    cfg: context.getCommittedRuntimeConfig?.() ?? currentCfg,
+                    client,
+                    target: { ...target, entry },
+                    members: evidenceMembers,
+                    identities,
+                    profiles,
+                  }),
+                }
+              : {}),
             role,
             allowedVisibilities: allowedSessionVisibilities(currentCfg),
           },
@@ -321,19 +345,18 @@ function createSessionMemberMutationHandler(
       let addActor: SharingActorFacts | undefined;
       if (action === "add") {
         const projection = requireSessionRowProjection(context);
-        const profiles = await listProfiles();
         do {
-          await projection.ensureMaterialized();
-        } while (projection.needsMaterialization);
+          await projection.prepareSelection({ metadataOnly: true });
+        } while (projection.needsSelectionPreparation({ metadataOnly: true }));
         access.assertCurrent();
         addActor = actorIdentity(client);
         const known = knownSessionIdentities({
           creators: projection.listCreatedActors(),
           actor: addActor,
-          profiles,
+          profiles: listResidentUserProfileDisplayFacts(),
         });
         if (!known.some((identity) => identity.id === params.identityId)) {
-          respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown identity"));
+          respondError(respond, ErrorCodes.INVALID_REQUEST, "unknown identity");
           return;
         }
       }
@@ -406,27 +429,25 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
     async ({ params, respond, context }, access) => {
       const managed = access.target;
       if (managed.entry.incognito || isIncognitoSessionKey(managed.canonicalKey)) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "Incognito sessions cannot be published."),
+        respondError(
+          respond,
+          ErrorCodes.INVALID_REQUEST,
+          "Incognito sessions cannot be published.",
         );
         return;
       }
       if (managed.entry.sessionId !== params.expectedSessionId) {
-        respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.INVALID_REQUEST,
-            "Session changed; reopen sharing before publishing.",
-          ),
+        respondError(
+          respond,
+          ErrorCodes.INVALID_REQUEST,
+          "Session changed; reopen sharing before publishing.",
         );
         return;
       }
-      let publicShare: SessionPublicShare | undefined;
+      let publicShareGrant: ReturnType<typeof resolveSessionPublicShare>;
+      let tokenCodec: PublicSessionShareTokenCodec | undefined;
       await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
-        const tokenCodec = params.enabled ? await loadPublicSessionShareTokenCodec() : undefined;
+        tokenCodec = params.enabled ? await loadPublicSessionShareTokenCodec() : undefined;
         const { target: current } = access.current();
         let changed = false;
         let inspected = false;
@@ -446,31 +467,31 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
             }
             access.assertEntryManageable(entry);
             const previous = resolveSessionPublicShare(entry);
-            const publicShareGrant = params.enabled
+            publicShareGrant = params.enabled
               ? prepareSessionPublicShareGrant(entry, current.canonicalKey)
               : undefined;
-            publicShare =
-              publicShareGrant && tokenCodec
-                ? projectPublicSessionShare({
-                    agentId: current.agentId,
-                    sessionKey: current.canonicalKey,
-                    grant: publicShareGrant,
-                    codec: tokenCodec,
-                  })
-                : undefined;
+            if (publicShareGrant) {
+              encodePublicSessionShareLocator({
+                agentId: current.agentId,
+                sessionKey: current.canonicalKey,
+                sessionId: publicShareGrant.sessionId,
+                shareId: publicShareGrant.id,
+              });
+            }
             changed = publicShareGrant?.id !== previous?.id;
             return changed ? { publicShare: publicShareGrant } : null;
           },
           {
             // Entry patches await preparation before committing. Recheck current
             // sharing authority on the synchronous commit edge, after that await.
-            assertCommitAllowed: access.assertCurrent,
+            ...sessionEntryCommitGuardOptions(access.assertCurrent),
           },
         );
         if (!inspected) {
           throw new Error("session changed before sharing mutation");
         }
         if (changed) {
+          access.current();
           emitSessionsChanged(context, {
             reason: "sharing",
             sessionKey: current.canonicalKey,
@@ -478,6 +499,20 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
           });
         }
       });
+      const { target: published } = access.current();
+      const currentGrant = resolveSessionPublicShare(published.entry);
+      if (currentGrant?.id !== publicShareGrant?.id) {
+        throw new Error("session publication changed before sharing response");
+      }
+      const publicShare =
+        currentGrant && tokenCodec
+          ? projectPublicSessionShare({
+              agentId: published.agentId,
+              sessionKey: published.canonicalKey,
+              grant: currentGrant,
+              codec: tokenCodec,
+            })
+          : undefined;
       respond(
         true,
         {
@@ -495,13 +530,20 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
     async ({ params, respond, client, context }, access) => {
       const managed = access.target;
       const visibility = params.visibility;
+      const assertVisibilityCurrent = () => {
+        const { target } = access.current();
+        if (resolveSessionVisibility(target.entry) !== visibility) {
+          throw new Error("session visibility changed before sharing response");
+        }
+      };
       if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, `session visibility is disabled: ${visibility}`, {
+        respondError(
+          respond,
+          ErrorCodes.INVALID_REQUEST,
+          `session visibility is disabled: ${visibility}`,
+          {
             details: { code: "SESSION_VISIBILITY_DISABLED", visibility },
-          }),
+          },
         );
         return;
       }
@@ -517,6 +559,15 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         // replacement still cannot inherit this visibility change.
         let inspected = false;
         let changed = false;
+        const commitGuard = composeSessionSourceAssertion(
+          [access.assertCurrent],
+          (assertSources) => {
+            assertSources();
+            if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
+              throw new Error(`session visibility is disabled: ${visibility}`);
+            }
+          },
+        );
         await patchSessionEntryCore(
           scope,
           (entry) => {
@@ -528,14 +579,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
             changed = true;
             return { visibility };
           },
-          {
-            assertCommitAllowed: () => {
-              access.assertCurrent();
-              if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
-                throw new Error(`session visibility is disabled: ${visibility}`);
-              }
-            },
-          },
+          sessionEntryCommitGuardOptions(commitGuard),
         );
         if (!inspected) {
           throw new Error("session changed before sharing mutation");
@@ -545,6 +589,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         }
         const now = Date.now();
         const actor = actorIdentity(client);
+        assertVisibilityCurrent();
         publishSharingChange({
           context,
           actor,
@@ -557,6 +602,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
           },
         });
       });
+      assertVisibilityCurrent();
       respond(true, { ok: true, sessionKey: managed.canonicalKey, visibility }, undefined);
     },
   ),
