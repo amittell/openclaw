@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as harnessRegistry from "../agents/harness/registry.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
+import * as userTurnPersistence from "../sessions/user-turn-transcript.persistence.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { installGatewayServerChatTestSuite } from "./server.chat.gateway-server-chat.test-support.js";
 import { collectHistoryTextValues } from "./session-history-fixtures.test-support.js";
@@ -23,79 +24,17 @@ import { agentCommandMock } from "./test-helpers.runtime-state.js";
 let ws: WebSocket;
 let port: number;
 
-const connectWork: Promise<unknown>[] = [];
-let joinedConnectWork = 0;
-let restoreConnectWork: (() => void) | undefined;
-
-const waitForConnectWork = async () => {
-  while (joinedConnectWork < connectWork.length) {
-    // A producer can register catalog tails before releasing its own root.
-    const pending = connectWork.slice(joinedConnectWork);
-    joinedConnectWork = connectWork.length;
-    await Promise.allSettled(pending);
-  }
-};
-
-// Install before this suite opens either socket; delegate all admission to its real owner.
-beforeAll(async () => {
-  const admission = await import("../process/gateway-work-admission.js");
-  const beginRoot = admission.tryBeginGatewayRootWorkAdmission;
-  const runIndependent = admission.runWithGatewayIndependentRootWorkAdmission;
-  const producers = vi
-    .spyOn(admission, "tryBeginGatewayRootWorkAdmission")
-    .mockImplementation((origin) => {
-      const lease = beginRoot(origin);
-      // Handler completion can precede release of retained request work.
-      return lease && (origin === "ws:connect" || origin === "ws:chat.send")
-        ? {
-            ...lease,
-            run: (run) =>
-              lease.run(() => {
-                const released = createDeferred<"settled" | "reset">();
-                const observeRelease = admission.captureGatewayRootWorkReleaseObserver();
-                if (!observeRelease) {
-                  throw new Error("connect producer must retain its admitted root");
-                }
-                observeRelease(released.resolve);
-                connectWork.push(released.promise);
-                return run();
-              }),
-          }
-        : lease;
-    });
-  const tails = vi
-    .spyOn(admission, "runWithGatewayIndependentRootWorkAdmission")
-    .mockImplementation((run, origin, signal) => {
-      const pending = runIndependent(run, origin, signal);
-      if (origin === "ws:preauth") {
-        connectWork.push(pending);
-      }
-      return pending;
-    });
-  restoreConnectWork = () => {
-    tails.mockRestore();
-    producers.mockRestore();
-  };
-});
-beforeEach(waitForConnectWork);
-afterAll(async () => {
-  try {
-    await waitForConnectWork();
-  } finally {
-    restoreConnectWork?.();
-  }
-});
-
 const gatewaySuite = installGatewayServerChatTestSuite((started) => {
   ws = started.ws;
   port = started.port;
-}, waitForConnectWork);
+});
 const {
   abortChatRun,
   expectAgentWaitTimeout,
   mockBlockedChatReply,
   sendChatAndExpectStarted,
   settleGatewayFixture,
+  waitForConnectWork,
   waitForAgentRunDrained,
   withMainSessionStore,
 } = gatewaySuite;
@@ -290,6 +229,18 @@ test("chat.send /reset on an idle session finishes post-commit cleanup and recor
   await useRealReply();
   // Observe the harness reset that initSessionState runs after the reset commits.
   const harnessReset = vi.spyOn(harnessRegistry, "resetRegisteredAgentHarnessSessions");
+  const persistenceFailures: string[] = [];
+  const persistUserTurn = userTurnPersistence.persistUserTurnTranscript;
+  const persistence = vi
+    .spyOn(userTurnPersistence, "persistUserTurnTranscript")
+    .mockImplementation(async (params) => {
+      try {
+        return await persistUserTurn(params);
+      } catch (error) {
+        persistenceFailures.push(String(error));
+        throw error;
+      }
+    });
   try {
     await withMainSessionStore(async () => {
       const runId = "idem-admin-reset-idle";
@@ -302,11 +253,13 @@ test("chat.send /reset on an idle session finishes post-commit cleanup and recor
         expect.objectContaining({ sessionId: "sess-main", sessionKey: "agent:main:main" }),
       );
       const stored = await history(ws);
-      expect(stored?.messages?.filter((message) => message.role === "user")).toMatchObject([
-        { content: "/reset" },
-      ]);
+      expect(
+        stored?.messages?.filter((message) => message.role === "user"),
+        `Reset input persistence failures: ${JSON.stringify(persistenceFailures)}`,
+      ).toMatchObject([{ content: "/reset" }]);
     });
   } finally {
+    persistence.mockRestore();
     harnessReset.mockRestore();
   }
 });

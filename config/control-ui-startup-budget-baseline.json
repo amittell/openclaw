@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 325081,
-  "reason": "Solid 2 action/optimistic runtime adoption, W-SOLID2-RECIPES; offset tracked by HF-STARTUP-BUDGET",
-  "updatedAt": "2026-10-21"
+  "startupJsGzipBytes": 88758,
+  "reason": "Current-main Board containment build measures 88,758 B gzip, 7 B above its matched base, with three startup JavaScript requests and one CSS request; paired CPU qualification demonstrates the rendering win.",
+  "updatedAt": "2026-10-30"
 }

@@ -164,6 +164,7 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
   agentDatabaseTargets: readonly { agentId: string; path: string }[];
   agentDatabaseMigrationDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
   integrityCheck?: "quick" | "full";
+  inspectedSessionEntryPaths?: readonly string[];
   orphanSessionStores?: ReturnType<typeof inspectOrphanSessionStoreEndpoints>;
   pluginSessionStoreAgentIds: readonly string[];
   legacySessionSurfaces: PreparedLegacySessionSurfaces;
@@ -185,6 +186,9 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
       path: databasePath,
     })),
   ]);
+  const entryStateChanges = (repaired: number) =>
+    repaired > 0 ? [`Canonicalized entry state for ${repaired} durable session row(s).`] : [];
+
   const sharedStep = (
     id: string,
     source: LegacyStateMigrationEndpoint[],
@@ -216,6 +220,10 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
   const versionMigrationPaths = new Set(
     params.agentDatabaseMigrationDiscovery?.versionMigrations?.map((migration) => migration.path),
   );
+  // Preflight already inspected these targets; version-migrated targets keep their repair path.
+  inspectedEntryStatePaths = new Set(
+    params.inspectedSessionEntryPaths?.filter((pathname) => !versionMigrationPaths.has(pathname)),
+  );
   const steps: LegacyStateMigrationStep[] = [];
   if (params.mode === "doctor") {
     steps.push(
@@ -231,7 +239,7 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
             cfg: params.config,
             env: stateEnv,
             deferToMediaPreparation: true,
-            excludedDatabasePaths: versionMigrationPaths,
+            excludedDatabasePaths: new Set([...versionMigrationPaths, ...inspectedEntryStatePaths]),
             integrityCheck: params.integrityCheck,
             ...(params.agentDatabaseMigrationDiscovery
               ? {
@@ -240,14 +248,13 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
                 }
               : {}),
             onInspectedTargets: (targets) => {
-              inspectedEntryStatePaths = new Set(targets.map((target) => target.canonicalPath));
+              for (const target of targets) {
+                inspectedEntryStatePaths.add(target.canonicalPath);
+              }
             },
           });
           return {
-            changes:
-              report.repaired > 0
-                ? [`Canonicalized entry state for ${report.repaired} durable session row(s).`]
-                : [],
+            changes: entryStateChanges(report.repaired),
             warnings: [],
           };
         },
@@ -279,10 +286,7 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
               });
               return {
                 completed: true,
-                changes:
-                  report.repaired > 0
-                    ? [`Canonicalized entry state for ${report.repaired} durable session row(s).`]
-                    : [],
+                changes: entryStateChanges(report.repaired),
               };
             } catch (error) {
               mediaEntryStatePreparationError ??=
@@ -321,10 +325,7 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
               })),
           });
           return {
-            changes:
-              report.repaired > 0
-                ? [`Canonicalized entry state for ${report.repaired} durable session row(s).`]
-                : [],
+            changes: entryStateChanges(report.repaired),
             warnings: [],
           };
         },

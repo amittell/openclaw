@@ -160,7 +160,7 @@ export function validateDecisionBatchV2(batch: unknown): batch is DecisionBatchV
         : batch;
   return (
     !oversized &&
-    questions.length <= 256 &&
+    questions.length <= 400 &&
     finiteJson(jsonEnvelope, { rejectProxies: true }) === "valid"
   );
 }
@@ -179,6 +179,15 @@ export function validateDecisionResultV2(
   } catch {
     return false;
   }
+  return validateAdmittedDecisionResultV2(batch, value, capabilities);
+}
+
+/** Internal result boundary for a host-owned, admitted snapshot kept outside provider reach. */
+export function validateAdmittedDecisionResultV2(
+  batch: DecisionBatchV2,
+  value: unknown,
+  capabilities?: ModelDecisionCapabilities,
+): value is DecisionBatchResultV2 {
   if (
     finiteJson(value, { rejectProxies: true }) !== "valid" ||
     !isPlainDecisionRecord(value) ||
