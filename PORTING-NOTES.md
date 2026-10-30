@@ -4067,4 +4067,14 @@ On the M4 (Node 26.12.1):
     check, room #315).
   - After `a1314c6b96f` (the Air's 6 files) and `63a2759b28d` (the M4's 7 files), each of the 12 surviving files
     passes alone. The 13th, redaction-replay, is deleted.
-- **Pending:** the full `qual-c1010.sh` rerun at `63a2759b28d`. Its build is the deploy bundle.
+- **Static gates at `63a2759b28d`** (`qual-c1010.sh` run q1010c, done 2026-10-29 03:08:59Z): build rc=0 (179 s),
+  `tsgo:all` rc=0, both ratchets OK with `--base` beta.4 (assertion-safety: 2682 files; line-cap: 549 changed
+  source files, no new violations), oxlint rc=0, oxfmt clean on 546 files, and the wrapper inventory passes. That
+  run's fast step did not start: its list still named the deleted redaction-replay test.
+- **Fast gate at `569299d7f42`** (room #333; started about 19:04Z on 2026-10-30, after the M4's reboot, rc=1 in
+  2332 s, no edits during the run): 778 files, 11215 tests, 11112 pass, 97 fail, 6 skip. All 97 failures are
+  `test/scripts/ci-workflow-planning.test.ts`, the Bash 5+ environment failure above, which bare beta.4 shares. No
+  carry failure is left.
+- **Qualified at `569299d7f42`,** which is code-identical to `63a2759b28d` (the two differ only in this file). The
+  deploy branch `upgrade-v2026.10.10-beta.4` was created at `569299d7f42`, so later commits to this file on
+  `wip/beta4-carry` do not move the deployed sha.
