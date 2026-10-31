@@ -24,12 +24,12 @@ import {
   modelSupportsInput,
   prepareModelRunCapabilities,
 } from "../../agents/model-catalog-lookup.js";
-import { recordModelFallbackStop } from "../../agents/model-fallback-stop.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import {
   resolveScheduledToolCallerContext,
   resolveScheduledToolPolicyContext,
 } from "../../agents/scheduled-tool-policy.js";
+import { createUnrecordedScheduledAccountRefusal } from "../../agents/scheduled-unrecorded-account.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveAgentLifecycleTerminalMetadata } from "../../auto-reply/reply/agent-lifecycle-terminal.js";
@@ -510,12 +510,7 @@ export function createCronPromptExecutor(
                     })
                   : undefined;
                 if (trigger === "cron" && !binding && authProfileId) {
-                  const refusal = new Error(
-                    "Automation has no recorded inference account. Explicitly select its account with a model@profile update before running it.",
-                  );
-                  // Another model would only bypass the operator's account choice.
-                  recordModelFallbackStop(refusal);
-                  throw refusal;
+                  throw createUnrecordedScheduledAccountRefusal();
                 }
                 const guardedCliSessionBinding =
                   cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)

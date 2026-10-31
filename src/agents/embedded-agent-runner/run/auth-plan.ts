@@ -10,7 +10,6 @@ import {
   ensureAuthProfileStoreAsync,
   ensureAuthProfileStoreWithoutExternalProfilesAsync,
 } from "../../model-auth.js";
-import { recordModelFallbackStop } from "../../model-fallback-stop.js";
 import { OPENAI_PROVIDER_ID } from "../../openai-routing.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { isConfiguredKeyAuthSource } from "../../provider-model-auth-source-plan.js";
@@ -24,6 +23,7 @@ import {
   type PreparedAgentRuntimeAuth,
   type PreparedAgentRuntimeAuthAttempt,
 } from "../../runtime-plan/prepare-auth.js";
+import { createUnrecordedScheduledAccountRefusal } from "../../scheduled-unrecorded-account.js";
 import { resolveModelAsync } from "../model.js";
 import type { PreparedNativeSessionRuntime } from "./model-setup.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -205,12 +205,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
         );
       })
     ) {
-      const refusal = new Error(
-        "Automation has no recorded inference account. Explicitly select its account with a model@profile update before running it.",
-      );
-      // Another model would only bypass the operator's account choice.
-      recordModelFallbackStop(refusal);
-      throw refusal;
+      throw createUnrecordedScheduledAccountRefusal();
     }
     return prepared;
   };
