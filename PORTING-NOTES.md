@@ -4078,3 +4078,54 @@ On the M4 (Node 26.12.1):
 - **Qualified at `569299d7f42`,** which is code-identical to `63a2759b28d` (the two differ only in this file). The
   deploy branch `upgrade-v2026.10.10-beta.4` was created at `569299d7f42`, so later commits to this file on
   `wip/beta4-carry` do not move the deployed sha.
+
+# Carrying onto v2026.10.10-beta.5 (2026-11-01, session 68acf50e; qualification on the M4)
+
+Alex's ruling (question tool, 10-31): "Finish beta.4, then carry beta.5". beta.4 passed its real-turn gate on
+both bots at `b333906f3b5` (alexm/openclaw room #363), which opened this carry.
+
+| step                                                                                   | commit        |
+| -------------------------------------------------------------------------------------- | ------------- |
+| v2026.10.10-beta.5^{commit} (10-29; a descendant of beta.4, 652 commits, 2363 files)  | `7e15622f37b` |
+| the beta.4 carry's tree at `419ff411cf0`, 3-way onto beta.5 with base beta.4: 9 files | `8d1661f13d5` |
+| upstream #188980, `cherry-pick -x 199176839ce`, in place of the fork's cron pair       | `e88114ae8cf` |
+| the fork's two configured-key auth-continuity integration tests (from `b5ce5b49e70`)  | `63f3825aaa2` |
+
+## Method
+
+The carry is applied as one 3-way merge, not replayed commit by commit: the beta.4 carry's first commit is a WIP
+squash that held conflict markers its successors resolved. A temporary commit with `419ff411cf0`'s tree and parent
+beta.4 was cherry-picked onto beta.5. The carry touches 577 files, 63 of them overlap beta.4..beta.5, and 9
+conflicted. `8d1661f13d5`'s body records each resolution.
+
+## Native on beta.5 (fork copies dropped)
+
+- **#183006 (`34259c9f421`):** `classify.ts` is byte-identical to the fork's carry; `classify.test.ts` is beta.5's,
+  and the fork's `noPlugin`/`validationSignal` helpers are removed.
+- **#138415 (`b630f9cf885`):** the code is upstream's (`missingIdentifierAuditReasons` byte-identical). The fork's
+  sizing stays by Alex's ruling (room #259): the 8000-char `wrapUntrustedQualityFeedbackBlock`, a 7200-char
+  identifier budget and an 800-char reserve. The test file is the fork's, at that sizing, with every beta.5 case.
+- **#169536:** `getOrCreateAccountThrottler` takes no `apiThrottler`; the fork's upload-timeout transformer stays.
+- **#173411 (the fork's backport `b5ce5b49e70` + `b333906f3b5`):** replaced by release-branch #188980, which also
+  fixes `cron.add` (`captureCronInferenceBinding`), the half the fork's version left refusing configured keys
+  (room #366). #188980 drops on its own once a 10.10 tag carries it (patch-id `b880a3db4d4e120c`).
+
+## Still carried (not in beta.5: the `(#N)` subject grep over beta.4..beta.5 is negative)
+
+#174884, #130400 and the #155000 port, #186998 (`419ff411cf0`; its backport #189935 is open), #93952's
+`withRuntimeAuthRefreshDeadline` (#189144 is main-only), #151924, #182429, #101866, #89526 and #158145, plus every
+fork-only change listed under beta.4.
+
+## Open for qualification and Alex (room #358, #359, #366)
+
+- **Run on the M4:** the build, `tsgo:all`, both ratchets with `--base` beta.5, oxlint, oxfmt and the fast gate.
+  The commits were made on the Air with the repo's hooks skipped, because those run pnpm (no builds or tests on the
+  Air), so formatting and lint are unmeasured until then.
+- **Measure, then decide:** whether the fork's two cron integration tests pass against #188980; the bots without
+  #101866; whether the #155000 port is redundant now that #162567 is in (it has been since beta.4).
+- **Alex's call:** the transport-failure copy (`renderTransportFailureReplyCopy`) only adds provider and model naming
+  to #168247's "Couldn't connect to the AI service" message. It is carried unchanged until he rules.
+- **Docs gap:** `docs/automation/cron-jobs/payloads.md` and `troubleshooting.md` (beta.5's and the fork's) still say
+  new host-managed jobs reject environment and config keys at creation, which #188980 reverses. Not edited here.
+- The surface-report baselines (3764 and 2199) are arithmetic (beta.4 + 1 upstream + 3 carry); the report run checks
+  them.
