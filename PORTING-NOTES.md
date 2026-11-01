@@ -4155,4 +4155,7 @@ Ran on `82d86af2309` from 05:00:21Z to 06:07:24Z on 2026-11-01.
   environment or provider-config key keeps a job unbound and running, that it stops instead of switching once a
   stored account becomes eligible, and that creation follows the same rule, as #188980's code and tests do. The
   wording follows main's #173509 paragraph without main's later Doctor adoption text, which this line lacks.
-- **Still open:** the bots without #101866, and Alex's ruling on the transport-failure copy.
+- **Alex's ruling (2026-11-01 about 15:33Z, question tool): keep the fork's transport-failure copy.** Replies keep
+  naming the provider and model in front of #168247's "Couldn't connect to the AI service" message, so the failing
+  backend shows in the chat. `renderTransportFailureReplyCopy` stays carried.
+- **Still open:** the bots without #101866.
