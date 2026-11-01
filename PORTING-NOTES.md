@@ -4129,3 +4129,30 @@ fork-only change listed under beta.4.
   new host-managed jobs reject environment and config keys at creation, which #188980 reverses. Not edited here.
 - The surface-report baselines (3764 and 2199) are arithmetic (beta.4 + 1 upstream + 3 carry); the report run checks
   them.
+
+## Qualification q1010b5a (M4, `claude-m4-6da8934d`, openclaw room #370) and its rulings
+
+Ran on `82d86af2309` from 05:00:21Z to 06:07:24Z on 2026-11-01.
+- **Static gates pass:** build, `tsgo:all`, assertion-safety, oxlint and oxfmt over 555 changed TS files, the
+  PR-wrapper inventory, and `plugin-sdk:surface:check`, so the 3764/2199 baselines hold.
+- **Line cap, accepted as upstream growth:** `src/agents/cli-runner/prepare.ts` counts 1731 lines against a 700 cap
+  (1728 on beta.5). The carry's only delta there is `e88114ae8cf`'s hunk from #188980 (same patch-id
+  `f0f4fb979a9498b8` on both), so the growth is upstream's and drops out once a tag carries #188980. It is not
+  re-extracted, so the cherry-pick still drops cleanly.
+- **Fast gate:** 917 files; 12,691 tests, 12,582 pass, 99 fail, 10 skipped.
+  - 97 in `ci-workflow-planning.test.ts` are the known Bash 5 environment failure. Bare beta.5 fails the same 97.
+  - **Known red, accepted:** "keeps the complete full manual manifest output below the safety budget". The fork's
+    extra test files put upstream's full-manual CI manifest at 262,234 chars against a 262,144 limit; bare beta.5
+    passes. It matters only if upstream's full-manual workflow is dispatched on the fork, which the bots and this
+    qualification never do.
+  - **Fixed in `7b8aa8e3df4` (test only):** `extensions/memory-lancedb/auto-recall.deadline.test.ts`. beta.5's
+    cold-start cases straddle upstream's 15 s auto-recall budget; the fork keeps 5 s (`AUTO_RECALL_TIMEOUT_MS`), so
+    the cases now use 3_000 and 6_000. Control: with the budget set back to 15 s, both cases fail.
+- **#155000: keep the port.** On beta.5 the subagent lane's exhausted turn reports `fallbackSafe: false` bare and
+  `true` with the carry, so only the carry hands it to the fallback model. Keep it until a tag reports `true` on its
+  own.
+- **Docs gap closed:** `payloads.md` and `troubleshooting.md` under `docs/automation/cron-jobs/` now say an
+  environment or provider-config key keeps a job unbound and running, that it stops instead of switching once a
+  stored account becomes eligible, and that creation follows the same rule, as #188980's code and tests do. The
+  wording follows main's #173509 paragraph without main's later Doctor adoption text, which this line lacks.
+- **Still open:** the bots without #101866, and Alex's ruling on the transport-failure copy.
