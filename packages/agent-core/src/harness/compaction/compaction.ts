@@ -11,6 +11,7 @@ import { buildSessionContext, projectSessionEntryMessage } from "../session/sess
 import { selectResetKeptEntries } from "../session/tool-result-pairing.js";
 import { CompactionError, err, ok, type Result, type SessionTreeEntry } from "../types.js";
 import { type CompactionDetails, parseCompactionDetails } from "./compaction-details.js";
+import { createOpenToolCallCutGuard } from "./open-tool-call-cut-guard.js";
 import { formatSplitTurnSourceAsk, resolveLatestUnresolvedUserRequest } from "./request-context.js";
 import { runSummarizationCompletion } from "./summarization-completion.js";
 import { buildSummaryCheckpointPrompt } from "./summary-checkpoint-prompt.js";
@@ -352,6 +353,8 @@ export function findCutPoint(
   constraints?: CompactionRetentionConstraints,
 ): CutPointResult {
   const retention = constraints?.budget;
+  // A cut inside an open tool-call frame would split a call from its results.
+  const cutGuard = createOpenToolCallCutGuard(isCutPointMessage);
   // Projection validates persisted custom/branch timestamps even outside the
   // retained tail. Keep that eager validation without storing every cut point.
   let cutIndex: number | undefined;
@@ -362,9 +365,7 @@ export function findCutPoint(
     if (entry && entry.id === constraints?.preserveFromEntryId) {
       lastAllowedCut = i;
     }
-    if (message && isCutPointMessage(message)) {
-      cutIndex = i;
-    }
+    cutIndex = message && cutGuard.admits(i, message) ? i : cutIndex;
   }
   if (cutIndex === undefined) {
     return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
@@ -382,7 +383,7 @@ export function findCutPoint(
     if (!message) {
       continue;
     }
-    if (isCutPointMessage(message)) {
+    if (cutGuard.allows(i, message)) {
       cutIndex = i;
     }
     accumulatedTokens += retention?.estimateTokens(message) ?? estimateTokens(message);
@@ -402,7 +403,7 @@ export function findCutPoint(
       if (retainedTokens > tailLimit) {
         break;
       }
-      if (i <= lastAllowedCut && message && isCutPointMessage(message)) {
+      if (i <= lastAllowedCut && message && cutGuard.allows(i, message)) {
         if (fittingCut === endIndex) {
           // The summary maximum is a reservation, not a minimum: small windows
           // retain one complete atom and give the summary the remaining room.

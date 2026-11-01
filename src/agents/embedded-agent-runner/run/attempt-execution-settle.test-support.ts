@@ -25,6 +25,11 @@ export function createFixture(mocks: {
 }) {
   const order: string[] = [];
   const queueHandle = { kind: "embedded", runId: "run-1" };
+  const contextTotalTokensWriter = {
+    offer: vi.fn(),
+    close: vi.fn(async () => undefined),
+    abandon: vi.fn(async () => undefined),
+  };
   const unsubscribe = vi.fn(() => order.push("unsubscribe"));
   const waitForPendingEvents = vi.fn(async () => undefined);
   const subscription = {
@@ -134,6 +139,7 @@ export function createFixture(mocks: {
     promptActiveSession,
     stream: {
       subscription,
+      contextTotalTokensWriter,
       queueHandle,
       stopAcceptingSteerMessages: vi.fn(),
       getBeforeAgentFinalizeRevisionReason,
@@ -292,6 +298,7 @@ export function createFixture(mocks: {
   return {
     cacheTrace,
     clearTimers,
+    contextTotalTokensWriter,
     detachBackend,
     getBeforeAgentFinalizeRevisionReason,
     input,

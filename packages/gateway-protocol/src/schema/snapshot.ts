@@ -185,6 +185,15 @@ const HealthSnapshotSchema = closedObject({
       available: Type.Boolean(),
     }),
   ),
+  runtimeConfig: Type.Optional(
+    closedObject({
+      state: Type.Union([Type.Literal("ok"), Type.Literal("drift"), Type.Literal("unknown")]),
+      liveDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      observedDefaultModel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      driftPaths: Type.Optional(Type.Array(Type.String())),
+      message: Type.Optional(Type.String()),
+    }),
+  ),
   // Channel plugins own their nested account/probe summaries, so this is the
   // one provider-contributed bag that deliberately remains unknown.
   channels: Type.Optional(Type.Record(Type.String(), Type.Unknown())),

@@ -8,6 +8,7 @@ import type {
   RestartRecoveryTerminalDeliveryEvidenceResult,
 } from "../config/sessions/restart-recovery-types.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { isAgentMediatedCompletionSourceTool } from "../sessions/input-provenance.js";
 import type { DeliveryContext } from "../utils/delivery-context.shared.js";
 import {
@@ -397,6 +398,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   | "restartRecoveryDeliveryMediaUrls"
   | "restartRecoveryDisableMessageTool"
   | "restartRecoveryDeliveryRunId"
+  | "restartRecoveryDeliveryLifecycleGeneration"
   | "restartRecoveryDeliverySourceRunId"
   | "restartRecoveryHarnessCompletion"
   | "restartRecoveryForceSafeTools"
@@ -423,6 +425,8 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
       restartRecoveryDisableMessageTool: entry.restartRecoveryDisableMessageTool,
       restartRecoverySuppressTextDelivery: entry.restartRecoverySuppressTextDelivery,
       restartRecoveryDeliveryRunId: params.runId,
+      // The adopting run's generation now owns the claim (see the new-claim branch).
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
       restartRecoveryOperatorSource: entry.restartRecoveryOperatorSource,
       restartRecoverySourceIngress: entry.restartRecoverySourceIngress,
@@ -450,6 +454,11 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
     restartRecoverySuppressTextDelivery:
       createsScopedDeliveryClaim && params.suppressTextDelivery === true ? true : undefined,
     restartRecoveryDeliveryRunId: createsScopedDeliveryClaim ? params.runId : undefined,
+    // A claim minted here is owned by the running generation; without it the claim
+    // reads as restart-orphaned and any later admission would retire it.
+    restartRecoveryDeliveryLifecycleGeneration: createsScopedDeliveryClaim
+      ? getAgentEventLifecycleGeneration()
+      : undefined,
     restartRecoveryDeliverySourceRunId: params.sourceRunId,
     restartRecoveryOperatorSource: createsScopedDeliveryClaim ? params.operatorSource : undefined,
     restartRecoverySourceIngress: createsScopedDeliveryClaim ? params.sourceIngress : undefined,

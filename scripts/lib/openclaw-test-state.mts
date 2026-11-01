@@ -114,16 +114,20 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
       },
     },
     agents: {
+      ownership: "explicit",
       defaults: {
         model: {
           primary: "openai/gpt-5.6-luna",
         },
         contextTokens: 64000,
         skills: ["memory"],
+        authInheritance: { agentId: "main" },
+        heartbeat: { agentId: "main" },
+        sessionStore: { agentId: "main" },
+        systemAgent: { agentId: "main" },
       },
       entries: {
         main: {
-          default: true,
           name: "Main",
           workspace: "~/workspace",
           model: {
@@ -143,6 +147,11 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
         },
       },
     },
+    bindings: [
+      { agentId: "main", match: { channel: "discord", accountId: "*" } },
+      { agentId: "main", match: { channel: "telegram", accountId: "*" } },
+      { agentId: "main", match: { channel: "whatsapp", accountId: "*" } },
+    ],
     skills: {
       allowBundled: ["memory", "openclaw-testing"],
       limits: {
@@ -163,10 +172,8 @@ function upgradeSurvivorConfig(options: TestStateOptions = {}) {
       discord: {
         enabled: true,
         token: { source: "env", provider: "default", id: "DISCORD_BOT_TOKEN" },
-        dm: {
-          policy: "allowlist",
-          allowFrom: ["111111111111111111"],
-        },
+        dmPolicy: "allowlist",
+        allowFrom: ["111111111111111111"],
         groupPolicy: "allowlist",
         guilds: {
           "222222222222222222": {

@@ -54,10 +54,11 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { loadApnsRegistration } from "./push-apns.js";
 import { acquireStartupMigrationLeaseWithWait } from "./startup-migration-checkpoint.js";
 import {
-  autoMigrateLegacyState as autoMigrateLegacyStateWithSurfaces,
-  detectLegacyStateMigrations as detectLegacyStateMigrationsWithSurfaces,
-  runLegacyStateMigrations as runLegacyStateMigrationsWithSurfaces,
-} from "./state-migrations.doctor.js";
+  autoMigrateLegacyState,
+  detectLegacyStateMigrations,
+  runLegacyStateMigrations,
+  type AutoMigrateLegacyStateParams,
+} from "./state-migrations.core-entrypoints.test-support.js";
 import { expectRecoveryPredicateRefusedAfterRepair } from "./state-migrations.ingress-lifecycle.test-support.js";
 import * as sessionStore from "./state-migrations.legacy-session-store.js";
 import { throwIfDoctorStateMigrationRefused } from "./state-migrations.messages.js";
@@ -70,37 +71,6 @@ import {
   drainSessionMigrationFixture,
 } from "./state-migrations.session-store.test-support.js";
 import { resetAutoMigrateLegacyStateDirForTest } from "./state-migrations.state-dir.js";
-
-type DetectLegacyStateParams = Parameters<typeof detectLegacyStateMigrationsWithSurfaces>[0];
-type RunLegacyStateParams = Parameters<typeof runLegacyStateMigrationsWithSurfaces>[0];
-type AutoMigrateLegacyStateParams = Parameters<typeof autoMigrateLegacyStateWithSurfaces>[0];
-
-type CoreMigrationParams<T> = Omit<T, "legacySessionSurfaces"> & {
-  legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
-};
-
-// This broad core suite intentionally exercises migration mechanics without plugin-owned keys.
-// Package-shaped coverage owns configured plugin resolution and setup-sidecar loading.
-function detectLegacyStateMigrations(params: CoreMigrationParams<DetectLegacyStateParams>) {
-  return detectLegacyStateMigrationsWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
-
-function runLegacyStateMigrations(params: CoreMigrationParams<RunLegacyStateParams>) {
-  return runLegacyStateMigrationsWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
-
-function autoMigrateLegacyState(params: CoreMigrationParams<AutoMigrateLegacyStateParams>) {
-  return autoMigrateLegacyStateWithSurfaces({
-    legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    ...params,
-  });
-}
 
 // Static helpers can retain earlier cohorts after resetModules; close every cohort at teardown.
 const migrationDatabaseClosers = new Set([

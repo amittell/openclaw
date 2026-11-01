@@ -6,6 +6,7 @@ import { makeZeroUsageSnapshot } from "../agents/usage.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import {
+  patchSessionEntryCore,
   persistSessionTranscriptTurn,
   publishTranscriptUpdate,
 } from "../config/sessions/session-accessor.js";
@@ -310,6 +311,7 @@ export async function prepareHeartbeatTargetAwareness(params: {
     if (!entry?.sessionId) {
       return undefined;
     }
+    const expectedSessionId = entry.sessionId;
     const idempotencyKey = `${HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX}${params.startedAt}:${params.runSessionKey}`;
     return (payload) => {
       try {
@@ -322,11 +324,60 @@ export async function prepareHeartbeatTargetAwareness(params: {
           return;
         }
         const text = truncateUtf16Safe(deliveredText, MAX_HEARTBEAT_TARGET_AWARENESS_CHARS);
+        // Content-scoped duplicate suppression (mirrors the channel-side
+        // lastHeartbeatText guard): the same delivered content must not be
+        // re-projected into the target session on every heartbeat run. Each
+        // projection enqueues a system event that becomes a fresh agent turn
+        // in the originating conversation, so a repeated projection is a
+        // self-reinforcing re-presentation loop (2026-09-11 incident). The
+        // idempotencyKey above is per-execution and cannot dedupe across
+        // runs. The prepare-time read is this run's snapshot of the target and
+        // the bookkeeping patch below pins its session id, so the 24h window
+        // here is the whole additional policy.
+        if (
+          entry.lastHeartbeatAwarenessText === text &&
+          typeof entry.lastHeartbeatAwarenessSentAt === "number" &&
+          entry.lastHeartbeatAwarenessSentAt <= params.startedAt &&
+          params.startedAt - entry.lastHeartbeatAwarenessSentAt < 24 * 60 * 60 * 1000
+        ) {
+          return;
+        }
         const suffix = text.length < deliveredText.length ? "\n[truncated]" : "";
         enqueueSystemEvent(
           `A heartbeat delivered this message to this channel:\n${text}${suffix}`,
           withSystemEventOwner({ sessionKey, contextKey: idempotencyKey }, params.agentId),
         );
+        // Bookkeeping is fire-and-forget post-send (the observer callback is
+        // invoked, never awaited, by the deliver core), so a lost patch only
+        // re-allows a later re-projection; it never blocks the already
+        // succeeded delivery. Re-read the target at patch time: the pre-send
+        // snapshot predates this run's projection.
+        void (async () => {
+          try {
+            const current = await readSessionEntryReadOnlyInWorker({
+              ...scope,
+              readConsistency: "latest",
+            });
+            if (current?.sessionId !== expectedSessionId) {
+              return;
+            }
+            await patchSessionEntryCore(
+              scope,
+              (_entry, context) =>
+                context.existingEntry?.sessionId === expectedSessionId
+                  ? {
+                      lastHeartbeatAwarenessText: text,
+                      lastHeartbeatAwarenessSentAt: params.startedAt,
+                    }
+                  : null,
+              { preserveActivity: true },
+            );
+          } catch (error) {
+            log.warn("heartbeat: failed to persist target awareness bookkeeping", {
+              error: formatErrorMessage(error),
+            });
+          }
+        })();
       } catch (error) {
         // Platform delivery already succeeded; projection remains best-effort bookkeeping.
         log.warn("heartbeat: failed to queue target session awareness", {

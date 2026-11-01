@@ -15,10 +15,14 @@ import {
 } from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { createSessionActorTranscriptReader } from "../session-transcript-memory-reader.js";
+import type { SubagentCoordinationDisplayResolver } from "../session-transcript-read.types.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
+import { prepareCompactionSpanSubagentCoordination } from "./chat-history-compaction-span-visibility.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
 import { projectChatHistoryWithReplies } from "./chat-history-reply-messages.js";
 import { encodeChatHistoryResponsePage } from "./chat-history-response-page.js";
+
+export { shouldReadAnchoredWindow } from "./chat-history-page-kernel.js";
 
 function prepareChatHistoryParams<Params extends ChatHistoryPageParams>(input: Params): Params {
   return getCliSessionBinding(input.entry, "claude-cli")?.sessionId
@@ -142,6 +146,59 @@ export async function readChatHistoryPage(
     },
     signal,
   );
+}
+
+/**
+ * Reads one page of the span a compaction summary shadowed; undefined when the id is not a
+ * compaction in this session. Always local: the span reader is host-side, not one of the
+ * worker's admitted readers, so this never takes readChatHistoryPage's worker path. It
+ * never reaches the CLI-import readers either, so an import binding cannot answer a span
+ * request with the live tail.
+ */
+export async function readChatHistoryCompactionSpanPage(
+  params: ChatHistoryPageParams & { compactionId: string },
+  signal?: AbortSignal,
+): Promise<ChatHistoryPage | undefined> {
+  signal?.throwIfAborted();
+  if (!params.sessionId || !params.storePath) {
+    const page = await readChatHistoryPageKernel(params, {
+      readers: sessionTranscriptReaders,
+      resolveCurrentUserProfileDisplay,
+      resolveCronJobName: () => undefined,
+    });
+    return { ...page, messages: await refreshForwardedLabels(page.messages) };
+  }
+  const durable = !params.entry?.incognito && !isIncognitoSessionKey(params.canonicalKey);
+  // Prepared from the span's own messages before the kernel projects them (see the module).
+  let prepared: SubagentCoordinationDisplayResolver | undefined;
+  const subagentCoordination: SubagentCoordinationDisplayResolver | undefined = durable
+    ? {
+        assertCurrent: () => prepared?.assertCurrent?.(),
+        isSubagentSession: (sessionKey) => prepared?.isSubagentSession(sessionKey) ?? false,
+        isSubagentRunMessage: (runId, messageSeq) =>
+          prepared?.isSubagentRunMessage(runId, messageSeq) ?? false,
+      }
+    : undefined;
+  let found = false;
+  const page = await readChatHistoryPageKernel(params, {
+    readers: { ...sessionTranscriptReaders, subagentCoordination },
+    resolveCurrentUserProfileDisplay,
+    resolveCronJobName: () => undefined,
+    readCompactionShadowPage: async (readScope, opts) => {
+      const span = await sessionTranscriptReaders.readSessionMessagesShadowedByCompactionAsync(
+        readScope,
+        opts,
+      );
+      found = span !== undefined;
+      if (span && durable) {
+        prepared = await prepareCompactionSpanSubagentCoordination(readScope, span.messages);
+      }
+      return span;
+    },
+  });
+  subagentCoordination?.assertCurrent?.();
+  signal?.throwIfAborted();
+  return found ? { ...page, messages: await refreshForwardedLabels(page.messages) } : undefined;
 }
 
 async function refreshForwardedLabels(messages: unknown[]): Promise<unknown[]> {
