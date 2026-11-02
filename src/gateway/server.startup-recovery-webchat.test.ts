@@ -225,6 +225,15 @@ it(
           updatedAt: Date.now() - 10_000,
           status: "running",
           abortedLastRun: true,
+          // A genuine gateway restart runs mark_interrupted, which persists a recovery
+          // cycle with cause "gateway_restart"; seed it so the resume notice keeps the
+          // restart-specific wording (the in-process overflow abort never creates this).
+          mainRestartRecovery: {
+            cycleId: "marked-cycle",
+            revision: 1,
+            chargedAttempts: 0,
+            cause: "gateway_restart",
+          },
         },
       );
       clearSessionStoreCacheForTest();
@@ -370,6 +379,14 @@ it(
         status: "running",
         abortedLastRun: true,
         updatedAt: Date.now() - 10_000,
+        // Second genuine restart: seed the recovery cycle with its cause so the resume
+        // notice keeps the restart-specific wording.
+        mainRestartRecovery: {
+          cycleId: "marked-cycle-reset",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
       }));
       addRecoveryChild(currentChildMarker);
       const resetRecovery = recoverRestartAbortedMainSessions({

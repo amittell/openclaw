@@ -42,14 +42,16 @@ function createImmediateSerialThrottler(): TelegramApiTransformer {
 // serialized account queue remain real.
 describe("recovery notice final transport fence", () => {
   it.each([
-    "allowed",
-    "gateway closed",
-    "policy revoked",
-    "production allowed",
-    "runtime policy revoked",
-    "automatic delivery revoked",
-    "owner retired",
-  ] as const)("checks %s after a real serialized account queue wait", async (mode) => {
+    ["allowed", undefined],
+    ["gateway closed", undefined],
+    ["policy revoked", undefined],
+    ["production allowed", undefined],
+    ["production allowed", "unknown"],
+    ["production allowed", "gateway_restart"],
+    ["runtime policy revoked", undefined],
+    ["automatic delivery revoked", undefined],
+    ["owner retired", undefined],
+  ] as const)("checks %s (cause: %s) after a queue wait", async (mode, cause) => {
     await withOpenClawTestState({ prefix: "notice-http-" }, async (state) => {
       const blocked = createDeferredCore<ServerResponse>();
       const preDispatch = createDeferredCore();
@@ -63,7 +65,9 @@ describe("recovery notice final transport fence", () => {
         mode === "automatic delivery revoked" ||
         mode === "owner retired";
       const noticeText = productionPredicate
-        ? "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!"
+        ? cause === "gateway_restart"
+          ? "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!"
+          : "I'm continuing your interrupted request now.  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!"
         : "Recovery resumed";
       const accept = (response: ServerResponse, text: string) => {
         visible.push(text);
@@ -176,6 +180,7 @@ describe("recovery notice final transport fence", () => {
         const operation = productionPredicate
           ? announceRestartRecoveryResumption({
               ...scope,
+              ...(cause === undefined ? {} : { cause }),
               cfg,
               gatewayRuntime: { ...runtime.recovery, sendRecoveryNotice: observedSend },
             })
