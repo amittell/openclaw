@@ -2,7 +2,8 @@
  * Typed cause of one main-session interruption, persisted so the resume notice can
  * distinguish a genuine gateway restart from an in-process abort (e.g. a
  * context-overflow retry). Pre-upgrade state predates this field and reads as
- * unknown; unknown cause must render neutral wording and must not re-dispatch.
+ * unknown. Recovery still settles interrupted delivery claims, but an unknown
+ * cause must render neutral wording rather than claim a restart.
  */
 export type MainRestartRecoveryCause = "gateway_restart" | "unknown";
 

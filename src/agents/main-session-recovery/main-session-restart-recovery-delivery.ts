@@ -1,5 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { SessionEntry } from "../../config/sessions.js";
+import type { MainRestartRecoveryCause, SessionEntry } from "../../config/sessions.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
@@ -90,7 +90,10 @@ export function isRestartRecoveryDeliveryCurrent(params: RestartRecoveryDelivery
 }
 
 export async function announceRestartRecoveryResumption(
-  params: RestartRecoveryDeliveryScope & { gatewayRuntime: GatewayRecoveryRuntime },
+  params: RestartRecoveryDeliveryScope & {
+    gatewayRuntime: GatewayRecoveryRuntime;
+    cause?: MainRestartRecoveryCause;
+  },
 ): Promise<void> {
   const isCurrent = (cfg: OpenClawConfig) => isRestartRecoveryDeliveryCurrent({ ...params, cfg });
   try {
@@ -99,7 +102,10 @@ export async function announceRestartRecoveryResumption(
     }
     await params.gatewayRuntime.sendRecoveryNotice({
       ...params.deliveryContext,
-      text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
+      text:
+        "I'm continuing your interrupted request now" +
+        (params.cause === "gateway_restart" ? " (the gateway has just restarted)" : "") +
+        ".  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
       idempotencyKey: `main-session-restart-recovery:${params.recoveryRunId}:resumed-notice`,
       liveOnly: true,
       isCurrent,

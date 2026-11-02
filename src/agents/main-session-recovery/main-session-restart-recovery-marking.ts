@@ -140,7 +140,7 @@ export async function markRestartAbortedMainSessions(params: {
    * Typed cause of the interruption. Defaults to "gateway_restart": every
    * production caller of this function is a genuine gateway shutdown/restart
    * marking path. Callers that abort runs in-process (no lifecycle rotation)
-   * must omit it so the resume notice stays cause-agnostic.
+   * must pass "unknown" explicitly so the resume notice stays cause-agnostic.
    */
   cause?: MainRestartRecoveryCause;
 }): Promise<{ marked: number; skipped: number }> {
@@ -312,6 +312,7 @@ type OrphanMarkParams = {
 
 async function markOrphanedMainSessionStore(
   params: OrphanMarkParams & {
+    cause: MainRestartRecoveryCause;
     target: RestartRecoveryStoreTarget & { sessionKey?: string };
     expectedSessionId?: string;
     expectedLifecycleRevision?: string;
@@ -325,9 +326,9 @@ async function markOrphanedMainSessionStore(
   return await markRecoveryStore({
     ...params.target,
     statuses: params.target.sessionKey ? undefined : ["running"],
-    // Startup orphan marking only runs at Gateway boot, i.e. after a real restart;
-    // attribute its cycles so the resume notice stays restart-specific.
-    cause: "gateway_restart",
+    // Startup and live reconciliation share this owner. Only the startup caller
+    // can attribute the interrupted work to a gateway restart.
+    cause: params.cause,
     assertCommitAllowed: () => {
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
       params.assertCommitAllowed?.();
@@ -409,6 +410,7 @@ export async function markOrphanedMainSessionForRecovery(params: {
 }): Promise<{ marked: number; skipped: number }> {
   return await markOrphanedMainSessionStore({
     ...params,
+    cause: "unknown",
     lifecycleGeneration: getAgentEventLifecycleGeneration(),
   });
 }
@@ -436,6 +438,7 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
     try {
       const storeResult = await markOrphanedMainSessionStore({
         ...params,
+        cause: "gateway_restart",
         target,
         lifecycleGeneration,
       });

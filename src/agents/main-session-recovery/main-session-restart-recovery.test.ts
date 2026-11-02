@@ -109,6 +109,7 @@ import {
 import { subagentRuns } from "../subagents/registry/subagent-registry-memory.js";
 import { registerHarnessCompletionRecoveryCases } from "./main-session-harness-completion.test-harness.js";
 import { registerParentRestartRecoveryCases } from "./main-session-parent-recovery.test-harness.js";
+import { registerMainSessionRecoveryCauseCases } from "./main-session-recovery-cause.test-harness.js";
 import * as recoveryOwnerRelease from "./main-session-recovery-owner-release.js";
 import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
 import {
@@ -445,7 +446,14 @@ function observeRecoveryRootCompletions(
 
 function getHarnessRecoveryFixture() {
   return {
+    prepareTranscriptRoot: () => {
+      tmpDir = transcriptFixture.prepareRoot();
+    },
     tmpDir,
+    makeMainSessionFixture,
+    writeMainSession,
+    writeCompletedToolTranscript,
+    mockRecoveryRuntime,
     makeSessionsDir,
     mainSessionEntry,
     writeStore,
@@ -1419,22 +1427,6 @@ describe("main-session-restart-recovery", () => {
     expect(store["agent:main:main"]?.abortedLastRun).toBe(false);
   });
 
-  it("uses neutral wording for a pre-upgrade reservation without a persisted cause", async () => {
-    tmpDir = transcriptFixture.prepareRoot();
-    // Pre-upgrade state predates cause persistence: the cycle exists but has no cause,
-    // so the resume notice must stay neutral and never claim a gateway restart.
-    const { sessionsDir } = await makeMainSessionFixture({
-      mainRestartRecovery: { cycleId: "pre-upgrade-cycle", revision: 1, chargedAttempts: 0 },
-    });
-    await writeCompletedToolTranscript(sessionsDir);
-    await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
-    expect(callGateway).toHaveBeenCalledOnce();
-    const message = String((gatewayParams() as Record<string, unknown>).message);
-    expect(message).toContain("The interruption did not cancel the user's task");
-    expect(message).not.toContain("interrupted by a gateway restart");
-    expect(message).not.toContain("The restart did not cancel the user's task");
-  });
-
   it("resumes when durable commentary is mirrored after the restart recovery mark", async () => {
     tmpDir = transcriptFixture.prepareRoot();
     const sessionsDir = await makeSessionsDir();
@@ -1594,6 +1586,7 @@ describe("main-session-restart-recovery", () => {
   });
 
   registerHarnessCompletionRecoveryCases(getHarnessRecoveryFixture);
+  registerMainSessionRecoveryCauseCases(getHarnessRecoveryFixture);
 
   it.each([
     {
@@ -1744,57 +1737,6 @@ describe("main-session-restart-recovery", () => {
           process.env.OPENCLAW_STATE_DIR = previousStateDir;
         }
       }
-    },
-  );
-
-  it.each([false, true])(
-    "announces an active recovered Telegram topic (notice fails=%s)",
-    async (noticeFails) => {
-      const sessionsDir = await makeSessionsDir();
-      const sessionKey = "agent:main:telegram:group:-100123:topic:99";
-      const storePath = path.join(sessionsDir, "sessions.json");
-      await writeMainSession({
-        sessionsDir,
-        sessionKey,
-        deliveryContext: {
-          channel: "telegram",
-          to: "telegram:-100123",
-          accountId: "work",
-          threadId: 99,
-        },
-      });
-      await writeCompletedToolTranscript(sessionsDir);
-      if (noticeFails) {
-        sendRecoveryNotice.mockRejectedValueOnce(new Error("temporary transport failure"));
-      }
-      await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
-      expect(sendRecoveryNotice).toHaveBeenCalledOnce();
-      const notice = sendRecoveryNotice.mock.calls[0]?.[0];
-      expect(notice).toMatchObject({
-        channel: "telegram",
-        to: "telegram:-100123",
-        accountId: "work",
-        threadId: 99,
-        text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
-        idempotencyKey: `main-session-restart-recovery:${String(gatewayParams().idempotencyKey)}:resumed-notice`,
-      });
-      expect(notice?.isCurrent?.({})).toBe(true);
-      const current = loadSessionEntry({ sessionKey, storePath });
-      if (!current) {
-        throw new Error("expected recovered session");
-      }
-      await writeStore(sessionsDir, {
-        [sessionKey]: { ...current, abortedLastRun: true },
-      });
-      expect(notice?.isCurrent?.({})).toBe(false);
-      await writeStore(sessionsDir, {
-        [sessionKey]: { ...current, sessionId: "replacement-session" },
-      });
-      expect(notice?.isCurrent?.({})).toBe(false);
-      await writeStore(sessionsDir, { [sessionKey]: current });
-      expect(notice?.isCurrent?.({})).toBe(true);
-      dispatchSettlement.resolve();
-      await waitForFast(() => expect(notice?.isCurrent?.({})).toBe(false));
     },
   );
 
@@ -3277,6 +3219,7 @@ describe("main-session-restart-recovery", () => {
     expect(marked).toEqual({ marked: 1, skipped: 2 });
     let store = readStore(path.join(sessionsDir, "sessions.json"));
     expect(store["agent:main:main"]?.abortedLastRun).toBe(true);
+    expect(store["agent:main:main"]?.mainRestartRecovery?.cause).toBe("gateway_restart");
     expect(store["agent:main:active-key"]?.abortedLastRun).toBeUndefined();
     expect(store["agent:main:active-id"]?.abortedLastRun).toBeUndefined();
     expect(store["agent:main:fresh"]?.abortedLastRun).toBeUndefined();
@@ -4220,7 +4163,7 @@ describe("main-session-restart-recovery", () => {
     });
   });
 
-  it("retries only the exact interrupted row released by its final foreground owner", async () => {
+  it("retries only the requested interrupted row", async () => {
     const sessionsDir = await makeSessionsDir();
     const storePath = path.join(sessionsDir, "sessions.json");
     await writeStore(sessionsDir, {

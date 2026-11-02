@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
-import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import {
+  loadSessionEntry,
+  replaceSessionEntry,
+} from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import { getAgentRunLifecycleGeneration } from "../../../infra/agent-run-registry.js";
+import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAttemptResult } from "../run.overflow-compaction.fixture.js";
@@ -12,6 +18,15 @@ import { createEmbeddedRunCompactionRuntime } from "./compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
+
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    for (const stateDir of tempDirs.dirs) {
+      await cleanupSessionStateForTest({ stateDir });
+    }
+    cleanup();
+  }),
+);
 
 describe("recoverEmbeddedRunOverflow transcript ownership", () => {
   it("rejects a changed active transcript without losing a known compaction", async () => {
@@ -26,8 +41,11 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
       agentId: "main",
       sessionId,
       sessionKey: "agent:main:session-1",
-      storePath: "/tmp/unused-in-memory-recovery.sqlite",
+      storePath: path.join(tempDirs.make("openclaw-overflow-recovery-"), "sessions.json"),
     };
+    await replaceSessionEntry(target, { sessionId, updatedAt: 1, status: "running" });
+    const beforeOverflow = loadSessionEntry(target);
+    expect(beforeOverflow).toMatchObject({ sessionId, status: "running" });
     const admission = prepareSystemAgentRunAdmission(
       {},
       "run-owner-change",
@@ -143,17 +161,8 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
       expect(adoptCompactionTranscript).not.toHaveBeenCalled();
       expect(afterHook).not.toHaveBeenCalled();
       expect(prepareCurrentTranscriptRetry).not.toHaveBeenCalled();
-      // The overflow recovery path is restart-agnostic: it must never write a durable
-      // main-session restart-recovery reservation or the aborted marker, so a same-process
-      // overflow retry can never re-dispatch a recovery turn or stamp a phantom
-      // "interrupted by a gateway restart" notice.
-      const afterOverflow = loadSessionEntry({
-        agentId: "main",
-        sessionKey: target.sessionKey,
-        storePath: target.storePath,
-      });
-      expect(afterOverflow?.abortedLastRun).toBeUndefined();
-      expect(afterOverflow?.mainRestartRecovery).toBeUndefined();
+      // Reading a seeded row makes accidental recovery-state writes observable.
+      expect(loadSessionEntry(target)).toEqual(beforeOverflow);
     } finally {
       admission.close();
     }

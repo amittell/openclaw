@@ -596,6 +596,7 @@ async function resumeMainSessionWithinAdmission(
         shouldContinue: () =>
           !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
         gatewayRuntime: params.gatewayRuntime,
+        cause: reservation?.cause,
       });
     }
     log.info(

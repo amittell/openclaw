@@ -262,166 +262,170 @@ describe("reply turn recovery admission", () => {
     });
   });
 
-  it("keeps new input and followups behind a concurrent recovery winner", async () => {
-    const sessionKey = "agent:main:main";
-    const sessionId = "interrupted-channel-session";
-    const entry: SessionEntry = {
-      sessionId,
-      updatedAt: Date.now(),
-      status: "running",
-      abortedLastRun: true,
-      restartRecoveryDeliveryRunId: "old-channel-claim",
-      restartRecoveryDeliverySourceRunId: "old-channel-source",
-      restartRecoveryDeliveryContext: { channel: "discord", to: "synthetic-channel" },
-      restartRecoverySourceIngress: "channel",
-      // A genuine gateway restart runs mark_interrupted, which persists a recovery
-      // cycle; seed it so admission's restart-evidence gate authorizes the resume
-      // dispatch (a stale same-process abort never creates this cycle).
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 1,
-        chargedAttempts: 0,
-        cause: "gateway_restart",
-      },
-    };
-    const storePath = createSessionStore({ [sessionKey]: entry });
-    const context = createRecoveryGatewayContext();
-    const resolveGatewayContext = () => ({ ...context });
-    const root = await beginSessionWorkAdmission({
-      scope: storePath,
-      identities: [sessionKey, sessionId],
-      resolveGatewayContext,
-      assertAllowed: () => {},
-    });
-    let recoveryLease: SessionWorkAdmissionLease | undefined;
-    const retry = vi
-      .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
-      .mockImplementationOnce(async (request) => {
-        expect(request).toMatchObject({
-          expectedSessionId: sessionId,
-          expectedRecoveryRunId: "old-channel-claim",
-          expectedRecoverySourceRunId: "old-channel-source",
-          gatewayRuntime: context.recoveryRuntime,
-        });
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
-        expect(root.isActive()).toBe(true);
-        const owner = await beginSessionWorkAdmission({
-          scope: storePath,
-          identities: [sessionKey, sessionId],
-          owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-          resolveGatewayContext,
-          assertAllowed: () => {},
-        });
-        recoveryLease = consumeSessionWorkAdmissionHandoff({
-          handoffId: owner.createHandoff(),
-          scope: storePath,
-          identities: [sessionKey, sessionId],
-        });
-        expect(recoveryLease).toBe(owner);
-        await owner.run(() => {
-          expect(isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, sessionId])).toBe(
-            false,
-          );
-          return runExclusiveSessionLifecycleMutation({
+  it.each(["gateway_restart", "unknown", undefined] as const)(
+    "keeps new input and followups behind a concurrent recovery winner (cause=%s)",
+    async (cause) => {
+      const sessionKey = "agent:main:main";
+      const sessionId = "interrupted-channel-session";
+      const entry: SessionEntry = {
+        sessionId,
+        updatedAt: Date.now(),
+        status: "running",
+        abortedLastRun: true,
+        restartRecoveryDeliveryRunId: "old-channel-claim",
+        restartRecoveryDeliverySourceRunId: "old-channel-source",
+        restartRecoveryDeliveryContext: { channel: "discord", to: "synthetic-channel" },
+        restartRecoverySourceIngress: "channel",
+        ...(cause
+          ? {
+              mainRestartRecovery: {
+                cycleId: "cycle-1",
+                revision: 1,
+                chargedAttempts: 0,
+                cause,
+              },
+            }
+          : {}),
+      };
+      const storePath = createSessionStore({ [sessionKey]: entry });
+      const context = createRecoveryGatewayContext();
+      const resolveGatewayContext = () => ({ ...context });
+      const root = await beginSessionWorkAdmission({
+        scope: storePath,
+        identities: [sessionKey, sessionId],
+        resolveGatewayContext,
+        assertAllowed: () => {},
+      });
+      let recoveryLease: SessionWorkAdmissionLease | undefined;
+      const retry = vi
+        .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
+        .mockImplementationOnce(async (request) => {
+          expect(request).toMatchObject({
+            expectedSessionId: sessionId,
+            expectedRecoveryRunId: "old-channel-claim",
+            expectedRecoverySourceRunId: "old-channel-source",
+            gatewayRuntime: context.recoveryRuntime,
+          });
+          expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+          expect(root.isActive()).toBe(true);
+          const owner = await beginSessionWorkAdmission({
             scope: storePath,
             identities: [sessionKey, sessionId],
-            run: () =>
-              replaceSessionEntry(
-                { storePath, sessionKey },
-                {
-                  ...entry,
-                  abortedLastRun: false,
-                  restartRecoveryRuns: [
-                    {
-                      runId: "old-channel-claim",
-                      lifecycleGeneration: getAgentEventLifecycleGeneration(),
-                    },
-                  ],
-                },
-              ),
+            owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
+            resolveGatewayContext,
+            assertAllowed: () => {},
           });
+          recoveryLease = consumeSessionWorkAdmissionHandoff({
+            handoffId: owner.createHandoff(),
+            scope: storePath,
+            identities: [sessionKey, sessionId],
+          });
+          expect(recoveryLease).toBe(owner);
+          await owner.run(() => {
+            expect(isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, sessionId])).toBe(
+              false,
+            );
+            return runExclusiveSessionLifecycleMutation({
+              scope: storePath,
+              identities: [sessionKey, sessionId],
+              run: () =>
+                replaceSessionEntry(
+                  { storePath, sessionKey },
+                  {
+                    ...entry,
+                    abortedLastRun: false,
+                    restartRecoveryRuns: [
+                      {
+                        runId: "old-channel-claim",
+                        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+                      },
+                    ],
+                  },
+                ),
+            });
+          });
+          return {
+            started: 0,
+            settled: 0,
+            failed: 0,
+            skipped: 1,
+          };
         });
-        return {
-          started: 0,
-          settled: 0,
-          failed: 0,
-          skipped: 1,
-        };
-      });
-    let visible: Awaited<ReturnType<typeof admitTestReplyTurn>> | undefined;
-    let followup: Awaited<ReturnType<typeof admitTestReplyTurn>> | undefined;
-    let followupPromise: ReturnType<typeof admitTestReplyTurn> | undefined;
-    const abort = new AbortController();
-    try {
-      visible = await root.run(() =>
-        admitTestReplyTurn({
+      let visible: Awaited<ReturnType<typeof admitTestReplyTurn>> | undefined;
+      let followup: Awaited<ReturnType<typeof admitTestReplyTurn>> | undefined;
+      let followupPromise: ReturnType<typeof admitTestReplyTurn> | undefined;
+      const abort = new AbortController();
+      try {
+        visible = await root.run(() =>
+          admitTestReplyTurn({
+            sessionKey,
+            sessionId,
+            storePath,
+            expectedSessionId: sessionId,
+            resolveGatewayContext,
+            waitForActive: false,
+          }),
+        );
+        expect(visible.status).toBe("owned");
+        expect(retry).toHaveBeenCalledOnce();
+        expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+          restartRecoveryDeliveryRunId: "old-channel-claim",
+          restartRecoveryDeliverySourceRunId: "old-channel-source",
+        });
+        expect(
+          loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery?.foregroundClaims,
+        ).toBeUndefined();
+        expect(
+          getSessionWorkAdmissionOwnerRelease({
+            scope: storePath,
+            identities: [sessionKey, sessionId],
+            owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
+          }),
+        ).toBeDefined();
+        if (visible.status === "owned") {
+          visible.operation.complete();
+        }
+        root.release();
+        let followupSettled = false;
+        followupPromise = admitTestReplyTurn({
           sessionKey,
           sessionId,
           storePath,
           expectedSessionId: sessionId,
           resolveGatewayContext,
-          waitForActive: false,
-        }),
-      );
-      expect(visible.status).toBe("owned");
-      expect(retry).toHaveBeenCalledOnce();
-      expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
-        restartRecoveryDeliveryRunId: "old-channel-claim",
-        restartRecoveryDeliverySourceRunId: "old-channel-source",
-      });
-      expect(
-        loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery?.foregroundClaims,
-      ).toBeUndefined();
-      expect(
-        getSessionWorkAdmissionOwnerRelease({
-          scope: storePath,
-          identities: [sessionKey, sessionId],
-          owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-        }),
-      ).toBeDefined();
-      if (visible.status === "owned") {
-        visible.operation.complete();
+          kind: "queued_followup",
+          upstreamAbortSignal: abort.signal,
+        });
+        void followupPromise.then(() => {
+          followupSettled = true;
+        });
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(followupSettled).toBe(false);
+        await replaceSessionEntry(
+          { storePath, sessionKey },
+          { sessionId, updatedAt: Date.now(), status: "done" },
+        );
+        recoveryLease?.release();
+        followup = await followupPromise;
+        expect(followup.status).toBe("owned");
+        expect(retry).toHaveBeenCalledOnce();
+      } finally {
+        abort.abort();
+        recoveryLease?.release();
+        root.release();
+        if (visible?.status === "owned") {
+          visible.operation.complete();
+        }
+        followup ??= await followupPromise;
+        if (followup?.status === "owned") {
+          followup.operation.complete();
+        }
+        retry.mockRestore();
       }
-      root.release();
-      let followupSettled = false;
-      followupPromise = admitTestReplyTurn({
-        sessionKey,
-        sessionId,
-        storePath,
-        expectedSessionId: sessionId,
-        resolveGatewayContext,
-        kind: "queued_followup",
-        upstreamAbortSignal: abort.signal,
-      });
-      void followupPromise.then(() => {
-        followupSettled = true;
-      });
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      expect(followupSettled).toBe(false);
-      await replaceSessionEntry(
-        { storePath, sessionKey },
-        { sessionId, updatedAt: Date.now(), status: "done" },
-      );
-      recoveryLease?.release();
-      followup = await followupPromise;
-      expect(followup.status).toBe("owned");
-      expect(retry).toHaveBeenCalledOnce();
-    } finally {
-      abort.abort();
-      recoveryLease?.release();
-      root.release();
-      if (visible?.status === "owned") {
-        visible.operation.complete();
-      }
-      followup ??= await followupPromise;
-      if (followup?.status === "owned") {
-        followup.operation.complete();
-      }
-      retry.mockRestore();
-    }
-  });
+    },
+  );
 
   it.each([
     { kind: "visible", failed: false },
@@ -439,9 +443,8 @@ describe("reply turn recovery admission", () => {
         abortedLastRun: true,
         restartRecoveryDeliveryRunId: "interrupted-claim",
         restartRecoveryDeliverySourceRunId: "interrupted-source",
-        // A genuine gateway restart runs mark_interrupted, which persists a recovery
-        // cycle; seed it so admission's restart-evidence gate authorizes the resume
-        // dispatch (a stale same-process abort never creates this cycle).
+        // Marking a genuine gateway restart persists its known cause. This case
+        // covers admission ordering and failure handling for that marked cycle.
         mainRestartRecovery: {
           cycleId: "cycle-1",
           revision: 1,
@@ -526,56 +529,6 @@ describe("reply turn recovery admission", () => {
       }
     },
   );
-
-  it("does not re-dispatch restart recovery for a stale claim with no durable restart evidence", async () => {
-    // The incident: a same-process abort (context-overflow retry) leaves a stale
-    // delivery claim and `abortedLastRun` but creates NO durable restart evidence
-    // (no recovery cycle, no fence). Admission must not re-dispatch restart recovery
-    // for that stale claim, so no phantom "interrupted by a gateway restart" notice
-    // is stamped. A genuine restart always persists a recovery cycle (see the
-    // "settles or defers ... recovery failure" cases), which is what authorizes the
-    // re-dispatch those tests exercise.
-    const sessionKey = "agent:main:stale-claim-redispatch";
-    const sessionId = "stale-claim-session";
-    const storePath = createSessionStore({
-      [sessionKey]: {
-        sessionId,
-        updatedAt: Date.now(),
-        status: "running",
-        abortedLastRun: true,
-        restartRecoveryDeliveryRunId: "stale-claim",
-        restartRecoveryDeliverySourceRunId: "stale-source",
-        restartRecoverySourceIngress: "channel",
-      },
-    });
-    const context = createRecoveryGatewayContext();
-    const retry = vi
-      .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
-      .mockResolvedValue({ started: 0, settled: 0, failed: 0, skipped: 1 });
-    try {
-      const admission = await admitTestReplyTurn({
-        sessionKey,
-        sessionId,
-        storePath,
-        expectedSessionId: sessionId,
-        resolveGatewayContext: () => context,
-      });
-      expect(admission.status).toBe("owned");
-      // A stale claim alone must not re-dispatch restart recovery.
-      expect(retry).not.toHaveBeenCalled();
-      if (admission.status === "owned") {
-        admission.operation.complete();
-        // Settle the async after-clear work (recovery-owner release + worker DB
-        // claim) before returning, so it cannot leak into the next test's store.
-        await vi.waitFor(() => {
-          const entry = loadSessionEntry({ storePath, sessionKey });
-          expect(entry?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
-        });
-      }
-    } finally {
-      retry.mockRestore();
-    }
-  });
 
   it.each(["started", "cancelled", "replaced"] as const)(
     "waits for reserved startup recovery before admitting visible input: %s",
