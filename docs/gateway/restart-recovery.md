@@ -87,8 +87,13 @@ cleanup deadline, lifetime sidecar, or retained plugin runtime, and returns with
 status `0` unless required persistence failed. A runtime that still owns resources
 is never reused for an in-process restart. Node exits naturally after owned handles
 close; the native shutdown watchdog kills the process if leaked handles keep it
-alive past the deadline. That signal exit is accepted, and the supervisor starts
-a fresh Gateway.
+alive past the deadline. After a clean shutdown retires that watchdog, the
+command waits ten seconds past its own final cleanup. If a leaked handle still
+keeps the process alive, the Gateway prints the active resource types to stderr.
+On Linux and macOS, a stop with exit status `0` then ends with `SIGTERM`, which
+supervisors count as a clean stop. A non-zero status, which can be a supervisor
+restart instruction, and Windows keep the report only. That signal exit is
+accepted, and the supervisor starts a fresh Gateway.
 
 Reversible suspension and host freeze preparation keep their own semantics. A
 suspension does not mark sessions or abort them. Preparation with `drain: true`
