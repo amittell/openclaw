@@ -9,6 +9,7 @@ import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gate
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 
 const identity = { sessionKey: "agent:main:preview", sessionId: "conversation", agentId: "main" };
 const binding = { ...identity, environmentId: "attached", ownerEpoch: 1, generation: 1 };
@@ -101,6 +102,17 @@ describe("attached conversation portal tool availability", () => {
             ).toBe(false);
           } else if (access === "global") {
             expect(portal?.parameters).toHaveProperty("properties.environmentId");
+          } else if (builder === "agent" && !owner) {
+            // Fork carry: the embedded runner still filters portal on non-owner turns
+            // (914d1ae1618), and owner-only-tool-stubs.ts replaces a filtered owner-only
+            // tool with a refusing stub that carries the owner turn's declaration.
+            expect(portal).toBeDefined();
+            expect(isOwnerOnlyToolStub(portal!)).toBe(true);
+            expect(portal?.parameters).toEqual(ownerPortal?.parameters);
+            expect(portal?.description).toBe(ownerPortal?.description);
+            await expect(portal!.execute("host", { action: "open", port: 3000 })).rejects.toThrow(
+              "owner-only",
+            );
           } else {
             expect(portal).toBeUndefined();
           }
