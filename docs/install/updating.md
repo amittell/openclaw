@@ -125,6 +125,15 @@ labels identify the failed verification stage, not the writer or root cause. Cle
 still retains the affected originals and requests a fresh preview; all destination
 identity, content, and live-authority checks remain unchanged.
 
+Gateway cleanup preserves retired managed npm plugin generations referenced by
+absolute or home-relative paths in startup or current configuration. This keeps
+explicit executable pins working after an update without rewriting their settings.
+Removing a startup reference allows reclamation after a Gateway restart; current
+references protect their files on each cleanup pass. The candidate Gateway must
+contain this fix. It does not restore generations already deleted or discover
+references supplied only through environment variables, relative paths, or external
+symlinks. An incidental path-valued setting can conservatively retain extra files.
+
 The candidate macOS app's narrow credential Doctor also completes pending local
 service-runtime intent migration before native startup selects a Gateway. This
 prevents an absent migration receipt from preserving the old seed after credential
