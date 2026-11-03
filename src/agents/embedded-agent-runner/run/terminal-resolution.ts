@@ -415,8 +415,14 @@ export async function resolveEmbeddedRunTerminal(input: {
   const silentStopAssistantText = attempt.assistantTexts.some(
     (text) => text.trim().length > 0 && !isSilentReplyText(text),
   );
+  // A `sessions_send` target answers its caller inline through the tool result, so its
+  // text is not an undelivered user reply. An announce back to the user still is.
+  const answersCallerInline =
+    runParams.inputProvenance?.kind === "inter_session" &&
+    runParams.inputProvenance.sourceTool === "sessions_send";
   const silentStopDeliveryGap =
     runParams.sourceReplyDeliveryMode === "message_tool_only" &&
+    !answersCallerInline &&
     silentStopAssistantText &&
     attempt.didDeliverSourceReplyViaMessageTool !== true &&
     (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
