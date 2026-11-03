@@ -255,4 +255,16 @@ describe("renderAssistantRequestFailureCopy", () => {
     expect(renderAssistantRequestFailureCopy({ ...target, status: 0 })).toBe(runFailure);
     expect(renderAssistantRequestFailureCopy({ ...target, status: 400 })).toBe(runFailure);
   });
+
+  it("reports the classified reason for 5xx failures instead of re-deriving it", () => {
+    // The classifier owns the reason. A gateway timeout really did time out,
+    // and an untyped 5xx is already classified server_error upstream, so this
+    // layer must not second-guess either from the status.
+    expect(renderAssistantRequestFailureCopy({ ...target, reason: "timeout", status: 504 })).toBe(
+      "⚠️ The request took too long. Check the conversation for any completed work before trying again.",
+    );
+    expect(
+      renderAssistantRequestFailureCopy({ ...target, reason: "server_error", status: 502 }),
+    ).toBe("⚠️ The AI service is having trouble. Please try again in a moment.");
+  });
 });

@@ -500,6 +500,21 @@ export function buildBuiltinChatCommands(
         listThinkingLevelChoices(provider, model, catalog, agentRuntime),
       ),
     }),
+    defineBuiltinCommand(
+      "temperature",
+      "Set sampling temperature for this session.",
+      "options",
+      "standard",
+      {
+        nativeAliases: ["temp"],
+        textAliases: ["/temperature", "/temp"],
+        args: [
+          defineCommandArgument("value", "Temperature (0–2); omit to show current", {
+            type: "number",
+          }),
+        ],
+      },
+    ),
     defineBuiltinCommand("verbose", "Toggle verbose mode.", "options", "standard", {
       modelIndependent: "always",
       textAliases: ["/verbose", "/v"],

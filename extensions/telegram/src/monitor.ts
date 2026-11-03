@@ -16,6 +16,7 @@ import {
   normalizeTelegramUpdateId,
 } from "./update-offset-persistence.js";
 import {
+  deleteTelegramUpdateOffset,
   prepareTelegramAccount,
   writeTelegramUpdateOffset,
   type TelegramOffsetRotationReason,
@@ -25,6 +26,7 @@ const TELEGRAM_OFFSET_ROTATION_LABELS: Record<TelegramOffsetRotationReason, stri
   "bot-id-changed": "bot identity change",
   "legacy-state": "legacy update offset",
   "token-rotated": "token rotation",
+  "api-root-changed": "Bot API root change",
 };
 
 export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
@@ -87,12 +89,16 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
       : await prepareTelegramAccount({
           accountId: account.accountId,
           botToken: token,
+          apiRoot: account.config.apiRoot,
           abortSignal: opts.abortSignal,
           onRotationDetected: (info) => {
-            const previousLabel = info.previousBotId ?? "(legacy unscoped offset)";
             const reasonLabel = TELEGRAM_OFFSET_ROTATION_LABELS[info.reason];
+            const transition =
+              info.reason === "api-root-changed"
+                ? `was ${info.previousApiRoot ?? "(unrecorded, assumed cloud)"}, now ${info.currentApiRoot}`
+                : `was ${info.previousBotId ?? "(legacy unscoped offset)"}, now ${info.currentBotId}`;
             log(
-              `[telegram] Detected ${reasonLabel} for account "${account.accountId}" (was ${previousLabel}, now ${info.currentBotId}); discarding stale update offset ${info.staleLastUpdateId ?? "(none)"} and starting fresh.`,
+              `[telegram] Detected ${reasonLabel} for account "${account.accountId}" (${transition}); discarding stale update offset ${info.staleLastUpdateId ?? "(none)"} and starting fresh.`,
             );
           },
         });
@@ -142,6 +148,7 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
           accountId: account.accountId,
           updateId,
           botToken: token,
+          apiRoot: account.config.apiRoot,
         });
       },
       onInvalidUpdateId: (updateId) => {
@@ -169,6 +176,10 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
       botInfo: opts.botInfo,
       getCommittedUpdateId: offsetPersistence.getCommittedUpdateId,
       persistUpdateId: offsetPersistence.persistUpdateId,
+      resetUpdateOffset: async () => {
+        offsetPersistence.reset();
+        await deleteTelegramUpdateOffset({ accountId: account.accountId });
+      },
       log,
       telegramTransport,
       createTelegramTransport: createTelegramTransportForPolling,

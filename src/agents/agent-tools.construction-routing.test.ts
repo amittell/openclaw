@@ -47,6 +47,7 @@ vi.mock("./openclaw-tools.js", async (importOriginal) => {
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import { createOpenClawCodingTools, createOpenClawCodingToolsInternal } from "./agent-tools.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { createAgentToolsSandboxContext } from "./test-helpers/agent-tools-sandbox-context.js";
 import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 import {
@@ -125,8 +126,10 @@ describe("createOpenClawCodingTools cron scope", () => {
       senderIsOwner: false,
     });
 
-    expect(tools.map((tool) => tool.name)).toContain(AUTOMATIONS_TOOL_NAME);
-    expect(tools.map((tool) => tool.name)).not.toContain("gateway");
+    // Owner-only tools stay declared for this non-owner turn as refusing stubs.
+    const names = tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
+    expect(names).toContain(AUTOMATIONS_TOOL_NAME);
+    expect(names).not.toContain("gateway");
     expect(firstOpenClawToolsOptions()?.cronSelfRemoveOnlyJobId).toBe("job-current");
   });
 
@@ -144,7 +147,9 @@ describe("createOpenClawCodingTools cron scope", () => {
     "does not expose automation controls for an incomplete scheduled context: %j",
     (context) => {
       const tools = createOpenClawCodingTools({ ...context, senderIsOwner: false });
-      expect(tools.map((tool) => tool.name)).not.toContain(AUTOMATIONS_TOOL_NAME);
+      // A refusing owner-only stub keeps the declaration but grants no automation control.
+      const names = tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
+      expect(names).not.toContain(AUTOMATIONS_TOOL_NAME);
     },
   );
 
@@ -183,7 +188,8 @@ describe("createOpenClawCodingTools cron scope", () => {
           }),
       ),
     );
-    const names = tools.map((tool) => tool.name);
+    // Owner-only tools stay declared for this non-owner turn as refusing stubs.
+    const names = tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
     expect(names).toContain(AUTOMATIONS_TOOL_NAME);
     expect(names).not.toContain("gateway");
   });

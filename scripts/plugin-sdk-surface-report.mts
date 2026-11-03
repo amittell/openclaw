@@ -274,7 +274,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: async auth-provider preparation for Codex and voice model-session patches.
       // +1: isHostNoticePayload for agent-to-agent reply filtering.
       // +1: managed plugin resource root retained during redirected agent execution.
-      3761,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      3764,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -310,7 +311,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: the same prepareAuthProfileProvider operation on model-session-runtime.
       // +1: the same host-notice classifier on reply-payload.
       // +1: managed plugin resource root retained during redirected agent execution.
-      2196,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      2199,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

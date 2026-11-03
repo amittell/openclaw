@@ -22,6 +22,15 @@ type StructuredExecCompletionEvent = {
   output: string;
   notes: string;
   succeeded: boolean;
+  /**
+   * Terminated by a signal (e.g. SIGTERM at gateway drain or a cancel) with
+   * neither captured output nor producer notes. This carries no user-facing
+   * content: the completion wake would only produce a "terminated by signal N"
+   * report for an internal process the owner never started (#141973, #156537).
+   * A timeout kill carries the producer's retry guidance as notes, so it is not
+   * metadata-only and still wakes and relays (#164171).
+   */
+  metadataOnlySignalKill: boolean;
 };
 
 function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompletionEvent | null {
@@ -32,14 +41,18 @@ function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompleti
   }
   const action = match[1] ?? "";
   const result = match[3] ?? "";
+  const succeeded = action.toLowerCase() === "completed" && result.toLowerCase() === "code 0";
+  const output = (match[4] ?? "").trim();
+  const notes = (match[5] ?? "").trim();
   return {
     raw: trimmed,
     action,
     id: match[2] ?? "",
     result,
-    output: (match[4] ?? "").trim(),
-    notes: (match[5] ?? "").trim(),
-    succeeded: action.toLowerCase() === "completed" && result.toLowerCase() === "code 0",
+    output,
+    notes,
+    succeeded,
+    metadataOnlySignalKill: !succeeded && /^signal /i.test(result.trim()) && !output && !notes,
   };
 }
 
@@ -48,7 +61,7 @@ export function isRelayableExecCompletionEvent(evt: string): boolean {
   if (!parsed) {
     return isExecCompletionEvent(evt);
   }
-  return Boolean(parsed.output) || !parsed.succeeded;
+  return Boolean(parsed.output) || (!parsed.metadataOnlySignalKill && !parsed.succeeded);
 }
 
 function formatExecEventPromptText(pendingEvents: string[]): {
@@ -64,6 +77,12 @@ function formatExecEventPromptText(pendingEvents: string[]): {
     }
     if (parsed.output) {
       return [parsed.raw];
+    }
+    // Fork (#156537, narrowed per Alex 2026-10-11): a metadata-only signal kill
+    // carries no user-facing content, so it adds no line. A timeout kill carries
+    // the producer's retry guidance as notes and is not metadata-only.
+    if (parsed.metadataOnlySignalKill) {
+      return [];
     }
     hasMissingOutput = true;
     const missingOutput = `Exec ${parsed.action} (${parsed.id}, ${parsed.result}) without captured stdout/stderr.`;
@@ -112,6 +131,15 @@ export function buildExecEventPrompt(
     rawEventText.length > MAX_EXEC_EVENT_PROMPT_CHARS
       ? `${truncateUtf16Safe(rawEventText, MAX_EXEC_EVENT_PROMPT_CHARS)}\n\n[truncated]`
       : rawEventText;
+  // Fork: #166123 dropped this guard because every structured event now yields a
+  // line; a batch of metadata-only signal kills still yields none, and must not
+  // become a "completed" report with empty details.
+  if (!eventText) {
+    const completionInstruction = useHeartbeatResponseTool
+      ? HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS
+      : `Reply ${SILENT_REPLY_TOKEN} only.`;
+    return `An async command completion event was triggered, but no command output was found. ${completionInstruction} Do not mention, summarize, or reuse output from any earlier run.`;
+  }
   if (!deliverToUser) {
     const completionInstruction = useHeartbeatResponseTool
       ? `Handle the result internally. ${HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS}`

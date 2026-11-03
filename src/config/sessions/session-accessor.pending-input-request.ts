@@ -15,7 +15,8 @@ function resolvePendingInputRequestHash(
   return requestFingerprint ? `request:${requestFingerprint}` : sha256Hex(stableStringify(message));
 }
 
-function preparePendingInputMessage(
+/** Stage-time request identity shared by pending-input admission and the answered-turn marker. */
+export function preparePendingInputMessage(
   message: PersistedUserTurnMessage,
   requestFingerprint?: string,
 ) {

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { asOptionalObjectRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as normalizeRunId } from "@openclaw/normalization-core/string-coerce";
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
+import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
   isAcpSessionKey,
   isCronSessionKey,
@@ -613,6 +614,20 @@ export function hasRestartRecoverySourceClaim(
   );
 }
 
+/**
+ * A delivery claim is live authority only while the generation that minted it is
+ * still running. Turn claims never survive a Gateway restart, so an absent or
+ * superseded generation means the owning process is gone: the claim is orphaned
+ * and the next admission retires it instead of failing closed against a run that
+ * no longer exists.
+ */
+export function hasLiveRestartRecoveryDeliveryClaim(
+  entry: SessionEntry | null | undefined,
+): boolean {
+  const generation = normalizeRunId(entry?.restartRecoveryDeliveryLifecycleGeneration);
+  return generation !== undefined && isAgentEventLifecycleGenerationCurrent(generation);
+}
+
 /** Clears exact active ownership and optionally records its client source as terminal. */
 export function buildRestartRecoveryClaimCleanupPatch(params: {
   entry: SessionEntry;
@@ -662,6 +677,7 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
     restartRecoverySuppressTextDelivery: undefined,
     restartRecoveryDeliveryRequestFingerprint: undefined,
     restartRecoveryDeliveryRunId: undefined,
+    restartRecoveryDeliveryLifecycleGeneration: undefined,
     restartRecoveryDeliverySourceRunId: undefined,
     restartRecoveryOperatorSource: undefined,
     restartRecoveryHarnessCompletion: undefined,

@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOpenClawCodingTools } from "../agent-tools.js";
+import { isOwnerOnlyToolStub } from "../owner-only-tool-stub-marker.js";
 import "../test-helpers/fast-coding-tools.js";
 import type { AnyAgentTool } from "./common.js";
 
@@ -166,8 +167,21 @@ describe("assembled Gateway update capability", () => {
     ).not.toContain("gateway");
   });
 
+  // FORK DIVERGENCE (owner-only tool stubs, PORTING-NOTES "Owner-only tool stubs onto the 9.6
+  // carry", b5bf6d52a70 + eba8e338ace): a non-owner turn keeps the owner turn's declarations so
+  // the prompt prefix stays cacheable, so `gateway` is listed, but only as a refusing stub.
+  it("preserves the non-owner boundary", async () => {
+    const gateway = requireGateway(
+      createTools({ tools: { profile: "coding" } }, { senderIsOwner: false }),
+    );
+
+    expect(isOwnerOnlyToolStub(gateway)).toBe(true);
+    await expect(gateway.execute("non-owner-call", { action: "update.run" })).rejects.toThrow(
+      "gateway is not available on this turn: owner-only.",
+    );
+  });
+
   it.each([
-    { name: "non-owner", options: { senderIsOwner: false } },
     {
       name: "subagent",
       options: { sessionKey: "agent:main:subagent:worker", senderIsOwner: true },

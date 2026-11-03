@@ -35,6 +35,7 @@ import {
   mergeAgentRingZeroTools,
 } from "./agent-tools.ring-zero-context.js";
 import { runtimeToolAllowlistIncludesMessage } from "./agent-tools.runtime-allowlist.js";
+import { assembleTurnToolSurface } from "./agent-tools.turn-surface.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { resolveProcessToolScopeKey } from "./bash-process-scope.js";
 import { listChannelAgentTools } from "./channel-tools.js";
@@ -45,7 +46,6 @@ import {
 } from "./conversation-capability-profile.js";
 import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.js";
 import { createCoreCodingTools } from "./core-coding-tools.js";
-import { applyDelegationCapability } from "./delegation-capability.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveExecToolConfig } from "./lazy-exec-tool.js";
@@ -61,8 +61,8 @@ import {
   filterToolsByClientCaps,
 } from "./openclaw-tools.js";
 import { filterRequesterYieldTools } from "./openclaw-tools.requester-yield.js";
-import { applySwarmCollectorToolContract } from "./openclaw-tools.swarm.js";
 import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { prepareCoreToolPolicy } from "./prepared-tool-surface.js";
 import { resolveSandboxFileIdentity } from "./sandbox/file-mutation-identity.js";
 import { createEmbeddedMessageInvocationPolicy } from "./scheduled-message-invocation.js";
@@ -550,23 +550,21 @@ function* assembleOpenClawCodingTools(
     toolDenylist: pluginToolDenylist,
   });
   // Sender identity is primarily command/action auth, with one Gateway parity exception:
-  // explicit non-owner callers never receive owner-only control-plane core tools.
-  const subagentFiltered = messageInvocationPolicy.filter(capabilityProfile, onPolicyFilter);
-  // Host-bound ring-zero tools carry their own authority checks. Agent policy
-  // must not deadlock setup, but the tools still receive schema/hook wrappers.
-  const inheritableTools = applySwarmCollectorToolContract(
-    applyDelegationCapability(
-      mergeAgentRingZeroTools(ringZeroTools, subagentFiltered),
-      options?.delegationCapability,
-    ),
-    {
-      swarmCollector: options?.swarmCollector,
-      structuredOutputTool: swarmStructuredOutputTool,
-    },
-  );
-  const authorizedTools = unavailablePublicationTool
-    ? inheritableTools.filter((tool) => tool !== unavailablePublicationTool)
-    : inheritableTools;
+  // explicit non-owner callers never receive owner-only control-plane core tools. They
+  // see refusing stubs in their place, so every grant below reads `authorizedTools`.
+  const { authorizedTools: inheritableTools, modelFacingTools: shaped } = assembleTurnToolSurface({
+    policy: messageInvocationPolicy,
+    ringZeroTools,
+    delegationCapability: options?.delegationCapability,
+    swarmCollector: options?.swarmCollector,
+    structuredOutputTool: swarmStructuredOutputTool,
+    stubContext: { runId: options?.runId, sessionKey: executionSessionKey },
+    onPolicyFilter,
+  });
+  // The unavailable publication tool is captured for children, never exposed to this turn.
+  const exposed = (tool: AnyAgentTool) => tool !== unavailablePublicationTool;
+  const authorizedTools = inheritableTools.filter(exposed);
+  const modelFacingTools = shaped.filter(exposed);
   if (options?.inheritedPublicationToolRef) {
     options.inheritedPublicationToolRef.current = inheritableTools.find(
       (tool) => tool === unavailablePublicationTool,
@@ -627,7 +625,7 @@ function* assembleOpenClawCodingTools(
   };
   const finalizedTools = finalizeAgentTools({
     ...options,
-    tools: filterRequesterYieldTools(authorizedTools, executionSessionKey),
+    tools: filterRequesterYieldTools(modelFacingTools, executionSessionKey),
     wrapBeforeToolCallHook: preparedTools
       ? (tool) =>
           options?.wrapBeforeToolCallHook !== false &&
@@ -643,8 +641,11 @@ function* assembleOpenClawCodingTools(
       sessionKey: executionSessionKey,
       accountId: gatewayCaller.accountId,
       capabilityProfile,
+      // Owner-only stubs grant nothing, so they never widen a follow-up's tool surface.
       sessionEventSourcePolicy: options?.sessionEventSourcePolicy ?? {
-        toolsAllow: finalizedTools.map((tool) => tool.name),
+        toolsAllow: finalizedTools
+          .filter((tool) => !isOwnerOnlyToolStub(tool))
+          .map((tool) => tool.name),
       },
     }),
   );
