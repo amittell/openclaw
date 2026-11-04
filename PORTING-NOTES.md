@@ -4084,11 +4084,11 @@ On the M4 (Node 26.12.1):
 Alex's ruling (question tool, 10-31): "Finish beta.4, then carry beta.5". beta.4 passed its real-turn gate on
 both bots at `b333906f3b5` (alexm/openclaw room #363), which opened this carry.
 
-| step                                                                                   | commit        |
-| -------------------------------------------------------------------------------------- | ------------- |
+| step                                                                                  | commit        |
+| ------------------------------------------------------------------------------------- | ------------- |
 | v2026.10.10-beta.5^{commit} (10-29; a descendant of beta.4, 652 commits, 2363 files)  | `7e15622f37b` |
 | the beta.4 carry's tree at `419ff411cf0`, 3-way onto beta.5 with base beta.4: 9 files | `8d1661f13d5` |
-| upstream #188980, `cherry-pick -x 199176839ce`, in place of the fork's cron pair       | `e88114ae8cf` |
+| upstream #188980, `cherry-pick -x 199176839ce`, in place of the fork's cron pair      | `e88114ae8cf` |
 | the fork's two configured-key auth-continuity integration tests (from `b5ce5b49e70`)  | `63f3825aaa2` |
 
 ## Method
@@ -4133,6 +4133,7 @@ fork-only change listed under beta.4.
 ## Qualification q1010b5a (M4, `claude-m4-6da8934d`, openclaw room #370) and its rulings
 
 Ran on `82d86af2309` from 05:00:21Z to 06:07:24Z on 2026-11-01.
+
 - **Static gates pass:** build, `tsgo:all`, assertion-safety, oxlint and oxfmt over 555 changed TS files, the
   PR-wrapper inventory, and `plugin-sdk:surface:check`, so the 3764/2199 baselines hold.
 - **Line cap, accepted as upstream growth:** `src/agents/cli-runner/prepare.ts` counts 1731 lines against a 700 cap
@@ -4159,3 +4160,90 @@ Ran on `82d86af2309` from 05:00:21Z to 06:07:24Z on 2026-11-01.
   naming the provider and model in front of #168247's "Couldn't connect to the AI service" message, so the failing
   backend shows in the chat. `renderTransportFailureReplyCopy` stays carried.
 - **Still open:** the bots without #101866.
+
+# Carrying onto v2026.10.10 (2026-11-03, sessions 6da8934d and 68acf50e; qualification on the M4)
+
+Alex's ruling (question tool, 11-03, on `claude-m4-6da8934d`'s 11:17Z question): "Wait for the Air's two". The
+deploy goes out once, after #180846 and #186300 are in and the port is reviewed (alexm/openclaw room #403).
+
+| step                                                                                       | commit        |
+| ------------------------------------------------------------------------------------------ | ------------- |
+| v2026.10.10^{commit} (GA; a descendant of beta.5, 240 commits, 708 files)                  | `7dc3350cb9f` |
+| the beta.5 carry's tree at `b4f9f0a12c1`, 3-way onto GA with base beta.5: 18 files overlap | `1e127ad9166` |
+| #172978, `cherry-pick -x 45f8946406f`, adapted to GA's `session-lifecycle-state.ts`        | `6d8c2f26c21` |
+| #179060, `cherry-pick -x ccedbdc7ba3`, the heartbeat-preemption gate only                  | `fe3d2b9eec6` |
+| #180846, `cherry-pick -x f113dde017e`, clean                                               | `22273802ef7` |
+| #186300, `cherry-pick -x 39e4093b654`, two conflicts (below)                               | `270bb120450` |
+| portal test pin: the fork's owner-only stub on non-owner embedded turns (test only)        | `95338b8ff3f` |
+| no silent-stop nudge for a `sessions_send` target answering inline                         | `e665daaf0e3` |
+
+## Method
+
+Same as beta.5: one 3-way merge, not a commit-by-commit replay. The carry touches 582 files, 18 of them overlap
+beta.5..GA, and none conflicted. The port was reviewed on the Air by recomputing
+`git merge-tree --write-tree --merge-base 7e15622f37b 7dc3350cb9f b4f9f0a12c1`: rc 0, tree `a81ca489e8dd`, equal to
+`1e127ad9166^{tree}`, with parent GA (room #401).
+
+## Native on GA (fork copies dropped)
+
+- **#188980 (`199176839ce`):** six overlapping files come out identical to GA's (`cli-runner/prepare.ts`,
+  `run/auth-plan.ts`, `provider-model-auth-source-plan.ts`, `cron/inference-binding-executor.test.ts`,
+  `cron/inference-binding.runtime.ts`, `server-methods/cron.inference-binding.test.ts`), so the carry's backport
+  `e88114ae8cf` adds nothing there. `cron/isolated-agent/run-prompt-executor.ts` comes out as the carry's. With
+  #188980 in the tag, `prepare.ts` no longer grows past the line cap.
+
+## Conflict resolutions
+
+- **#172978:** `src/gateway/session-lifecycle-state.ts` conflicted with an unrelated perf commit GA lacks. GA's code
+  is kept with only the fix's two lines applied. Reverting the source fails 8 tests in 6 files with `Terminal write
+owner changed before commit` at `agent-run-terminal-writes.ts:107`, the stack mac-mini logs.
+- **#186300:** in `attempt-execution-phase.ts` GA's `onIdleTimeout` handler is kept, and only `normalizeToolCallIds`
+  joins the stream-guard destructure. In `attempt-midturn-precheck.test.ts` GA's file is kept. All 89 `attempt-*`
+  test files pass in q1010gb.
+
+## Qualification (M4, `claude-m4-6da8934d`)
+
+- **q1010ga on `fe3d2b9eec6` (room #399) and q1010gb on `95338b8ff3f` (room #405).** Static gates pass in both: the
+  build, `tsgo:all`, assertion-safety, line-cap, oxlint, oxfmt over 565 files, the wrapper inventory and
+  `plugin-sdk:surface:check`.
+- **q1010gb fast gate:** 1155 of 1169 files (the 14 missing are `*.live.test.ts`); 17,414 tests, 17,278 pass, 116
+  fail, 20 skipped.
+  - 98 are `ci-workflow-planning.test.ts`: the Bash 5 environment failure plus the accepted manifest-budget red
+    (beta.5 entry).
+  - The rest fail identically on bare GA (`sqlite-snapshot-staging.ownership` 1/11, `git-backup-plugin-secrets` 2/3)
+    or at Crabline's m4-store boundary.
+- **Ruled carry-caused reds, both fixed:**
+  - **`agent-tools.session-portal.test.ts`, 2 of 7 on `fe3d2b9eec6`.** GA's `914d1ae1618` makes
+    `createAvailablePortalTools` always declare `portal` and refuse non-owner calls in `execute`; the fork's owner-only
+    stub path then turns it into a refusing stub instead of dropping it. Nothing new can execute (probe: execute throws
+    `portal is not available on this turn: owner-only.`). `95338b8ff3f` pins the two rows to the stub, the same kind
+    of pin as `7b8aa8e3df4`; 7/7.
+  - **`sessions-send-visible-child.product-proof.e2e.test.ts`, 1 of 3 on `95338b8ff3f`.** The fork's silent-stop
+    nudge (`terminal-resolution.ts`, beta.5 carry) fired on a `sessions_send` target that had answered inline, so the
+    child made a third model request; with a real model it could post into the user's channel. Ruling (room #404): skip
+    the nudge when `inputProvenance` is `{ kind: "inter_session", sourceTool: "sessions_send" }`; `subagent_announce`
+    and every other `message_tool_only` turn are still nudged. `e665daaf0e3` adds the guard and a two-row test that
+    fails without it; `terminal-resolution.test.ts` 28/28, the product-proof e2e 3/3, and the 8 `terminal-resolution*`
+    files plus `run.plugin-runtime-refresh.integration` (10 files, 107 tests) pass.
+
+## Deploy
+
+rh-bot first, then mac-mini, through the idle gate (`BRANCH_REF=wip/ga-carry-air`), with the new
+`ARCHIVE_STALE_AGENTS` step moving unconfigured agent dirs to `~/.openclaw/agents-archived-<ts>/` after the backup:
+`agent,claude,codex,openclaw` on rh-bot (configured: coder, main) and `agent,claude-code,claude,openclaw` on mac-mini
+(configured: ailybot, main, ratbot, voice). Both rollbacks move them back first.
+
+- **rh-bot (alexm/openclaw room #409):** on `e665daaf0e3` since 23:09Z on 11-03. HEAD, build info and the server build id
+  agree; healthz/readyz 200/200. The DB backup is at `/Volumes/SSD512/oc1010-dbbackup-20261103T230453Z`. `agent`,
+  `claude`, `codex` and `openclaw` were moved to `~/.openclaw/agents-archived-20261103T230453Z/` with the gateway
+  stopped. No schema migration; `doctor` took 182 s. Real-turn gate passed on the first inbound turn (23:42:58Z): 1
+  inbound, 2 sends, 0 provider 4xx, 0 errored turns, 34/34 fork markers present in dist.
+- **mac-mini:** the idle gate never opened overnight: 180 probes from 23:50Z to 03:15Z on 11-04, with the longest quiet
+  gap 169 s against the 300 s gate, mostly from `agent:main:main`. Alex then ruled "deploy now, interrupt"
+  (question tool, `claude-m4-6da8934d`). Launched 17:09Z on 11-04, deploy rc 0 at 17:23Z: HEAD and build info agree
+  on `e665daaf0e3`; healthz/readyz 200/200; agent DBs `ailybot`, `main`,
+  `ratbot` and `voice` at v27, state v22, no schema migration. `doctor` took 404 s and printed `agent database
+clean-close receipt: checkpoint-incomplete` twice, which is what this first interrupted stop leaves. `agent`,
+  `claude-code`, `claude` (534 MiB) and `openclaw` were moved to `~/.openclaw/agents-archived-20261104T171106Z/`; the
+  DB backup is at `/Volumes/Storage/oc1010-dbbackup-20261104T171106Z`. Real-turn gate passed at 17:31Z: 1 inbound,
+  3 sends, 0 provider 4xx, 0 errored turns, 34/34 fork markers (alexm/openclaw room #415, #417).
