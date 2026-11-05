@@ -157,7 +157,9 @@ test("keeps the cold-start embed deadline on the monotonic clock across a wall-c
   expect(close).toHaveBeenCalledOnce();
 });
 
-test.each([10_000, 16_000])(
+// Fork: auto-recall's budget is 5_000 ms (auto-recall.ts AUTO_RECALL_TIMEOUT_MS), not upstream's
+// 15_000, so the cases straddle 5_000 instead: initialization inside the budget, then past it.
+test.each([3_000, 6_000])(
   "includes %ims of cold provider initialization in the auto-recall deadline",
   async (initializationMs) => {
     const ready = createDeferred<void>();
@@ -234,10 +236,10 @@ test.each([10_000, 16_000])(
       await vi.advanceTimersByTimeAsync(initializationMs);
       ready.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      if (initializationMs < 15_000) {
+      if (initializationMs < 5_000) {
         expect(requests).toHaveLength(1);
         expect(requests[0]?.aborted).toBe(false);
-        await vi.advanceTimersByTimeAsync(15_000 - initializationMs);
+        await vi.advanceTimersByTimeAsync(5_000 - initializationMs);
         await expect(recall).resolves.toBeUndefined();
         expect(requests[0]?.aborted).toBe(true);
       } else {

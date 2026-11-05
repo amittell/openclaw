@@ -274,9 +274,10 @@ export function installEmbeddedAttemptStreamGuards(
     toolCallIdMode: transcriptPolicy.toolCallIdMode,
     isOpenAIResponsesApi,
   };
+  let normalizeToolCallIds: Parameters<typeof wrapStreamFnWithMessageTransform>[1] | undefined;
   if (shouldApplyReplayToolCallIdSanitizer(replayToolCallIdSanitizerDecision)) {
     const mode = replayToolCallIdSanitizerDecision.toolCallIdMode;
-    installStreamWrapper(wrapStreamFnWithMessageTransform, (messages, model) =>
+    normalizeToolCallIds = (messages, model) =>
       sanitizeReplayToolCallIdsForStream({
         messages,
         mode,
@@ -289,8 +290,7 @@ export function installEmbeddedAttemptStreamGuards(
           policy: transcriptPolicy,
         }),
         repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
-      }),
-    );
+      });
   }
 
   // Responses and eligible Anthropic routes replay provider checkpoints; a rejected one must be
@@ -453,6 +453,7 @@ export function installEmbeddedAttemptStreamGuards(
     suppressPluginHooks: attempt.operation === "settled-tool-finalization",
   });
   return {
+    normalizeToolCallIds,
     /** Returns the measured predecessor that may anchor this exact request's pressure. */
     onModelRequest: (...args: Parameters<typeof cacheObserver.onModelRequest>) => {
       const previous = cacheObserver.getContextUsage();

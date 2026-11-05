@@ -16,6 +16,7 @@ import {
   markEmbeddedRunAuthProfileSuccess,
   reportEmbeddedRunSuccessfulAuthBinding,
 } from "./auth-profile-success.js";
+import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "./incomplete-turn-recovery.js";
 import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
@@ -182,6 +183,41 @@ describe("terminal resolution", () => {
     expect(resolved.result.meta.livenessState).toBe("working");
     expect(activateInternalPrompt).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["sessions_send", "complete"],
+    ["subagent_announce", "retry"],
+  ] as const)(
+    "nudges undelivered message_tool_only text unless a %s target answers inline",
+    async (sourceTool, action) => {
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "QA-VISIBLE-CHILD-OK" }],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: ["QA-VISIBLE-CHILD-OK"],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+      });
+      const activateInternalPrompt = vi.fn();
+      const input = makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        runParams: {
+          sourceReplyDeliveryMode: "message_tool_only",
+          inputProvenance: { kind: "inter_session", sourceTool },
+        },
+        sessionPromptState: { activateInternalPrompt },
+      });
+
+      const resolved = await resolveEmbeddedRunTerminal(input);
+
+      expect(resolved.action).toBe(action);
+      expect(activateInternalPrompt.mock.calls).toEqual(
+        action === "retry" ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION]] : [],
+      );
+    },
+  );
 
   it("keeps an empty visible parent alive for accepted completion children", async () => {
     const attempt = makeEmbeddedRunnerAttempt({

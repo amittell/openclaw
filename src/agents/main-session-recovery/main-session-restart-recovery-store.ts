@@ -61,9 +61,11 @@ import {
 import {
   type ExhaustedRestartRecoveryTarget,
   type ExpectedRestartRecoveryTarget,
+  isRestartRecoveryCandidateEntry,
   mainSessionRecoveryLog,
   MAX_RECOVERY_RETRIES,
   resolveRestartRecoveryTerminalClientRunId,
+  warnIfPassedOverMarkedSession,
 } from "./main-session-restart-recovery-shared.js";
 import { resolveRestartRecoveryDispatchTarget } from "./main-session-restart-recovery-target.js";
 
@@ -206,12 +208,7 @@ export async function recoverStore(params: {
   )) {
     let entry = loadedEntry;
     let completionSource: SessionSourceAssertion | undefined;
-    const isRecoveryCandidate =
-      !loadedEntry.mainRestartRecovery?.tombstone &&
-      hasMainSessionRecoveryClaim(loadedEntry) &&
-      (loadedEntry.abortedLastRun === true ||
-        isMainRestartRecoveryTerminalOnly(loadedEntry) ||
-        (isTerminalSessionStatus(loadedEntry.status) && loadedEntry.status !== "interrupted"));
+    const isRecoveryCandidate = isRestartRecoveryCandidateEntry(loadedEntry, lifecycleGeneration);
     let decision: MainSessionRecoveryDecision = {
       decision: "deferred",
       reason: "preparation_failed",
@@ -234,6 +231,7 @@ export async function recoverStore(params: {
         return result;
       }
       if (!isRecoveryCandidate) {
+        warnIfPassedOverMarkedSession(loadedEntry, sessionKey);
         continue;
       }
       if (!isMainRestartRecoveryCandidate(entry, sessionKey)) {
@@ -316,7 +314,10 @@ export async function recoverStore(params: {
         recoveryView.status === "tombstoned"
       ) {
         skip(recoveryView.status);
-        if (recoveryView.status === "inactive" && isMainRestartRecoveryTerminalOnly(loadedEntry)) {
+        if (
+          recoveryView.status === "inactive" &&
+          isMainRestartRecoveryTerminalOnly(loadedEntry, lifecycleGeneration)
+        ) {
           decision = { decision: "settled", reason: "terminal-residue", nextOwner: "none" };
         }
         continue;

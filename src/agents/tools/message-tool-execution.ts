@@ -50,6 +50,7 @@ import {
   resolveMessageToolDiscoveryAsync,
   supportsMessageToolPromptReactions,
 } from "./message-tool-discovery.js";
+import { checkMessageToolSendGuards } from "./message-tool-execution.send-guards.js";
 import type { MessageToolOptions } from "./message-tool-execution.types.js";
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
@@ -74,13 +75,8 @@ import { createMessageToolTurnAuthority } from "./message-tool-turn-authority.js
 import {
   hasSanitizedSendPayloadContent,
   sanitizeMessageToolVisiblePayload,
-  type VisibleTextSuppressionReason,
 } from "./message-tool-visible-content.js";
-import {
-  recordPollVote,
-  resolvePollVoteEchoRoute,
-  suppressPollVoteEcho,
-} from "./poll-vote-echo.js";
+import { resolvePollVoteEchoRoute } from "./poll-vote-echo.js";
 
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const steps = createMessageToolSteps(options);
@@ -225,9 +221,11 @@ function* createMessageToolSteps(
     execute: async (toolCallId, args, signal) => {
       const assertCaller = turnAuthority.captureCaller(signal, captureGatewayToolCallerAssertion);
       // Shallow-copy so we don't mutate the original event args (used for logging/dedup).
+      // SAFETY: args is the tool-call payload; the shallow copy is only read through readToolStringParam/readToolParam helpers that validate each field.
       const params = { ...(args as Record<string, unknown>) };
       const action = readToolStringParam(params, "action", {
         required: true,
+        // SAFETY: readToolStringParam with required: true returns a non-empty string; the assertion only names the action union, and every use is an equality check or a by-name dispatch.
       }) as ChannelMessageActionName;
       const {
         authorization: trustedTurnContext,
@@ -487,13 +485,16 @@ function* createMessageToolSteps(
         currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
         preparedMessageToolCatalog,
       });
-      if (suppressPollVoteEcho(pollEchoSessionKey, pollVoteEchoRoute, action, params)) {
-        decisions.recordPollVoteEchoSuppressed();
-        return jsonResult({
-          status: "suppressed",
-          reason: "poll_vote_echo" satisfies VisibleTextSuppressionReason,
-          message: "Suppressed outbound text because it only restated the poll vote just cast.",
-        });
+      const sendGuards = checkMessageToolSendGuards({
+        action,
+        args: params,
+        runId: options?.runId,
+        route: pollVoteEchoRoute,
+        pollEchoSessionKey,
+        onPollVoteEchoSuppressed: () => decisions.recordPollVoteEchoSuppressed(),
+      });
+      if (sendGuards.suppressed) {
+        return sendGuards.suppressed;
       }
 
       const toolContext =
@@ -709,10 +710,7 @@ function* createMessageToolSteps(
               )?.markSourceReplyDelivered();
             }
           }
-          if (action === "poll-vote" && pollVoteEchoRoute && pollEchoSessionKey) {
-            const details = toolResult?.details as { pollVotedOption?: unknown } | undefined;
-            recordPollVote(pollEchoSessionKey, pollVoteEchoRoute, details?.pollVotedOption);
-          }
+          sendGuards.recordDelivered(toolResult);
           const response = toolResult ?? jsonResult(result.payload);
           const notice =
             result.kind === "send" && !result.dryRun ? result.normalization?.notice : undefined;

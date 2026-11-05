@@ -1,5 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { SessionEntry } from "../../config/sessions.js";
+import type { MainRestartRecoveryCause, SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope.js";
@@ -170,8 +170,15 @@ export async function prepareRestartRecoveryDeliveryCurrent(
   };
 }
 
+const RESUMED_AFTER_RESTART_NOTICE =
+  "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!";
+// Unless restart marking recorded the cycle, the notice must not claim a restart.
+const RESUMED_NOTICE =
+  "I'm continuing your interrupted request now.  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!";
+
 export async function announceRestartRecoveryResumption(
   params: RestartRecoveryDeliveryScope & {
+    cause?: MainRestartRecoveryCause;
     gatewayRuntime: GatewayRecoveryRuntime;
     isCurrent?: (cfg?: OpenClawConfig) => boolean;
   },
@@ -185,7 +192,7 @@ export async function announceRestartRecoveryResumption(
     }
     await params.gatewayRuntime.sendRecoveryNotice({
       ...params.deliveryContext,
-      text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
+      text: params.cause === "gateway_restart" ? RESUMED_AFTER_RESTART_NOTICE : RESUMED_NOTICE,
       idempotencyKey: `main-session-restart-recovery:${params.recoveryRunId}:resumed-notice`,
       liveOnly: true,
       isCurrent,

@@ -145,7 +145,12 @@ preserve the recorded source. Changes to model-facing names, prompts, tools, sch
 or other executable behavior need fresh source authorization and clear the old source
 when none is present. Remote management alone cannot supply local-source authorization,
 and older jobs without a provable origin remain blocked until reauthorized or recreated
-from a fresh authorized source.
+from a fresh authorized source. Blocked jobs are discoverable: `openclaw automations status`
+reports a `reauthorizationRequired` count, and each affected job's details and list entries
+carry a `reauthorizationRequired` flag. Re-saving the job's tool cap from the creator's
+authenticated turn records a fresh origin and unblocks the job without changing its
+account-scoped authority; recreating it from the intended account is the fallback when the
+creator turn is unavailable.
 
 Scheduled turns can also `edit`, `delete`, `pin`, and `unpin` Discord messages.
 Agent-created jobs use their recorded creator account and Discord's delegated
@@ -200,10 +205,12 @@ To change an account deliberately, update the job with a model/profile selection
 for example `--model "openai/gpt-4.1@work"`. This captures a fresh authorization.
 Legacy jobs without a recorded inference owner require this explicit adoption
 before using host credentials; OpenClaw does not guess their historical account
-from current defaults. Environment-only and provider-config API keys have no durable
-account ownership, so new host-managed jobs reject them at creation. Store the key
-in an auth profile and select that profile instead. Credentialless models remain
-usable without an account.
+from current defaults. Keys in the environment or provider config have no stored
+account to record. A job on such a route stays unbound and runs on that key; once a
+stored account becomes eligible for its route, the job stops with the adoption
+instructions instead of switching to that account. Job creation follows the same
+rule. An account refusal ends the run; it never falls back to another model or
+provider. Credentialless models remain usable without an account.
 Native runtime-owned jobs retain their runtime’s existing authorization checks, and a
 native connection cannot silently replace a job’s recorded host-managed inference account.
 An explicit update from an authorized native creator can adopt its runtime authority.
