@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Message } from "grammy/types";
 import {
   createChannelIngressMonitor,
@@ -316,6 +317,9 @@ type CreateTelegramIngressMonitorParams = {
  * committed spool append into the shared pump.
  */
 export function createTelegramIngressMonitor(params: CreateTelegramIngressMonitorParams) {
+  // Reply runs exit this plugin's instance. A claim settled there would wake the drain, and
+  // arm its retry timer, without the Telegram runtime; settle in the monitor's scope instead.
+  const runInMonitorScope = AsyncLocalStorage.snapshot();
   const inspect: Parameters<typeof createChannelIngressMonitor>[0]["inspect"] = (update, context) =>
     inspectTelegramSpooledUpdate(
       update,
@@ -381,6 +385,10 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
       const telegramLifecycle: TelegramIngressDrainLifecycle = {
         ...ingressLifecycle,
         onFailed: (error) => ingressLifecycle.onFailed(wrapFailure(error)),
+        // The handler reaches these through its spooled-replay frame, often inside a reply run.
+        onAdopted: () => runInMonitorScope(ingressLifecycle.onAdopted),
+        onDeferred: () => runInMonitorScope(ingressLifecycle.onDeferred),
+        onAbandoned: () => runInMonitorScope(ingressLifecycle.onAbandoned),
       };
       try {
         const result = await runWithTelegramSpooledReplayUpdate(

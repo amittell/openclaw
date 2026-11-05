@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { GrammyError } from "grammy";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -631,5 +632,36 @@ describe("createTelegramIngressMonitor", () => {
       ]);
       expect((await queue.enqueue(eventId, payload, { laneKey })).kind).not.toBe("completed");
     });
+  });
+
+  it("wakes the drain in the monitor's async scope when a reply run releases a claim", async () => {
+    const scope = new AsyncLocalStorage<string>();
+    await withTempState(({ queue, monitor: makeMonitor, enqueue }) =>
+      scope.run("monitor", async () => {
+        await enqueue(10);
+        const lifecycles: Array<Parameters<MonitorOptions["dispatch"]>[1]> = [];
+        const scopes: Array<string | undefined> = [];
+        const monitor = makeMonitor({
+          dispatch: async (_update, lifecycle) => {
+            scopes.push(scope.getStore());
+            lifecycles.push(lifecycle);
+            createTelegramSpooledReplayDeferredParticipant(`test:scope-${scopes.length}`);
+          },
+        });
+        monitor.start();
+        await monitor.waitForIdle();
+        // Only the drain woken by the release can claim this other chat's row.
+        const other = updatePayload(11);
+        other.update.message.chat.id = 222;
+        await queue.enqueue("0000000000000011", other, {
+          laneKey: telegramSpooledUpdateLaneKey(other.update),
+        });
+        // Reply runs exit the plugin's async scope before they abandon a source.
+        scope.run("reply-run", () => void lifecycles[0]?.onAbandoned());
+        await vi.waitFor(() => expect(scopes).toHaveLength(2));
+        expect(scopes).toEqual(["monitor", "monitor"]);
+        await monitor.stop();
+      }),
+    );
   });
 });
