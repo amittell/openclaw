@@ -1,4 +1,7 @@
-import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import {
+  buildSessionContext as buildCoreSessionContext,
+  countCompactionShadowedEntries,
+} from "../../../packages/agent-core/src/harness/session/session.js";
 import type { BuildSessionContextOptions } from "../../../packages/agent-core/src/index.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
@@ -41,6 +44,13 @@ export class SessionManagerEntries extends SessionManagerAppend {
   ): void {
     this.checkpointHandleFormatter = formatter;
   }
+  // Counted from the branch the new boundary is appended to, while the rows it shadows are still
+  // loaded; a bounded read after the compaction no longer holds them.
+  private countShadowedEntries(firstKeptEntryId: string): number {
+    const branch = this.appendParentId === null ? [] : this.getBranch(this.appendParentId);
+    return countCompactionShadowedEntries(branch as CoreSessionTreeEntry[], firstKeptEntryId);
+  }
+
   private createEntry<T extends { type: SessionEntry["type"] }>(data: T, timestamp = Date.now()) {
     return {
       ...data,
@@ -58,6 +68,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
     fromHook?: boolean,
     metadata?: CompactionEntry["__openclaw"],
     tokensAfter?: number,
+    shadowedEntryCount?: number,
   ): Promise<string> {
     const entry: CompactionEntry = this.createEntry({
       type: "compaction",
@@ -65,6 +76,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
       firstKeptEntryId,
       tokensBefore,
       ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+      shadowedEntryCount: shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
       details,
       fromHook,
       ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
@@ -84,6 +96,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
     fromHook?: boolean,
     metadata?: CompactionEntry["__openclaw"],
     tokensAfter?: number,
+    shadowedEntryCount?: number,
   ): string {
     prepareSessionManagerSync("appendCompaction", this.persistenceTarget, this);
     const entry: CompactionEntry = this.createEntry({
@@ -92,6 +105,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
       firstKeptEntryId,
       tokensBefore,
       ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+      shadowedEntryCount: shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
       details,
       fromHook,
       ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),

@@ -1,4 +1,7 @@
-import { formatCompactionCheckpointHandle } from "../../../packages/agent-core/src/index.js";
+import {
+  type CompactionCheckpointHandle,
+  formatCompactionCheckpointHandle,
+} from "../../../packages/agent-core/src/index.js";
 
 /**
  * Model-visible summary for a compaction boundary: the persisted summary bytes plus the checkpoint
@@ -10,7 +13,7 @@ import { formatCompactionCheckpointHandle } from "../../../packages/agent-core/s
  */
 export function expectedCompactionSummary(
   summary: string,
-  handle: { entryId: string; shadowedEntryCount: number },
+  handle: CompactionCheckpointHandle,
   readHint?: string,
 ): string {
   return `${summary}\n${formatCompactionCheckpointHandle(handle, readHint)}`;

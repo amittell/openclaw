@@ -399,6 +399,8 @@ it("keeps small context unchanged and leaves compacted navigation out of the det
         limits: { maxBytes: 4096, maxEvents: 3 },
       });
       expect(selected.buildSessionContext()).toEqual(full);
+      // A complete-history reader renders the same checkpoint line as the detached views.
+      expect(SessionManager.open(scope).buildSessionContext()).toEqual(full);
       expect(selected.getEntries().filter((entry) => entry.type === "message")).toHaveLength(2);
       expect(selected.getEntries().length).toBeLessThanOrEqual(5);
       expect(selected.getHeader()?.id).toBe(scope.sessionId);

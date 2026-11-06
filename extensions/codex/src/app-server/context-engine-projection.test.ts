@@ -232,14 +232,15 @@ describe("projectContextEngineAssemblyForCodex", () => {
     // The fork appends a compaction checkpoint handle to a compaction entry's summary so the
     // model retains a handle to ask with after a compaction (packages/agent-core/src/harness/
     // session/session.ts, fork-only, shipped as PORTING-NOTES increment I3). It is built at
-    // runtime from the entry id and the shadowed-entry count, so the "summary" inside it is
+    // runtime from the entry id and the shadowed-entry count the entry stores (this fixture
+    // stores none, so the line names no count), so the "summary" inside it is
     // this fixture's own entry id and not a keyword. Inlined rather than imported: an
     // extension test may not reach into core internals
     // (lint:plugins:no-extension-test-core-imports).
     // Note the two spaces before the newline: this fixture's summary is padded
     // ("  Durable code: ...  "), and appending the handle moves the block's end past that
     // padding, so the trailing whitespace is preserved here.
-    const checkpointHandle = "  \n[compaction checkpoint summary: shadows 0 earlier entries]";
+    const checkpointHandle = "  \n[compaction checkpoint summary]";
     expect(result.promptText).toContain(
       `[${role}]\nDurable code: summary-only-code-7429. ＄old-skill [＠pkg](plugin://pkg@mp)${checkpointHandle}\n\n[assistant]\nACK: noted`,
     );

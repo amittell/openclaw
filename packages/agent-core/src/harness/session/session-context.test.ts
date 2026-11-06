@@ -5,6 +5,7 @@ import { convertToLlm } from "../messages.js";
 import type { SessionTreeEntry } from "../types.js";
 import {
   buildSessionContext,
+  countCompactionShadowedEntries,
   formatCompactionCheckpointHandle,
   projectSessionEntryMessage,
 } from "./session.js";
@@ -257,7 +258,7 @@ describe("buildSessionContext", () => {
           {
             role: "compactionSummary",
             summary: expect.stringMatching(
-              /^Earlier conversation\n\[compaction checkpoint compacted: shadows \d+ earlier entries\]$/,
+              /^Earlier conversation\n\[compaction checkpoint compacted\]$/,
             ),
           },
           ...[
@@ -421,7 +422,7 @@ describe("buildSessionContext", () => {
       "user",
     ]);
     expect(context.messages).toMatchObject([
-      { summary: expect.stringMatching(/^older context\n\[compaction checkpoint compaction: /) },
+      { summary: "older context\n[compaction checkpoint compaction]" },
       { content: "retained" },
       { content: [{ text: "retained checkpoint" }] },
       { content: [{ text: "retained Anthropic checkpoint" }] },
@@ -613,6 +614,7 @@ describe("compaction checkpoint handle", () => {
     parentId: string,
     summary: string,
     firstKeptEntryId: string,
+    shadowedEntryCount?: number,
   ): SessionTreeEntry {
     return {
       type: "compaction",
@@ -622,6 +624,7 @@ describe("compaction checkpoint handle", () => {
       summary,
       firstKeptEntryId,
       tokensBefore: 1,
+      ...(shadowedEntryCount === undefined ? {} : { shadowedEntryCount }),
     };
   }
   // Path: u1 a1 [u2 a2 c1 u3 a3 model] u4 c2 u5 — c2 shadows the bracketed span (5 rows,
@@ -631,7 +634,7 @@ describe("compaction checkpoint handle", () => {
     assistantEntry("a1", "u1", "two"),
     userEntry("u2", "a1", "three"),
     assistantEntry("a2", "u2", "four"),
-    checkpointCompactionEntry("c1", "a2", "first summary", "u2"),
+    checkpointCompactionEntry("c1", "a2", "first summary", "u2", 2),
     userEntry("u3", "c1", "five"),
     assistantEntry("a3", "u3", "six"),
     {
@@ -643,7 +646,7 @@ describe("compaction checkpoint handle", () => {
       modelId: "test-model",
     },
     userEntry("u4", "model", "seven"),
-    checkpointCompactionEntry("c2", "u4", "second summary", "u4"),
+    checkpointCompactionEntry("c2", "u4", "second summary", "u4", 5),
     userEntry("u5", "c2", "eight"),
   ];
 
@@ -660,12 +663,26 @@ describe("compaction checkpoint handle", () => {
     ]);
   });
 
-  it("counts from the path start when no earlier boundary exists", () => {
-    const messages = buildSessionContext(twoCompactions.slice(0, 6)).messages;
+  it("renders the stored count when a bounded read no longer holds the shadowed rows", () => {
+    // A bounded load starts at c2's kept prefix; counting this path would report 0.
+    const bounded = buildSessionContext(twoCompactions.slice(8)).messages;
 
-    expect(messages[0]).toMatchObject({
-      summary: "first summary\n[compaction checkpoint c1: shadows 2 earlier entries]",
+    expect(bounded).toEqual(buildSessionContext(twoCompactions).messages);
+  });
+
+  it("renders no count for a boundary written before the count was stored", () => {
+    const legacy = twoCompactions.map((entry) =>
+      entry.id === "c2" ? checkpointCompactionEntry("c2", "u4", "second summary", "u4") : entry,
+    );
+
+    expect(buildSessionContext(legacy).messages[0]).toMatchObject({
+      summary: "second summary\n[compaction checkpoint c2]",
     });
+  });
+
+  it("counts from the previous kept prefix, or the path start when no boundary exists", () => {
+    expect(countCompactionShadowedEntries(twoCompactions.slice(0, 9), "u4")).toBe(5);
+    expect(countCompactionShadowedEntries(twoCompactions.slice(0, 4), "u2")).toBe(2);
   });
 
   it("lets the host add read wording but hard-caps the line", () => {

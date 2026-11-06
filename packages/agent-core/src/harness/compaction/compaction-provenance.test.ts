@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createAssistantMessageEventStream } from "../../llm.js";
 import type { AssistantMessage, StreamFn } from "../../llm.js";
 import type { AgentMessage } from "../../types.js";
-import { buildSessionContext } from "../session/session.js";
+import { buildSessionContext, countCompactionShadowedEntries } from "../session/session.js";
 import {
   compact,
   estimateTokens,
@@ -182,6 +182,7 @@ describe("compaction sender provenance", () => {
         parentId: entries.at(-1)?.id ?? null,
         timestamp: new Date(6).toISOString(),
         ...result.value,
+        shadowedEntryCount: countCompactionShadowedEntries(entries, result.value.firstKeptEntryId),
       },
     ]);
     // FORK DIVERGENCE (compaction checkpoint handle): the fork appends a checkpoint handle

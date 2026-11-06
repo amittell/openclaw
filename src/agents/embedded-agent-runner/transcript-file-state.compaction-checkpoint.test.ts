@@ -1,5 +1,6 @@
 // Transcript file-state cases that remap compaction keep markers; the rebuilt
 // context carries the checkpoint handle buildSessionContext appends to the summary.
+// These files predate the stored shadow count, so the handle names no count.
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import {
@@ -58,10 +59,7 @@ describe("readTranscriptState", () => {
     expect(state.buildSessionContext().messages).toMatchObject([
       {
         role: "compactionSummary",
-        summary: expectedCompactionSummary("summary", {
-          entryId: compaction.id,
-          shadowedEntryCount: 1,
-        }),
+        summary: expectedCompactionSummary("summary", { entryId: compaction.id }),
       },
       { role: "user", content: "legacy kept suffix" },
     ]);
@@ -121,10 +119,7 @@ describe("readTranscriptState", () => {
     expect(state.buildSessionContext().messages).toMatchObject([
       {
         role: "compactionSummary",
-        summary: expectedCompactionSummary("summary", {
-          entryId: compaction.id,
-          shadowedEntryCount: 0,
-        }),
+        summary: expectedCompactionSummary("summary", { entryId: compaction.id }),
       },
       { role: "user", content: "active branch kept turn" },
       { role: "assistant", content: [{ type: "text", text: "active reply" }] },

@@ -5,6 +5,7 @@ import {
   capCompactionSummary,
   compactWithoutSummary,
 } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
+import { countCompactionShadowedEntries } from "../../../packages/agent-core/src/harness/session/session.js";
 import { InvalidSummaryOutputError } from "../../../packages/agent-core/src/harness/types.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { AssistantMessage } from "../../llm/types.js";
@@ -384,6 +385,8 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           parentId: pathEntries.at(-1)?.id ?? null,
           timestamp: new Date().toISOString(),
           summary,
+          // The committed boundary renders this count, so the budget estimate must too.
+          shadowedEntryCount: countCompactionShadowedEntries(pathEntries, result.firstKeptEntryId),
         },
       ]).messages;
     if (requestBudget && requestTokenLimit !== undefined) {

@@ -275,7 +275,7 @@ describe("canonical CLI history", () => {
         });
         ownedSummary = expectedCompactionSummary("OWNED_SUMMARY", {
           entryId: ownedCompactionId,
-          shadowedEntryCount: 0,
+          shadowedEntryCount: 1,
         });
       }
       const tail = manager.appendMessage({ role: "user", content: "OWNED_TAIL", timestamp: 13 });
@@ -514,9 +514,8 @@ describe("canonical CLI history", () => {
         const boundaryCompactionId = manager.appendCompaction("summary", firstKept, 1000);
         boundarySummary = expectedCompactionSummary("summary", {
           entryId: boundaryCompactionId,
-          // The durable fixture carries one earlier persisted entry; the in-memory
-          // manager starts empty, so the boundary shadows nothing there.
-          shadowedEntryCount: owner === "durable" ? 1 : 0,
+          // Both owners hold the persisted "summarized" row when the boundary is written.
+          shadowedEntryCount: 1,
         });
       } else {
         manager.appendResetBoundary("reset", firstKept);
@@ -586,10 +585,8 @@ describe("canonical CLI history", () => {
     await expect(loadCliSessionContextEngineMessages(params)).resolves.toMatchObject([
       {
         role: "compactionSummary",
-        summary: expectedCompactionSummary("summary", {
-          entryId: "compact",
-          shadowedEntryCount: 0,
-        }),
+        // Appended without a count, as boundaries written before it was stored are.
+        summary: expectedCompactionSummary("summary", { entryId: "compact" }),
         timestamp: "2026-01-01T00:00:00.000Z",
         tokensBefore: 100,
         tokensAfter: 10,

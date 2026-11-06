@@ -123,7 +123,11 @@ export function* iterateSessionContextEntries<T extends SessionTreeEntry>(
 // Hard cap for the one model-visible line appended to a compaction summary.
 const CHECKPOINT_HANDLE_MAX_CHARS = 160;
 
-export type CompactionCheckpointHandle = { entryId: string; shadowedEntryCount: number };
+export type CompactionCheckpointHandle = {
+  entryId: string;
+  /** Absent for boundaries written before the count was persisted with them. */
+  shadowedEntryCount?: number;
+};
 
 export type BuildSessionContextOptions = {
   /** Hosts inject read-tool wording here; the default names no tool. */
@@ -135,8 +139,13 @@ export function formatCompactionCheckpointHandle(
   handle: CompactionCheckpointHandle,
   readHint?: string,
 ): string {
-  const shadows = `shadows ${handle.shadowedEntryCount} earlier entries`;
-  return `[compaction checkpoint ${handle.entryId}: ${shadows}${readHint ? `; ${readHint}` : ""}]`;
+  const facts = [
+    handle.shadowedEntryCount === undefined
+      ? undefined
+      : `shadows ${handle.shadowedEntryCount} earlier entries`,
+    readHint,
+  ].filter(Boolean);
+  return `[compaction checkpoint ${handle.entryId}${facts.length ? `: ${facts.join("; ")}` : ""}]`;
 }
 
 function isBoundaryEntry(entry: SessionTreeEntry): entry is ContextBoundary {
@@ -146,31 +155,36 @@ function isBoundaryEntry(entry: SessionTreeEntry): entry is ContextBoundary {
 /** Index where a boundary's kept prefix starts; the boundary itself when it kept nothing. */
 function resolveKeptPrefixIndex(
   pathEntries: readonly SessionTreeEntry[],
-  boundary: ContextBoundary,
+  firstKeptEntryId: string | undefined,
   boundaryIdx: number,
 ): number {
-  const firstKeptIdx = pathEntries.findIndex((entry) => entry.id === boundary.firstKeptEntryId);
+  const firstKeptIdx = pathEntries.findIndex((entry) => entry.id === firstKeptEntryId);
   return firstKeptIdx >= 0 && firstKeptIdx < boundaryIdx ? firstKeptIdx : boundaryIdx;
 }
 
 /**
- * Rows this summary replaced: the previous boundary's kept prefix (or the path start) up to this
- * one's. The kept prefix is excluded because it still replays verbatim, and only transcript-visible
- * rows count so the figure matches what a history reader can page through.
+ * Rows a compaction appended after `pathEntries` replaces: the previous boundary's kept prefix (or
+ * the path start) up to `firstKeptEntryId`. The kept prefix is excluded because it still replays
+ * verbatim, and only transcript-visible rows count so the figure matches what a history reader can
+ * page through.
+ *
+ * Writers persist this with the boundary. A bounded read after the compaction no longer holds the
+ * rows it shadows, so counting there reported 0 where a full read reported the real figure, and
+ * the two readers rendered different context bytes. Rows a bounded load had already omitted when
+ * the compaction was written are not counted; the summary did not cover them either.
  */
-function resolveShadowedEntryCount(
+export function countCompactionShadowedEntries(
   pathEntries: readonly SessionTreeEntry[],
-  boundary: ContextBoundary,
-  boundaryIdx: number,
+  firstKeptEntryId: string,
 ): number {
-  const previousIdx = pathEntries.slice(0, boundaryIdx).findLastIndex(isBoundaryEntry);
+  const previousIdx = pathEntries.findLastIndex(isBoundaryEntry);
   const previous = pathEntries[previousIdx];
   const spanStart =
     previous && isBoundaryEntry(previous)
-      ? resolveKeptPrefixIndex(pathEntries, previous, previousIdx)
+      ? resolveKeptPrefixIndex(pathEntries, previous.firstKeptEntryId, previousIdx)
       : 0;
   return pathEntries
-    .slice(spanStart, resolveKeptPrefixIndex(pathEntries, boundary, boundaryIdx))
+    .slice(spanStart, resolveKeptPrefixIndex(pathEntries, firstKeptEntryId, pathEntries.length))
     .filter((entry) => entry.type === "message" || isBoundaryEntry(entry)).length;
 }
 
@@ -234,18 +248,19 @@ export function withCompactionCheckpointHandle<T extends SessionTreeEntry>(
   if (boundary?.type !== "compaction") {
     return readEntry;
   }
-  const activeBoundary = boundary;
-  const boundaryIdx = pathEntries.findIndex((item) => item.id === activeBoundary.id);
+  const activeBoundaryId = boundary.id;
   return (entry: T): SessionTreeEntry => {
-    // Hydrate first: the SQLite reader's own readEntry is what materializes the summary text.
+    // Hydrate first: the SQLite reader's own readEntry is what materializes the summary text, and
+    // its navigation rows carry only control fields, so the count is read from the hydrated row.
     const hydrated = readEntry(entry);
-    if (entry.id !== activeBoundary.id || hydrated.type !== "compaction") {
+    if (entry.id !== activeBoundaryId || hydrated.type !== "compaction") {
       return hydrated;
     }
     const format = options?.formatCheckpointHandle ?? formatCompactionCheckpointHandle;
+    const shadowedEntryCount = hydrated.shadowedEntryCount;
     const handleLine = format({
-      entryId: activeBoundary.id,
-      shadowedEntryCount: resolveShadowedEntryCount(pathEntries, activeBoundary, boundaryIdx),
+      entryId: activeBoundaryId,
+      ...(typeof shadowedEntryCount === "number" ? { shadowedEntryCount } : {}),
     }).slice(0, CHECKPOINT_HANDLE_MAX_CHARS);
     return { ...hydrated, summary: `${hydrated.summary}\n${handleLine}` };
   };
