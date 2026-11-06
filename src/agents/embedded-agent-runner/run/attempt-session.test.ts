@@ -133,7 +133,7 @@ function createInput(options?: { terminalHookError?: Error }) {
     }),
     replaceCustomTools: vi.fn(),
   } as unknown as AgentSession;
-  const sessionManager = { id: "session-manager", setCompactionCheckpointHandleFormatter: vi.fn() };
+  const sessionManager = { id: "session-manager" };
   const transcriptLifecycle = {
     withTranscriptWrite: vi.fn(async (operation: () => unknown) => await operation()),
   };
@@ -221,7 +221,6 @@ function createInput(options?: { terminalHookError?: Error }) {
     },
     onDeliveredSourceReply: () => onDeliveredSourceReply?.(),
     resourceLoader,
-    sessionManager,
     sessionToolAllowlist,
     settingsManager,
   };
@@ -931,29 +930,5 @@ describe("prepareEmbeddedAttemptAgentSession", () => {
       "publish-system-prompt",
       "install-terminal-hook",
     ]);
-  });
-
-  it("names sessions_history in the compaction checkpoint only when the run registers it", async () => {
-    const withTool = createInput();
-    hoisted.prepareEmbeddedAttemptClientTools.mockReturnValue({
-      allCustomTools: withTool.allCustomTools,
-      sessionToolAllowlist: ["read", "sessions_history"],
-      ...withTool.clientToolRuntime,
-      refreshTools: vi.fn(),
-    });
-    await prepareEmbeddedAttemptAgentSession(withTool.input);
-    const formatter = withTool.sessionManager.setCompactionCheckpointHandleFormatter.mock
-      .calls[0]?.[0] as
-      | ((handle: { entryId: string; shadowedEntryCount: number }) => string)
-      | undefined;
-    expect(formatter?.({ entryId: "c1", shadowedEntryCount: 3 })).toBe(
-      "[compaction checkpoint c1: shadows 3 earlier entries; sessions_history can read them by compactionId]",
-    );
-
-    const withoutTool = createInput();
-    await prepareEmbeddedAttemptAgentSession(withoutTool.input);
-    expect(withoutTool.sessionManager.setCompactionCheckpointHandleFormatter).toHaveBeenCalledWith(
-      undefined,
-    );
   });
 });

@@ -1,6 +1,5 @@
 import { isAnthropicOAuthApiKey, isDirectAnthropicModel } from "@openclaw/ai/internal/anthropic";
 import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core";
-import { formatCompactionCheckpointHandle } from "../../../../packages/agent-core/src/index.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
@@ -41,7 +40,6 @@ import { createAgentSession } from "../../sessions/sdk.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
 import { sessionManagerOpenTranscriptCohort } from "../../sessions/session-manager-core.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
-import { SESSIONS_HISTORY_CHECKPOINT_READ_HINT } from "../../tool-description-presets.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
@@ -157,12 +155,6 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     ...input.clientToolPreparation,
   });
   const { allCustomTools, sessionToolAllowlist, ...clientToolRuntime } = preparedClientTools;
-  // The checkpoint line may name sessions_history only when this run registers it.
-  input.sessionManager.setCompactionCheckpointHandleFormatter(
-    sessionToolAllowlist.includes("sessions_history")
-      ? (handle) => formatCompactionCheckpointHandle(handle, SESSIONS_HISTORY_CHECKPOINT_READ_HINT)
-      : undefined,
-  );
 
   const { session: activeSession } = await createAgentSession({
     systemPrompt: input.initialSystemPrompt.trim(),

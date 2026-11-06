@@ -12,8 +12,6 @@ import "./test-helpers/fast-openclaw-tools.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
-import { listOwnerOnlyToolStubNames } from "./owner-only-tool-stub-marker.js";
-import { buildOwnerOnlyToolsUnavailablePrompt } from "./owner-only-tool-stubs.js";
 import { buildAgentSystemPrompt } from "./system-prompt.js";
 
 const sessionKey = "agent:main:telegram:direct:owner";
@@ -36,8 +34,6 @@ function buildTurn(senderIsOwner: boolean) {
   const systemPrompt = buildAgentSystemPrompt({
     workspaceDir: "/tmp/owner-prefix-workspace",
     toolNames: tools.map((tool) => tool.name),
-    // The embedded attempt puts this per-turn note in the volatile Conversation Context.
-    extraSystemPrompt: buildOwnerOnlyToolsUnavailablePrompt(listOwnerOnlyToolStubNames(tools)),
     ownerNumbers: senderIsOwner ? ["owner"] : [],
     runtimeInfo: { agentId: "main", sessionKey, sessionId: "session-1" },
   });
@@ -64,12 +60,5 @@ describe("owner and non-owner turns of one session", () => {
     const ownerPrompt = splitAtBoundary(owner.systemPrompt);
     const completionPrompt = splitAtBoundary(completion.systemPrompt);
     expect(completionPrompt.prefix).toBe(ownerPrompt.prefix);
-    // Only the per-turn suffix says which declared tools refuse for this sender.
-    const refusalLine =
-      "Owner-only tools unavailable on this turn; calls to them are refused: " +
-      "`nodes`, `automations`, `gateway`, `openclaw`, `conversations_list`, " +
-      "`conversations_send`, `conversations_turn`.";
-    expect(completionPrompt.suffix).toContain(refusalLine);
-    expect(ownerPrompt.suffix).not.toContain("Owner-only tools unavailable");
   });
 });

@@ -23,21 +23,6 @@ function ownerOnlyToolRefusalMessage(toolName: string): string {
 }
 
 /**
- * Per-turn note for the prompt's volatile suffix. The tool list above the cache
- * boundary stays the owner turn's, so this is where the model learns which of those
- * tools refuse on this turn.
- */
-export function buildOwnerOnlyToolsUnavailablePrompt(
-  toolNames: readonly string[] | undefined,
-): string | undefined {
-  if (!toolNames?.length) {
-    return undefined;
-  }
-  const list = toolNames.map((name) => `\`${name}\``).join(", ");
-  return `Owner-only tools unavailable on this turn; calls to them are refused: ${list}.`;
-}
-
-/**
  * Build the refusing stand-in for one owner-only tool.
  *
  * The stub is a fresh object that copies only the tool's data fields (name, label,

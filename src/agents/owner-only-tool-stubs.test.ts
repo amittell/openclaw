@@ -1,9 +1,10 @@
 /**
- * Owner-only tool stubs: a non-owner turn declares every owner-only tool an owner turn
- * would, but each one refuses, and no call path (direct execution, the agent loop's
- * preparer lookup, Tool Search, Code Mode catalog calls, hooks, allowlist inheritance
- * or cron capture) reaches the real tool. Keeps the #102030 guarantee, including its one
- * exception: an exact-run automations grant.
+ * Owner-only tools on a non-owner turn: the turn declares every owner-only tool an owner
+ * turn would, with the owner's definition, and no call path (direct execution, the agent
+ * loop's preparer lookup, the session adapter, Tool Search, Code Mode catalog calls,
+ * availability-bound tools, allowlist inheritance or cron capture) reaches the real tool.
+ * Since v2026.11.1 core owner-only tools are gated in place (`resolveTurnToolSurface`); a
+ * plugin tool registered `ownerOnly` is still the fork's refusing stub. Keeps #102030.
  */
 import { expectDefined } from "@openclaw/normalization-core";
 import {
@@ -25,17 +26,10 @@ import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../security/dangerous-tools.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
-import {
-  bindAgentToolAvailability,
-  finalizeAgentToolAvailability,
-} from "./agent-tool-availability.js";
+import { bindAgentToolAvailability } from "./agent-tool-availability.js";
 import { toToolDefinitions } from "./agent-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
-import {
-  createCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapability,
-  runWithCronCreatorAuthorityCapabilityResolver,
-} from "./cron-creator-authority-context.js";
+import { expectOwnerGated } from "./agent-tools.turn-authority.test-support.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { isOwnerOnlyToolStub, listOwnerOnlyToolStubNames } from "./owner-only-tool-stub-marker.js";
 import { createOwnerOnlyToolStub } from "./owner-only-tool-stubs.js";
@@ -44,24 +38,19 @@ import {
   getInternalToolExecutionPreparer,
 } from "./runtime/internal-hooks.js";
 import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
-import { ToolAuthorizationError } from "./tool-input-error.js";
-import { replaceWithEffectiveToolAllowlist } from "./tool-policy.js";
-import { consumeTrustedToolNoStartError, isToolResultError } from "./tool-result-error.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import {
   createToolSearchCatalogRef,
   registerHeadlessToolSearchCatalog,
   resolveToolSearchConfig,
 } from "./tool-search.js";
-import { createToolTerminalObserver } from "./tool-terminal-outcome.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
-import { captureFinalEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool.js";
 import type { CronCreatorToolAllowlistEntry } from "./tools/cron-tool.types.js";
 
 const OWNER_ONLY = [...GATEWAY_OWNER_ONLY_CORE_TOOLS];
 // Since #154239 (v2026.10.1) `sessions` gates its own actions on a non-owner turn
 // (assign_owner only) instead of being denied, so it stays the real tool there.
-const STUBBED_OWNER_ONLY = OWNER_ONLY.filter((name) => name !== "sessions");
+const GATED_OWNER_ONLY = OWNER_ONLY.filter((name) => name !== "sessions");
 // Since v2026.10.7 (#176892) `intent` is itself a core owner-only tool, so a synthetic name stands
 // in for a plugin tool registered `ownerOnly`; the fork keeps that path for other plugin tools.
 const PLUGIN_OWNER_ONLY = "plugin_owner_only_probe";
@@ -109,8 +98,8 @@ function createRealTool(name: string): AnyAgentTool {
   return tool;
 }
 
-function buildTurnTools(senderIsOwner: boolean, runId = senderIsOwner ? "owner-run" : "other-run") {
-  return createOpenClawCodingTools({
+function turnOptions(senderIsOwner: boolean, runId = senderIsOwner ? "owner-run" : "other-run") {
+  return {
     agentId: "main",
     sessionKey,
     runId,
@@ -119,12 +108,11 @@ function buildTurnTools(senderIsOwner: boolean, runId = senderIsOwner ? "owner-r
     abortSignal: new AbortController().signal,
     workspaceDir: "/tmp/owner-only-stubs-workspace",
     agentDir: "/tmp/owner-only-stubs-agent",
-  });
+  };
 }
 
-// Only real tools grant anything; a non-owner turn declares owner-only tools as stubs.
-function executableNames(tools: readonly AnyAgentTool[]): string[] {
-  return tools.filter((tool) => !isOwnerOnlyToolStub(tool)).map((tool) => tool.name);
+function buildTurnTools(senderIsOwner: boolean, runId?: string) {
+  return createOpenClawCodingTools(turnOptions(senderIsOwner, runId));
 }
 
 function requireTool(tools: readonly AnyAgentTool[], name: string): AnyAgentTool {
@@ -144,18 +132,29 @@ function expectNoRealOwnerOnlyExecution() {
   }
 }
 
-// A refusal is a pre-execution block: the preparer the agent loop prefers answers at once.
-async function expectPreExecutionRefusal(tool: object, name: string) {
-  const preparer = expectDefined(getInternalToolExecutionPreparer(tool), `${name} preparer`);
+type CallableTool = { execute: (...args: never[]) => Promise<unknown> };
+
+// The agent loop, the session adapter and the Tool Search executor prefer an execution
+// preparer over `execute`, so whatever the preparer leads to must be the gate as well.
+async function callAsTheLoopWould(tool: CallableTool, name: string): Promise<unknown> {
+  const preparer = getInternalToolExecutionPreparer(tool);
+  if (!preparer) {
+    const execute = tool.execute as (id: string, args: object) => Promise<unknown>;
+    return await execute(`call-${name}`, { action: "x" });
+  }
   const prepared = await preparer({ toolCallId: `prepare-${name}`, args: { action: "x" } });
-  expect(prepared, name).toMatchObject({
-    kind: "immediate",
-    outcome: {
-      kind: "result",
-      isError: true,
-      result: { details: { status: "blocked", deniedReason: "owner-only" } },
-    },
-  });
+  try {
+    if (prepared.kind === "ready") {
+      return await prepared.execute();
+    }
+    return prepared.outcome.kind === "result" ? prepared.outcome.result : prepared.outcome.error;
+  } finally {
+    prepared.dispose();
+  }
+}
+
+function ownerGateText(name: string): string {
+  return `${name} needs the owner's authority`;
 }
 
 const loopModel: Model = {
@@ -219,41 +218,27 @@ describe("owner-only tool stubs", () => {
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
   });
 
-  it("declares every owner-only tool on a non-owner turn only as a refusing stub (#102030)", async () => {
+  it("declares every owner-only tool on a non-owner turn with the owner's definition, and gates it (#102030)", async () => {
     const owner = buildTurnTools(true);
     const other = buildTurnTools(false);
 
     expect(other.map((tool) => tool.name)).toEqual(owner.map((tool) => tool.name));
-    expect(listOwnerOnlyToolStubNames(other).toSorted()).toEqual(
-      [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY].toSorted(),
-    );
-    expect(isOwnerOnlyToolStub(requireTool(other, "message"))).toBe(false);
-    expect(isOwnerOnlyToolStub(requireTool(other, "sessions"))).toBe(false);
-    for (const name of STUBBED_OWNER_ONLY) {
-      const stub = requireTool(other, name);
+    // Core owner-only tools are gated in place; only the plugin's own owner-only tool is a stub.
+    expect(listOwnerOnlyToolStubNames(other)).toEqual([PLUGIN_OWNER_ONLY]);
+    for (const name of GATED_OWNER_ONLY) {
+      const gated = requireTool(other, name);
       const ownerTool = requireTool(owner, name);
-      expect(isOwnerOnlyToolStub(stub), name).toBe(true);
-      expect(stub.description).toBe(ownerTool.description);
-      expect(stub.parameters).toEqual(ownerTool.parameters);
-      expect(stub.outputSchema).toEqual(ownerTool.outputSchema);
-      expect(stub.resultContentSource).toBeUndefined();
-      expect(stub.prepareArguments).toBeUndefined();
-      await expectPreExecutionRefusal(stub, name);
-      // Callers that bypass preparers get host-owned proof that nothing started.
-      const error = await stub.execute(`call-${name}`, { action: "x" }).then(
-        () => undefined,
-        (thrown: unknown) => thrown,
+      expect(gated.description, name).toBe(ownerTool.description);
+      expect(gated.parameters, name).toEqual(ownerTool.parameters);
+      expect(JSON.stringify(await callAsTheLoopWould(gated, name)), name).toContain(
+        ownerGateText(name),
       );
-      expect(error).toEqual(
-        new ToolAuthorizationError(`${name} is not available on this turn: owner-only.`),
-      );
-      expect(consumeTrustedToolNoStartError(error), name).toBe(true);
     }
+    await expectOwnerGated(other, ...GATED_OWNER_ONLY);
     expectNoRealOwnerOnlyExecution();
-    expect(beforeToolCall).not.toHaveBeenCalled();
   });
 
-  it("reaches only the refusal through Tool Search and Code Mode catalog calls", async () => {
+  it("runs only the gate through Tool Search and Code Mode catalog calls", async () => {
     const other = buildTurnTools(false);
     const catalogRef = createToolSearchCatalogRef();
     registerHeadlessToolSearchCatalog({
@@ -265,38 +250,40 @@ describe("owner-only tool stubs", () => {
       { catalogRef, runId: "other-run", sessionId: "session-1", sessionKey },
       resolveToolSearchConfig(),
     );
-    // The run's catalog executor prefers an execution preparer over execute, so the
-    // cataloged objects themselves must carry neither the real preparer nor hooks.
     const cataloged = (catalogRef.current?.entries ?? []).filter((entry) =>
-      STUBBED_OWNER_ONLY.includes(entry.name as (typeof STUBBED_OWNER_ONLY)[number]),
+      GATED_OWNER_ONLY.includes(entry.name as (typeof GATED_OWNER_ONLY)[number]),
     );
-    expect(cataloged.map((entry) => entry.name).toSorted()).toEqual(STUBBED_OWNER_ONLY.toSorted());
+    expect(cataloged.map((entry) => entry.name).toSorted()).toEqual(GATED_OWNER_ONLY.toSorted());
     for (const entry of cataloged) {
-      expect(isOwnerOnlyToolStub(entry.tool), entry.name).toBe(true);
-      await expectPreExecutionRefusal(entry.tool, entry.name);
+      expect(
+        JSON.stringify(await callAsTheLoopWould(entry.tool, entry.name)),
+        entry.name,
+      ).toContain(ownerGateText(entry.name));
     }
 
-    await expect(runtime.call("gateway", { action: "config.get" })).rejects.toThrow(
-      "gateway is not available on this turn: owner-only.",
+    expect(JSON.stringify(await runtime.call("gateway", { action: "config.get" }))).toContain(
+      ownerGateText("gateway"),
     );
     // Code Mode's nodes bridge resolves this exact catalog id.
-    await expect(runtime.callExactId("openclaw:core:nodes", { action: "status" })).rejects.toThrow(
-      "nodes is not available on this turn: owner-only.",
-    );
+    expect(
+      JSON.stringify(await runtime.callExactId("openclaw:core:nodes", { action: "status" })),
+    ).toContain(ownerGateText("nodes"));
     expectNoRealOwnerOnlyExecution();
-    expect(beforeToolCall).not.toHaveBeenCalled();
   });
 
-  it("records a refusal as a blocked call that never started, through the adapter and loop", async () => {
+  it("returns the gate, never the real tool, through the session adapter and the agent loop", async () => {
     const runId = "other-run";
-    const stub = requireTool(buildTurnTools(false, runId), "nodes");
+    const gated = requireTool(buildTurnTools(false, runId), "nodes");
     const args = { action: "invoke", node: "mac", invokeCommand: "system.run" };
     // The embedded session adapter runs before_tool_call itself for tools it sees unwrapped.
-    const [definition] = toToolDefinitions([stub], { runId, sessionKey });
-    await expectPreExecutionRefusal(expectDefined(definition, "nodes definition"), "nodes");
+    const [definition] = toToolDefinitions([gated], { runId, sessionKey });
+    expect(
+      JSON.stringify(
+        await callAsTheLoopWould(expectDefined(definition, "nodes definition"), "nodes"),
+      ),
+    ).toContain(ownerGateText("nodes"));
 
     const events: AgentEvent[] = [];
-    const afterToolCall = vi.fn();
     let turn = 0;
     const streamFn = () => {
       turn += 1;
@@ -313,15 +300,8 @@ describe("owner-only tool stubs", () => {
     };
     await runAgentLoop(
       [{ role: "user", content: "run it", timestamp: 1 }],
-      { systemPrompt: "", messages: [], tools: [stub] },
-      {
-        model: loopModel,
-        convertToLlm: (messages) => messages as Message[],
-        // Mirrors the session: tool_result handlers run only for started calls.
-        afterToolCall,
-        afterToolOutcome: async ({ executionStarted, result, isError }) =>
-          executionStarted ? undefined : { isError: isError || isToolResultError(result) },
-      },
+      { systemPrompt: "", messages: [], tools: [gated] },
+      { model: loopModel, convertToLlm: (messages) => messages as Message[] },
       (event) => {
         events.push(event);
       },
@@ -336,188 +316,53 @@ describe("owner-only tool stubs", () => {
       ),
       "tool_execution_end",
     );
-    expect(end).toMatchObject({
-      executionStarted: false,
-      isError: true,
-      result: { details: { status: "blocked", deniedReason: "owner-only" } },
-    });
-    expect(afterToolCall).not.toHaveBeenCalled();
-    // The host observer turns this into no side-effect evidence, so replay stays valid.
-    expect(
-      createToolTerminalObserver(runId)({
-        toolCallId: "loop-call",
-        toolName: "nodes",
-        arguments: args,
-        executionStarted: end.executionStarted,
-        outcome: "failure",
-        result: end.result,
-        failure: { error: "nodes is not available on this turn: owner-only." },
-      }),
-    ).toMatchObject({
-      executionStarted: false,
-      sideEffectEvidence: false,
-      lastToolError: { executionStarted: false, mutatingAction: false },
-    });
+    expect(end.result).toMatchObject({ details: { gated: true } });
+    expect(JSON.stringify(end.result)).toContain(ownerGateText("nodes"));
     expectNoRealOwnerOnlyExecution();
-    expect(beforeToolCall).not.toHaveBeenCalled();
   });
 
-  it("never counts a stub as callable for availability-bound tools", () => {
+  it("never counts a gated tool or a stub as callable for availability-bound tools", () => {
     const callable: string[] = [];
-    const probe = bindAgentToolAvailability(
-      { name: "probe", description: "probe", parameters: { type: "object", properties: {} } },
-      { prepare: (_tool, callableTools) => callable.push(...callableTools.keys()) },
+    const probe = bindAgentToolAvailability(createRealTool("probe"), {
+      prepare: (_tool, callableTools) => {
+        callable.splice(0, callable.length, ...callableTools.keys());
+      },
+      prepareBeforeNormalization: true,
+    });
+    const assemble = expectDefined(
+      vi.mocked(createOpenClawTools).getMockImplementation(),
+      "createOpenClawTools implementation",
     );
+    vi.mocked(createOpenClawTools).mockImplementation((options) => [...assemble(options), probe]);
 
-    finalizeAgentToolAvailability([probe, ...buildTurnTools(false)]);
+    buildTurnTools(false);
 
     expect(callable).toContain("message");
-    for (const name of [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
+    for (const name of [...GATED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
       expect(callable).not.toContain(name);
     }
   });
 
-  it("never passes a stub name on to child sessions or scheduled jobs", () => {
-    const other = buildTurnTools(false);
-    const inherited: string[] = [];
-    replaceWithEffectiveToolAllowlist(inherited, other);
-    const cronCaptured: CronCreatorToolAllowlistEntry[] = [];
-    captureFinalEffectiveCronCreatorToolAllowlist(cronCaptured, {}, other);
-
-    expect(inherited).toContain("message");
-    expect(cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name))).toContain(
-      "message",
+  it("never passes a gated or stubbed name on to child sessions or scheduled jobs", () => {
+    const inheritedToolAllowlistRef: string[] = [];
+    const cronCreatorToolAllowlistRef: CronCreatorToolAllowlistEntry[] = [];
+    createOpenClawCodingTools({
+      ...turnOptions(false),
+      // A restrictive inherited allowlist is what makes the turn export one to children.
+      runtimeToolAllowlist: [...OWNER_ONLY, "message", PLUGIN_OWNER_ONLY],
+      inheritRuntimeToolAllowlist: true,
+      inheritedToolAllowlistRef,
+      cronCreatorToolAllowlistRef,
+    });
+    const cronCaptured = cronCreatorToolAllowlistRef.map((entry) =>
+      typeof entry === "string" ? entry : entry.name,
     );
-    for (const name of [...STUBBED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
-      expect(inherited).not.toContain(name);
-      expect(
-        cronCaptured.map((entry) => (typeof entry === "string" ? entry : entry.name)),
-      ).not.toContain(name);
+
+    expect(inheritedToolAllowlistRef).toContain("message");
+    expect(cronCaptured).toContain("message");
+    for (const name of [...GATED_OWNER_ONLY, PLUGIN_OWNER_ONLY]) {
+      expect(inheritedToolAllowlistRef).not.toContain(name);
+      expect(cronCaptured).not.toContain(name);
     }
-  });
-
-  describe("senderless automations authority", () => {
-    it("binds configured MCP cron authority only to the exact admitted run", async () => {
-      const resolve = vi.fn().mockResolvedValue({
-        tools: ["read", { name: "mcp_todoist_add_task", pluginId: "todoist" }],
-        provenance: { version: 1, source: "final-executable-surface" },
-      });
-      let releaseRun: (() => void) | undefined;
-      const holdRun = new Promise<void>((resolveHold) => {
-        releaseRun = resolveHold;
-      });
-      let retainedResolver: (() => Promise<unknown>) | undefined;
-
-      vi.mocked(createOpenClawTools).mockClear();
-      const forgedTools = runWithCronCreatorAuthorityCapabilityResolver({
-        capability: undefined,
-        runId: "forged-run",
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: "forged-run", senderIsOwner: false }),
-      });
-      expect(executableNames(forgedTools)).not.toContain("automations");
-      expect(
-        vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority,
-      ).toBeUndefined();
-
-      const capability = createCronCreatorAuthorityCapability("admitted-run")!;
-      const activeRun = runWithCronCreatorAuthorityCapability(capability, async () => {
-        const wrongRunTools = runWithCronCreatorAuthorityCapabilityResolver({
-          capability,
-          runId: "other-run",
-          resolve,
-          run: () => createOpenClawCodingTools({ runId: "admitted-run", senderIsOwner: false }),
-        });
-        expect(executableNames(wrongRunTools)).not.toContain("automations");
-        expect(
-          vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority,
-        ).toBeUndefined();
-
-        const cronCreatorToolAllowlistRef: CronCreatorToolAllowlistEntry[] = [];
-        const admittedTools = runWithCronCreatorAuthorityCapabilityResolver({
-          capability,
-          runId: "admitted-run",
-          resolve,
-          run: () =>
-            createOpenClawCodingTools({
-              runId: "admitted-run",
-              senderIsOwner: false,
-              cronCreatorToolAllowlistRef,
-            }),
-        });
-        const admittedToolNames = executableNames(admittedTools);
-        expect(admittedToolNames).toContain("automations");
-        expect(admittedToolNames).not.toContain("gateway");
-        expect(admittedToolNames).not.toContain("nodes");
-        expect(admittedToolNames).not.toContain("openclaw");
-        // The granted run may schedule only what it can run itself, never a stub.
-        const captured = cronCreatorToolAllowlistRef.map((entry) =>
-          typeof entry === "string" ? entry : entry.name,
-        );
-        expect(captured).toContain("automations");
-        expect(captured).not.toContain("gateway");
-        expect(captured).not.toContain("nodes");
-        expect(captured).not.toContain("intent");
-        expect(captured).not.toContain(PLUGIN_OWNER_ONLY);
-        retainedResolver =
-          vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.resolveCronCreatorToolAuthority;
-        expect(retainedResolver).toEqual(expect.any(Function));
-        await expect(retainedResolver!()).resolves.toMatchObject({
-          provenance: { source: "final-executable-surface" },
-        });
-        await holdRun;
-      });
-
-      releaseRun?.();
-      await activeRun;
-      await expect(retainedResolver!()).rejects.toThrow(
-        "Configured MCP cron authority is no longer active for this run",
-      );
-      expect(
-        executableNames(createOpenClawCodingTools({ runId: "admitted-run", senderIsOwner: false })),
-      ).not.toContain("automations");
-      expect(resolve).toHaveBeenCalledTimes(1);
-    });
-
-    it("drops senderless Automations retention when exact authority aborts or errors", async () => {
-      const resolve = async () => ({
-        tools: ["read"],
-        provenance: { version: 1 as const, source: "final-executable-surface" as const },
-      });
-      const buildTools = (capability: ReturnType<typeof createCronCreatorAuthorityCapability>) =>
-        runWithCronCreatorAuthorityCapabilityResolver({
-          capability,
-          runId: "lifecycle-run",
-          resolve,
-          run: () => createOpenClawCodingTools({ runId: "lifecycle-run", senderIsOwner: false }),
-        });
-
-      const abortController = new AbortController();
-      const abortedCapability = createCronCreatorAuthorityCapability("lifecycle-run")!;
-      await runWithCronCreatorAuthorityCapability(
-        abortedCapability,
-        async () => {
-          expect(executableNames(buildTools(abortedCapability))).toContain("automations");
-          abortController.abort(new Error("run cancelled"));
-          expect(executableNames(buildTools(abortedCapability))).not.toContain("automations");
-        },
-        abortController.signal,
-      );
-      expect(abortedCapability.active).toBe(false);
-
-      const failedCapability = createCronCreatorAuthorityCapability("lifecycle-run")!;
-      await expect(
-        runWithCronCreatorAuthorityCapability(failedCapability, async () => {
-          expect(executableNames(buildTools(failedCapability))).toContain("automations");
-          throw new Error("run failed");
-        }),
-      ).rejects.toThrow("run failed");
-      expect(failedCapability.active).toBe(false);
-      expect(
-        executableNames(
-          createOpenClawCodingTools({ runId: "lifecycle-run", senderIsOwner: false }),
-        ),
-      ).not.toContain("automations");
-    });
   });
 });
