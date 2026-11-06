@@ -1,5 +1,4 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   SessionTranscriptDisplayDeltaResult,
   SessionTranscriptMessageByIdOptions,
@@ -17,14 +16,9 @@ import {
 } from "../../sessions/transcript-anchor-page.js";
 import type { TranscriptReadWindowOptions } from "../../sessions/transcript-read-window.js";
 import { isVisibleTranscriptRecord } from "../../sessions/transcript-visible-record.js";
-import {
-  readActiveMessagePositionRows,
-  resolveKeptPrefixStart,
-} from "./session-accessor.sqlite-active-message-positions.js";
-import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
+import { readActiveMessagePositionRows } from "./session-accessor.sqlite-active-message-positions.js";
 import type {
   SessionTranscriptRawDeltaLimits,
-  SessionTranscriptReadScope,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
 import { positionTranscriptDisplayEvents } from "./session-accessor.sqlite-display-position.js";
@@ -90,7 +84,7 @@ function retainHistoryWindowOwner(database: CurrentTranscriptProjection["databas
   historyWindowOwners.add(database);
 }
 
-function readBoundaryEvents(
+export function readBoundaryEvents(
   projection: CurrentTranscriptProjection,
   boundaries: Iterable<VisibleHistoryBoundary>,
 ): Map<number, TranscriptEvent> {
@@ -106,7 +100,7 @@ function readBoundaryEvents(
   );
 }
 
-function readVisibleHistoryRange(
+export function readVisibleHistoryRange(
   projection: CurrentTranscriptProjection,
   start: number,
   endExclusive: number,
@@ -697,56 +691,4 @@ export function readSessionTranscriptHistoryAnchorPageFromProjection(
     displaySource: history.displaySource,
     totalMessages: history.total,
   };
-}
-
-export type SessionTranscriptCompactionShadowPage = {
-  displaySource?: string;
-  /** `seq` is span-relative (1 = oldest shadowed row) so offset paging math is shared. */
-  events: SessionTranscriptMessageEvent[];
-  offset: number;
-  shadowedCount: number;
-};
-
-/**
- * Reads the rows a compaction summary replaced: from the previous compaction's kept prefix
- * (or the visible window start) up to this boundary's kept prefix. The kept prefix is
- * excluded because it still replays verbatim after the summary; only the summarized span
- * is shadowed. Unknown ids and reset boundaries resolve to undefined.
- */
-export function readSessionTranscriptCompactionShadowPage(
-  scope: SessionTranscriptReadScope,
-  options: { compactionId: string; maxMessages: number; offset: number },
-): SessionTranscriptCompactionShadowPage | undefined {
-  return withCurrentProjectionSnapshot(scope, (projection) => {
-    const history = resolveVisibleHistoryProjection(projection);
-    const index = history.boundaries.findIndex(
-      (candidate) => candidate.eventId === options.compactionId,
-    );
-    const boundary = history.boundaries[index];
-    if (!boundary) {
-      return undefined;
-    }
-    const previous = history.boundaries[index - 1];
-    const events = readBoundaryEvents(projection, previous ? [previous, boundary] : [boundary]);
-    const event = asOptionalRecord(events.get(boundary.eventSeq));
-    if (event?.type !== "compaction") {
-      return undefined;
-    }
-    const previousEvent = previous ? asOptionalRecord(events.get(previous.eventSeq)) : undefined;
-    const spanStart =
-      previous && previousEvent?.type === "compaction"
-        ? resolveKeptPrefixStart(projection, history, previous, previousEvent)
-        : 0;
-    const spanEnd = resolveKeptPrefixStart(projection, history, boundary, event);
-    const shadowedCount = Math.max(0, spanEnd - spanStart);
-    const offset = resolveIntegerOption(options.offset, 0, { min: 0, max: shadowedCount });
-    const maxMessages = resolveIntegerOption(options.maxMessages, 0, { min: 0 });
-    const endExclusive = spanEnd - offset;
-    const start = Math.max(spanStart, endExclusive - maxMessages);
-    const rows = readVisibleHistoryRange(projection, start, endExclusive, history);
-    for (const entry of rows) {
-      entry.seq -= spanStart;
-    }
-    return { displaySource: history.displaySource, events: rows, offset, shadowedCount };
-  });
 }

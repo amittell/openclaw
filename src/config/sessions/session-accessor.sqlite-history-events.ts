@@ -7,7 +7,7 @@ import type { SessionTranscriptMessageEventPage } from "./session-accessor.sqlit
 export {
   readSessionTranscriptCompactionShadowPage,
   type SessionTranscriptCompactionShadowPage,
-} from "./session-accessor.sqlite-history-query.js";
+} from "./session-accessor.sqlite-compaction-shadow-page.js";
 
 export function readSessionTranscriptHistoryEventPage(
   scope: SessionTranscriptReadScope,
