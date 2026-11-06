@@ -20,15 +20,10 @@ import type { AgentRunRequest } from "../../gateway/server-methods/agent-request
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
-import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
-import {
-  buildSubagentRestartRecoveryRoster,
-  SUBAGENT_RESTART_RECOVERY_INSTRUCTION,
-} from "../subagents/subagent-restart-recovery-prompt.js";
-import { TOOL_FAILURE_INSTRUCTION } from "../tool-outcome-instructions.js";
+import { buildSubagentRestartRecoveryRoster } from "../subagents/subagent-restart-recovery-prompt.js";
 import {
   runWithMainSessionRecoveryAdmission,
   type MainSessionRecoveryAdmission,
@@ -48,6 +43,7 @@ import {
   commitMainSessionRecovery,
   type MainSessionRecoveryStoreTarget,
 } from "./main-session-recovery-store.js";
+import { resolveRestartRecoveryResumeMessage } from "./main-session-restart-dispatch-resume-message.js";
 import {
   settleAcceptedRestartRecovery,
   settleRejectedRestartRecovery,
@@ -69,32 +65,6 @@ import {
   readInterruptedRunId,
 } from "./main-session-restart-recovery-shared.js";
 
-// Used only when a Gateway close recorded the "gateway_restart" cause. 10.7 made the shared
-// RESTART_RECOVERY_INTERRUPTION_NOTE cause-neutral, so this variant states the restart itself.
-const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
-  "Your previous turn was interrupted by a gateway restart while " +
-    "OpenClaw was waiting on tool/model work. " +
-    "Treat tool results marked interrupted, missing, or aborted as having an unknown outcome " +
-    "from the restart, not proof of tool failure. Verify what happened before repeating an action. " +
-    "The restart did not cancel the user's task. " +
-    "Continue from the existing transcript: check the current state, recover interrupted work, " +
-    "and finish the task without asking the user to repeat the request. " +
-    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
-);
-
-// Used whenever no restart is on record: an explicit operator recovery, a pre-upgrade
-// cycle, or any cycle without the "gateway_restart" cause. It never claims a restart.
-// Mirrors the restart variant above without claiming the restart.
-const INTERRUPT_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
-  "Your previous turn was interrupted while OpenClaw was waiting on tool/model work. " +
-    "Treat tool results marked interrupted, missing, or aborted as having an unknown outcome, " +
-    "not proof of tool failure. Verify what happened before repeating an action. " +
-    "The interruption did not cancel the user's task. " +
-    "Continue from the existing transcript: check the current state, recover interrupted work, " +
-    "and finish the task without asking the user to repeat the request. " +
-    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
-);
-
 const RESTART_SAFE_TOOLS_NOTICE =
   "For this turn only, the tool surface has been narrowed to replay-safe tools as a " +
   "recovery precaution. Use the tools that are available to report status or continue " +
@@ -107,10 +77,7 @@ function buildResumeMessage(
   cause?: MainRestartRecoveryCause,
 ): string {
   const sanitizedPendingText = sanitizePendingFinalDeliveryText(pendingFinalDeliveryText);
-  const resumeMessage =
-    cause === "gateway_restart"
-      ? RESTART_RECOVERY_RESUME_MESSAGE
-      : INTERRUPT_RECOVERY_RESUME_MESSAGE;
+  const resumeMessage = resolveRestartRecoveryResumeMessage(cause);
   const instructions = forceRestartSafeTools
     ? `${resumeMessage}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
     : resumeMessage;
