@@ -357,6 +357,7 @@ const runtimeConsumers = [
   ...[
     "src/gateway/gateway-active-memory.test.ts",
     "src/gateway/gateway-concurrent-streams.test.ts",
+    "src/gateway/gateway.scheduled-dispatch-exec.test.ts",
     "src/gateway/gateway.sessions-send-recovery.test.ts",
   ].map((file) => ({
     file,
