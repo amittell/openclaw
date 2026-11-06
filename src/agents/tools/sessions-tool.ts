@@ -96,6 +96,7 @@ async function resolvePatchTarget(
   opts: SessionsToolOptions,
   sessionKey: string | undefined,
   callGateway: AgentToolGatewayRequestCaller,
+  nonOwnerAssignment = false,
 ): Promise<{
   agentId: string;
   cfg: OpenClawConfig;
@@ -155,7 +156,7 @@ async function resolvePatchTarget(
       agentId !== requesterAgentId && !parseAgentSessionKey(resolved.key)
         ? `agent:${agentId}:${resolved.key}`
         : resolved.key;
-    const access = await resolveSessionToolAccess({
+    const accessRequest = {
       action: "status",
       requesterSessionKey: context.effectiveRequesterKey,
       mainSessionKey: context.mainSessionKey,
@@ -164,9 +165,12 @@ async function resolvePatchTarget(
       targetAgentId: agentId,
       targetSessionKey: resolved.key,
       requesterOwned: resolved.requesterOwned,
-      visibility: context.sessionVisibility,
       a2aPolicy: context.a2aPolicy,
       callGateway,
+    } as const;
+    const access = await resolveSessionToolAccess({
+      ...accessRequest,
+      visibility: context.sessionVisibility,
     });
     if (!access.allowed) {
       throw new ToolAuthorizationError(
@@ -175,6 +179,30 @@ async function resolvePatchTarget(
           targetSessionKey: resolved.displayKey,
         }),
       );
+    }
+    // Fork rule (2026-10-12): an explicit non-owner turn may reassign its own session and the
+    // sessions it spawned, never wider than `tree`. #154239 let it reassign any visible session,
+    // and the default visibility (`all`) makes every session on the Gateway visible, other
+    // agents' included. Checked on the resolved target (the current session by key or id never
+    // reaches here) and before the owner write; `self` is already narrower.
+    if (nonOwnerAssignment && context.sessionVisibility !== "self") {
+      const treeAccess = await resolveSessionToolAccess({ ...accessRequest, visibility: "tree" });
+      if (!treeAccess.allowed) {
+        // A failed lineage lookup is not a verdict on the target: a retired caller reports its
+        // own authority error, as the owner write would, and a live one the lookup failure.
+        if (treeAccess.reasonCode.startsWith("session_ownership_lookup_failed")) {
+          captureGatewayToolCallerAssertion()?.("sessions.assignOwner");
+          throw new ToolAuthorizationError(
+            formatSessionToolAccessDenial(treeAccess, {
+              action: "status",
+              targetSessionKey: resolved.displayKey,
+            }),
+          );
+        }
+        throw new ToolAuthorizationError(
+          "Non-owner callers can assign an owner only for the current session or a session it spawned",
+        );
+      }
     }
   }
   return {
@@ -391,6 +419,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
           opts,
           readToolStringParam(params, "sessionKey"),
           gatewayRequest,
+          opts.senderIsOwner === false,
         );
         const result = await gatewayRequest<SessionsAssignOwnerResult>({
           method: "sessions.assignOwner",

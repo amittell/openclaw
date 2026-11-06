@@ -57,16 +57,40 @@ type Outcome = "allowed" | "non-owner" | "visibility";
 const REFUSAL: Record<Exclude<Outcome, "allowed">, RegExp> = {
   "non-owner":
     /Non-owner callers can assign an owner only for the current session or a session it spawned/,
-  visibility: /visibility is restricted\. Set tools\.sessions\.visibility=all/,
+  visibility: /visibility is restricted|Agent-to-agent status is disabled/,
 };
 
-const VISIBILITY: Array<{ visibility: string; tools: OpenClawConfig["tools"] }> = [
-  { visibility: "default (all)", tools: undefined },
-  { visibility: "agent", tools: { sessions: { visibility: "agent" } } },
+// `hidden` is what the configured visibility refuses for every caller, owner or not.
+const VISIBILITY: Array<{
+  visibility: string;
+  tools: OpenClawConfig["tools"];
+  hidden: TargetName[];
+}> = [
+  { visibility: "default (all)", tools: undefined, hidden: [] },
+  {
+    visibility: "all with agent-to-agent disabled",
+    tools: { sessions: { visibility: "all" }, agentToAgent: { enabled: false } },
+    hidden: ["otherAgent"],
+  },
+  { visibility: "agent", tools: { sessions: { visibility: "agent" } }, hidden: ["otherAgent"] },
+  {
+    visibility: "tree",
+    tools: { sessions: { visibility: "tree" } },
+    hidden: ["sameAgentKey", "sameAgentSessionId", "otherAgent"],
+  },
+  {
+    visibility: "self",
+    tools: { sessions: { visibility: "self" } },
+    hidden: ["spawnedChild", "sameAgentKey", "sameAgentSessionId", "otherAgent"],
+  },
 ];
 
-function expectedOutcome(senderIsOwner: boolean, visibility: string, target: TargetName): Outcome {
-  if (visibility === "agent" && target === "otherAgent") {
+function expectedOutcome(
+  senderIsOwner: boolean,
+  hidden: TargetName[],
+  target: TargetName,
+): Outcome {
+  if (hidden.includes(target)) {
     return "visibility";
   }
   return senderIsOwner || OWN_TREE.has(target) ? "allowed" : "non-owner";
@@ -189,12 +213,12 @@ describe("sessions assign_owner reach from a channel turn", () => {
   });
 
   it.each(
-    VISIBILITY.flatMap(({ visibility, tools }) =>
-      [false, true].map((senderIsOwner) => ({ visibility, tools, senderIsOwner })),
+    VISIBILITY.flatMap(({ visibility, tools, hidden }) =>
+      [false, true].map((senderIsOwner) => ({ visibility, tools, hidden, senderIsOwner })),
     ),
   )(
     "with visibility $visibility, senderIsOwner=$senderIsOwner reassigns only what the rule allows",
-    async ({ visibility, tools, senderIsOwner }) => {
+    async ({ tools, hidden, senderIsOwner }) => {
       await withChannelTurnFixture(tools, async (cfg) => {
         const outcomes: Record<string, Outcome> = {};
         for (const target of Object.keys(TARGETS) as TargetName[]) {
@@ -232,7 +256,7 @@ describe("sessions assign_owner reach from a channel turn", () => {
           Object.fromEntries(
             (Object.keys(TARGETS) as TargetName[]).map((target) => [
               target,
-              expectedOutcome(senderIsOwner, visibility, target),
+              expectedOutcome(senderIsOwner, hidden, target),
             ]),
           ),
         );
