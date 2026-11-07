@@ -48,6 +48,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
   // loaded; a bounded read after the compaction no longer holds them.
   private countShadowedEntries(firstKeptEntryId: string): number {
     const branch = this.appendParentId === null ? [] : this.getBranch(this.appendParentId);
+    // SAFETY: the count reads only id, type and firstKeptEntryId, which both entry shapes share.
     return countCompactionShadowedEntries(branch as CoreSessionTreeEntry[], firstKeptEntryId);
   }
 
