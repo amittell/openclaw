@@ -6,6 +6,7 @@ import {
 import type { AgentMessage } from "../runtime/index.js";
 
 const MAX_RECENT_TURN_TEXT_CHARS = 600;
+const MAX_PRESERVED_TOOL_RESULT_CHARS = 160;
 
 function formatNonTextPlaceholder(content: unknown): string | null {
   if (content == null || typeof content === "string") {
@@ -52,9 +53,15 @@ export function formatContextMessage(message: AgentMessage): string | null {
   if (!rendered) {
     return null;
   }
+  // Tool output is bulk the summary already distills; keep only a head excerpt
+  // so it cannot crowd generated facts out of the bounded artifact.
+  const limit =
+    message.role === "toolResult" ? MAX_PRESERVED_TOOL_RESULT_CHARS : MAX_RECENT_TURN_TEXT_CHARS;
   const trimmed =
-    rendered.length > MAX_RECENT_TURN_TEXT_CHARS
-      ? `${truncateUtf16Safe(rendered, MAX_RECENT_TURN_TEXT_CHARS)}...`
-      : rendered;
+    rendered.length <= limit
+      ? rendered
+      : message.role === "toolResult"
+        ? `${truncateUtf16Safe(rendered, limit)} [${rendered.length - limit} more chars omitted at compaction]`
+        : `${truncateUtf16Safe(rendered, limit)}...`;
   return `- ${roleLabel}: ${trimmed}`;
 }
