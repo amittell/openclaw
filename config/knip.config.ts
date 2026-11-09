@@ -877,6 +877,11 @@ const config = {
     "src/agents/model-auth-runtime.ts": ["nsExports"],
     "src/agents/model-auth-runtime-shared.ts": ["nsExports"],
     "src/agents/prepared-model-runtime.ts": ["nsExports"],
+    // Module-global reset helpers exist only to isolate the restart-trace and
+    // healthz-shutdown-log singletons between focused gateway tests; there is
+    // no production caller, but the state they reset is production state.
+    "src/gateway/restart-trace.ts": ["exports"],
+    "src/gateway/server-http.ts": ["exports"],
   },
   workspaces: {
     ".": {

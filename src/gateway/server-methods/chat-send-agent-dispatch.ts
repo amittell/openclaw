@@ -38,6 +38,7 @@ import { broadcastChatDelta } from "./chat-broadcast.js";
 import type { StartChatDispatchParams } from "./chat-send-agent-dispatch.types.js";
 import { scheduleChatDashboardSessionTitle } from "./chat-send-background.js";
 import { readChatSendReplyPayload } from "./chat-send-command-replies.js";
+import { bindChatSendCompletedTurn } from "./chat-send-completed-turn.js";
 import {
   createChatSendDispatchErrorLifecycle,
   formatReturnedAgentErrors,
@@ -46,6 +47,7 @@ import {
   finalizeAcceptedChatSendMessageInjection,
   settleChatSendMessageInjection,
 } from "./chat-send-message-injection.js";
+import { createProviderLoginAuthorityAssertion } from "./chat-send-provider-login-authority.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
 import { createChatSendReplyDispatch } from "./chat-send-reply-dispatch.js";
 import { finalizeChatSendDispatchedReplies } from "./chat-send-reply-finalization.js";
@@ -110,6 +112,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     sessionKey,
   } = session;
   const { clientInfo, p, supportsTaskSuggestions } = request;
+  const turnTarget = { agentId, expectedSessionId: admittedSessionId, sessionKey, storePath };
   const {
     accountId,
     ctx,
@@ -422,12 +425,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 onTranscriptStartPreparation: () => diagnostics.scope("snapshot")?.finish,
                 abortSignal: activeRunAbort.controller.signal,
                 getProviderLoginConfig: context.getRuntimeConfig,
-                assertProviderLoginAuthority: () => {
-                  client?.connectionSignal?.throwIfAborted();
-                  if (client?.invalidated || !client?.connect.scopes?.includes("operator.admin")) {
-                    throw new Error("Provider login authority is no longer active.");
-                  }
-                },
+                assertProviderLoginAuthority: createProviderLoginAuthorityAssertion(client),
                 // Retain this input identity while followup/collect owns its execution.
                 onFollowupQueueDisposition: queuedFollowup.onQueueDisposition,
                 onQueuedFollowupReplyBatch: queuedFollowup.onQueuedFollowupReplyBatch,
@@ -624,6 +622,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   activeRunAbort.entry?.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
+              recordCompletedTurn: bindChatSendCompletedTurn(context, userTurnRecorder, turnTarget),
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({

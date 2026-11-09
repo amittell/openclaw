@@ -115,6 +115,7 @@ function shouldUseWhatsAppStickerMarker(input: ResponsesInputItem[]) {
     const fenceEnd = fenceStart >= 0 ? prompt.indexOf("```", fenceStart + 7) : -1;
     if (fenceStart >= 0 && fenceEnd >= 0) {
       try {
+        // SAFETY: all fields are optional and the parse is inside a try; malformed JSON throws and is caught.
         const value = JSON.parse(prompt.slice(fenceStart + 7, fenceEnd)) as {
           payload?: { kind?: unknown };
         };
@@ -218,6 +219,7 @@ export function findNamedToolDefinition(
     return null;
   }
   if (!Array.isArray(value)) {
+    // SAFETY: the guards above already excluded null and non-objects, and this branch excludes arrays.
     const record = value as Record<string, unknown>;
     if (record.name === name || record.tool === name || record.functionName === name) {
       return record;
@@ -309,7 +311,7 @@ export function extractSessionStatusSessionKey(
   return (
     normalizeOptionalString(
       details && typeof details === "object"
-        ? (details as { sessionKey?: unknown }).sessionKey
+        ? (details as { sessionKey?: unknown }).sessionKey // SAFETY: object-checked above.
         : undefined,
     ) ??
     normalizeOptionalString(toolJson?.sessionKey) ??

@@ -106,7 +106,13 @@ export function registerParentRestartRecoveryCases(harness: ParentRestartRecover
         updatedAt: Date.now() - 10_000,
         status: "interrupted",
         abortedLastRun: true,
-        mainRestartRecovery: { cycleId: "parent-cycle", revision: 1, chargedAttempts: 0 },
+        // Gateway close marked this row, so its cycle records the restart.
+        mainRestartRecovery: {
+          cycleId: "parent-cycle",
+          revision: 1,
+          chargedAttempts: 0,
+          cause: "gateway_restart",
+        },
         restartRecoveryRuns: fixture.restartRecoveryRuns,
         lifecycleRunId: fixture.lifecycleRunId,
       },

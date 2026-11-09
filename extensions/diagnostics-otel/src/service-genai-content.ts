@@ -14,9 +14,6 @@ import type {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   MAX_OTEL_CONTENT_ARRAY_ITEMS,
-  MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
-  createOtelContentRedactor,
-  type OtelContentRedactor,
   normalizeOtelContentValue,
   safeJsonString,
 } from "./service-content-normalization.js";
@@ -162,13 +159,6 @@ function redactInternalReasoningParts(value: unknown): unknown {
     for (const field of INTERNAL_REASONING_PART_FIELDS) {
       delete redacted[field];
     }
-    if (
-      part.type === "image" &&
-      typeof redacted.data === "string" &&
-      redacted.data.length > MAX_OTEL_CONTENT_ATTRIBUTE_CHARS
-    ) {
-      delete redacted.data;
-    }
     return redacted;
   });
 }
@@ -280,13 +270,15 @@ function normalizeGenAiToolDefinitions(value: unknown) {
 
 function assignJsonAttribute(
   attributes: Record<string, string | number | boolean>,
-  key: string,
+  keys: readonly string[],
   value: unknown,
-  redact?: OtelContentRedactor,
 ): void {
-  const json = safeJsonString(value, redact);
+  // Mirrored keys carry the same value; serialize and redact it once for all of them.
+  const json = safeJsonString(value);
   if (json) {
-    attributes[key] = json;
+    for (const key of keys) {
+      attributes[key] = json;
+    }
   }
 }
 
@@ -294,9 +286,8 @@ function assignOtelContentAttribute(
   attributes: Record<string, string | number | boolean>,
   key: string,
   value: unknown,
-  redact?: OtelContentRedactor,
 ): void {
-  const normalized = normalizeOtelContentValue(value, redact);
+  const normalized = normalizeOtelContentValue(value);
   if (normalized) {
     attributes[key] = normalized;
   }
@@ -327,42 +318,29 @@ export function assignOtelModelContentAttributes(
   // Provider-native thinking blocks are not user-visible model output. Keep only
   // a structural marker on compatibility attributes and omit them from semconv
   // message parts, whose reasoning schema requires exportable content.
-  const redact = createOtelContentRedactor();
   const redactedInput = redactInternalReasoningFromMessages(content?.inputMessages);
   const redactedOutput = redactInternalReasoningFromMessages(content?.outputMessages);
   const inputMessages = normalizeGenAiMessages(redactedInput, "user");
   if (inputMessages.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_INPUT_MESSAGES, inputMessages, redact);
-    if (attributes[ATTR_GEN_AI_INPUT_MESSAGES] !== undefined) {
-      attributes["input.value"] = attributes[ATTR_GEN_AI_INPUT_MESSAGES];
-    }
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_INPUT_MESSAGES, "input.value"], inputMessages);
     attributes["input.mime_type"] = "application/json";
   }
   const toolDefinitions = normalizeGenAiToolDefinitions(content?.toolDefinitions);
   if (toolDefinitions.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_TOOL_DEFINITIONS, toolDefinitions, redact);
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_TOOL_DEFINITIONS], toolDefinitions);
   }
   const outputMessages = normalizeGenAiMessages(redactedOutput, "assistant");
   if (outputMessages.length > 0) {
-    assignJsonAttribute(attributes, ATTR_GEN_AI_OUTPUT_MESSAGES, outputMessages, redact);
-    if (attributes[ATTR_GEN_AI_OUTPUT_MESSAGES] !== undefined) {
-      attributes["output.value"] = attributes[ATTR_GEN_AI_OUTPUT_MESSAGES];
-    }
+    assignJsonAttribute(attributes, [ATTR_GEN_AI_OUTPUT_MESSAGES, "output.value"], outputMessages);
     attributes["output.mime_type"] = "application/json";
   }
-  assignOtelContentAttribute(attributes, "openclaw.content.input_messages", redactedInput, redact);
+  assignOtelContentAttribute(attributes, "openclaw.content.input_messages", redactedInput);
   assignOtelContentAttribute(
     attributes,
     "openclaw.content.tool_definitions",
     content?.toolDefinitions,
-    redact,
   );
-  assignOtelContentAttribute(
-    attributes,
-    "openclaw.content.output_messages",
-    redactedOutput,
-    redact,
-  );
+  assignOtelContentAttribute(attributes, "openclaw.content.output_messages", redactedOutput);
 }
 
 export function assignOtelToolContentAttributes(

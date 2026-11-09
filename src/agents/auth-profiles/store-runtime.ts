@@ -4,6 +4,7 @@ export const {
   createAuthProfileStoreReadScope,
   createAuthProfileStoreReadScopeAsync,
   updateAuthProfileStoreWithLock,
+  loadAgentLocalAuthProfileStore,
   loadAuthProfileStore,
   loadAuthProfileStoreForRuntimeAsync,
   prepareAuthProfileProvider,

@@ -59,6 +59,10 @@ vi.mock("./external-cli-sync.js", async (importOriginal) => ({
     params.credential.authFlow === "external-cli",
   readExternalCliBootstrapCredential: () => null,
   resolveExternalCliAuthProfiles: () => [],
+  // external-auth.ts runs the fork's env-token sync through this module. Keep it
+  // inert so host env-backed tokens cannot leak into OAuth store tests; identity
+  // matches the real function's no-change result at that call site (`?? store`).
+  syncEnvBackedTokenCredentials: (store: unknown) => store,
 }));
 
 afterAll(() => {

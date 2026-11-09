@@ -82,6 +82,8 @@ message returns an error instead of exhausting a transcript worker. If an anchor
 page exceeds this limit, request a smaller `limit`. The tool's text and response
 byte caps still apply.
 
+After a compaction, the summary the model sees ends with a `[compaction checkpoint <id>: shadows N earlier entries]` line. N is counted when the compaction is written and stored with it, so every reader shows the same line; a compaction written before the count was stored shows `[compaction checkpoint <id>]`. Pass that id as `compactionId` to read the rows the summary replaced (from the previous compaction's kept tail up to this one's), with the same `offset`/`limit` paging and byte cap; the result adds `shadowedCount` and `returnedCount`, and `truncated` says whether the page was cut. An id that is not a compaction checkpoint is rejected with an error that says how to find one.
+
 Durably admitted inputs from `sessions_send` or the Gateway `agent` method
 appear separately in `pendingInputs`, not in transcript `messages`. Each row
 records `queued`, `cancelled`, or `interrupted`.

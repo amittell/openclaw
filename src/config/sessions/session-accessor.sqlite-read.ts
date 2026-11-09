@@ -15,6 +15,7 @@ import {
   runSqliteDeferredTransactionSync,
   runSqliteReadSnapshotSync,
 } from "../../infra/sqlite-transaction.js";
+import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
@@ -349,14 +350,14 @@ export function validatePreparedAssistantAppendSync(
   scope: SessionTranscriptReadScope,
   preparedParentId: string | null,
   admittedUserId?: string,
+  carriedQuestionAnswers?: readonly UserTurnTranscriptAdmissionReceipt[],
 ): number | null | undefined {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  const questionAnswers = captureSessionTranscriptQuestionAnswers(
-    database,
-    resolved.sessionId,
-    admittedUserId,
-  );
+  // An async append carries the answers its caller captured before the worker hop.
+  const questionAnswers =
+    carriedQuestionAnswers ??
+    captureSessionTranscriptQuestionAnswers(database, resolved.sessionId, admittedUserId)?.answers;
   return runSqliteDeferredTransactionSync(
     database.db,
     () =>
@@ -365,7 +366,7 @@ export function validatePreparedAssistantAppendSync(
         resolved.sessionId,
         preparedParentId,
         admittedUserId,
-        questionAnswers?.answers,
+        questionAnswers,
       )
         ? readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt
         : undefined,

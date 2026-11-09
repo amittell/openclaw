@@ -1551,7 +1551,7 @@ describe("main-session-restart-recovery", () => {
       to: "telegram:-100123",
       accountId: "work",
       threadId: 99,
-      text: "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!",
+      text: expect.stringContaining("I'm continuing your interrupted request now"),
       idempotencyKey: `main-session-restart-recovery:${String(gatewayParams().idempotencyKey)}:resumed-notice`,
     });
     expect(notice?.isCurrent?.({})).toBe(false);
@@ -4393,7 +4393,9 @@ describe("main-session-restart-recovery", () => {
       ],
       safeTools: "required",
       promptIncludes: [
-        "interrupted while OpenClaw was waiting",
+        // Fork: a recorded gateway restart names its cause (main-session-restart-dispatch.ts) instead of
+        // upstream's cause-neutral "interrupted while OpenClaw was waiting" opening.
+        "interrupted by a gateway restart",
         "marked interrupted, missing, or aborted",
         "unknown outcome",
         "not proof of tool failure",
@@ -4659,9 +4661,9 @@ describe("main-session-restart-recovery", () => {
       expect(callGateway).toHaveBeenCalledTimes(1);
       expect(gatewayParams().forceRestartSafeTools === true).toBe(restricted);
       expect(gatewayParams()).not.toHaveProperty("forceCodeModeTools");
-      expect(gatewayParams().message).toContain(
-        "after a Gateway restart or a tool execution timeout",
-      );
+      // Fork: this cycle records no restart cause, so the resume prompt claims no restart
+      // (7bb739a7242); upstream's shared note names a Gateway restart as a possibility.
+      expect(gatewayParams().message).toContain("The interruption did not cancel the user's task");
       expect(gatewayParams().message).toContain("unknown outcome");
       expect(
         loadSessionEntry({

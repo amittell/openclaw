@@ -107,11 +107,7 @@ export function renderAssistantRequestFailureCopy(
   if (facts.code === "incomplete_tool_call") {
     return "⚠️ The task couldn't finish. Some actions may have completed; check their results before continuing.";
   }
-  const reason =
-    facts.reason === "timeout" && typeof facts.status === "number" && facts.status >= 500
-      ? "server_error"
-      : facts.reason;
-  const copy = reason ? ASSISTANT_REQUEST_FAILURE_COPY[reason] : undefined;
+  const copy = facts.reason ? ASSISTANT_REQUEST_FAILURE_COPY[facts.reason] : undefined;
   if (copy) {
     return `⚠️ ${copy}`;
   }

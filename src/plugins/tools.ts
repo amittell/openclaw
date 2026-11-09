@@ -1,6 +1,7 @@
 /** Builds agent tools registered by plugins, preserving plugin scope around callbacks and descriptors. */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { compileGlobPatterns, matchesAnyGlobPattern } from "../agents/glob-pattern.js";
+import { gateOwnerOnlyPluginTool } from "../agents/owner-only-tool-stubs.js";
 import { normalizeToolPolicyName } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import { captureAgentWorkspaceReadiness } from "../agents/workspace-readiness.js";
@@ -698,7 +699,10 @@ function* resolvePluginToolsFromRegistry(
           reportError(entry, `plugin tool is malformed (${entry.pluginId}): ${inspected.error}`);
           continue;
         }
-        const tool = inspected.tool;
+        const tool = gateOwnerOnlyPluginTool(entry, inspected.tool, factoryContext, params.context);
+        if (!tool) {
+          continue;
+        }
         if (entry.declaredNames && !entry.declaredNames.has(toolName)) {
           const message = `plugin tool is undeclared (${entry.pluginId}): ${toolName}`;
           reportError(entry, message);

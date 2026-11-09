@@ -101,6 +101,17 @@ function matchKnownChannelMarkerFreeEnvelopePrefix(
   return options?.allowAmbiguousDirect ? match : null;
 }
 
+/**
+ * OpenClaw prefixes the user-role turns it generates for itself (restart
+ * recovery, stranded-reply retry, recovery continuation) with `[System]`. They
+ * instruct the agent and state nothing about the user, so they must never be
+ * stored or recalled as memories. Keep the marker byte-identical with
+ * `formatSystemTurnPrompt` in `src/sessions/system-turn-prompt.ts`.
+ */
+export function isSystemTurnPromptText(text: string): boolean {
+  return text.trimStart().startsWith("[System]");
+}
+
 export function looksLikeEnvelopeSludge(text: string): boolean {
   return (
     MARKER_HEADER_LINE_RE.test(text) ||

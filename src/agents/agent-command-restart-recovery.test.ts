@@ -4,6 +4,7 @@ import {
   getRestartRecoveryTerminalDeliveryEvidence,
   mergeRestartRecoveryTerminalDeliveryEvidence,
 } from "../config/sessions/restart-recovery-state.js";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   buildCurrentRunRestartRecoveryClaim,
   buildRestartRecoveryTerminalDeliveryEvidence,
@@ -39,6 +40,7 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       restartRecoveryDeliveryContext: undefined,
       restartRecoveryDeliveryMediaUrls: [],
       restartRecoveryDeliveryRunId: "media-run",
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: "media-run",
     });
   });
@@ -64,6 +66,8 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       ...mediaPolicy,
       restartRecoveryDeliveryContext: { channel: "telegram", to: "-100123", threadId: 1 },
       restartRecoveryDeliveryRunId: "recovery-run",
+      // Fork: the adopting run's generation owns the claim.
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
     });
   });
 
