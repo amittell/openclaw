@@ -14,10 +14,12 @@ import {
 } from "../../plugins/conversation-binding.js";
 import { withClaimingHookAdmission } from "../../plugins/hook-claim-admission.js";
 import { getGlobalPluginRegistry } from "../../plugins/hook-runner-global.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveCommandAuthorizationAsync } from "../command-auth.js";
 import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../reply-payload.js";
+import type { FastAbortResult } from "./abort.js";
 import {
   DispatchReplyOperationAbortedError,
   runWithDispatchAbortSignal,
@@ -34,6 +36,7 @@ import {
 } from "./dispatch-from-config.transcript.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
+import { holdReplyRunSuccessorAdmissionForCommandExchange } from "./reply-run-registry.js";
 import { extractShortModelName } from "./response-prefix-template.js";
 import { assertPreparedConversationBindingRouteCurrent } from "./session-conversation-binding.js";
 
@@ -168,26 +171,46 @@ export async function prepareDispatchOperation(state: PrepareDispatchOperationCo
       result: attachSourceReplyDeliveryMode({ queuedFinal, counts }),
     };
   };
-  const fastAbort = await fastAbortResolver({
-    ctx,
-    cfg,
-    isCommandTargetCurrent: params.replyOptions?.isCommandTargetCurrent,
-  });
-  if (fastAbort.handled) {
-    if (fastAbort.aborted || (fastAbort.stoppedSubagents ?? 0) > 0) {
-      state.markInboundDedupeReplayUnsafe();
-    }
-    return await finishFastCommand({
-      payload: {
-        text: formatAbortReplyTextResolver(
-          fastAbort.stoppedSubagents,
-          fastAbort.rejectionReason,
-          fastAbort.failedSubagents,
+  // The Stop's exchange is recorded at dispatcher settlement, after this returns. Once a
+  // stop request is recognized, and before Stop cancels anything, hold the session's next
+  // turn until then, so its user row is written after the Stop's rows (#194303).
+  const stopExchangeRecorded = createDeferredCore();
+  let fastAbort: FastAbortResult | undefined;
+  try {
+    fastAbort = await fastAbortResolver({
+      ctx,
+      cfg,
+      isCommandTargetCurrent: params.replyOptions?.isCommandTargetCurrent,
+      onAbortRequest: () =>
+        holdReplyRunSuccessorAdmissionForCommandExchange(
+          sessionKey,
+          stopExchangeRecorded.promise,
+          dispatcher.resolveFollowupAdmissionBarrierTimeoutPolicy?.(),
         ),
-      },
-      reason: "fast_abort",
-      logKind: "fast_abort",
     });
+    if (fastAbort.handled) {
+      if (fastAbort.aborted || (fastAbort.stoppedSubagents ?? 0) > 0) {
+        state.markInboundDedupeReplayUnsafe();
+      }
+      return await finishFastCommand({
+        payload: {
+          text: formatAbortReplyTextResolver(
+            fastAbort.stoppedSubagents,
+            fastAbort.rejectionReason,
+            fastAbort.failedSubagents,
+          ),
+        },
+        reason: "fast_abort",
+        logKind: "fast_abort",
+      });
+    }
+  } finally {
+    // Settled tasks run in order, so this follows the transcript mirror registered above.
+    if (fastAbort?.handled) {
+      registerReplyDispatcherSettledTask(dispatcher, () => stopExchangeRecorded.resolve());
+    } else {
+      stopExchangeRecorded.resolve();
+    }
   }
   if (/^\s*\/approve(?:@[^\s]+)?(?:\s|$)/i.test(ctx.commandText)) {
     const fastApprove = await (

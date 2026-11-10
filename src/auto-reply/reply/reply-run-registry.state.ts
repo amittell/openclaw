@@ -47,6 +47,9 @@ export type ReplyRunAdmissionBarrier = {
   sources: Map<OpenClawAgentDatabaseIdentity | undefined, ReplyRunAdmissionSource>;
 };
 
+/** A successor hold with no reply operation behind it, so no session rotation to carry. */
+type ReplyRunCommandExchangeHold = Pick<ReplyRunAdmissionBarrier, "settled" | "sources">;
+
 export type ReplyOperationAdmission = {
   lease?: SessionWorkAdmissionLease;
   readonly databaseIdentity?: OpenClawAgentDatabaseIdentity;
@@ -67,6 +70,7 @@ type ReplyRunState = {
   waitersByKey: Map<string, Set<ReplyRunWaiter>>;
   followupAdmissionBarriersByKey: Map<string, ReplyRunAdmissionBarrier>;
   successorAdmissionBarriersByKey: Map<string, ReplyRunAdmissionBarrier>;
+  commandExchangeHoldsByKey: Map<string, ReplyRunCommandExchangeHold>;
   sourceTurnByKey: Map<string, string>;
   evictOperationByOperation: WeakMap<ReplyOperation, () => void>;
   clearOperationByOperation: WeakMap<ReplyOperation, () => void>;
@@ -83,6 +87,7 @@ export const replyRunState = resolveGlobalSingleton<ReplyRunState>(REPLY_RUN_STA
   waitersByKey: new Map<string, Set<ReplyRunWaiter>>(),
   followupAdmissionBarriersByKey: new Map<string, ReplyRunAdmissionBarrier>(),
   successorAdmissionBarriersByKey: new Map<string, ReplyRunAdmissionBarrier>(),
+  commandExchangeHoldsByKey: new Map<string, ReplyRunCommandExchangeHold>(),
   sourceTurnByKey: new Map<string, string>(),
   evictOperationByOperation: new WeakMap(),
   clearOperationByOperation: new WeakMap(),
@@ -563,8 +568,38 @@ export function isReplyRunSuccessorAdmissionBlocked(sessionKey: string): boolean
   return Boolean(
     normalizedSessionKey &&
     !replyRunState.activeRunsByKey.has(normalizedSessionKey) &&
-    replyRunState.successorAdmissionBarriersByKey.has(normalizedSessionKey),
+    (replyRunState.successorAdmissionBarriersByKey.has(normalizedSessionKey) ||
+      replyRunState.commandExchangeHoldsByKey.has(normalizedSessionKey)),
   );
+}
+
+/**
+ * A fast /stop records its command exchange only once its reply is delivered, after its
+ * dispatch returned. Fence successor admission until then, within the delivery barrier's
+ * bound, so the next turn's user row follows the Stop's rows in the transcript.
+ */
+export function holdReplyRunSuccessorAdmissionForCommandExchange(
+  sessionKey: string | undefined,
+  exchange: PromiseLike<unknown>,
+  timeout?: number | ReplyFollowupAdmissionBarrierTimeoutPolicy,
+): void {
+  const key = normalizeOptionalString(sessionKey);
+  if (!key) {
+    return;
+  }
+  const holds = replyRunState.commandExchangeHoldsByKey;
+  const previous = holds.get(key)?.settled;
+  const settled = waitForReplyBarrierSettlement(exchange, timeout);
+  const hold = {
+    settled: previous ? Promise.all([previous, settled]).then(() => undefined) : settled,
+    sources: new Map(),
+  };
+  holds.set(key, hold);
+  void hold.settled.then(() => {
+    if (holds.get(key) === hold) {
+      holds.delete(key);
+    }
+  });
 }
 
 export function flushReplyOperationAfterClear(operation: ReplyOperation, sessionId: string): void {
