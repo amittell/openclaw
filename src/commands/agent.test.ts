@@ -2137,8 +2137,8 @@ describe("agentCommand", () => {
 
   it("uses explicit session keys for embedded runs", async () => {
     await useRealCommandSessionPersistence();
-    vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId }) =>
-      createDefaultAgentResult({ sessionId }),
+    vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId, provider, model }) =>
+      createDefaultAgentResult({ sessionId, provider, model }),
     );
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
@@ -2258,8 +2258,8 @@ describe("agentCommand", () => {
 
   it("scopes bare explicit session keys to the default agent for embedded runs", async () => {
     await useRealCommandSessionPersistence();
-    vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId }) =>
-      createDefaultAgentResult({ sessionId }),
+    vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId, provider, model }) =>
+      createDefaultAgentResult({ sessionId, provider, model }),
     );
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
