@@ -87,6 +87,7 @@ import {
 } from "./script-payload.js";
 import type { CronServiceDeps } from "./service/state.js";
 import { resolveCronAuthenticatedChannelRequester } from "./tools-allow-provenance.js";
+import { cronScriptReferencesMcp } from "./tools-allow.js";
 import { acquireCronScriptMcpTools, type CronScriptMcpTools } from "./trigger-script-mcp.js";
 import {
   parseScriptPayloadResult,
@@ -563,8 +564,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           if (!runtime.isCurrent()) {
             throw new PluginInstanceUnavailableError();
           }
-          // A script that never names MCP cannot reach it, so it starts no server.
-          if (/\bMCP\b/.test(params.script)) {
+          if (cronScriptReferencesMcp(params.script)) {
             const reservedToolNames = tools.map((tool) => tool.name);
             mcp = await withPluginRuntimeRegistryScope(selected.pluginRegistry, () =>
               selected.acquireMcpTools?.(authority, reservedToolNames),

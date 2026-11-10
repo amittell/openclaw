@@ -23,6 +23,7 @@ import type { CronEvent } from "../service/state.js";
 import { onTimer } from "../service/timer.test-support.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
+import { cronJobNeedsCreatorReauthorization } from "../tools-allow.js";
 import type { CronStoredJob } from "../types.js";
 import {
   getChannelPluginMock,
@@ -86,6 +87,14 @@ describe("scheduled account policy outcomes", () => {
       name: "DM account with malformed creator origin",
       accountId: "work",
       toolsAllow: ["read"],
+      fails: true,
+      ownerSessionKey: "agent:main:whatsapp:direct:sender",
+      callerOrigin: { kind: "external", channel: "" },
+    },
+    {
+      name: "DM no-tool job with malformed creator origin",
+      accountId: "work",
+      toolsAllow: [],
       fails: true,
       ownerSessionKey: "agent:main:whatsapp:direct:sender",
       callerOrigin: { kind: "external", channel: "" },
@@ -182,6 +191,9 @@ describe("scheduled account policy outcomes", () => {
         expect(tasks).toHaveLength(1);
         const expectedStatus = fails ? "error" : "ok";
         expect(persisted?.state.lastRunStatus).toBe(expectedStatus);
+        expect(cronJobNeedsCreatorReauthorization({ job })).toBe(
+          persisted?.state.lastError?.includes("no recorded creator channel") === true,
+        );
         expect(history.entries[0]).toMatchObject({
           status: expectedStatus,
           completionStatus: fails ? "failed" : "succeeded",
