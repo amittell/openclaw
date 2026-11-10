@@ -11,6 +11,7 @@ import {
 } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { loadPendingFinalDeliveryPayload } from "../registry/subagent-delivery-state.js";
+import { resolveSubagentDeliveryStatus } from "../registry/subagent-list.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
@@ -153,6 +154,32 @@ describe("persisted subagent requester wakes", () => {
       expect(currentCompletionRun(input).requesterSettleWake).toBeUndefined();
       expect(loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.cleanupHandled).toBe(
         false,
+      );
+    },
+  );
+
+  it.each([true, false])(
+    "keeps a private batch delivered only with a confirmed visible final (visible=%s)",
+    async (visible) => {
+      const input = armRequesterWake(records());
+      input.subagent.completionTarget = "parent";
+      persistOwner(input);
+      await mutateRequesterCompletionBatch({
+        entries: [input.subagent],
+        operation: {
+          kind: "settle",
+          outcome: {
+            delivered: true,
+            path: "direct",
+            ...(visible ? { requesterVisibleFinalDelivered: true as const } : {}),
+          },
+        },
+        assertCurrent: () => {},
+        databaseOptions: { database },
+      });
+      const stored = loadSubagentRegistryFromSqlite().get(input.subagent.runId);
+      expect(stored && resolveSubagentDeliveryStatus(stored)).toBe(
+        visible ? "delivered" : "consumed_privately",
       );
     },
   );

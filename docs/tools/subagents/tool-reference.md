@@ -457,7 +457,11 @@ A zero timeout reads a snapshot. `reason` is `completed`, `attention`,
 Waiting does not cancel execution or consume completion delivery.
 
 List entries include the native `runId`, child `sessionKey`, status, outcome,
-and delivery status. A yielded child remains `waiting` until its continuation.
+and delivery status. A
+[private parent completion](/tools/subagents/announce#private-parent-completion)
+whose final reply did not reach the source conversation reports
+`consumed_privately`, not `delivered`. A yielded child remains `waiting` until its
+continuation.
 For an external wait, its controlling parent can send a continuation with
 `sessions_send`; yielding itself does not schedule external work.
 

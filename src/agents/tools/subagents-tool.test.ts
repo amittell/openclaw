@@ -56,7 +56,10 @@ vi.mock("../subagents/registry/subagent-registry-publication.js", async (importO
     }) satisfies typeof actual.subscribeSubagentRunChanges,
   };
 });
-vi.mock("../subagents/registry/subagent-list.js", () => ({
+vi.mock("../subagents/registry/subagent-list.js", async (importOriginal) => ({
+  resolveSubagentDeliveryStatus: (
+    await importOriginal<typeof import("../subagents/registry/subagent-list.js")>()
+  ).resolveSubagentDeliveryStatus,
   readSubagentListSessionEntries: () => new Map(),
   buildSubagentList: () => ({
     total: owner.runs.length,
@@ -101,6 +104,19 @@ describe("subagents native run contract", () => {
     });
     expect(owner.listeners.size).toBe(0);
     expect(entry.delivery.status).toBe("pending");
+  });
+  it("reports private parent consumption without claiming user delivery", async () => {
+    const entry = run();
+    entry.execution = { status: "terminal", endedAt: 100, outcome: { status: "ok" } };
+    entry.delivery = { status: "delivered", consumedPrivately: true };
+    const result = await tool().execute("wait", {
+      action: "wait",
+      runIds: [entry.runId],
+      timeoutSeconds: 0,
+    });
+    expect(result.details).toMatchObject({
+      runs: [{ runId: entry.runId, deliveryStatus: "consumed_privately" }],
+    });
   });
   it("rechecks wait ownership without disclosing revoked results and reports suspended delivery", async () => {
     const entry = run();
