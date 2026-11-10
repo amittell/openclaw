@@ -1,4 +1,3 @@
-// Telegram plugin module implements request timeouts behavior.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Transformer } from "grammy";
 import {

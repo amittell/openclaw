@@ -1,4 +1,3 @@
-// Telegram plugin module implements dispatcher pool options behavior.
 import type { Agent } from "undici/index.js";
 import { TELEGRAM_CLIENT_TIMEOUT_BACKSTOP_SECONDS } from "./request-timeouts.js";
 
