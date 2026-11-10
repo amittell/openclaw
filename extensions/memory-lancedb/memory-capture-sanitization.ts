@@ -101,17 +101,6 @@ function matchKnownChannelMarkerFreeEnvelopePrefix(
   return options?.allowAmbiguousDirect ? match : null;
 }
 
-/**
- * OpenClaw prefixes the user-role turns it generates for itself (restart
- * recovery, stranded-reply retry, recovery continuation) with `[System]`. They
- * instruct the agent and state nothing about the user, so they must never be
- * stored or recalled as memories. Keep the marker byte-identical with
- * `formatSystemTurnPrompt` in `src/sessions/system-turn-prompt.ts`.
- */
-export function isSystemTurnPromptText(text: string): boolean {
-  return text.trimStart().startsWith("[System]");
-}
-
 export function looksLikeEnvelopeSludge(text: string): boolean {
   return (
     MARKER_HEADER_LINE_RE.test(text) ||
@@ -129,6 +118,10 @@ export function looksLikeEnvelopeSludge(text: string): boolean {
 
 // Matches injectTimestamp in src/auto-reply/reply/strip-inbound-meta.ts.
 const LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+
+export function stripLeadingTimestampPrefix(text: string): string {
+  return text.replace(LEADING_TIMESTAMP_PREFIX_RE, "");
+}
 
 // Group envelopes can name the room in the header and sender in the body
 // ("[Slack #general] Alice: text"). Preserve user labels such as "TODO:" unless

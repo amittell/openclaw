@@ -16,7 +16,7 @@ import {
   MEMORY_TABLE_NAME,
   quoteLanceSqlString,
 } from "./lancedb-schema.js";
-import { isSystemTurnPromptText } from "./memory-capture-sanitization.js";
+import { isSystemTurnPromptText } from "./memory-policy.js";
 
 type LanceDbModule = typeof import("@lancedb/lancedb");
 type LanceDbConnection = Awaited<ReturnType<LanceDbModule["connect"]>>;
