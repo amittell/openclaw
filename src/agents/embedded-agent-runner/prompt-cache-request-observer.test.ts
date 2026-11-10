@@ -220,6 +220,57 @@ describe("prompt cache request observer", () => {
   );
 
   it.each([
+    ["max_tokens", {}, "prefix-match"],
+    ["max_completion_tokens", {}, "prefix-match"],
+    ["max_output_tokens", {}, "prefix-match"],
+    ["max_completion_tokens", { temperature: 0.2 }, "parameters:temperature"],
+    ["max_completion_tokens", { instructions: "provider rewritten system" }, "system"],
+  ] as const)(
+    "does not attribute a drop to a re-clamped %s output cap (with %j: %s)",
+    (cap, replacement, expected) => {
+      const observer = createPromptCacheRequestObserver(
+        { sessionId: scopedKey(`output-cap-${cap}-${expected}`), streamStrategy: "test" },
+        () => {},
+      );
+      const payload = {
+        instructions: "original system",
+        tools: [{ type: "function", name: "read" }],
+        input: [{ role: "user", content: "first" }],
+        temperature: 1,
+      };
+      const measure = (body: unknown, cacheRead: number) => {
+        observer.onModelRequest(
+          { provider: "openai", id: "test-model", api: "openai-responses" },
+          { systemPrompt: "original system", messages: [] },
+        );
+        const { encoded: _encoded, ...fingerprint } = prepareProviderPrompt({
+          payload: body,
+          encode: true,
+        });
+        observer.onModelUsage(
+          {
+            cacheRead,
+            contextUsage: { state: "available", promptTokens: 10_000, totalTokens: 10_100 },
+          },
+          { scopeDigest: "same-scope", ...fingerprint },
+          { responseId: "resp-cache-fixture" },
+        );
+        return observer.getObservation();
+      };
+      measure({ ...payload, [cap]: 32_000 }, 22_560);
+      expect(measure({ ...payload, ...replacement, [cap]: 31_304 }, 0)).toMatchObject({
+        broke: true,
+        changes: null,
+        providerPrefix: expected,
+        dropCause:
+          expected === "prefix-match"
+            ? "provider-cache-reuse-lost:unchanged-prefix"
+            : `provider-input-change:${expected}`,
+      });
+    },
+  );
+
+  it.each([
     {
       name: "three healthy calls then one",
       turns: [[10_000, 10_000, 10_000], [10_000]],
