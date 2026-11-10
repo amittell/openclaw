@@ -55,7 +55,7 @@ import { startMemoryRecall } from "./recall-service.js";
 
 // Fork: test/memory-lancedb-system-turn-capture.test.ts reaches these through the plugin entry,
 // since root tests import only an extension's public surfaces.
-export { sanitizeForMemoryCapture, shouldCapture };
+export { capturableUserText, sanitizeForMemoryCapture, shouldCapture };
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),

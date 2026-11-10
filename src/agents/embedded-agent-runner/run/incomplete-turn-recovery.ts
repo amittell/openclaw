@@ -5,6 +5,7 @@ import {
 } from "@openclaw/ai/internal/shared";
 import { MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE } from "../../../llm/types.js";
 import { isTerminalAssistantError } from "../../../llm/utils/retry.js";
+import { formatSystemTurnPrompt } from "../../../sessions/system-turn-prompt.js";
 import { hasAcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import { isPreDispatchToolCallRejectionMessage } from "../../failover/message-patterns.js";
 import { resolveReplyCompletion, resolveReplyExpectation } from "../../reply-completion.js";
@@ -53,8 +54,11 @@ export const SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION =
 // Under message_tool_only delivery, text that never went through the message
 // tool is dropped by the channel layer: the user sees nothing. One bounded
 // continuation asks the model to actually deliver before the turn is accepted.
-export const SILENT_STOP_DELIVERY_RETRY_INSTRUCTION =
-  "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.";
+// It is a user-role turn OpenClaw writes itself, so it carries the [System]
+// marker that memory plugins use to keep such turns out of user memories.
+export const SILENT_STOP_DELIVERY_RETRY_INSTRUCTION = formatSystemTurnPrompt(
+  "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.",
+);
 
 type IncompleteTurnRecoveryParams = {
   provider?: string;

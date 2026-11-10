@@ -257,6 +257,10 @@ describe("memory-lancedb doctor migration", () => {
         id: "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3",
         text: "[Systemd] units always restart on failure",
       },
+      {
+        id: "c4c4c4c4-c4c4-4c4c-8c4c-c4c4c4c4c4c4",
+        text: "You wrote an answer but never delivered it: remember to resend the invoice.",
+      },
     ];
     const systemTurnRows = [
       {
@@ -266,6 +270,11 @@ describe("memory-lancedb doctor migration", () => {
       {
         id: "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2",
         text: "  [System] Continue from the recovered transcript and finish the interrupted work.",
+      },
+      {
+        // The silent-stop nudge as stored before it carried the [System] marker.
+        id: "d3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3d3",
+        text: "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.",
       },
     ];
     const connection = await lancedb.connect(getDbPath());
@@ -295,11 +304,11 @@ describe("memory-lancedb doctor migration", () => {
 
     await expect(migration.detectLegacyState(params)).resolves.toEqual({
       preview: [
-        `- Memory LanceDB: delete 2 memory rows captured from OpenClaw system-turn prompts at ${getDbPath()}`,
+        `- Memory LanceDB: delete 3 memory rows captured from OpenClaw system-turn prompts at ${getDbPath()}`,
       ],
     });
     await expect(migration.migrateLegacyState(params)).resolves.toEqual({
-      changes: ["Deleted 2 Memory LanceDB rows captured from OpenClaw system-turn prompts"],
+      changes: ["Deleted 3 Memory LanceDB rows captured from OpenClaw system-turn prompts"],
       warnings: [],
     });
     await expect(migration.detectLegacyState(params)).resolves.toBeNull();

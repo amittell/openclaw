@@ -87,12 +87,20 @@ const LEGACY_ENVELOPE_ROWS: RowCleanup = {
   matches: isLegacyEnvelopeContaminatedText,
 };
 
+// The embedded runner's silent-stop delivery nudge was sent without the
+// `[System]` marker, and its "never" matched a capture trigger, so stores hold it
+// as this exact text. Only an exact match is deleted; the nudge now carries the marker.
+const LEGACY_UNMARKED_SILENT_STOP_NUDGE =
+  "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.";
+
 // Capture used to accept OpenClaw's own `[System]` turns, such as the restart
 // recovery prompt, and recall then replayed them as facts about the user.
 const SYSTEM_TURN_ROWS: RowCleanup = {
   reason: "captured from OpenClaw system-turn prompts",
   kind: "system-turn",
-  matches: (text) => typeof text === "string" && isSystemTurnPromptText(text),
+  matches: (text) =>
+    typeof text === "string" &&
+    (isSystemTurnPromptText(text) || text === LEGACY_UNMARKED_SILENT_STOP_NUDGE),
 };
 
 async function scanMatchingRowIds(table: LanceDbTable, cleanup: RowCleanup): Promise<string[]> {

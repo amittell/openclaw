@@ -1,6 +1,11 @@
 // Core's generated system turns must never become memory-lancedb memories.
 import { describe, expect, it } from "vitest";
-import { sanitizeForMemoryCapture, shouldCapture } from "../extensions/memory-lancedb/index.js";
+import {
+  capturableUserText,
+  sanitizeForMemoryCapture,
+  shouldCapture,
+} from "../extensions/memory-lancedb/index.js";
+import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "../src/agents/embedded-agent-runner/run/incomplete-turn-recovery.js";
 import { TOOL_FAILURE_INSTRUCTION } from "../src/agents/tool-outcome-instructions.js";
 import { formatSystemTurnPrompt } from "../src/sessions/system-turn-prompt.js";
 
@@ -19,5 +24,15 @@ describe("memory-lancedb capture of core system turns", () => {
 
     expect(shouldCapture(prompt, options)).toBe(false);
     expect(shouldCapture(sanitizeForMemoryCapture(prompt), options)).toBe(false);
+  });
+
+  it("skips the embedded runner's silent-stop delivery nudge", () => {
+    // Its "never" matches a capture trigger; the turn reaches capture with a timestamp envelope.
+    for (const turn of [
+      SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
+      `[Mon 2026-11-09 23:55 EST] ${SILENT_STOP_DELIVERY_RETRY_INSTRUCTION}`,
+    ]) {
+      expect(capturableUserText(turn), turn).toBeUndefined();
+    }
   });
 });
