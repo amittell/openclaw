@@ -1,5 +1,7 @@
 import { ChildProcess, type MessageOptions, type SendHandle } from "node:child_process";
+import { Socket } from "node:net";
 import { PassThrough } from "node:stream";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createSpawnBrokerHost, type SpawnBrokerHost } from "./host.js";
@@ -267,3 +269,37 @@ it.each([
     expect(launchSettled).toBe(true);
   },
 );
+
+it("drains a pipe that arrives after a lost command retired its request", async () => {
+  const fixture = brokerFixture();
+  const { host, worker } = fixture;
+  worker.emit("message", { type: "ready", pid: worker.pid });
+  await host.ready();
+  const child = host.spawn("synthetic-command", [], { stdio: "pipe" }, (launch) => launch());
+  await fixture.sent("prepare-spawn");
+  worker.emit("message", { type: "prepared", id: child.requestId });
+  await fixture.sent("launch");
+
+  // The relay loses the command after granting launch, before the ownership receipt.
+  child.fail(new Error("synthetic cleanup identity lost"));
+  await child.waitForClose();
+  worker.emit("message", { type: "owned", id: child.requestId, pid: 41002 });
+  expect(native.childCleanup).toHaveBeenCalledOnce();
+
+  // The broker forgets an owned command only after every transferred fd is drained.
+  let drained: unknown;
+  void fixture.sent("output-drained").then((message) => {
+    drained = message;
+  });
+  const pipe = new Socket();
+  worker.emit("message", { type: "pipe", id: child.requestId, fd: 1 }, pipe);
+  await fixture.sent("pipe-received");
+  await nextTurn();
+  expect(pipe.destroyed).toBe(true);
+  expect(drained).toMatchObject({
+    type: "output-drained",
+    id: child.requestId,
+    fd: 1,
+    error: { message: "Spawn broker pipe arrived after its request retired" },
+  });
+});

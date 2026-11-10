@@ -1,0 +1,3 @@
+# Spawn broker orphan-pipe release regression: exact net test-line growth on this branch (upstream 35;
+# the fixture has no ready() helper here, so readiness is two inline lines).
+36
