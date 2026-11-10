@@ -214,7 +214,48 @@ describe("terminal resolution", () => {
 
       expect(resolved.action).toBe(action);
       expect(activateInternalPrompt.mock.calls).toEqual(
-        action === "retry" ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION]] : [],
+        action === "retry"
+          ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, { retryToolsAllow: ["message"] }]]
+          : [],
+      );
+    },
+  );
+
+  it.each([
+    { messageToolCallable: true, toolsAllow: undefined, harnessEnforces: true, nudged: true },
+    // A harness that does not report its tool surface falls back to the runtime allowlist.
+    { messageToolCallable: undefined, toolsAllow: undefined, harnessEnforces: true, nudged: true },
+    { messageToolCallable: undefined, toolsAllow: ["read"], harnessEnforces: true, nudged: false },
+    // Without a callable message tool the final text is private by design.
+    { messageToolCallable: false, toolsAllow: undefined, harnessEnforces: true, nudged: false },
+    { messageToolCallable: true, toolsAllow: undefined, harnessEnforces: false, nudged: false },
+  ])(
+    "retries undelivered text with only the message tool: callable $messageToolCallable, allow $toolsAllow, harness enforces $harnessEnforces",
+    async ({ messageToolCallable, toolsAllow, harnessEnforces, nudged }) => {
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "Undelivered answer" }],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: ["Undelivered answer"],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        ...(messageToolCallable === undefined ? {} : { messageToolCallable }),
+      });
+      const activateInternalPrompt = vi.fn();
+      const resolved = await resolveEmbeddedRunTerminal(
+        makeTerminalInput({
+          attempt,
+          attemptAssistant: assistant,
+          runParams: { sourceReplyDeliveryMode: "message_tool_only", toolsAllow },
+          sessionPromptState: { activateInternalPrompt },
+          harnessEnforcesToolPolicy: harnessEnforces,
+        }),
+      );
+
+      expect(resolved.action).toBe(nudged ? "retry" : "complete");
+      expect(activateInternalPrompt.mock.calls).toEqual(
+        nudged ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, { retryToolsAllow: ["message"] }]] : [],
       );
     },
   );

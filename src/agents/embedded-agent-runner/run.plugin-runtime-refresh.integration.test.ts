@@ -480,6 +480,10 @@ describe("plugin runtime refresh admission", () => {
         expect(mockedRunEmbeddedAttempt.mock.calls[2]?.[0]?.prompt).toBe(
           SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
         );
+        // Only the delivery retry is limited to the message tool.
+        expect(mockedRunEmbeddedAttempt.mock.calls.map(([attempt]) => attempt?.toolsAllow)).toEqual(
+          [undefined, undefined, ["message"]],
+        );
       }
       expect(result.didSendViaMessagingTool).not.toBe(true);
       expect(result.messagingToolSentMediaUrls ?? []).toEqual([]);

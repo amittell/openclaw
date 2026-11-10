@@ -16,6 +16,7 @@ import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assis
 import { AGENT_LANE_SUBAGENT } from "../../lanes.js";
 import type { ResolvedProviderAuth } from "../../model-auth.js";
 import { resolveReplyExpectation } from "../../reply-completion.js";
+import { isRuntimeToolAllowed } from "../../tool-policy-match.js";
 import { resolveSourceReplyDelivery } from "../delivery-evidence.js";
 import { log } from "../logger.js";
 import type { EmbeddedRunReplayState } from "../replay-state.js";
@@ -143,6 +144,8 @@ export async function resolveEmbeddedRunTerminal(input: {
   attemptAuthProfileStore: AuthProfileStore;
   apiKeyInfo: ResolvedProviderAuth | null;
   agentHarnessId: string;
+  /** The attempt's harness enforces a narrowed tool set, so a retry can be limited. */
+  harnessEnforcesToolPolicy: boolean;
   settledTurnFinalizationOutcome:
     | "not-attempted"
     | "answered"
@@ -418,6 +421,12 @@ export async function resolveEmbeddedRunTerminal(input: {
   const answersCallerInline =
     runParams.inputProvenance?.kind === "inter_session" &&
     runParams.inputProvenance.sourceTool === "sessions_send";
+  // As in stranded-reply recovery, the delivery retry may call only the message tool.
+  // Without a callable message tool the final text is private by design, and a harness
+  // that cannot enforce the narrowed set would fail the retry, so neither is nudged.
+  const messageOnlyRetryAvailable =
+    input.harnessEnforcesToolPolicy &&
+    (attempt.messageToolCallable ?? isRuntimeToolAllowed("message", runParams.toolsAllow));
   const silentStopDeliveryGap =
     runParams.sourceReplyDeliveryMode === "message_tool_only" &&
     !answersCallerInline &&
@@ -429,10 +438,13 @@ export async function resolveEmbeddedRunTerminal(input: {
     !terminalTimedOut &&
     !attempt.clientToolCalls &&
     !attempt.yieldDetected &&
-    !hasAttemptTerminalState(attempt);
+    !hasAttemptTerminalState(attempt) &&
+    messageOnlyRetryAvailable;
   if (silentStopDeliveryGap && retryState.silentStopNudges < MAX_SILENT_STOP_NUDGES) {
     retryState.silentStopNudges += 1;
-    sessionPromptState.activateInternalPrompt(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION);
+    sessionPromptState.activateInternalPrompt(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, {
+      retryToolsAllow: ["message"],
+    });
     log.warn(
       `silent-stop nudge: undelivered visible text under message_tool_only; ` +
         `retrying ${retryState.silentStopNudges}/${MAX_SILENT_STOP_NUDGES}: ` +

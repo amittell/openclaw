@@ -293,15 +293,16 @@ function isSupportedHarness(entry: {
   return entry.support.supported;
 }
 
+/** True when the harness enforces a restricted conversation tool set itself. */
+export function agentHarnessEnforcesConversationToolPolicy(harness: AgentHarness): boolean {
+  return harness.id === "openclaw" || harness.conversationToolPolicySupport === "exact";
+}
+
 export function assertPluginHarnessConversationToolPolicySupport(
   harness: AgentHarness,
   restricted: boolean,
 ): void {
-  if (
-    harness.id !== "openclaw" &&
-    restricted &&
-    harness.conversationToolPolicySupport !== "exact"
-  ) {
+  if (restricted && !agentHarnessEnforcesConversationToolPolicy(harness)) {
     throw new AgentHarnessPreflightError(
       `${harness.label} cannot enforce this conversation's tool policy. Use the embedded runtime or ask in the main conversation.`,
       {

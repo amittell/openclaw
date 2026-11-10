@@ -1,0 +1,2 @@
+# The silent-stop nudge: message-only retry rows, the no-message-tool and harness-enforcement gates, the run-loop retry tool set, and the prompt state that never widens it.
+57

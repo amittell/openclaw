@@ -467,6 +467,7 @@ async function runEmbeddedAttemptOwned(
       return {
         ...executionResult,
         codeModeEngaged: codeModeControlsEnabledForRun,
+        messageToolCallable: toolSearchRunPlan.capabilityToolNames.has("message"),
         providerRetryMaxRetries: providerRetry.maxRetries,
         providerRetryMaxDelayMs: providerRetry.maxRetryDelayMs,
         ...(catalogSession
