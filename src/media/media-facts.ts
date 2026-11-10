@@ -37,6 +37,8 @@ export type MediaFact = {
   hydrationSuppressed?: boolean;
   /** Run-only: this turn could not read the attachment. Never persisted, so later turns retry it. */
   unresolvedThisTurn?: boolean;
+  /** Attached from the replied-to message for inspection; not sent with the current message. */
+  quoted?: boolean;
 };
 
 export type MediaFactInput = {
@@ -406,6 +408,7 @@ function normalizeMediaFact<TInput extends MediaFactInput>(
     ...(workspaceDir ? { workspaceDir } : {}),
     ...(input.staged === true ? { staged: true } : {}),
     ...(input.hydrationSuppressed === true ? { hydrationSuppressed: true } : {}),
+    ...(input.quoted === true ? { quoted: true } : {}),
   };
 }
 

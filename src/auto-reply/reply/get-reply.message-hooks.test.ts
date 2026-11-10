@@ -223,6 +223,15 @@ describe("getReplyFromConfig message hooks", () => {
       label: "configured audio",
       harness: "claude-cli",
       mime: "audio/ogg",
+      quoted: false,
+      configuredAudio: true,
+      mode: "audio-and-files",
+    },
+    {
+      label: "quoted configured audio",
+      harness: "claude-cli",
+      mime: "audio/ogg",
+      quoted: true,
       configuredAudio: true,
       mode: "audio-and-files",
     },
@@ -230,12 +239,13 @@ describe("getReplyFromConfig message hooks", () => {
       label: "pasted text",
       harness: "codex",
       mime: "text/plain",
+      quoted: false,
       configuredAudio: false,
       mode: "files-only",
     },
   ])(
     "preprocesses model-locked $label before dispatch",
-    async ({ harness, mime, configuredAudio, mode }) => {
+    async ({ harness, mime, quoted, configuredAudio, mode }) => {
       const sessionKey = `agent:main:harness:${harness}:locked-media`;
       const preprocessingState = createLockedReplyPreprocessingState({
         sessionKey,
@@ -258,6 +268,7 @@ describe("getReplyFromConfig message hooks", () => {
             {
               path: mime === "text/plain" ? "/tmp/pasted-text-123.txt" : "/tmp/voice.ogg",
               contentType: mime,
+              quoted,
             },
           ],
         }),

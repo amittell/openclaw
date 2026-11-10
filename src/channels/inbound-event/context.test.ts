@@ -1,5 +1,6 @@
 // Inbound event context tests cover channel event context construction before routing.
 import { describe, expect, it, vi } from "vitest";
+import { hasAnyInboundAudio, hasInboundAudio } from "../../auto-reply/reply/inbound-media.js";
 import {
   buildChannelInboundEventContext,
   finalizeChannelInboundContext,
@@ -402,6 +403,24 @@ describe("buildChannelInboundEventContext", () => {
     });
     expect(ctx.CommandSource).toBeUndefined();
     expect(ctx.CommandAuthorized).toBe(false);
+  });
+
+  const voiceNote = { path: "/tmp/voice.ogg", contentType: "audio/ogg" };
+  it.each([
+    { name: "text", media: [], ownAudio: false },
+    {
+      name: "photo",
+      media: [{ path: "/tmp/photo.png", contentType: "image/png" }],
+      ownAudio: false,
+    },
+    { name: "voice note", media: [voiceNote], ownAudio: true },
+  ])("counts only own audio as inbound when replying to a voice note with $name", (params) => {
+    const ctx = buildTestInboundEventContext({
+      media: params.media,
+      supplemental: { quote: { id: "quote-1", senderAllowed: true, media: [voiceNote] } },
+    });
+    expect(hasInboundAudio(ctx)).toBe(params.ownAudio);
+    expect(hasAnyInboundAudio(ctx)).toBe(true);
   });
 
   it("filters supplemental context with channel visibility policy", async () => {
