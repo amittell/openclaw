@@ -14,6 +14,7 @@ import type {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   MAX_OTEL_CONTENT_ARRAY_ITEMS,
+  MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
   normalizeOtelContentValue,
   safeJsonString,
 } from "./service-content-normalization.js";
@@ -158,6 +159,13 @@ function redactInternalReasoningParts(value: unknown): unknown {
     // to visible text or tool calls. Preserve the visible part, not replay state.
     for (const field of INTERNAL_REASONING_PART_FIELDS) {
       delete redacted[field];
+    }
+    if (
+      part.type === "image" &&
+      typeof redacted.data === "string" &&
+      redacted.data.length > MAX_OTEL_CONTENT_ATTRIBUTE_CHARS
+    ) {
+      delete redacted.data;
     }
     return redacted;
   });

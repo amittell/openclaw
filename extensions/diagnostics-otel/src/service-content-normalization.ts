@@ -6,7 +6,7 @@ import {
   redactSensitiveText,
 } from "../api.js";
 
-const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
+export const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 export const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
 const MAX_OTEL_ERROR_MESSAGE_CHARS = 4 * 1024;
 const PRELOADED_OTEL_SDK_ENV = "OPENCLAW_OTEL_PRELOADED";
