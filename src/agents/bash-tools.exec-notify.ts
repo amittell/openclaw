@@ -43,7 +43,11 @@ export function prepareExecExitNotification(
   if (!owner) {
     return undefined;
   }
-  return captureSessionEventTarget(owner, targetKey).then(
+  // The completion continues its starting sender's work only on that turn's own route.
+  const route = session.notifyDeliveryContext;
+  const requester =
+    session.notifyRequester && route?.channel ? { ...session.notifyRequester, route } : undefined;
+  return captureSessionEventTarget(owner, targetKey, requester ? { requester } : {}).then(
     (target) => {
       session.notifySessionTarget = target;
     },

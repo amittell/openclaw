@@ -487,7 +487,9 @@ function resolveCommandAuthorizationState(
   const senderId = matchedSender ?? matchedCommandOwner ?? senderCandidates[0];
 
   const enforceOwner = Boolean(plugin?.commands?.enforceOwnerForCommands);
-  const senderIsOwnerByIdentity = Boolean(matchedSender);
+  // An event turn's sender is a retained requester restored only for their own tool policy.
+  // Owner authority on an event turn comes from a host-bound owner capability, never identity.
+  const senderIsOwnerByIdentity = Boolean(matchedSender) && ctx.InternalTurnSource !== "event";
   const senderIsOwnerByScope =
     isInternalMessageChannel(ctx.Provider) &&
     Array.isArray(ctx.GatewayClientScopes) &&

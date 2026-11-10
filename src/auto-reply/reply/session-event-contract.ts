@@ -9,6 +9,7 @@ import type {
   EmbeddedAgentRunPayload,
 } from "../../agents/embedded-agent-runner/result.types.js";
 import type { ResolvedToolPromptFinalizer } from "../../agents/resolved-tool-prompt.types.js";
+import type { ChatType } from "../../channels/chat-type.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -84,6 +85,23 @@ export type SessionEventTarget = {
   agentId?: string;
   sessionKey?: string;
 };
+
+/**
+ * The sender whose own turn started a producer, captured by the host at that turn, with the
+ * conversation facts their tool policy keys on. A completion restores it only on `route`; it
+ * stays within that turn's captured tool surface, which already carries the DM's own policy.
+ */
+export type SessionEventRequester = Readonly<{
+  route: DeliveryContext;
+  senderId: string;
+  senderE164?: string;
+  senderName?: string;
+  senderUsername?: string;
+  chatType?: ChatType;
+  /** Group policy selects its entry by these (a Discord guild and channel name). */
+  groupSpace?: string;
+  groupChannel?: string;
+}>;
 
 export type SessionEventOptions = {
   agentId: string;

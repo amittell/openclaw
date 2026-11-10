@@ -1,4 +1,5 @@
 import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -15,6 +16,7 @@ import {
   getSessionEventRuntimeConfig,
   readSessionEventTargetEnvironment,
   readSessionEventTargetOperatorAuthority,
+  readSessionEventTargetRequester,
   resolveSessionEventKey,
 } from "./session-event-target.js";
 import { setChannelSourceTurnId } from "./source-turn-id.js";
@@ -101,6 +103,27 @@ export function buildSessionEventContext(params: {
       ? `${occurrenceId}:readmission-${options.readmissionAttempt}`
       : occurrenceId,
   };
+  // A completion continues its requester's own work: restore the sender and the group facts
+  // their policy keys on, so the turn resolves that sender's current toolsBySender entry and
+  // group policy instead of the "*" entry. Only on the requester's exact route and conversation
+  // type; elsewhere the turn stays senderless. This grants nothing itself: the turn stays within
+  // the producer's captured tool surface, and never derives owner authority from it (command-auth).
+  const requester = readSessionEventTargetRequester(target);
+  if (
+    requester &&
+    ctx.ChatType &&
+    normalizeChatType(ctx.ChatType) === requester.chatType &&
+    channelRouteTargetsMatchExact({ left: deliveryContext, right: requester.route })
+  ) {
+    Object.assign(ctx, {
+      SenderId: requester.senderId,
+      SenderE164: requester.senderE164,
+      SenderName: requester.senderName,
+      SenderUsername: requester.senderUsername,
+      GroupSpace: requester.groupSpace,
+      GroupChannel: requester.groupChannel,
+    });
+  }
   const automation = options.scheduledAutomation;
   if (automation && !target.sessionId) {
     // The ordinary session writer owns creation; preserve the job's captured facts.

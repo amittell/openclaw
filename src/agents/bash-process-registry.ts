@@ -16,6 +16,7 @@ import type {
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
+import type { ExecCompletionRequester } from "./exec-completion-requester.js";
 
 const DEFAULT_JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MIN_JOB_TTL_MS = 60 * 1000; // 1 minute
@@ -66,6 +67,8 @@ export interface ProcessSession {
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
   notifyFromConversationTurn?: boolean;
+  /** Start-time sender for the completion's policy; cleared with the other notify facts. */
+  notifyRequester?: ExecCompletionRequester;
   notifySessionTarget?: SessionEventTarget;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;

@@ -47,6 +47,7 @@ import {
 import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.js";
 import { createCoreCodingTools } from "./core-coding-tools.js";
 import { applyDelegationCapability } from "./delegation-capability.js";
+import { resolveExecCompletionRequester } from "./exec-completion-requester.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveExecToolConfig } from "./lazy-exec-tool.js";
@@ -289,6 +290,7 @@ function* assembleOpenClawCodingTools(
             currentChannelId: options?.currentChannelId,
             currentThreadTs: options?.currentThreadTs,
             channelContext: options?.channelContext,
+            completionRequester: resolveExecCompletionRequester(options),
             accountId: options?.agentAccountId,
             approvalReviewerDeviceId: options?.approvalReviewerDeviceId,
             nonInteractiveApproval: options?.swarmCollector,

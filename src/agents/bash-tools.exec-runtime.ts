@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import path from "node:path";
 import { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { SessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import type { EventSessionRoutingPolicy } from "../infra/event-session-routing.js";
@@ -17,7 +15,6 @@ import {
   withExecRequestOwners,
   type ExecRequestOwner,
 } from "../infra/exec-request-context.js";
-import { findPathKey, mergePathPrepend } from "../infra/path-prepend.js";
 import { logWarn } from "../logger.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { withChildProcessOperation } from "../process/spawn-diagnostics.js";
@@ -71,6 +68,7 @@ import type {
 } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
+import type { ExecCompletionRequester } from "./exec-completion-requester.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { createSessionSlug } from "./session-slug.js";
@@ -196,22 +194,6 @@ export function resolveExecTarget(params: {
     selectedTarget: resolvedTarget,
     effectiveHost,
   };
-}
-
-/** Merges shell-discovered PATH entries into an exec environment. */
-export function applyShellPath(env: Record<string, string>, shellPath?: string | null) {
-  if (!shellPath) {
-    return;
-  }
-  const entries = normalizeStringEntries(shellPath.split(path.delimiter));
-  if (entries.length === 0) {
-    return;
-  }
-  const pathKey = findPathKey(env);
-  const merged = mergePathPrepend(env[pathKey], entries);
-  if (merged) {
-    env[pathKey] = merged;
-  }
 }
 
 /** Creates the short approval id shown in `/approve` prompts. */
@@ -446,6 +428,8 @@ export async function runExecProcess({
   notifyDeliveryContext?: DeliveryContext;
   /** The command was started by a conversation turn, not heartbeat or automation work. */
   notifyFromConversationTurn?: boolean;
+  /** Host-captured sender of that turn; its completion continues under their policy. */
+  notifyRequester?: ExecCompletionRequester;
   timeoutSec: number | null;
   /** Whether exec may return a supervised session for later continuation. */
   processContinuationAvailable?: boolean;
@@ -492,6 +476,7 @@ export async function runExecProcess({
       eventRouting: opts.eventRouting,
       notifyDeliveryContext: normalizeDeliveryContext(opts.notifyDeliveryContext),
       notifyFromConversationTurn: opts.notifyFromConversationTurn === true,
+      notifyRequester: opts.notifyRequester,
       notifyOnExit: opts.notifyOnExit,
       notifyOnExitEmptySuccess: opts.notifyOnExitEmptySuccess === true,
       exitNotified: false,
