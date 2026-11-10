@@ -170,7 +170,7 @@ describe("requester settle dispatch deadline", () => {
     { name: "consumed empty", pending: false, restart: false, silent: false },
     { name: "pending silent", pending: true, restart: false, silent: true },
     { name: "restart silent", pending: false, restart: true, silent: true },
-  ])("settles only consumed optional cohorts: $name", async ({ pending, restart, silent }) => {
+  ])("settles silent optional cohorts once: $name", async ({ pending, restart, silent }) => {
     vi.useFakeTimers();
     const child = settledChild();
     child.delivery = { status: pending ? "pending" : "delivered" };
@@ -221,17 +221,16 @@ describe("requester settle dispatch deadline", () => {
           }),
       );
     const required = pending || restart;
-    await expect(run()).resolves.toBe(!required);
+    // A successful silent settle turn consumes the findings once, owed or not.
+    await expect(run()).resolves.toBe(true);
     expect(startTurn).toHaveBeenCalledOnce();
-    expect(completeBatch).toHaveBeenCalledTimes(required ? 0 : 1);
+    expect(completeBatch).toHaveBeenCalledOnce();
     expect(deliver.mock.calls[0]?.[0].triggerMessage).toContain(
       required ? "child result" : "each child result was announced individually",
     );
-    if (!required) {
-      await vi.advanceTimersByTimeAsync(30_000);
-      await expect(run()).resolves.toBe(false);
-      expect(startTurn).toHaveBeenCalledOnce();
-    }
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(run()).resolves.toBe(false);
+    expect(startTurn).toHaveBeenCalledOnce();
   });
 
   it("queues a pause notice behind the requester's current turn and delivers it once", async () => {

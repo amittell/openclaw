@@ -250,17 +250,20 @@ export function createSubagentAnnounceSessionStore(
 
 // Required public outputs and optional result intake share both command runtimes.
 export const INTER_SESSION_REPLY_POLICY_CASES = [
-  ["agent:main:subagent:reply-required", "discord"],
+  // Completion provenance is optional unless its producer assigns an expectation.
+  ["agent:main:subagent:completion", "discord", undefined, true],
+  ["agent:main:subagent:child-result", "discord", true, false, "subagent_announce", "required"],
+  ["agent:main:subagent:settle-result", "discord", true, false, "subagent_settle", "required"],
   ["agent:main:subagent:optional-settle", "discord", true, true, "subagent_settle", "optional"],
   ["agent:main:direct:optional-settle", "webchat", true, true, "subagent_settle", "optional"],
   ["agent:main:direct:required-settle", "webchat", false, false, "subagent_settle", "required"],
   ["agent:main:direct:peer-result", "webchat", false, true, "sessions_send", "optional"],
-  ["agent:main:direct:reply-required", "webchat"],
+  ["agent:main:direct:completion", "webchat", undefined, true],
   ["agent:main:direct:private-settle", "telegram", true, true],
   ["agent:main:direct:private-announce", "telegram", true, true, "subagent_announce"],
   ["agent:main:direct:private-required", "telegram", true, false, "subagent_announce", "required"],
   ["agent:main:direct:private-peer-result", "telegram", true, false, "sessions_send"],
-  ["agent:main:telegram:direct:reply-required", "telegram"],
+  ["agent:main:telegram:direct:completion", "telegram", undefined, true],
   ["agent:main:telegram:group:optional", "telegram", undefined, true],
   ["agent:main:telegram:direct:delegated", "telegram", undefined, false, "sessions_send"],
   ["agent:main:telegram:group:delegated", "telegram", undefined, true, "sessions_send"],

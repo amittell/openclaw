@@ -279,7 +279,7 @@ export async function runTrustedClaudeCompletionForTest({
   expect(runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
     provider: "claude-cli",
     disableTools: false,
-    terminalReplyExpectation: "required",
+    terminalReplyExpectation: "optional",
   });
   expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
   const run = runCliAgentMock.mock.calls[0]?.[0] as RunCliAgentParams;

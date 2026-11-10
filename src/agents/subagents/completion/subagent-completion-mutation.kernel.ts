@@ -1,16 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
+import { loadDeliveryQueueEntryInDatabase } from "../../../infra/delivery-queue-sqlite-bound.js";
 import {
-  bindDeliveryQueueEntry,
-  loadDeliveryQueueEntryInDatabase,
-  upsertBoundDeliveryQueueEntryInDatabase,
-} from "../../../infra/delivery-queue-sqlite-bound.js";
-import {
-  prepareClaimedSessionDelivery,
   SESSION_DELIVERY_QUEUE_NAME,
   type QueuedSessionDelivery,
 } from "../../../infra/session-delivery-queue.records.js";
-import { resolveEventSessionKey } from "../../../routing/session-key.js";
 import type { OpenClawStateDatabase } from "../../../state/openclaw-state-db-contract.js";
 import {
   matchesSubagentChildSessionOwner,
@@ -50,22 +44,16 @@ import type {
   SubagentCompletionMutationResult,
   SubagentCompletionRecord,
 } from "./subagent-completion-mutation.types.js";
-import {
-  readSubagentCompletionQueueReceipt,
-  reconcileSubagentCompletionQueueReceipts,
-} from "./subagent-completion-queue-receipt.js";
 
 const SUSPENDED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 type CompletionMutation = {
   subagent: SubagentRunRecord;
-  queued?: QueuedSessionDelivery;
   retire?: boolean;
 };
 const noMutation = (applied: boolean | null): SubagentCompletionMutationResult => ({
   applied,
   records: [],
   retiredRunIds: [],
-  queueIds: [],
 });
 
 /** Decode the committed row on the worker. */
@@ -220,25 +208,7 @@ function prepareBlockedSubagentCompletion(
   } else {
     subagent.suppressCompletionDelivery = true;
   }
-  const text =
-    successful && !params.storeReplaced
-      ? `Subagent completion delivery is blocked: ${params.reason} (run ${subagent.runId})`
-      : null;
-  const queued = text
-    ? prepareClaimedSessionDelivery(
-        {
-          kind: "systemEvent",
-          sessionKey: resolveEventSessionKey(subagent.requesterSessionKey),
-          ...(subagent.requesterAgentId ? { agentId: subagent.requesterAgentId } : {}),
-          text,
-          ...(subagent.requesterOrigin ? { deliveryContext: subagent.requesterOrigin } : {}),
-          idempotencyKey: `subagent-completion-blocked:${subagent.runId}:generation:${generation}`,
-        },
-        0,
-        now,
-      )
-    : undefined;
-  return { subagent, queued };
+  return { subagent };
 }
 
 function commitCompletionMutations(
@@ -254,34 +224,17 @@ function commitCompletionMutations(
   const retiredRunIds = mutations
     .filter((mutation) => mutation.retire)
     .map(({ subagent }) => subagent.runId);
-  for (const { queued } of mutations) {
-    if (queued) {
-      upsertBoundDeliveryQueueEntryInDatabase(
-        bindDeliveryQueueEntry({
-          queueName: SESSION_DELIVERY_QUEUE_NAME,
-          entry: queued,
-          insertOnly: true,
-        }),
-        database,
-      );
-    }
-  }
   writeSubagentRunValuesInDatabase(
     database,
     rows.map(({ row }) => row),
     retiredRunIds,
   );
-  const queueIds = mutations.flatMap(({ queued }) => (queued ? [queued.id] : []));
   return {
     applied: true,
     records: rows.map(({ row, cleanupHandled }) =>
       decodeSubagentCompletionRecord(row, cleanupHandled),
     ),
     retiredRunIds,
-    queueIds,
-    ...(queueIds.length > 0
-      ? { queueReceipts: queueIds.map((id) => readSubagentCompletionQueueReceipt(database, id)) }
-      : {}),
   };
 }
 
@@ -430,11 +383,7 @@ function reconcileRequesterWake(
   params: Extract<SubagentCompletionMutation, { kind: "requesterWake" | "requesterBatch" }>,
 ): SubagentCompletionMutationResult {
   const committed = params.committed;
-  if (
-    !committed ||
-    committed.result.applied !== true ||
-    (params.kind === "requesterWake" && committed.result.queueIds.length !== 0)
-  ) {
+  if (!committed || committed.result.applied !== true) {
     throw new Error("Requester wake reconciliation requires its committed native receipt");
   }
   const result = noMutation(true);
@@ -502,17 +451,6 @@ function reconcileRequesterWake(
     // independent cleanup cannot be overwritten by the older acknowledgement.
     result.records.push(decodeSubagentCompletionRecord(row, expected.cleanupHandled));
   }
-  if (committed.result.queueIds.length > 0) {
-    const receipts = reconcileSubagentCompletionQueueReceipts(
-      database,
-      committed.result.queueIds,
-      committed.result.queueReceipts,
-    ).filter((receipt) => receipt.status === "pending");
-    result.queueIds = receipts.map(({ id }) => id);
-    if (receipts.length > 0) {
-      result.queueReceipts = receipts;
-    }
-  }
   return result;
 }
 
@@ -557,7 +495,6 @@ export function mutateSubagentCompletionInDatabase(
           applied: true,
           records: [decodeSubagentCompletionRecord(row, mutation.expected.cleanupHandled)],
           retiredRunIds: [],
-          queueIds: [],
         };
       }
       if (current.delivery.queueId !== mutation.queueId) {

@@ -331,7 +331,7 @@ describe("persisted subagent requester wakes", () => {
           await retry.run();
           expect(observed).toHaveBeenCalledOnce();
           expect(observed.mock.results[0]?.value).toEqual([undefined, undefined]);
-          expect(readCompletionSystemEvents(database)).toHaveLength(2);
+          expect(readCompletionSystemEvents(database)).toEqual([]);
           database = await reopenCompletionFixtureOwners();
           for (const input of inputs) {
             expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toBeUndefined();
@@ -679,9 +679,7 @@ describe("persisted subagent requester wakes", () => {
         expect(subagentRuns.get(second.subagent.runId)?.requesterSettleWake).toEqual(
           ["retired", "blocked", "blocked retirement"].includes(change) ? undefined : newerWake,
         );
-        expect(readCompletionSystemEvents(database)).toHaveLength(
-          (blocked ? 1 : 0) + (delivered ? 0 : 2),
-        );
+        expect(readCompletionSystemEvents(database)).toEqual([]);
       } finally {
         process.env.OPENCLAW_STATE_DIR = originalStateDir;
         publication.restore();

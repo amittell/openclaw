@@ -1937,7 +1937,9 @@ describe("qa mock openai server", () => {
       const payload = await expectNonStreamingResponsesJson(server, { tools, input });
       if (terminalCase === "visible") {
         expect(outputItems(payload).some((item) => item.type === "function_call")).toBe(false);
-        expect(outputText(payload)).toBe("NO_REPLY");
+        expect(outputText(payload)).toBe(
+          "The child run ended. Report its outcome to the requester.",
+        );
         return;
       }
       const messageCall = outputToolCall(payload, "message");

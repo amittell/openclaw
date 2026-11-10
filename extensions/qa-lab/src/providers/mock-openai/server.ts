@@ -942,10 +942,9 @@ async function buildResponsesPayload(
       }
       return buildAssistantEvents(visibleRepresentation);
     }
-    // The direct delivery fallback owns visible, restart, and sanitized fallback
-    // results. Use explicit silence so generic empty-response recovery cannot
-    // replay the historical spawn before that fallback runs.
-    return buildAssistantEvents("NO_REPLY");
+    // Successful parent silence settles quietly. Leave a visible answer unsent so
+    // direct-message fallback must deliver the child result or failure notice.
+    return buildAssistantEvents("The child run ended. Report its outcome to the requester.");
   }
   const terminalWorkerCase = terminalTurn?.kind === "worker" ? terminalTurn.caseName : undefined;
   if (terminalWorkerCase) {

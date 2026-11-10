@@ -62,11 +62,10 @@ export function resolveCommandReplyExpectation(params: {
   }
   const provenance = params.opts.inputProvenance;
   if (
-    params.opts.privateCompletion &&
     provenance?.kind === "inter_session" &&
     (provenance.sourceTool === "subagent_announce" || provenance.sourceTool === "subagent_settle")
   ) {
-    // Private completion processing consumes findings; it does not owe another answer.
+    // Completion processing is optional unless the caller assigned a reply obligation above.
     return "optional";
   }
   if (

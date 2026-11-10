@@ -99,10 +99,16 @@ function answerWakes(
     if (wakes.length === 1) {
       await onWake?.(params);
     }
+    const reply = replies[wakes.length - 1];
+    // A yielded requester owes a visible answer: the runner retries silence inside the
+    // turn and reports an incomplete turn when the answer stays silent.
     return {
       status: "ok",
       inputProcessingCompleted: true,
-      result: { payloads: [{ text: replies[wakes.length - 1] }], meta: {} },
+      result: {
+        payloads: [{ text: reply }],
+        meta: reply === "NO_REPLY" ? { error: { kind: "incomplete_turn" } } : {},
+      },
     } as T;
   };
   setSubagentAnnounceDeliveryDepsForTest({ dispatchGatewayMethodInProcess: dispatch });
@@ -135,7 +141,7 @@ it.each([
     await endRun("b");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
-      // A yielded requester owes a visible answer, so silence retries the same wake.
+      // An incomplete silent attempt leaves the wake pending for its next retry.
       for (const retryDelayMs of [30_000, 120_000].slice(0, replies.length - 1)) {
         expect(draft.retire).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(retryDelayMs);

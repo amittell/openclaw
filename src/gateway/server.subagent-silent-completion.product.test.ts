@@ -1,4 +1,5 @@
-// Exercise private subagent completions through the real Gateway, runner, registry, and provider HTTP.
+// Exercise private and user-facing subagent completions through the real Gateway, runner,
+// registry, and provider HTTP.
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { text as readBody } from "node:stream/consumers";
@@ -59,7 +60,7 @@ function writeSpawnCall(response: ServerResponse, args: Record<string, unknown>)
 }
 
 it(
-  "settles silent and visible private completions in one parent turn",
+  "settles silent and visible parent completions in one parent turn",
   { timeout: 120_000 },
   async () => {
     resetGatewayTestState();
@@ -70,6 +71,7 @@ it(
     let parentPrompt = "";
     let childTask = "";
     let childResult = "";
+    let completionTarget: "parent" | "user" = "parent";
     let releaseChild = createDeferred();
     let childAccepted = createDeferred<SpawnReceipt>();
     const errors: unknown[] = [];
@@ -100,7 +102,7 @@ it(
                 writeSpawnCall(response, {
                   task: childTask,
                   context: "isolated",
-                  completionTarget: "parent",
+                  ...(completionTarget === "parent" ? { completionTarget } : {}),
                   cleanup: "keep",
                 });
               } else {
@@ -167,7 +169,13 @@ it(
           scopes: ["operator.admin"],
         });
         await gateway.server.startupSettled;
-        for (const text of ["NO_REPLY", "", "The child result is ready."]) {
+        const cases = (["parent", "user"] as const).flatMap((completionCase) =>
+          ["NO_REPLY", "", "The child result is ready."].map(
+            (reply) => [completionCase, reply] as const,
+          ),
+        );
+        for (const [target, text] of cases) {
+          completionTarget = target;
           completionReply = text;
           completionRequests = 0;
           const key = `quiet_parent_${sequence}`;
@@ -197,7 +205,7 @@ it(
           } finally {
             stop();
           }
-          const label = `private completion ${JSON.stringify(text)}`;
+          const label = `${target} completion ${JSON.stringify(text)}`;
           expect(listSubagentRunsForRequester(sessionKey), label).toEqual([
             expect.objectContaining({
               runId: child.runId,
@@ -212,6 +220,13 @@ it(
             sessionKey: child.childSessionKey,
           });
           expect(JSON.stringify(childHistory), label).toContain(childResult);
+          const history = JSON.stringify(
+            await gateway.client.request("chat.history", { sessionKey }),
+          );
+          expect(history, label).not.toContain("delivery is blocked");
+          if (target === "user" && text) {
+            expect(history, label).toContain(text === "NO_REPLY" ? "Child accepted." : text);
+          }
         }
         expect(errors).toEqual([]);
       },

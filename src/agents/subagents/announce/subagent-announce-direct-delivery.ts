@@ -443,14 +443,16 @@ async function sendSubagentAnnounceDirectlyBound(
         runId: params.directIdempotencyKey,
       });
     }
-    // A private parent turn consumes child findings and owes no further answer;
-    // an explicit visible reply remains required.
+    // Available child findings do not create a reply obligation for their parent;
+    // an explicit visible reply and other completion producers remain required.
     const inputReplyExpectation =
-      params.requireVisibleReply || (params.expectsCompletionMessage && !parentOnly)
+      params.requireVisibleReply ||
+      (params.expectsCompletionMessage &&
+        sourceToolId !== "subagent_settle" &&
+        !isSubagentCompletion)
         ? "required"
         : "optional";
     const classifyResponse = createDirectAnnounceResponseClassifier({
-      replyExpectation: inputReplyExpectation,
       params,
       parentOnly,
       requesterSessionBound,
@@ -501,9 +503,8 @@ async function sendSubagentAnnounceDirectlyBound(
               }
               return await runAnnounceAgentCall({
                 agentParams: directAgentParams,
-                // Individual public result delivery and an owed public synthesis
-                // remain required; private review and optional settle intake may
-                // complete without repeating it.
+                // An owed visible synthesis remains required; consuming child
+                // findings may complete without repeating them.
                 replyExpectation: inputReplyExpectation,
                 // A resumed parent has no inbound channel dispatcher to keep activity visible.
                 typing:
