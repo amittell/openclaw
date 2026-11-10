@@ -1,9 +1,13 @@
 // Covers message action allowlists plus cross-context marker/decorator policy
 // for same-provider and cross-provider sends.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { MessageToolsConfig } from "../../config/types.tools.js";
 import type { CrossContextDecoration } from "./outbound-policy.js";
+
+type CrossContextConfig = NonNullable<MessageToolsConfig["crossContext"]>;
 
 let applyCrossContextDecoration: typeof import("./outbound-policy.js").applyCrossContextDecoration;
 let buildCrossContextDecoration: typeof import("./outbound-policy.js").buildCrossContextDecoration;
@@ -194,6 +198,65 @@ describe("outbound policy helpers", () => {
     },
   ])("enforces cross-context policy for %j", (params) => {
     expectCrossContextPolicyResult(params);
+  });
+
+  type ConfinementCase = {
+    name: string;
+    global?: CrossContextConfig;
+    agent?: CrossContextConfig;
+    channel?: string;
+    chatType?: ChatType;
+    expected: "allow" | RegExp;
+  };
+  const confined: CrossContextConfig = { confineChatTypes: ["group"] };
+
+  it.each<ConfinementCase>([
+    {
+      name: "a confined group turn sending to another provider",
+      global: { ...confined, allowAcrossProviders: true },
+      channel: "other",
+      expected: /target provider "other" while bound to "chat".*confineChatTypes/,
+    },
+    {
+      name: "a direct turn when groups are confined",
+      global: confined,
+      chatType: "direct",
+      expected: "allow",
+    },
+    {
+      name: "an untyped turn when groups are confined",
+      global: confined,
+      chatType: undefined,
+      expected: "allow",
+    },
+    {
+      name: "an agent lifting the global confinement",
+      global: confined,
+      agent: { confineChatTypes: [] },
+      expected: "allow",
+    },
+  ])("handles $name", ({ global, agent, channel = "chat", expected, ...rest }) => {
+    const run = () =>
+      enforceCrossContextPolicy({
+        cfg: {
+          tools: { message: { crossContext: global } },
+          agents: { entries: { main: { tools: { message: { crossContext: agent } } } } },
+        },
+        channel,
+        action: "send",
+        args: { to: "dm" },
+        toolContext: {
+          currentChannelProvider: "chat",
+          currentChannelId: "room",
+          currentChatType: "chatType" in rest ? rest.chatType : "group",
+        },
+        agentId: "main",
+      });
+    if (expected === "allow") {
+      expect(run()).toBeUndefined();
+      return;
+    }
+    expect(run).toThrow(expected);
   });
 
   it("allows a routable alias of the native current channel", () => {

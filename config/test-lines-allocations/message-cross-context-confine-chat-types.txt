@@ -1,0 +1,3 @@
+# Opt-in message cross-context confinement by chat type and thread-aware same-conversation checks.
+# 450 on this branch (upstream 431): two test files keep their pre-table fixtures here.
+450
