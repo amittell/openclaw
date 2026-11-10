@@ -79,8 +79,10 @@ child's result remains available for recovery.
 
 Set `completionTarget: "parent"` on `sessions_spawn` to return the result in a
 private turn of the original requester session. The parent reviews the result,
-continues unfinished work, and records the reviewed outcome in its internal final
-reply. OpenClaw does not automatically send the child result, parent final, or
+continues unfinished work, and settles the reviewed input. Private processing may
+finish with `NO_REPLY` or no text; that settles the completion without a retry or
+another model turn, and it does not by itself satisfy an outstanding user reply.
+OpenClaw does not automatically send the child result, parent final, or
 generated media to a channel. The parent can still choose to send a message
 through its permitted tools.
 

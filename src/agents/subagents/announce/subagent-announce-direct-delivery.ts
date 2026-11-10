@@ -443,8 +443,12 @@ async function sendSubagentAnnounceDirectlyBound(
         runId: params.directIdempotencyKey,
       });
     }
+    // A private parent turn consumes child findings and owes no further answer;
+    // an explicit visible reply remains required.
     const inputReplyExpectation =
-      params.expectsCompletionMessage || params.requireVisibleReply ? "required" : "optional";
+      params.requireVisibleReply || (params.expectsCompletionMessage && !parentOnly)
+        ? "required"
+        : "optional";
     const classifyResponse = createDirectAnnounceResponseClassifier({
       replyExpectation: inputReplyExpectation,
       params,
@@ -497,8 +501,9 @@ async function sendSubagentAnnounceDirectlyBound(
               }
               return await runAnnounceAgentCall({
                 agentParams: directAgentParams,
-                // Individual result delivery and an owed public synthesis remain
-                // required; optional settle intake may complete without repeating it.
+                // Individual public result delivery and an owed public synthesis
+                // remain required; private review and optional settle intake may
+                // complete without repeating it.
                 replyExpectation: inputReplyExpectation,
                 // A resumed parent has no inbound channel dispatcher to keep activity visible.
                 typing:
