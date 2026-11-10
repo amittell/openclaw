@@ -5,6 +5,8 @@ import {
   HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
 } from "../../agents/failover/user-copy.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
+import { throwFallbackFailureSummary } from "../../agents/model-fallback-attempt.js";
+import type { FallbackAttempt } from "../../agents/model-fallback.types.js";
 import { resolveReplyCompletion, resolveReplyExpectation } from "../../agents/reply-completion.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
@@ -231,11 +233,13 @@ describe("buildExternalRunFailureReply", () => {
   // 10.1 (#163381) rewrote the copy these three pin: every transport phrase now renders
   // one "Couldn't connect" sentence, and a classified timeout no longer names the model
   // or a status. The fork pins the ROUTING (transport is not a timeout; a genuine timeout
-  // still is), so the expected strings take 10.1's copy.
+  // still is). Upstream #191301 names the failing model in the connection copy itself, so
+  // the expected transport string is that copy, completed-work caution included.
   const TRANSPORT_FAILURE_REPLY =
     "⚠️ gpufarm/qwen3.8-27b request failed: Couldn't connect to the AI service. " +
     "Check your connection, then try again. For details, open Settings → Logs in the " +
-    "Control UI or run `openclaw logs --follow`.";
+    "Control UI or run `openclaw logs --follow`. " +
+    "Check the conversation for any completed work before trying again.";
   const TIMEOUT_FAILURE_REPLY =
     "⚠️ The request took too long. Check the conversation for any completed work before trying again.";
 
@@ -380,6 +384,68 @@ describe("buildKnownAgentRunFailureReplyPayload", () => {
       expect(payload?.text).not.toMatch(/took too long|private-canary|Sanitized provider failure/);
     },
   );
+
+  const knownReply = (err: unknown) =>
+    buildKnownAgentRunFailureReplyPayload({ err, sessionCtx, resolvedVerboseLevel: "off" });
+
+  it("names the model whose connection failed", () => {
+    const failure = (facts: { provider?: string; model?: string }) =>
+      knownReply(
+        new FailoverError("Sanitized provider failure", {
+          rawError: "connect ECONNREFUSED 127.0.0.1:8000",
+          code: "ECONNREFUSED",
+          reason: "timeout",
+          ...facts,
+        }),
+      )?.text;
+
+    expect(failure({ provider: "gpufarm", model: "qwen3.8-27b" })).toBe(
+      "⚠️ gpufarm/qwen3.8-27b request failed: Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`. Check the conversation for any completed work before trying again.",
+    );
+    // A model id that already carries its provider is not prefixed twice.
+    expect(failure({ provider: "openrouter", model: "openrouter/auto" })).toMatch(
+      /^⚠️ openrouter\/auto request failed: Couldn't connect/,
+    );
+    // Without a provider or model the copy is unchanged.
+    expect(failure({})).toMatch(/^⚠️ Couldn't connect to the AI service\./);
+  });
+
+  it("names only the fallback attempts that failed to connect", () => {
+    const refused = {
+      provider: "gpufarm",
+      model: "qwen3.8-27b",
+      reason: "timeout" as const,
+      code: "ECONNREFUSED",
+      error: "connect ECONNREFUSED 127.0.0.1:8000",
+    };
+    // The real chain summary: it keeps the last attempt's model and joins every attempt's error.
+    const chain = (attempts: FallbackAttempt[]) => {
+      try {
+        throwFallbackFailureSummary({
+          attempts,
+          candidates: attempts.map(({ provider, model }) => ({ provider, model })),
+          lastError: new Error(attempts.at(-1)?.error),
+          label: "models",
+          formatAttempt: (attempt) => `${attempt.provider}/${attempt.model}: ${attempt.error}`,
+        });
+      } catch (err) {
+        return knownReply(err)?.text;
+      }
+      throw new Error("expected a fallback failure");
+    };
+
+    // The backup timed out after connecting, so only the refused primary is named.
+    const mixed = chain([
+      refused,
+      { provider: "backup", model: "llama3.3", reason: "timeout", error: "request timed out" },
+    ]);
+    expect(mixed).toMatch(/^⚠️ gpufarm\/qwen3\.8-27b request failed: Couldn't connect/);
+    expect(mixed).not.toContain("backup/llama3.3");
+    // Both refused: both are named.
+    expect(chain([refused, { ...refused, provider: "backup", model: "llama3.3" }])).toMatch(
+      /^⚠️ gpufarm\/qwen3\.8-27b, backup\/llama3\.3 request failed: Couldn't connect/,
+    );
+  });
 
   it("keeps HTTP server failures ahead of connection wording in provider details", () => {
     const error = new FailoverError("503 connection error: private-canary", {
