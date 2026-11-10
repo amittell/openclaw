@@ -1,9 +1,11 @@
+import assert from "node:assert/strict";
 import { Bot } from "grammy";
 import type { Message } from "grammy/types";
 import {
   createAcceptedChannelDeliveryResult,
   createChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
+import { createStructuredOutboundPayloadPlan } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
@@ -27,6 +29,8 @@ import {
   dispatchWithContext,
   editMessageTelegram,
   emitToolStart,
+  loadSessionStore,
+  readLatestAssistantTextByIdentity,
   telegramDepsForTest,
   type DispatchReplyWithBufferedBlockDispatcherArgs,
   editMessageReplyMarkupTelegram,
@@ -309,6 +313,44 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
     expect(editMessageText).toHaveBeenCalled();
     expect(outcomeLines()).toEqual([
       `telegram final delivery outcome=preview-finalized chat=123 message=${[...messages.keys()][0]}`,
+    ]);
+  });
+
+  it("logs a final whose recovered transcript text has nothing to send as skipped", async () => {
+    const { bot, messages } = await setupObservedProgressTransport();
+    const { runtime, outcomeLines } = createLoggedRuntime();
+    // The final looks cut off, so the longer transcript text replaces it. That text is
+    // one complete reply directive, which leaves nothing to send.
+    const directive = `[[reply_to:${"1".repeat(75)}]]`;
+    const truncated = directive.slice(0, 61);
+    loadSessionStore.mockReturnValue({
+      "agent:test:telegram:direct:123": { sessionId: "s1", updatedAt: 1 },
+    });
+    readLatestAssistantTextByIdentity.mockResolvedValue({
+      text: directive,
+      timestamp: Date.now() + 1_000,
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async ({ dispatcherOptions }) => {
+        const [plan] = createStructuredOutboundPayloadPlan([{ text: `${truncated}...` }]);
+        assert(plan && dispatcherOptions.deliverPrepared, "Prepared delivery missing");
+        await dispatcherOptions.deliverPrepared(plan, { kind: "final" });
+        return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+      },
+    );
+
+    await dispatchWithContext({
+      bot,
+      context: progressContext(),
+      streamMode: "partial",
+      telegramCfg: { streaming: { mode: "partial" } },
+      runtime,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect([...messages.values()]).toEqual([]);
+    expect(outcomeLines()).toEqual([
+      "telegram final delivery outcome=skipped chat=123 reason=channel_transform",
     ]);
   });
 
