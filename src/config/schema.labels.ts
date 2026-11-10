@@ -5,6 +5,7 @@ import { APPROVAL_FIELD_LABELS } from "./schema.labels.approvals.js";
 import { BROWSER_FIELD_LABELS } from "./schema.labels.browser.js";
 import { ENVIRONMENT_FIELD_LABELS } from "./schema.labels.environment.js";
 import { GITHUB_TOOL_FIELD_LABELS } from "./schema.labels.github.js";
+import { MESSAGE_TOOL_FIELD_LABELS } from "./schema.labels.message-tool.js";
 import { MESSAGE_FIELD_LABELS } from "./schema.labels.messages.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
 import { WORKSPACE_FIELD_LABELS } from "./schema.labels.workspace.js";
@@ -217,14 +218,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.exec.safeBinTrustedDirs": "Exec Safe Bin Trusted Dirs",
   "tools.exec.safeBinProfiles": "Exec Safe Bin Profiles",
   ...APPROVAL_FIELD_LABELS,
-  "tools.message.crossContext.allowWithinProvider": "Allow Cross-Context (Same Provider)",
-  "tools.message.crossContext.allowAcrossProviders": "Allow Cross-Context (Across Providers)",
-  "tools.message.crossContext.confineChatTypes": "Cross-Context Confined Chat Types",
-  "tools.message.crossContext.marker.enabled": "Cross-Context Marker",
-  "tools.message.crossContext.marker.prefix": "Cross-Context Marker Prefix",
-  "tools.message.crossContext.marker.suffix": "Cross-Context Marker Suffix",
-  "tools.message.broadcast.enabled": "Enable Message Broadcast",
-  "tools.message.actions.allow": "Message Action Allowlist",
+  ...MESSAGE_TOOL_FIELD_LABELS,
   "tools.web.search.enabled": "Enable Web Search Tool",
   "tools.web.search.provider": "Web Search Provider",
   "tools.web.search.maxResults": "Web Search Max Results",

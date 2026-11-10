@@ -57,9 +57,7 @@ vi.mock("../subagents/registry/subagent-registry-publication.js", async (importO
   };
 });
 vi.mock("../subagents/registry/subagent-list.js", async (importOriginal) => ({
-  resolveSubagentDeliveryStatus: (
-    await importOriginal<typeof import("../subagents/registry/subagent-list.js")>()
-  ).resolveSubagentDeliveryStatus,
+  ...(await importOriginal<typeof import("../subagents/registry/subagent-list.js")>()),
   readSubagentListSessionEntries: () => new Map(),
   buildSubagentList: () => ({
     total: owner.runs.length,
