@@ -4247,3 +4247,145 @@ clean-close receipt: checkpoint-incomplete` twice, which is what this first inte
   `claude-code`, `claude` (534 MiB) and `openclaw` were moved to `~/.openclaw/agents-archived-20261104T171106Z/`; the
   DB backup is at `/Volumes/Storage/oc1010-dbbackup-20261104T171106Z`. Real-turn gate passed at 17:31Z: 1 inbound,
   3 sends, 0 provider 4xx, 0 errored turns, 34/34 fork markers (alexm/openclaw room #415, #417).
+
+# Carrying onto v2026.11.2 (11.1 -> 11.2), 2026-11-09/10 (session 68acf50e; builds and tests on the M4)
+
+## Refs
+
+| ref                                                          | commit        |
+| ------------------------------------------------------------ | ------------- |
+| `v2026.11.1^{commit}`                                        | `4ffdd2047d1` |
+| `v2026.11.2^{commit}` (166 commits past 11.1)                | `b556fdf457b` |
+| the deployed 11.1 carry, fork branch `wip/1111-carry-deploy` | `eee763b8eb2` |
+| one merge of the two (fork branch `upgrade-v2026.11.2`)      | `3eefd13b896` |
+
+The 11.1 carry itself (21 commits on `v2026.11.1`, session 6da8934d, 11-05/06) has no section in this ledger;
+its commits name each change (`git log v2026.11.1..eee763b8eb2`).
+
+## Method
+
+One `git merge` of `eee763b8eb2` onto the tag. Eight files conflicted, all changed on both sides since 11.1;
+each was triaged against the three blobs (11.1 tag, carry, 11.2 tag):
+
+- `extensions/diagnostics-otel/src/service-content-normalization.ts`, `service-genai-content.ts`: the carry's
+  (#158145 normalizer). 11.2 has upstream's #186666 instead; see "otel" below.
+- `docs/automation/cron-jobs/payloads.md`, `troubleshooting.md`: the tag's, with the carry's two
+  non-conflicting hunks re-applied (the `reauthorizationRequired` status paragraph and the
+  "no recorded creator channel" bullet).
+- `src/cron/isolated-agent.auth-continuity.integration.test.ts`: the tag's. Its "legacy cron jobs without a
+  recorded account" block is a strict superset of the carry's copy.
+- The three `codex-runtime-happy-path` prompt snapshots: the tag's, then regenerated (below).
+
+After the merge: 0 conflict markers, 0 duplicate test titles in the five test files both sides changed, and
+no PR line the 11.1 carry held is missing (every one of Alex's 114 PRs scores at least as high on
+`3eefd13b896` as on `eee763b8eb2`).
+
+## otel: the fork keeps its #158145 normalizer (`9b351fa0838`)
+
+Alex closed #158145 on 11-06 as superseded by #186666 (`bc871e70213`, in 11.2). With the tag's two content
+files in the carry's place, 11 of the fork's own content-normalization tests fail (231/242 against 240/242),
+so the carry keeps its normalizer. Of 11.2's new tests, two failed on it:
+
+- "drops image bytes too large to export whole": taken as is (#186666's 7-line drop in
+  `redactInternalReasoningParts`; the normalizer now exports `MAX_OTEL_CONTENT_ATTRIBUTE_CHARS`).
+- "redacts each string of a large transcript once ... (#158116)": its spy sat on `security-runtime`, but the
+  carry reaches `redactSensitiveText` through `logging-core`. The fork redacts bounded windows rather than
+  memoizing whole strings, so "once per string" became the same bound on total work (redacted characters <=
+  transcript characters). Measured: 248 calls, 662,311 characters for 800,590, largest call 84,803, 98 ms.
+  Not run: a mutation proving the bound fails when every string is redacted per attribute.
+
+otel 242/242, `src/logging` redaction 37/37.
+
+## Pull-forward of Alex's PRs (census of all 114, 2026-11-09)
+
+Heads fetched 23:3xZ on 11-09, after the M4 lead's batch pushes. Four lanes ported in parallel; each PR is
+one commit with a test that fails with the source reverted, all run on the M4 (Node 26.12.1).
+
+| PR                      | head           | commit                       | note                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------- | -------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #151099                 | `8ff501e27074` | `52c7ae9d4bb`                | delta since the 9.6 pull-forward: a comment-only commit and the allocation record; the rest of the newer head is main-only reshuffling                                                                                                                                                                                                                                                                                       |
+| #151923                 | `75c01bc9f3fd` | `a4837c9ce50`                | delta since `fe89fffb2d4`: two header-comment drops, a test removal, the thread-binding isolation, the allocation record                                                                                                                                                                                                                                                                                                     |
+| #170110                 | `e90dd3e3b3ef` | `580f586696f`                | delta since `bf8380a23058`: the channel_transform skip test. The outcome line stays at INFO: main demoted it with #174260/#174402, which this branch lacks, and here every send still logs at INFO                                                                                                                                                                                                                           |
+| #191687                 | `8fec891ad7e0` | `7a0791a48d1`                | `api-logging.ts` hand-applied (older shape here); the inbound typing tests wait for the branch's early typing cue (main removed it in #178524)                                                                                                                                                                                                                                                                               |
+| #191787                 | `d096fe01a3cf` | `e9e0a7d8c08`                | `reply-tool-authority.ts` hand-applied; Slack and Matrix gain nativeApprovals here (Discord still uses the sync factory)                                                                                                                                                                                                                                                                                                     |
+| #185388                 | `1aba44bf4281` | `622b6fa191e`, `1daeda239b5` | merged upstream, not Alex's; Alex D8 (11-09) and "carry all of it" (11-10). First commit: private completions, with #185667's precedence (an explicit expectation wins). Second: public-completion quiet settle, the "Subagent completion delivery is blocked" notice removed, part of #185840 for the QA mock                                                                                                               |
+| #191857                 | `cb4d3469f05c` | `c22b4779f6e`                | 11.1 rows load and read as delivered (codec and read types unchanged; read, not run live)                                                                                                                                                                                                                                                                                                                                    |
+| #190572                 | `1cb5e029db33` | `d51ed46af95`                | the branch's schema owner is the same zod MessageToolConfigSchema                                                                                                                                                                                                                                                                                                                                                            |
+| #192999                 | `eae91e923b9b` | `f57432baeff`                | defect present: a late pipe answered `pipe-received` only, so the slot stayed held (limit 256 here)                                                                                                                                                                                                                                                                                                                          |
+| #190513                 | `6e8aec42f5e9` | `3da3f8cf028`                | its QA scenario is not carried: this branch never records the rejection notice in `chat.history` for a `chat.send` turn                                                                                                                                                                                                                                                                                                      |
+| #191301                 | `35ed4298bdd4` | `79f87485d26`                | retires the fork's `renderTransportFailureReplyCopy` (`d2f0e8c5139`), which ran first and named the last fallback model (Alex, 11-10)                                                                                                                                                                                                                                                                                        |
+| #191649                 | `a18dac5b480d` | `7755b026c49`                | with the extraction into `prompt-cache-provider-prefix.ts`: without it `prompt-cache-observability.ts` is 706 counted lines against 700                                                                                                                                                                                                                                                                                      |
+| #192348                 | `b817a354437c` | `ef72ab4be2b`                | the PR's own commit `6af705e9694`                                                                                                                                                                                                                                                                                                                                                                                            |
+| #189935                 | `59047d2f7897` | `809e6a32c58`                | tests only: the source is already here as #186998 (`419ff411cf0`); the fork's one-test `state-migrations.audit-missing-companion.test.ts` is removed (the carried moved-file row covers more)                                                                                                                                                                                                                                |
+| #189956                 | `dcf76a146006` | `ae508588c1a`                | replaces the fork's `f2c2804572b` capture/recall check (same intent; the PR also checks the raw turn and allows a leading timestamp); the fork's doctor-only row cleanup now uses it; the PR's QA scenario is dropped (the fork's silent-stop nudge answers first)                                                                                                                                                           |
+| #178677                 | `48ab4a7444d0` | `906a4d8b7a3`                | delta since `88ee80cd3cd` (this ledger's `2ef2ffabe40` line was stale): the empty-cap script reauthorization fix and its docs wording                                                                                                                                                                                                                                                                                        |
+| #190472 (branch-native) | `ee3411e1a707` | `bf164e56334`                | Alex, 11-10: redesign; upstream's fix needs #157806 and #185476. exec captures the starting turn's sender from the run context; the completion turn gets it back only on an exactly matching route and chat type, so it can only narrow. A completion never becomes an owner turn (upstream's owner path needs #185476). Test file about 50 s wall, over the 30 s budget. Drop when a release with upstream's fix is carried |
+| #195612 (branch-native) | `272d4c60652b` | `b97f7b0c6c0`                | Alex, 11-10: redesign; upstream's fix needs #175837 and #181105. a per-session hold from a recognized `/stop` until its exchange is mirrored to the transcript, capped by the delivery barrier timeout (15 s); only `/stop`, as upstream. Drop when a release with upstream's fix is carried                                                                                                                                 |
+
+Not carried:
+
+- #193829: the defect cannot occur here. It needs main's instance-dropping invocation scope (#184243, `62e0b2b7fcf`)
+  and `delivery-owner.ts` (#163685); the PR's own regression test, run without its fix, reads the runtime
+  in all three places.
+- Test-only, as before: #168611, #175029, #176070, #192254.
+- Closed upstream: #192166 (its A/B did not reproduce the misattribution), #192277/#192346 (no user-visible
+  effect; #192348 is the path that has one).
+
+## Fork changes made with the carry
+
+- `4429761ba7e`: the fork's silent-stop nudge is marked with `formatSystemTurnPrompt`, so
+  memory-lancedb capture and recall skip it, and the fork's doctor-only `memory-lancedb-system-turn-rows`
+  cleanup also deletes rows whose text is exactly the legacy unmarked nudge (Alex, 11-10). Measured
+  2026-11-10: one such row on each bot (mac-mini written 10-27, rh-bot 08-20). They go when the deploy runs
+  doctor after the DB backup. The match is exact, so check that doctor's preview lists the nudge row on each
+  bot (the same cleanup also counts `[System]` rows, so the preview is not 1).
+- `3586a4e5f04`: `agent.test.ts` "uses explicit session keys for embedded runs" and "scopes bare
+  explicit session keys ..." failed on the deployed 11.1 carry too (2 of 57): the carry's
+  `updateSessionStoreAfterAgentRun` does not persist a model other than the one the run asked for
+  (`isFromFallback`), and the tests' mocked run always answered p/m. The mock now reports the requested
+  model; a mutant that never sets the runtime model fails both.
+- `83871dbf34c`: Alex, 11-10: keep #132409. "keeps a timed-out update retryable while its
+  original middleware is still waiting" (from upstream #169202, `6d624f3af2a`) failed on the deployed 11.1
+  carry too: the #132409 stall watchdog holds the timed-out claim until the original dispatch returns, where
+  #169202 re-queues it. Measured: update 802 is processed exactly once, in order, either way. The case moves
+  to the fork-only `telegram-ingress-claim-hold.e2e.test.ts` as a FORK DIVERGENCE pin (the upstream file was
+  already over max-lines); it fails with the quiescence wait skipped. Dropping #132409 for #169202 waits for a
+  live re-delivery proof.
+- `0117ea5b64f`: Alex, 11-10: the fork's silent-stop nudge (`bab392de8d3`, 2026-07-25) retried with every tool
+  callable, so `gateway-completion-replay.e2e` saw a requester's `exec` side effect run twice (it failed on the
+  deployed 11.1 carry too, and passes on bare v2026.11.2). It now fires only when the attempt can call the
+  message tool and its harness can enforce a narrowed tool set, and the retry runs with `["message"]` only, the
+  rule upstream's stranded-reply recovery has had since #152786 (`f2dff0dcf9c`). The e2e passes (one effect,
+  child delivery suspended, unchanged after restart); red-before 6/1/3 rows across three files.
+- `efa05c6d40e`: #191687's test moved into `account-throttler.typing-unsent.test.ts`,
+  the eight `tools.message.*` labels into `schema.labels.message-tool.ts` (same key order), and the
+  subagents-tool `subagent-list.js` mock spreads the real module (its baseline entry dropped).
+
+## Generated files
+
+- Codex prompt snapshots (`5c5d457bb84`): regenerated; the only prompt change is the fork's message-tool
+  delivery wording, as in the 11.1 carry's snapshot. `prompt:snapshots:check` reported exactly these three.
+- Config docs baseline (`593eb576e87`): still the tag's (2515/4031/4650) before any pull-forward, so
+  `config:docs:check` failed at `3eefd13b896`. The 11.1 carry adds 1 core, 10 channel and 1 plugin path,
+  #190572 4 core: now 2520/4041/4651.
+
+## Qualification
+
+Full run at `83871dbf34c` (M4, Node 26.12.1, Vitest on Node, 2026-11-10 18:05-20:59Z): install, build, `tsgo:all`,
+assertion-safety, line-cap, oxlint over 625 changed files, oxfmt, the wrapper inventory, `plugin-sdk:surface:check`,
+mock-exports, conflict markers and `prompt:snapshots:check` all exit 0. Fast gate over 2,121 test files: 41,409 passed,
+325 failed, 129 skipped. 12 of the 13 failing files fail identically on bare v2026.11.2 (`launchd.integration.e2e`,
+`worker.runtime`, `package-openclaw-for-docker.e2e`, the `test/scripts` CI-planning, crabbox and release-workflow
+files, `update-repair-cancellation`, `sqlite-snapshot-staging.ownership`, `update-managed-service-handoff-recovery`).
+The 13th, `gateway-completion-replay.e2e`, is fixed by `0117ea5b64f`, whose own runs on this tree are above, with the
+embedded-runner directory at 378 files / 4,588 passed and the one failure
+(`message-tool-terminal.loop.test.ts`, "surfaces a steered input failure after the preceding source reply
+(final=true)") failing identically at `83871dbf34c`. Head: `0117ea5b64f`.
+
+Earlier failures resolved on the way: the first full run (`593eb576e87`) failed line-cap, oxlint and mock-exports on
+carried files (`efa05c6d40e`), and three files failed on the carry but not on bare v2026.11.2, all already red on the
+deployed 11.1 carry: `agent.test.ts` (2), the ingress-coalescing e2e (1), and the completion-replay e2e (1), fixed or
+pinned above.
+
+Not run: a live re-delivery proof for keeping #132409 over #169202; a real-model run of the nudge change; the
+Telegram live sittings the upstream PRs still lack.
