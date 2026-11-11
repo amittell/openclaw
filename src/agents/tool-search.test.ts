@@ -772,7 +772,7 @@ describe("Tool Search", () => {
 
   it.each([
     [true, "was blocked before execution: blocked by orchard policy"],
-    [false, "returned details that do not match its declared outputSchema"],
+    [false, /declared outputSchema\..* Received an object with properties: status, reason\.$/],
   ] as const)(
     "rejects invalid success-schema results with policy block=%s",
     async (blocked, error) => {
@@ -795,6 +795,17 @@ describe("Tool Search", () => {
       expect(target.execute).toHaveBeenCalledTimes(blocked ? 0 : 1);
     },
   );
+
+  it.each([
+    [["orchard"], "an array (1 item)"],
+    [null, "null"],
+  ] as const)("names a %j result's shape in the output-schema error", async (value, shape) => {
+    const target = pluginTool("orchard_shape", "Return an orchard shape");
+    target.outputSchema = Type.Object({ id: Type.String() });
+    target.execute = vi.fn(async () => jsonResult(value));
+    const { runtime } = headlessFixture([target]);
+    await expect(runtime.callValue(target.name)).rejects.toThrow(`Received ${shape}.`);
+  });
 
   it("keeps structured call content compact while preserving complete result details and termination", async () => {
     const target = pluginTool("compact_result_target", "Long tool instructions. ".repeat(1_000));

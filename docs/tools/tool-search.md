@@ -393,8 +393,10 @@ properties return actionable tool errors instead of executing the tool;
 misspelled properties include a suggested parameter when available.
 If a trusted tool also declares `outputSchema`, OpenClaw compiles that schema
 before execution and validates final `details` after normal tool hooks before
-returning the catalog call. MCP and client-owned schemas remain deferred to
-their owning execution boundary.
+returning the catalog call. A mismatch error lists the validation failures and
+the received shape: the top-level property names of `details`, or its type,
+without any values. MCP and client-owned schemas remain deferred to their
+owning execution boundary.
 
 Host-owned execution refusals do not have to match the target's success schema.
 Turn-authority gates preserve their refusal text without running the target;

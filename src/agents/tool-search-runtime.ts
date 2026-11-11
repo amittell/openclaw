@@ -187,17 +187,18 @@ async function assertCatalogOutputMatchesSchema(
   if ("isError" in result && result.isError === true) {
     return;
   }
+  const value = unwrapToolResultValue(result);
   const validation = await validateCatalogSchemaValue(
     entry,
     "outputSchema",
-    unwrapToolResultValue(result),
+    value,
     outputSelection,
   );
   if (!validation || validation.ok) {
     return;
   }
   throw markToolContractFailure(
-    new Error(formatCatalogOutputError(entry, validation.errors)),
+    new Error(formatCatalogOutputError(entry, validation.errors, value)),
     "output_contract",
   );
 }

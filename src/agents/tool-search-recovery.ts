@@ -179,9 +179,35 @@ export function formatCatalogInputError(
   return `Invalid arguments for tool "${entry.id}": ${details.join("; ")}.${hint}${signature}`;
 }
 
+const MAX_OUTPUT_SHAPE_PROPERTIES = 12;
+
+/** Names the returned value's top-level shape without echoing any of its values. */
+function receivedOutputShape(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `an array (${value.length} ${value.length === 1 ? "item" : "items"})`;
+  }
+  const record = asOptionalObjectRecord(value);
+  if (!record) {
+    return value === null || value === undefined ? String(value) : `a ${typeof value}`;
+  }
+  const names = Object.keys(record);
+  if (names.length === 0) {
+    return "an object with no properties";
+  }
+  const shown = names
+    .slice(0, MAX_OUTPUT_SHAPE_PROPERTIES)
+    .map((name) => truncateUtf8Prefix(name, 64));
+  const more = names.length > shown.length ? `, and ${names.length - shown.length} more` : "";
+  return redactRegisteredSecretValues(
+    `an object with properties: ${shown.join(", ")}${more}`,
+    () => "[redacted]",
+  );
+}
+
 export function formatCatalogOutputError(
   entry: ToolSearchCatalogEntry,
   errors: import("../plugins/schema-validator.js").JsonSchemaValidationError[],
+  value: unknown,
 ): string {
   const details = errors.slice(0, 5).map(({ text }) => {
     const prefix = truncateUtf8Prefix(text, 256);
@@ -193,6 +219,6 @@ export function formatCatalogOutputError(
   return (
     `Tool "${entry.id}" returned details that do not match its declared outputSchema. ` +
     "Check current state before retrying; the tool returned and side effects may already have occurred. " +
-    `Validation: ${details.join("; ")}.`
+    `Validation: ${details.join("; ")}. Received ${receivedOutputShape(value)}.`
   );
 }
