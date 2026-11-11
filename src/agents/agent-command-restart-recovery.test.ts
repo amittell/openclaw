@@ -4,6 +4,7 @@ import {
   getRestartRecoveryTerminalDeliveryEvidence,
   mergeRestartRecoveryTerminalDeliveryEvidence,
 } from "../config/sessions/restart-recovery-state.js";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   buildCurrentRunRestartRecoveryClaim,
   buildRestartRecoveryTerminalDeliveryEvidence,
@@ -39,6 +40,7 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       restartRecoveryDeliveryContext: undefined,
       restartRecoveryDeliveryMediaUrls: [],
       restartRecoveryDeliveryRunId: "media-run",
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
       restartRecoveryDeliverySourceRunId: "media-run",
     });
   });
@@ -64,6 +66,8 @@ describe("buildCurrentRunRestartRecoveryClaim", () => {
       ...mediaPolicy,
       restartRecoveryDeliveryContext: { channel: "telegram", to: "-100123", threadId: 1 },
       restartRecoveryDeliveryRunId: "recovery-run",
+      // Fork: the adopting run's generation owns the claim.
+      restartRecoveryDeliveryLifecycleGeneration: getAgentEventLifecycleGeneration(),
     });
   });
 
@@ -153,35 +157,30 @@ describe("buildRestartRecoveryTerminalDeliveryEvidence", () => {
     );
   }
 
-  const classifyWithExpectation = (replyExpectation: "required" | "optional") =>
-    createDirectAnnounceResponseClassifier({
-      replyExpectation,
-      params: {
-        sourceTool: "subagent_settle",
-        expectsCompletionMessage: false,
-        requesterIsSubagent: false,
-      },
-      parentOnly: false,
-      requesterSessionBound: true,
-      deliveryTarget: {},
-      shouldDeliverAgentFinal: true,
-      requiresMessageToolDelivery: false,
-      isSubagentCompletion: false,
-      hasSuccessfulTrustedSubagentNoOutputCompletion: false,
-      hasRequiredSubagentNoOutputCompletion: false,
-      subagentDirectMessageCompletionRequiresMessageTool: false,
-      effectiveDirectOrigin: undefined,
-      requesterSessionOrigin: undefined,
-      textCompletionDirectDeliveryKind: "completed_result",
-      tryTextCompletionDirectDelivery: async () => undefined,
-    });
-
-  const classify = classifyWithExpectation("required");
+  const classify = createDirectAnnounceResponseClassifier({
+    params: {
+      sourceTool: "subagent_settle",
+      expectsCompletionMessage: false,
+      requesterIsSubagent: false,
+    },
+    parentOnly: false,
+    requesterSessionBound: true,
+    deliveryTarget: {},
+    shouldDeliverAgentFinal: true,
+    requiresMessageToolDelivery: false,
+    isSubagentCompletion: false,
+    hasSuccessfulTrustedSubagentNoOutputCompletion: false,
+    hasRequiredSubagentNoOutputCompletion: false,
+    subagentDirectMessageCompletionRequiresMessageTool: false,
+    effectiveDirectOrigin: undefined,
+    requesterSessionOrigin: undefined,
+    textCompletionDirectDeliveryKind: "completed_result",
+    tryTextCompletionDirectDelivery: async () => undefined,
+  });
 
   it.each([
     {
       name: "intentional silent final",
-      replyExpectation: "optional" as const,
       result: { meta: { terminalReply: { disposition: "silent" } } },
       delivered: true,
     },
@@ -215,22 +214,18 @@ describe("buildRestartRecoveryTerminalDeliveryEvidence", () => {
       result: { meta: { yielded: true }, requesterContinuationSettled: true },
       delivered: true,
     },
-    { name: "legacy empty receipt", result: { payloads: [] }, delivered: false },
-  ])(
-    "replays $name without inventing visible delivery",
-    async ({ result, delivered, replyExpectation }) => {
-      const stored = project(result);
-      const delivery = await classifyWithExpectation(replyExpectation ?? "required")({
-        status: "ok",
-        result: stored,
-      });
-      expect(delivery).toMatchObject({ delivered, path: "direct" });
-      expect(JSON.stringify(stored)).not.toContain("private synthetic failure");
-      if (!delivered) {
-        expect(delivery).toMatchObject({ reason: "visible_reply_missing" });
-      }
-    },
-  );
+    // Successful empty settle output consumes the findings quietly.
+    { name: "legacy empty receipt", result: { payloads: [] }, delivered: true },
+  ])("replays $name without inventing visible delivery", async ({ result, delivered }) => {
+    const stored = project(result);
+    const delivery = await classify({ status: "ok", result: stored });
+    expect(delivery).toMatchObject({ delivered, path: "direct" });
+    expect(delivery.requesterVisibleFinalDelivered).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain("private synthetic failure");
+    if (!delivered) {
+      expect(delivery).toMatchObject({ reason: "visible_reply_missing" });
+    }
+  });
 
   it.each([
     { reason: "no_visible_payload", expected: { reason: "visible_reply_missing" } },
@@ -278,17 +273,13 @@ describe("buildRestartRecoveryTerminalDeliveryEvidence", () => {
           ],
         },
       };
-      expect(await classify({ status: "ok", result: original })).toMatchObject({
-        delivered: false,
-        disposition: "ambiguous",
-      });
       const stored = project(original);
       expect(stored?.deliveryStatus?.payloadOutcomes).toHaveLength(64);
       expect(stored?.deliveryStatus?.payloadOutcomes?.[63]).toEqual({ index: 64, ...lastOutcome });
-      expect(await classify({ status: "ok", result: stored })).toMatchObject({
-        delivered: false,
-        disposition: "ambiguous",
-      });
+      // Replay classifies the bounded receipt exactly as the original turn.
+      expect(await classify({ status: "ok", result: stored })).toEqual(
+        await classify({ status: "ok", result: original }),
+      );
     },
   );
 
@@ -305,13 +296,11 @@ describe("buildRestartRecoveryTerminalDeliveryEvidence", () => {
         })),
       },
     };
-    const expected = {
-      delivered: false,
-      disposition: "intentional_non_delivery",
-      reason: "delivery_suppressed",
-    };
-    expect(await classify({ status: "ok", result: original })).toMatchObject(expected);
-    expect(await classify({ status: "ok", result: project(original) })).toMatchObject(expected);
+    const stored = project(original);
+    expect(stored?.deliveryStatus?.reason).toBe("cancelled_by_message_sending_hook");
+    expect(await classify({ status: "ok", result: stored })).toEqual(
+      await classify({ status: "ok", result: original }),
+    );
   });
 
   it("bounds suppression reasons and outcomes without retaining raw terminal objects", () => {

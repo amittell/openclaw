@@ -1,6 +1,7 @@
 import path from "node:path";
+import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { prependShellPath } from "../infra/login-shell-path-carrier.js";
-import { findPathKey, removePathPrepend } from "../infra/path-prepend.js";
+import { findPathKey, mergePathPrepend, removePathPrepend } from "../infra/path-prepend.js";
 
 /**
  * Apply PATH prepends inside the shell command.
@@ -32,4 +33,20 @@ export function wrapPosixCommandWithPathPrepend(
   }
 
   return prependShellPath(command, env, pathPrepend.join(path.delimiter));
+}
+
+/** Merges shell-discovered PATH entries into an exec environment. */
+export function applyShellPath(env: Record<string, string>, shellPath?: string | null) {
+  if (!shellPath) {
+    return;
+  }
+  const entries = normalizeStringEntries(shellPath.split(path.delimiter));
+  if (entries.length === 0) {
+    return;
+  }
+  const pathKey = findPathKey(env);
+  const merged = mergePathPrepend(env[pathKey], entries);
+  if (merged) {
+    env[pathKey] = merged;
+  }
 }

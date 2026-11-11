@@ -333,7 +333,7 @@ export function waitForReplyRunEndBySessionId(
 }
 
 async function waitForReplyRunAdmissionBarrier(params: {
-  barriersByKey: Map<string, ReplyRunAdmissionBarrier>;
+  barriersByKey: Map<string, Pick<ReplyRunAdmissionBarrier, "settled" | "sources">>;
   minimumTimeoutMs: number;
   sessionKey: string;
   signal?: AbortSignal;
@@ -409,9 +409,13 @@ export async function waitForReplyRunSuccessorAdmission(
   opts?: { signal?: AbortSignal },
 ): Promise<ReplyRunAdmissionSettlement> {
   const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  // A /stop's pending command exchange comes first; admission rechecks the barrier after it.
+  const holds = replyRunState.commandExchangeHoldsByKey;
   return normalizedSessionKey
     ? await waitForReplyRunAdmissionBarrier({
-        barriersByKey: replyRunState.successorAdmissionBarriersByKey,
+        barriersByKey: holds.has(normalizedSessionKey)
+          ? holds
+          : replyRunState.successorAdmissionBarriersByKey,
         minimumTimeoutMs: 0,
         sessionKey: normalizedSessionKey,
         signal: opts?.signal,
@@ -536,6 +540,7 @@ const replyRunRegistryTestApi = {
     replyRunState.waitersByKey.clear();
     replyRunState.followupAdmissionBarriersByKey.clear();
     replyRunState.successorAdmissionBarriersByKey.clear();
+    replyRunState.commandExchangeHoldsByKey.clear();
   },
 };
 

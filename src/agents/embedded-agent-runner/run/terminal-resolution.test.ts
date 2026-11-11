@@ -16,6 +16,7 @@ import {
   markEmbeddedRunAuthProfileSuccess,
   reportEmbeddedRunSuccessfulAuthBinding,
 } from "./auth-profile-success.js";
+import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "./incomplete-turn-recovery.js";
 import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
@@ -182,6 +183,82 @@ describe("terminal resolution", () => {
     expect(resolved.result.meta.livenessState).toBe("working");
     expect(activateInternalPrompt).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["sessions_send", "complete"],
+    ["subagent_announce", "retry"],
+  ] as const)(
+    "nudges undelivered message_tool_only text unless a %s target answers inline",
+    async (sourceTool, action) => {
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "QA-VISIBLE-CHILD-OK" }],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: ["QA-VISIBLE-CHILD-OK"],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+      });
+      const activateInternalPrompt = vi.fn();
+      const input = makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        runParams: {
+          sourceReplyDeliveryMode: "message_tool_only",
+          inputProvenance: { kind: "inter_session", sourceTool },
+        },
+        sessionPromptState: { activateInternalPrompt },
+      });
+
+      const resolved = await resolveEmbeddedRunTerminal(input);
+
+      expect(resolved.action).toBe(action);
+      expect(activateInternalPrompt.mock.calls).toEqual(
+        action === "retry"
+          ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, { retryToolsAllow: ["message"] }]]
+          : [],
+      );
+    },
+  );
+
+  it.each([
+    { messageToolCallable: true, toolsAllow: undefined, harnessEnforces: true, nudged: true },
+    // A harness that does not report its tool surface falls back to the runtime allowlist.
+    { messageToolCallable: undefined, toolsAllow: undefined, harnessEnforces: true, nudged: true },
+    { messageToolCallable: undefined, toolsAllow: ["read"], harnessEnforces: true, nudged: false },
+    // Without a callable message tool the final text is private by design.
+    { messageToolCallable: false, toolsAllow: undefined, harnessEnforces: true, nudged: false },
+    { messageToolCallable: true, toolsAllow: undefined, harnessEnforces: false, nudged: false },
+  ])(
+    "retries undelivered text with only the message tool: callable $messageToolCallable, allow $toolsAllow, harness enforces $harnessEnforces",
+    async ({ messageToolCallable, toolsAllow, harnessEnforces, nudged }) => {
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "Undelivered answer" }],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: ["Undelivered answer"],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        ...(messageToolCallable === undefined ? {} : { messageToolCallable }),
+      });
+      const activateInternalPrompt = vi.fn();
+      const resolved = await resolveEmbeddedRunTerminal(
+        makeTerminalInput({
+          attempt,
+          attemptAssistant: assistant,
+          runParams: { sourceReplyDeliveryMode: "message_tool_only", toolsAllow },
+          sessionPromptState: { activateInternalPrompt },
+          harnessEnforcesToolPolicy: harnessEnforces,
+        }),
+      );
+
+      expect(resolved.action).toBe(nudged ? "retry" : "complete");
+      expect(activateInternalPrompt.mock.calls).toEqual(
+        nudged ? [[SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, { retryToolsAllow: ["message"] }]] : [],
+      );
+    },
+  );
 
   it("keeps an empty visible parent alive for accepted completion children", async () => {
     const attempt = makeEmbeddedRunnerAttempt({

@@ -60,6 +60,14 @@ export function resolveCommandReplyExpectation(params: {
   if (params.opts.replyExpectation !== undefined) {
     return params.opts.replyExpectation;
   }
+  const provenance = params.opts.inputProvenance;
+  if (
+    provenance?.kind === "inter_session" &&
+    (provenance.sourceTool === "subagent_announce" || provenance.sourceTool === "subagent_settle")
+  ) {
+    // Completion processing is optional unless the caller assigned a reply obligation above.
+    return "optional";
+  }
   if (
     params.opts.privateCompletion ||
     params.opts.lane === AGENT_LANE_SUBAGENT ||

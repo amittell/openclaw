@@ -89,6 +89,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   images: ImageContent[];
   leasedSteering?: SteeringLease;
   modelPrompt: string;
+  normalizeToolCallIds?: Parameters<typeof wrapStreamFnWithMessageTransform>[1];
   onFinalPromptText: (prompt: string) => void;
   assertHostActive?: SessionSourceAssertion;
   getUserTranscriptContexts?: () => readonly UserTranscriptContext[] | undefined;
@@ -285,7 +286,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
       );
     const providerPromptStreamFn = wrapStreamFnWithMessageTransform(
       persistThenStream,
-      (messages) => {
+      (messages, model) => {
         const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(
           messages,
           input.contextTokenBudget,
@@ -300,7 +301,8 @@ export async function submitEmbeddedAttemptPrompt(input: {
         if (providerPromptHistoryTruncation.aggregateTruncatedCount > 0) {
           recordAggregateTruncation(attempt);
         }
-        return providerMessages;
+        // Bind measured pressure to the final ID-normalized provider context.
+        return input.normalizeToolCallIds?.(providerMessages, model) ?? providerMessages;
       },
     );
     activeSession.agent.streamFn = providerPromptStreamFn;

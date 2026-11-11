@@ -47,6 +47,7 @@ export {
   forceClearReplyOperation,
   hasCommittedReplyOperationOutcome,
   hasReplyOperationExecutionStarted,
+  holdReplyRunSuccessorAdmissionForCommandExchange,
   isReplyRunAbortableForSignal,
   isReplyRunSuccessorAdmissionBlocked,
   markReplyOperationExecutionStarted,

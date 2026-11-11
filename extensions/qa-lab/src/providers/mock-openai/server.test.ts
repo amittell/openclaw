@@ -1937,7 +1937,9 @@ describe("qa mock openai server", () => {
       const payload = await expectNonStreamingResponsesJson(server, { tools, input });
       if (terminalCase === "visible") {
         expect(outputItems(payload).some((item) => item.type === "function_call")).toBe(false);
-        expect(outputText(payload)).toBe("NO_REPLY");
+        expect(outputText(payload)).toBe(
+          "The child run ended. Report its outcome to the requester.",
+        );
         return;
       }
       const messageCall = outputToolCall(payload, "message");
@@ -2733,26 +2735,6 @@ describe("qa mock openai server", () => {
   registerImageCompletionTests({
     startMockServer,
     tools: [MESSAGE_TOOL, IMAGE_GENERATE_TOOL],
-  });
-
-  it.each([
-    [
-      "plans QA tool-search failure calls with denied-input args",
-      {
-        input: [
-          makeUserInput(
-            "tool search qa failure target=web_search. Exercise the denied-input path once and then summarize.",
-          ),
-        ],
-      },
-      "web_search",
-      "OPENCLAW_QA_WEB_SEARCH_DENIED_INPUT",
-    ],
-  ] as const)("%s", async (_name, body, tool, argument) => {
-    const item = outputItem(await expectNonStreamingResponsesJson(await startMockServer(), body));
-    expect(item.type).toBe("function_call");
-    expect(item.name).toBe(tool);
-    expect(String(item.arguments)).toContain(argument);
   });
 
   it.each([

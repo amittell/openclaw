@@ -15,7 +15,6 @@ import {
 import { OAuthRefreshFailureError } from "../../auth-profiles/oauth-refresh-failure.js";
 import { classifyFailoverReason } from "../../embedded-agent-helpers.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
-import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
 import { getFailoverErrorCode } from "../../failover/error.js";
 import { resolveRetryAfterMs } from "../../failover/retry-evidence.js";
 import type { FailoverReason } from "../../failover/signal.js";
@@ -36,6 +35,7 @@ import {
   createRuntimeAuthDeadline,
 } from "../../runtime-auth-refresh.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.cooldown-probe.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 import {
@@ -46,6 +46,9 @@ import {
 } from "./helpers.js";
 import type { resolveEmbeddedRunEffectiveModel } from "./model-harness.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
+// Re-exported so `./auth-controller.js` stays the import path for the cooldown
+// probe policy; auth-controller.test.ts reads it there.
+export { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.cooldown-probe.js";
 
 export type EmbeddedRunAuthState = {
   readonly models: {
@@ -75,42 +78,6 @@ function resolveUnavailableAuthReason(
   profileIds: string[],
 ): FailoverReason {
   return resolveProfilesUnavailableReason({ store, profileIds }) ?? "unknown";
-}
-
-/** Decides whether one automatic profile may bypass its current cooldown. */
-export function resolveEmbeddedAuthCooldownProbePolicy(params: {
-  authStore: AuthProfileStore;
-  profileCandidates: Array<string | undefined>;
-  lockedProfileId?: string;
-  modelId: string;
-  allowTransientCooldownProbe: boolean;
-}): { probeProfileIds: ReadonlySet<string>; unavailableReason: FailoverReason | null } {
-  const autoProfileCandidates = params.profileCandidates.filter(
-    (candidate): candidate is string =>
-      typeof candidate === "string" && candidate.length > 0 && candidate !== params.lockedProfileId,
-  );
-  const allAutoProfilesInCooldown =
-    autoProfileCandidates.length > 0 &&
-    autoProfileCandidates.every((candidate) =>
-      isProfileInCooldown(params.authStore, candidate, undefined, params.modelId),
-    );
-  const unavailableReason = allAutoProfilesInCooldown
-    ? resolveUnavailableAuthReason(params.authStore, autoProfileCandidates)
-    : null;
-  const probeProfileIds = new Set<string>();
-  if (
-    params.allowTransientCooldownProbe &&
-    allAutoProfilesInCooldown &&
-    shouldUseTransientCooldownProbeSlot(unavailableReason)
-  ) {
-    for (const candidate of autoProfileCandidates) {
-      const candidateReason = resolveUnavailableAuthReason(params.authStore, [candidate]);
-      if (shouldUseTransientCooldownProbeSlot(candidateReason)) {
-        probeProfileIds.add(candidate);
-      }
-    }
-  }
-  return { probeProfileIds, unavailableReason };
 }
 
 /** Shares one transient probe across the selected owner's initial and later candidates. */
@@ -274,6 +241,8 @@ export function createEmbeddedRunAuthController(params: {
       return;
     }
     if (runtimeAuthState.refreshInFlight) {
+      // Settles: its only await is a withAuthDeadline step, which the hard
+      // backstop bounds even when the run deadline is unlimited or paused.
       await runtimeAuthState.refreshInFlight;
       return;
     }

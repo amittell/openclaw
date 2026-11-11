@@ -5,6 +5,7 @@ import { createChannelApiRetryRunner } from "openclaw/plugin-sdk/retry-runtime";
 import { logVerbose, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { runAuthorizedTelegramRequest } from "./account-throttler.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
+import { markTelegramVisibleReplyDelivered } from "./bot-processing-outcome.js";
 import {
   isTelegramSkippableChunkSendError,
   mergeTelegramPartialDeliveryError,
@@ -110,6 +111,8 @@ export function createTelegramPreparedSender(config: {
     // One ledger owns provider acceptance. Receipt/cache/projection observers are
     // fallible and cannot retroactively turn an accepted part into a rejection.
     parts.push(accepted);
+    // Both funnels accept here, so a streamed reply also blocks a duplicate replay.
+    markTelegramVisibleReplyDelivered();
     return accepted;
   };
   const acceptMany = async (

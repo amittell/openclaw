@@ -6,6 +6,8 @@ export type SessionPendingInputState = "queued" | "interrupted" | "cancelled";
 export type SessionPendingInputReceipt = {
   state: "queued" | "consumed";
   inputId: string;
+  /** Stage-time request identity, taken before hooks and storage redaction. */
+  requestHash?: string;
   message: PersistedUserTurnMessage;
   run: <T>(operation: () => T) => T;
   runAsync?: <T>(operation: () => T) => Promise<Awaited<T>>;

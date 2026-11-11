@@ -20,6 +20,7 @@ const EmbeddedAgentConfigSchema = z.strictObject({
     .union([z.literal("trusted"), z.literal("sanitize"), z.literal("ignore")])
     .optional(),
   executionContract: z.union([z.literal("default"), z.literal("strict-agentic")]).optional(),
+  overloadBackoffMaxMs: z.number().optional(),
   cyberFailover: z
     .strictObject({
       mode: z.union([z.literal("auto"), z.literal("off")]).optional(),

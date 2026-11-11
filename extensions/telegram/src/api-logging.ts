@@ -1,3 +1,4 @@
+import { GrammyError } from "grammy";
 import {
   collectErrorGraphCandidates,
   extractErrorCode,
@@ -17,6 +18,21 @@ type TelegramApiLoggingParams<T> = {
 };
 
 const fallbackLogger = createSubsystemLogger("telegram/api");
+
+/**
+ * Ends the description of the synthetic 429 the account limiter returns for a replaceable
+ * update (typing, preview) it skipped on purpose. A final it could not send keeps "request not sent".
+ */
+export const TELEGRAM_SKIPPED_UPDATE_SUFFIX = "; replaceable update not sent)";
+
+/** True when the account limiter skipped a replaceable update, so it never reached Telegram. */
+function isTelegramSkippedUpdateError(err: unknown): boolean {
+  return (
+    err instanceof GrammyError &&
+    err.error_code === 429 &&
+    err.description.endsWith(TELEGRAM_SKIPPED_UPDATE_SUFFIX)
+  );
+}
 
 function formatTransportDiagnostics(error: unknown): string {
   const fields: { code?: string; syscall?: string } = {};
@@ -49,7 +65,8 @@ export async function withTelegramApiErrorLogging<T>(
   try {
     return await fn();
   } catch (err) {
-    if (!shouldLog || shouldLog(err)) {
+    // A skipped replaceable update is the limiter's choice, not an API failure; it warns once per flood wait.
+    if (!isTelegramSkippedUpdateError(err) && (!shouldLog || shouldLog(err))) {
       const transport = formatTransportDiagnostics(err);
       const errText = transport ? `network request failed${transport}` : formatErrorMessage(err);
       const log = logger ?? runtime?.error ?? ((message: string) => fallbackLogger.error(message));

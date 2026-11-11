@@ -2,11 +2,33 @@ import {
   extractErrorHttpStatus,
   formatTransportErrorCopy,
 } from "../../shared/assistant-error-format.js";
+import { modelKey } from "../../shared/model-key.js";
 import { describeFailoverError } from "../failover-error.js";
 import { renderFormatErrorCopy } from "./assistant-request-failure-copy.js";
 import { classifyFailoverReason } from "./classify.js";
+import { isFailoverError } from "./error.js";
 import { classifyProviderRequestFacets } from "./request-error-facets.js";
 import { resolveProviderRequestFailureCopy } from "./user-copy.js";
+
+// With fallbacks or several providers configured, the connection copy alone does not say which
+// service is down. A fallback summary carries the last attempt's model while its message joins
+// every attempt's error, so name only the models whose own attempt failed to connect.
+function resolveConnectionFailureModels(
+  error: unknown,
+  described: { provider?: string; model?: string },
+): string {
+  const attempts = isFailoverError(error) ? error.attempts : undefined;
+  if (!attempts?.length) {
+    return modelKey(described.provider ?? "", described.model ?? "");
+  }
+  const refs = attempts
+    .filter((attempt) =>
+      formatTransportErrorCopy([attempt.error, attempt.code].filter(Boolean).join(" ")),
+    )
+    .map((attempt) => modelKey(attempt.provider, attempt.model))
+    .filter(Boolean);
+  return [...new Set(refs)].join(", ");
+}
 
 export function resolveReplyFailoverFacts(error: unknown, message: string) {
   const described = describeFailoverError(error);
@@ -18,6 +40,7 @@ export function resolveReplyFailoverFacts(error: unknown, message: string) {
     reason === "timeout" && (status === undefined || status === 408)
       ? formatTransportErrorCopy([rawError, described.code].filter(Boolean).join(" "))
       : undefined;
+  const failedModels = transportCopy ? resolveConnectionFailureModels(error, described) : "";
   const classification = reason ? ({ kind: "reason", reason } as const) : null;
   return {
     reason: reason || undefined,
@@ -30,7 +53,7 @@ export function resolveReplyFailoverFacts(error: unknown, message: string) {
       reason === "format"
         ? renderFormatErrorCopy(rawError)
         : transportCopy
-          ? `⚠️ ${transportCopy} Check the conversation for any completed work before trying again.`
+          ? `⚠️ ${failedModels ? `${failedModels} request failed: ` : ""}${transportCopy} Check the conversation for any completed work before trying again.`
           : undefined,
     providerRequestError: resolveProviderRequestFailureCopy({
       classification,

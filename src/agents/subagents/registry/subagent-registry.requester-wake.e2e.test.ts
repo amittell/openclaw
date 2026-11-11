@@ -817,13 +817,10 @@ describe("requester settle wake product flow", () => {
             await vi.waitFor(() => {
               expect(firstWakeReturned).toBe(true);
               if (!acceptNextChild) {
+                // A successful empty requester turn consumes the findings quietly.
                 expect(
                   registry.getSubagentRunByRunId(alpha.runId)?.requesterSettleWake,
-                ).toMatchObject({
-                  status: "pending",
-                  attemptCount: 1,
-                  nextAttemptAt: expect.any(Number),
-                });
+                ).toBeUndefined();
               }
             });
             await vi.advanceTimersByTimeAsync(0);
@@ -846,19 +843,10 @@ describe("requester settle wake product flow", () => {
             } else {
               expect(registry.getSubagentRunByRunId(beta.runId)).toBeUndefined();
             }
-            // Cross both native retry deadlines; a transferred obligation must not
-            // start an extra parent turn, while an empty failed handoff must recover.
+            // Cross both native retry deadlines; neither a transferred obligation nor
+            // a quietly settled empty turn may start an extra parent turn.
             await flushOwnedWork();
             const retryHorizon = Date.now() + 151_000;
-            if (!acceptNextChild) {
-              const retryAt = registry.getSubagentRunByRunId(alpha.runId)?.requesterSettleWake
-                ?.nextAttemptAt;
-              expect(retryAt).toEqual(expect.any(Number));
-              // The retry starts real worker I/O. Join it before advancing fake time
-              // across that worker's timeout, while retaining the full no-replay window.
-              await vi.advanceTimersByTimeAsync(retryAt! - Date.now());
-              await flushOwnedWork();
-            }
             await vi.advanceTimersByTimeAsync(retryHorizon - Date.now());
             await registry.testing.sweepOnceForTests();
             await vi.advanceTimersByTimeAsync(0);
@@ -875,14 +863,16 @@ describe("requester settle wake product flow", () => {
                 sourceSessionKey: alpha.childSessionKey,
                 idempotencyKey: expect.not.stringContaining(":retry-"),
               },
-              {
-                sourceSessionKey: acceptNextChild ? beta.childSessionKey : alpha.childSessionKey,
-                idempotencyKey: acceptNextChild
-                  ? expect.not.stringContaining(":retry-")
-                  : expect.stringContaining(":retry-"),
-              },
+              ...(acceptNextChild
+                ? [
+                    {
+                      sourceSessionKey: beta.childSessionKey,
+                      idempotencyKey: expect.not.stringContaining(":retry-"),
+                    },
+                  ]
+                : []),
             ]);
-            expect(visibleFinals).toBe(1);
+            expect(visibleFinals).toBe(acceptNextChild ? 1 : 0);
             expect(sendMessageMock).not.toHaveBeenCalled();
             expect(
               countActiveDescendantRunsFromRuns(subagentRuns, MAIN_REQUESTER_SESSION_KEY, "main"),

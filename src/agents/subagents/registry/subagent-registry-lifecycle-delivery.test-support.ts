@@ -4,6 +4,7 @@ import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
 } from "../announce/subagent-announce-dispatch.js";
+import { resolveSubagentDeliveryStatus } from "./subagent-list.js";
 import {
   mutateLifecycleRun,
   readLifecycleRun,
@@ -163,6 +164,23 @@ export function registerLifecycleDeliveryReceiptCases({
     expect(cleanupBrowserSessionsForLifecycleEnd).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["parent", undefined, "consumed_privately"],
+    ["parent", true, "delivered"],
+    [undefined, undefined, "delivered"],
+  ] as const)(
+    "settles completionTarget=%s visibleFinal=%s as %s",
+    async (completionTarget, requesterVisibleFinalDelivered, label) => {
+      const { entry, controller } = createReceiptFixture(
+        { delivered: true, path: "direct", requesterVisibleFinalDelivered },
+        "delivered",
+        { completionTarget },
+      );
+      await completeAndJoinCleanup(controller, entry, visibleCompletion);
+      expect(resolveSubagentDeliveryStatus(readLifecycleRun(entry))).toBe(label);
+    },
+  );
 
   it("records completion announcement timestamps from transcript delivery", async () => {
     const { entry, controller } = createReceiptFixture(

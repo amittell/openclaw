@@ -26,7 +26,6 @@ import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatc
 import type { DeliveryContext } from "./subagent-announce-origin.js";
 
 type DirectAnnounceResponseContext = {
-  replyExpectation: "required" | "optional";
   params: {
     sourceTool?: string;
     expectsCompletionMessage: boolean;
@@ -64,7 +63,6 @@ function missingVisibleReplyResult(): SubagentAnnounceDeliveryResult {
 export function createDirectAnnounceResponseClassifier(context: DirectAnnounceResponseContext) {
   const {
     params,
-    replyExpectation,
     parentOnly,
     requesterSessionBound,
     deliveryTarget,
@@ -132,19 +130,7 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
       directAnnounceRecord?.status === "ok" &&
       !directAnnounceResult?.meta?.error &&
       !directAnnounceResult?.meta?.aborted;
-    // The producer snapshot survives NO_REPLY stripping. A promoted human result
-    // obligation cannot be waived by the optional input that started this turn.
-    const optionalSettleCompletedWithoutReply =
-      params.sourceTool === "subagent_settle" &&
-      replyExpectation === "optional" &&
-      asOptionalRecord(directAnnounceResult?.meta)?.terminalReplyExpectation !== "required" &&
-      requesterCompletedSuccessfully &&
-      !hasVisibleNonSilentGatewayPayload &&
-      (!terminalReply || terminalReply.disposition !== "visible") &&
-      directAnnounceResult?.meta?.yielded !== true &&
-      directAnnounceResult?.meta?.continuationPending !== true;
-    const requiresSettleReply =
-      params.sourceTool === "subagent_settle" && !optionalSettleCompletedWithoutReply;
+    const requiresSettleReply = params.sourceTool === "subagent_settle";
     const requiresAutomaticFinalReceipt =
       shouldDeliverAgentFinal &&
       (params.expectsCompletionMessage || params.requireVisibleReply || requiresSettleReply);
@@ -165,6 +151,20 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
         error: directDeliveryFailure,
         ...(automaticEvidence.mayHaveSent ? { disposition: "ambiguous" as const } : {}),
       };
+    }
+    if (
+      (isSubagentCompletion || params.sourceTool === "subagent_settle") &&
+      requesterCompletedSuccessfully &&
+      !hasVisibleNonSilentGatewayPayload &&
+      (!terminalReply || terminalReply.disposition !== "visible") &&
+      directAnnounceResult?.meta?.yielded !== true &&
+      directAnnounceResult?.meta?.continuationPending !== true
+    ) {
+      // Consuming child findings settles delivery; the parent owns any later answer.
+      return buildRequesterCompletionDeliveryResult(
+        hasFinalMessagingToolDelivery,
+        directAnnounceResult?.meta?.finalAssistantVisibleText,
+      );
     }
     const terminalDelivery = normalizeAgentRunTerminalDeliverySnapshot(
       directAnnounceResult?.deliveryStatus,

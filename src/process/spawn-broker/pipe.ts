@@ -1,5 +1,5 @@
 import type { Socket } from "node:net";
-import { SpawnBrokerError } from "./protocol.js";
+import { serializeBrokerError, SpawnBrokerError, type BrokerRequest } from "./protocol.js";
 
 type HeldPipe = { read: Socket["read"]; resumed: boolean; onResume: () => void };
 const readers = new WeakMap<Socket, HeldPipe>();
@@ -86,6 +86,26 @@ export function takePipePrefix(socket: Socket): Buffer {
     throw new Error("Spawn broker pipe must contain bytes");
   }
   return buffered;
+}
+
+/** Acknowledge a transferred pipe whose request already retired, and drain it. */
+export function drainUntrackedPipe(
+  pipe: { id: number; fd: number },
+  transmit: (message: BrokerRequest) => Promise<void>,
+): Promise<void> {
+  // The broker forgets an owned command only after every transferred fd is
+  // drained, and a retired request has no caller left to drain this one.
+  return Promise.all([
+    transmit({ type: "pipe-received", id: pipe.id, fd: pipe.fd }),
+    transmit({
+      type: "output-drained",
+      id: pipe.id,
+      fd: pipe.fd,
+      error: serializeBrokerError(
+        new SpawnBrokerError("Spawn broker pipe arrived after its request retired"),
+      ),
+    }),
+  ]).then(() => undefined);
 }
 
 /** Publish stream data and EOF after the caller's readiness continuation. */

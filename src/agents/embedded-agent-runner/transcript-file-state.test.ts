@@ -1,17 +1,14 @@
 // Transcript file state tests cover tolerant JSONL reads, malformed entries,
 // branch leaf recovery, and repair-supported legacy payload shapes.
 import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseSessionEntries, SessionManager } from "../sessions/index.js";
+import type { SessionManager } from "../sessions/index.js";
 import { textToolResult } from "../test-helpers/sparse-transcript.test-support.js";
-
-const roots: string[] = [];
-
-async function readTranscriptState(sessionFile: string): Promise<SessionManager> {
-  return SessionManager.fromEntries(parseSessionEntries(await fs.readFile(sessionFile, "utf8")));
-}
+import {
+  cleanupTranscriptFixtureRoots,
+  readTranscriptState,
+  writeTranscriptFixture,
+} from "./transcript-file-state.test-support.js";
 
 async function persistTranscriptStateMutation(params: {
   sessionFile: string;
@@ -29,40 +26,8 @@ async function persistTranscriptStateMutation(params: {
   }
 }
 
-async function makeRoot(prefix: string): Promise<string> {
-  // Each file-state case writes a full JSONL transcript under its own root so
-  // orphan/leaf behavior stays isolated.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  roots.push(root);
-  return root;
-}
-
-async function writeTranscriptFixture(
-  prefix: string,
-  entryLines: string[],
-  header: { version?: number; timestamp?: string } = {},
-): Promise<string> {
-  const root = await makeRoot(prefix);
-  const sessionFile = path.join(root, "session.jsonl");
-  await fs.writeFile(
-    sessionFile,
-    [
-      JSON.stringify({
-        type: "session",
-        version: header.version ?? 3,
-        id: "session-1",
-        timestamp: header.timestamp ?? "2026-05-16T00:00:00.000Z",
-        cwd: root,
-      }),
-      ...entryLines,
-    ].join("\n") + "\n",
-    "utf8",
-  );
-  return sessionFile;
-}
-
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await cleanupTranscriptFixtureRoots();
 });
 
 describe("readTranscriptState", () => {
@@ -165,106 +130,6 @@ describe("readTranscriptState", () => {
     expect(appended.parentId).toBe(activeLeafId);
     const reopened = await readTranscriptState(sessionFile);
     expect(reopened.getBranch().map((entry) => entry.id)).toEqual([activeLeafId, appended.id]);
-  });
-
-  it("preserves legacy compaction keep indexes across JSON-valid non-object rows", async () => {
-    const sessionFile = await writeTranscriptFixture(
-      "openclaw-transcript-state-v1-compaction-null-row-",
-      [
-        JSON.stringify({
-          type: "message",
-          timestamp: "2026-05-16T00:00:01.000Z",
-          message: { role: "user", content: "legacy prelude" },
-        }),
-        "null",
-        JSON.stringify({
-          type: "message",
-          timestamp: "2026-05-16T00:00:02.000Z",
-          message: { role: "user", content: "legacy kept suffix" },
-        }),
-        JSON.stringify({
-          type: "compaction",
-          timestamp: "2026-05-16T00:00:03.000Z",
-          summary: "summary",
-          firstKeptEntryIndex: 3,
-          tokensBefore: 200,
-        }),
-      ],
-      { version: 1 },
-    );
-
-    const state = await readTranscriptState(sessionFile);
-    const kept = state
-      .getEntries()
-      .find(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message.role === "user" &&
-          entry.message.content === "legacy kept suffix",
-      );
-    const compaction = state.getEntries().find((entry) => entry.type === "compaction");
-
-    expect(kept).toBeDefined();
-    expect(compaction).toMatchObject({ firstKeptEntryId: kept?.id });
-    expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
-      { role: "user", content: "legacy kept suffix" },
-    ]);
-  });
-
-  it("remaps malformed compaction markers to descendants on the active branch", async () => {
-    const sessionFile = await writeTranscriptFixture(
-      "openclaw-transcript-state-compaction-branch-marker-",
-      [
-        JSON.stringify({
-          type: "message",
-          id: "bad-message",
-          parentId: null,
-          timestamp: "2026-05-16T00:00:01.000Z",
-          message: { role: "user" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-a-user",
-          parentId: "bad-message",
-          timestamp: "2026-05-16T00:00:02.000Z",
-          message: { role: "user", content: "other branch" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-b-user",
-          parentId: "bad-message",
-          timestamp: "2026-05-16T00:00:03.000Z",
-          message: { role: "user", content: "active branch kept turn" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "branch-b-assistant",
-          parentId: "branch-b-user",
-          timestamp: "2026-05-16T00:00:04.000Z",
-          message: { role: "assistant", content: [{ type: "text", text: "active reply" }] },
-        }),
-        JSON.stringify({
-          type: "compaction",
-          id: "compact-1",
-          parentId: "branch-b-assistant",
-          timestamp: "2026-05-16T00:00:05.000Z",
-          summary: "summary",
-          firstKeptEntryId: "bad-message",
-          tokensBefore: 200,
-        }),
-      ],
-    );
-
-    const state = await readTranscriptState(sessionFile);
-    const compaction = state.getEntries().find((entry) => entry.type === "compaction");
-
-    expect(compaction).toMatchObject({ firstKeptEntryId: "branch-b-user" });
-    expect(state.buildSessionContext().messages).toMatchObject([
-      { role: "compactionSummary", summary: "summary" },
-      { role: "user", content: "active branch kept turn" },
-      { role: "assistant", content: [{ type: "text", text: "active reply" }] },
-    ]);
   });
 
   it("breaks cycles between canonical and opaque rows", async () => {

@@ -84,6 +84,9 @@ async function appendBranchEntry(params: {
         // An unknown historical run must not inherit the rewriting run's identity.
         { runId: identity?.runId, ...identity },
         entry.tokensAfter,
+        // Rewrites map rows one to one, so the original count still holds, and the rewritten
+        // branch may be a bounded load that no longer holds the rows it shadows.
+        entry.shadowedEntryCount,
       );
     }
     case "reset":

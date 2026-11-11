@@ -122,11 +122,20 @@ export async function createEmbeddedRunSessionPromptState(input: {
       notifySessionIdChanged(previousSessionId);
     }
   };
+  // A retry limited to delivery keeps that narrower tool set for every later attempt
+  // in this run; a later prompt can narrow it further but never widen it.
+  let retryToolsAllow: string[] | undefined;
   // Internal control prompts are model-only context, never operator-authored transcript turns.
-  const activateInternalPrompt = (prompt: string) => {
+  const activateInternalPrompt = (prompt: string, options?: { retryToolsAllow?: string[] }) => {
     basePromptOverride = prompt;
     Object.assign(activePrompt, { persisted: true, internal: true });
     suppressNextUserMessagePersistence = true;
+    const narrowed = options?.retryToolsAllow;
+    if (narrowed) {
+      retryToolsAllow = retryToolsAllow
+        ? retryToolsAllow.filter((name) => narrowed.includes(name))
+        : [...narrowed];
+    }
   };
   // An outer model fallback starts a fresh invocation, but its retry instructions
   // cannot recapture the original user projection after that turn has dispatched.
@@ -269,6 +278,9 @@ export async function createEmbeddedRunSessionPromptState(input: {
     },
     get activePrompt() {
       return activePrompt;
+    },
+    get retryToolsAllow() {
+      return retryToolsAllow;
     },
     get continuation() {
       return continuation;

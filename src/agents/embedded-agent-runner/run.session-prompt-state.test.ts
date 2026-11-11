@@ -430,6 +430,18 @@ describe("embedded run session prompt state", () => {
     expect(state.activePrompt.override).toBe("empty-response retry");
   });
 
+  it("keeps a delivery-only retry tool set for later attempts without widening it", async () => {
+    await using state = await createState();
+    expect(state.retryToolsAllow).toBeUndefined();
+    state.activateInternalPrompt("deliver now", { retryToolsAllow: ["message"] });
+    state.activateInternalPrompt("empty-response retry");
+    expect(state.retryToolsAllow).toEqual(["message"]);
+    state.activateInternalPrompt("another retry", { retryToolsAllow: ["read", "message"] });
+    expect(state.retryToolsAllow).toEqual(["message"]);
+    state.activateInternalPrompt("no tools", { retryToolsAllow: [] });
+    expect(state.retryToolsAllow).toEqual([]);
+  });
+
   it("keeps a draft revision pending until its owned projection is ready", async () => {
     const reconcile = await import("../../config/sessions/session-transcript-reconcile.js");
     const projection = createDeferred();

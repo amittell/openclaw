@@ -620,6 +620,8 @@ export async function prepareEmbeddedAttemptSessionManager(
     allowSyntheticToolResults: transcriptPolicy.allowSyntheticToolResults,
     missingToolResultText: isOpenAIResponsesApi ? "aborted" : undefined,
     allowedToolNames: input.replayAllowedToolNames,
+    // Deny local-media replay authority until the agent session supplies its trust set.
+    trustedLocalMediaToolNames: new Set<string>(),
     trigger: attempt.trigger,
     suppressNextUserMessagePersistence:
       prepareInitialUserTurnReplay !== undefined || attempt.suppressNextUserMessagePersistence,

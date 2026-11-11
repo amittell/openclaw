@@ -45,7 +45,10 @@ import {
   captureSessionEventTargetForHost,
   enqueueSessionEventForHost,
 } from "./session-event-handoff.js";
-import { prepareSessionEventTargetForHost } from "./session-event-target.js";
+import {
+  combineSessionEventTargetsForHost,
+  prepareSessionEventTargetForHost,
+} from "./session-event-target.js";
 // These cases stop before turn admission. Unexpected dispatch is a failure,
 // never a synthetic adoption/settlement supplied by the fixture.
 const dispatch = vi.hoisted(() =>
@@ -530,6 +533,29 @@ describe("session event target custody", () => {
         }),
       ).toThrow("Background producer retired");
       expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+    });
+  });
+
+  it("refuses to batch completions that retain different requesters", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const capture = (senderId?: string) =>
+        captureSessionEventTargetForHost("main", sessionKey, {
+          env,
+          ...(senderId ? { requester: { route, senderId, chatType: "group" as const } } : {}),
+        });
+      const [alice, aliceAgain, bob, none] = await Promise.all([
+        capture("alice"),
+        capture("alice"),
+        capture("bob"),
+        capture(),
+      ]);
+      // The combined turn restores the first target's requester for every target.
+      expect(() => combineSessionEventTargetsForHost([alice, aliceAgain])).not.toThrow();
+      for (const other of [bob, none]) {
+        expect(() => combineSessionEventTargetsForHost([alice, other])).toThrow(
+          "different requesters",
+        );
+      }
     });
   });
 

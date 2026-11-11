@@ -57,10 +57,12 @@ import {
   resolveAgentRestartRecoveryContext,
   resolveAgentRestartRecoveryExecutionIdentityAdmission,
 } from "./agent-restart-recovery-context.js";
+import { recordAgentRunCompletedTurnMarker } from "./agent-run-completed-turn.js";
 import { createAgentRunDiagnostics } from "./agent-run-diagnostics.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
 import { projectWithdrawnAgentInput } from "./agent-run-dispatch-outcome.js";
 import { resolveExecutionIdentitySpawnFacts } from "./agent-run-execution-lineage.js";
+import { createAgentRunExecutionStartedHandler } from "./agent-run-execution-started.js";
 import type { StartAgentRunExecutionParams } from "./agent-run-execution-types.js";
 import { dispatchAgentRunWithMedia } from "./agent-run-media.js";
 import { settleUnstartedGatewayFollowup } from "./agent-run-subagent.js";
@@ -578,23 +580,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
                 cleanupBundleMcpOnRunEnd: params.request.cleanupBundleMcpOnRunEnd,
                 abortSignal: prepared.activeRunAbort.controller.signal,
                 lifecycleGeneration: params.lifecycleGeneration,
-                onExecutionStarted: () => {
-                  if (!prepared.activeRunAbort.markExecutionStarted()) {
-                    return;
-                  }
-                  params.io.emitExecutionStarted?.();
-                  if (params.resolvedSessionKey) {
-                    emitSessionsChanged(
-                      params.context,
-                      {
-                        sessionKey: params.resolvedSessionKey,
-                        agentId: params.agentId,
-                        reason: "agent.run.started",
-                      },
-                      { accessChanged: false },
-                    );
-                  }
-                },
+                onExecutionStarted: createAgentRunExecutionStartedHandler(params),
                 onActiveModelSelected: createAgentRunModelSelectionHandler({
                   context: params.context,
                   runId: params.runId,
@@ -656,6 +642,8 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             executionIdentitySpawnFacts,
           ),
         );
+        // Success exit only: a run that threw or was aborted stays re-drivable.
+        recordAgentRunCompletedTurnMarker(params, diagnostics);
       } catch (err) {
         if (prepared.activeRunAbort.controller.signal.aborted && isAbortError(err)) {
           await finishUndispatchedAbort();

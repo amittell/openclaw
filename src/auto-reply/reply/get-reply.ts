@@ -74,7 +74,7 @@ import { runPreparedReply } from "./get-reply-run.js";
 import { prepareInternalGetReplyOptions, withExtractedFileImages } from "./get-reply.types.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import {
-  hasInboundAudio,
+  hasAnyInboundAudio,
   hasInboundMedia,
   hasInboundMediaForUnderstanding,
 } from "./inbound-media.js";
@@ -443,7 +443,7 @@ async function resolveReplyFromConfig(
   if (mediaUnderstandingRequested) {
     const shouldApplyLockedAudio =
       utilityModelSelectionLocked &&
-      hasInboundAudio(finalized) &&
+      hasAnyInboundAudio(finalized) &&
       hasExplicitAudioUnderstandingConfig(cfg);
     // Native harnesses receive images directly, but generic file attachments
     // still need host extraction. Only explicitly configured STT runs when locked.

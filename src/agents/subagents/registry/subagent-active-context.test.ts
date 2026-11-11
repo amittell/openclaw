@@ -273,6 +273,24 @@ describe("buildActiveSubagentRuntimeContext", () => {
     expect(laterParentTurn).toContain('taskName_json="summarize_inbox"');
   });
 
+  it("labels a recent private consumption as delivery=consumed_privately", async () => {
+    seedSubagentRunForReadTest({
+      runId: "recent-private",
+      childSessionKey: "agent:main:subagent:recent-private",
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      endedAt: Date.now() - 60_000,
+      outcome: { status: "ok" },
+      completionTarget: "parent",
+      delivery: { status: "delivered", consumedPrivately: true },
+    });
+    const prompt = await buildActiveSubagentRuntimeContext({
+      cfg: {} as OpenClawConfig,
+      controllerSessionKey: "agent:main:main",
+    });
+    expect(prompt).toContain("delivery=consumed_privately;");
+  });
+
   it.each([
     { status: "failed", cleaned: true, wake: false, outstanding: false },
     { status: "failed", cleaned: false, wake: false, outstanding: true },

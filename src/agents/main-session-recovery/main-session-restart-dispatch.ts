@@ -3,7 +3,10 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  MainRestartRecoveryCause,
+} from "../../config/sessions.js";
 import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import type { SessionEntryCurrentFacts } from "../../config/sessions/session-entry-current.types.js";
@@ -17,16 +20,10 @@ import type { AgentRunRequest } from "../../gateway/server-methods/agent-request
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
-import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
-import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
-import {
-  buildSubagentRestartRecoveryRoster,
-  SUBAGENT_RESTART_RECOVERY_INSTRUCTION,
-} from "../subagents/subagent-restart-recovery-prompt.js";
-import { TOOL_FAILURE_INSTRUCTION } from "../tool-outcome-instructions.js";
+import { buildSubagentRestartRecoveryRoster } from "../subagents/subagent-restart-recovery-prompt.js";
 import {
   runWithMainSessionRecoveryAdmission,
   type MainSessionRecoveryAdmission,
@@ -46,6 +43,7 @@ import {
   commitMainSessionRecovery,
   type MainSessionRecoveryStoreTarget,
 } from "./main-session-recovery-store.js";
+import { resolveRestartRecoveryResumeMessage } from "./main-session-restart-dispatch-resume-message.js";
 import {
   settleAcceptedRestartRecovery,
   settleRejectedRestartRecovery,
@@ -67,13 +65,6 @@ import {
   readInterruptedRunId,
 } from "./main-session-restart-recovery-shared.js";
 
-const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
-  `${RESTART_RECOVERY_INTERRUPTION_NOTE} The restart did not cancel the user's task. ` +
-    "Continue from the existing transcript: check the current state, recover interrupted work, " +
-    "and finish the task without asking the user to repeat the request. " +
-    `${SUBAGENT_RESTART_RECOVERY_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`,
-);
-
 const RESTART_SAFE_TOOLS_NOTICE =
   "For this turn only, the tool surface has been narrowed to replay-safe tools as a " +
   "recovery precaution. Use the tools that are available to report status or continue " +
@@ -83,11 +74,13 @@ function buildResumeMessage(
   pendingFinalDeliveryText: string,
   forceRestartSafeTools?: boolean,
   childRecoveryRoster?: string,
+  cause?: MainRestartRecoveryCause,
 ): string {
   const sanitizedPendingText = sanitizePendingFinalDeliveryText(pendingFinalDeliveryText);
+  const resumeMessage = resolveRestartRecoveryResumeMessage(cause);
   const instructions = forceRestartSafeTools
-    ? `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
-    : RESTART_RECOVERY_RESUME_MESSAGE;
+    ? `${resumeMessage}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
+    : resumeMessage;
   const base = childRecoveryRoster ? `${instructions}\n\n${childRecoveryRoster}` : instructions;
   return sanitizedPendingText
     ? `${base}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`
@@ -441,6 +434,7 @@ async function resumeMainSessionWithinAdmission(
             requesterStorePath,
           }),
         ),
+        params.entry.mainRestartRecovery?.cause,
       ),
       sessionKey: dispatchSessionKey,
       expectedExistingSessionId: params.entry.sessionId,
@@ -603,6 +597,7 @@ async function resumeMainSessionWithinAdmission(
           lifecycleGeneration,
           deliveryContext,
           cfg: params.cfg,
+          cause: params.entry.mainRestartRecovery?.cause,
           shouldContinue: () =>
             !dispatchSettled && taskRemainsOwed() && params.shouldContinue?.() !== false,
           gatewayRuntime: params.gatewayRuntime,

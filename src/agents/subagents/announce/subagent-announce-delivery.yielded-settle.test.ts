@@ -67,7 +67,7 @@ describe("yielded private settle outcomes", () => {
           },
         },
       },
-      expected: { delivered: false, reason: "visible_reply_missing" },
+      expected: { delivered: true },
     },
     {
       name: "public required silence",
@@ -76,7 +76,7 @@ describe("yielded private settle outcomes", () => {
         status: "ok",
         result: { payloads: [], meta: { terminalReply: { disposition: "silent" } } },
       },
-      expected: { delivered: false, reason: "visible_reply_missing" },
+      expected: { delivered: true },
     },
     {
       name: "failed silence",

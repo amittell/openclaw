@@ -246,6 +246,83 @@ describe("memory-lancedb doctor migration", () => {
     migratedConnection.close();
   });
 
+  test("deletes only rows captured from OpenClaw system-turn prompts", async () => {
+    const benignRows = [
+      { id: "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1", text: "I prefer dark mode" },
+      {
+        id: "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2",
+        text: "The [System] tray icon should stay blue",
+      },
+      {
+        id: "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3",
+        text: "[Systemd] units always restart on failure",
+      },
+      {
+        id: "c4c4c4c4-c4c4-4c4c-8c4c-c4c4c4c4c4c4",
+        text: "You wrote an answer but never delivered it: remember to resend the invoice.",
+      },
+    ];
+    const systemTurnRows = [
+      {
+        id: "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1",
+        text: "[System] Your previous turn was interrupted by a gateway restart. Never claim completion.",
+      },
+      {
+        id: "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2",
+        text: "  [System] Continue from the recovered transcript and finish the interrupted work.",
+      },
+      {
+        // The silent-stop nudge as stored before it carried the [System] marker.
+        id: "d3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3d3",
+        text: "You wrote an answer but never delivered it: this session only reaches the user through the message tool. Send your final answer now with a single message tool call. Do not restate your analysis or restart from scratch.",
+      },
+    ];
+    const connection = await lancedb.connect(getDbPath());
+    const table = await connection.createTable(
+      "memories",
+      [...benignRows, ...systemTurnRows].map((row, index) =>
+        Object.assign(
+          {
+            vector: [1, 0],
+            importance: 0.7,
+            category: "fact",
+            createdAt: index + 1,
+            agentId: "main",
+          },
+          row,
+        ),
+      ),
+    );
+    table.close();
+    connection.close();
+    const params = migrationParams();
+    const migration = expectDefined(
+      stateMigrations.find(({ id }) => id === "memory-lancedb-system-turn-rows"),
+      "memory-lancedb system-turn state migration",
+    );
+    expect(migration.doctorOnly).toBe(true);
+
+    await expect(migration.detectLegacyState(params)).resolves.toEqual({
+      preview: [
+        `- Memory LanceDB: delete 3 memory rows captured from OpenClaw system-turn prompts at ${getDbPath()}`,
+      ],
+    });
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
+      changes: ["Deleted 3 Memory LanceDB rows captured from OpenClaw system-turn prompts"],
+      warnings: [],
+    });
+    await expect(migration.detectLegacyState(params)).resolves.toBeNull();
+
+    const migratedConnection = await lancedb.connect(getDbPath());
+    const migratedTable = await migratedConnection.openTable("memories");
+    await expect(migratedTable.countRows()).resolves.toBe(benignRows.length);
+    for (const row of systemTurnRows) {
+      await expect(migratedTable.countRows(`id = '${row.id}'`)).resolves.toBe(0);
+    }
+    migratedTable.close();
+    migratedConnection.close();
+  });
+
   test("resolves a relative database path from the plugin root", async () => {
     const packageRoot = path.join(getTmpDir(), "standalone-package");
     const packagedDoctorUrl = pathToFileURL(

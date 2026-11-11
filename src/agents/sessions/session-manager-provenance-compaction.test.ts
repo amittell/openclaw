@@ -89,7 +89,7 @@ it("persists a generated provenance compaction across reload and branch navigati
     if (!result.ok) {
       throw result.error;
     }
-    source.appendCompaction(
+    const compactionId = source.appendCompaction(
       result.value.summary,
       result.value.firstKeptEntryId,
       result.value.tokensBefore,
@@ -115,8 +115,16 @@ it("persists a generated provenance compaction across reload and branch navigati
       }),
     );
     const context = SessionManager.openModelContext(scope).buildSessionContext();
+    // The fork appends a compaction checkpoint handle to a compaction entry's summary in the
+    // MODEL context, so the model keeps a handle to page the shadowed span with
+    // (sessions_history / chat.history compactionId; packages/agent-core/src/harness/session/
+    // session.ts, fork-only). The persisted entry above keeps the bare summary. Pinned to the
+    // exact handle, not relaxed to a prefix, so a change in its shape still fails here.
     expect(context.messages).toContainEqual(
-      expect.objectContaining({ role: "compactionSummary", summary: result.value.summary }),
+      expect.objectContaining({
+        role: "compactionSummary",
+        summary: `${result.value.summary}\n[compaction checkpoint ${compactionId}: shadows 3 earlier entries]`,
+      }),
     );
     expect(context.messages.at(-1)).toMatchObject({ role: "user", content: "Branch follow-up." });
   });

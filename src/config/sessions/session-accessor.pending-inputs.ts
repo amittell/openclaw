@@ -14,6 +14,7 @@ import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contrac
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { rethrowIncognitoSessionError } from "../../state/incognito-session-error.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
+import { classifyCommittedPendingInputReplay } from "./session-accessor.pending-input-replay.js";
 import {
   preparePendingInputRequest,
   resolveCommittedPendingInputRequestHash,
@@ -63,6 +64,10 @@ import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 export { withSessionPendingInputRelocation };
+export {
+  computeSessionPendingInputRequestHash,
+  recordSessionPendingInputCompletedTurn,
+} from "./session-accessor.pending-input-replay.js";
 export type { SessionPendingInput, SessionPendingInputPage };
 export type { SessionPendingInputReceipt } from "./session-pending-input-receipt.types.js";
 
@@ -76,7 +81,10 @@ export function readWithdrawnSessionPendingInputId(
   return owner && withdrawnOwners.has(owner) ? owner.inputId : undefined;
 }
 
-function ownerReceipt(owner: SessionPendingInputOwner): SessionPendingInputReceipt {
+function ownerReceipt(
+  owner: SessionPendingInputOwner,
+  requestHash?: string,
+): SessionPendingInputReceipt {
   const receipt: SessionPendingInputReceipt = {
     get state() {
       return owner.consumed || owner.sources?.every((source) => source.consumed)
@@ -84,6 +92,7 @@ function ownerReceipt(owner: SessionPendingInputOwner): SessionPendingInputRecei
         : "queued";
     },
     inputId: owner.inputId,
+    ...(requestHash ? { requestHash } : {}),
     message: parseSessionPendingInputMessage(owner.messageJson),
     run: (operation) => runWithSessionPendingInput(owner, operation),
     runAsync: (operation) =>
@@ -346,6 +355,7 @@ async function stagePreparedPendingInput(
         return {
           state: "consumed",
           inputId: existing.input_id,
+          requestHash,
           message: parseSessionPendingInputMessage(existing.message_json),
           run: () => {
             throw new Error("Pending input has already been consumed");
@@ -485,6 +495,36 @@ async function stagePreparedPendingInput(
         requestHash = committedHash;
         await assertCurrent();
       }
+      // The answered-turn replay rule (fork; session-accessor.pending-input-replay.ts):
+      // trackCompletion retries keep 9.5's contract and are always admitted.
+      const replay = options.trackCompletion
+        ? "admit"
+        : await classifyCommittedPendingInputReplay({
+            scope,
+            sessionKey: store.sessionKey,
+            assertCurrent: store.assertCurrent,
+            idempotencyKey: identity.idempotencyKey,
+            requestHash,
+            committedTimestamp: committed.message.timestamp,
+          });
+      if (replay === "rotated") {
+        return undefined;
+      }
+      if (replay === "answered") {
+        // Terminal receipts hold no store custody, like the consumed returns above, so the
+        // store is released on the way out instead of waiting for a finish that may not come.
+        return {
+          state: "consumed",
+          inputId: committed.messageId,
+          requestHash,
+          message: committed.message,
+          run: (operation) => {
+            options.assertCurrent();
+            return operation();
+          },
+          finish: () => {},
+        };
+      }
       retained = true;
       const run = <T>(operation: () => T) => {
         store.assertCurrent();
@@ -499,6 +539,7 @@ async function stagePreparedPendingInput(
       return {
         state: "queued",
         inputId: committed.messageId,
+        requestHash,
         message: committed.message,
         run,
         assertLifetimeCurrent: () => {
@@ -604,7 +645,7 @@ async function stagePreparedPendingInput(
       );
     }
     retained = true;
-    return Object.assign(ownerReceipt(owner), completionMethods);
+    return Object.assign(ownerReceipt(owner, requestHash), completionMethods);
   } finally {
     if (!retained) {
       await store.release();

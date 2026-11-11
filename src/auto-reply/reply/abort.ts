@@ -17,6 +17,8 @@ export type FastAbortRequestParams = {
   ctx: FinalizedRuntimeMsgContext;
   cfg: OpenClawConfig;
   isCommandTargetCurrent?: SessionSourceCheck | AsyncSessionSourceCheck;
+  /** Runs once for a stop request, before Stop selects any input to cancel. */
+  onAbortRequest?: () => void;
 };
 
 export type FastAbortResult = {
@@ -78,6 +80,7 @@ export async function tryFastAbortFromMessage(
   if (!request) {
     return { handled: false, aborted: false };
   }
+  params.onAbortRequest?.();
   // Normalized ingress is not authority. The operation resolves authorization
   // and retains current-target validation after loading cancellation machinery.
   const { executeFastAbortRequest } = await import("./abort-operation.js");

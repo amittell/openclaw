@@ -11,6 +11,7 @@ import {
 } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { loadPendingFinalDeliveryPayload } from "../registry/subagent-delivery-state.js";
+import { resolveSubagentDeliveryStatus } from "../registry/subagent-list.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
@@ -153,6 +154,32 @@ describe("persisted subagent requester wakes", () => {
       expect(currentCompletionRun(input).requesterSettleWake).toBeUndefined();
       expect(loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.cleanupHandled).toBe(
         false,
+      );
+    },
+  );
+
+  it.each([true, false])(
+    "keeps a private batch delivered only with a confirmed visible final (visible=%s)",
+    async (visible) => {
+      const input = armRequesterWake(records());
+      input.subagent.completionTarget = "parent";
+      persistOwner(input);
+      await mutateRequesterCompletionBatch({
+        entries: [input.subagent],
+        operation: {
+          kind: "settle",
+          outcome: {
+            delivered: true,
+            path: "direct",
+            ...(visible ? { requesterVisibleFinalDelivered: true as const } : {}),
+          },
+        },
+        assertCurrent: () => {},
+        databaseOptions: { database },
+      });
+      const stored = loadSubagentRegistryFromSqlite().get(input.subagent.runId);
+      expect(stored && resolveSubagentDeliveryStatus(stored)).toBe(
+        visible ? "delivered" : "consumed_privately",
       );
     },
   );
@@ -304,7 +331,7 @@ describe("persisted subagent requester wakes", () => {
           await retry.run();
           expect(observed).toHaveBeenCalledOnce();
           expect(observed.mock.results[0]?.value).toEqual([undefined, undefined]);
-          expect(readCompletionSystemEvents(database)).toHaveLength(2);
+          expect(readCompletionSystemEvents(database)).toEqual([]);
           database = await reopenCompletionFixtureOwners();
           for (const input of inputs) {
             expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toBeUndefined();
@@ -652,9 +679,7 @@ describe("persisted subagent requester wakes", () => {
         expect(subagentRuns.get(second.subagent.runId)?.requesterSettleWake).toEqual(
           ["retired", "blocked", "blocked retirement"].includes(change) ? undefined : newerWake,
         );
-        expect(readCompletionSystemEvents(database)).toHaveLength(
-          (blocked ? 1 : 0) + (delivered ? 0 : 2),
-        );
+        expect(readCompletionSystemEvents(database)).toEqual([]);
       } finally {
         process.env.OPENCLAW_STATE_DIR = originalStateDir;
         publication.restore();

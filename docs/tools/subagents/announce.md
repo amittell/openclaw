@@ -16,6 +16,13 @@ Sub-agents report back through completion delivery:
 - Subagents must return a meaningful result or a concrete blocker. An exact child `NO_REPLY` response or no output cannot satisfy a missing child result and triggers normal missing-answer recovery. A retained completion without a visible result is handed to the requester as `(no output)`, including when several child results are collected together.
 - Duplicate delivery is suppressed through recorded completion and source-message delivery facts. Subagents and internal parent review turns do not use silent tokens for deduplication.
 
+A requester completion turn may finish with `NO_REPLY` or no visible text. That
+settles the child's completion without a retry, an extra model turn, or a blocked
+delivery notice. The child result remains available in its session and the
+**Subagents** panel. This also applies when the completion guidance asks the parent
+to answer the user: later parent turns own any outstanding answer. A child task
+itself still owes its result; this quiet settlement applies to the parent reviewing it.
+
 By default, delivery depends on requester depth:
 
 - Top-level requester sessions use a follow-up `agent` call. External conversations use `deliver=true`; WebChat conversations stay in-session with `deliver=false`.
@@ -60,10 +67,11 @@ context messages. If transcript persistence rejects a completion because its
 keyed input belongs to a closed turn, delivery records a permanent failure with
 the error. It does not retry other models or keep scheduling the same completion.
 
-Blocked completion warnings identify the child run and retain the concrete delivery
-error across retries. A confirmed handoff remains delivered even if its receipt
-callback fails; cleanup must not replay an already consumed result. Failures before
-a delivery result is reported follow the same retryability policy as direct sends.
+Completion failures retain the concrete delivery error in the run's delivery state
+without queuing a system notice into the parent session. A confirmed handoff remains
+delivered even if its receipt callback fails; cleanup must not replay an already
+consumed result. Failures before a delivery result is reported follow the same
+retryability policy as direct sends.
 
 Transcript writer-claim changes remain retryable when no send is confirmed. If
 local retries are exhausted, the completion stays eligible for bounded requester
@@ -79,8 +87,14 @@ child's result remains available for recovery.
 
 Set `completionTarget: "parent"` on `sessions_spawn` to return the result in a
 private turn of the original requester session. The parent reviews the result,
-continues unfinished work, and records the reviewed outcome in its internal final
-reply. OpenClaw does not automatically send the child result, parent final, or
+continues unfinished work, and settles the reviewed input. Private processing may
+finish with `NO_REPLY` or no text; that settles the completion without a retry or
+another model turn, and it does not by itself satisfy an outstanding user reply.
+Once the parent turn that processes the result finishes, the run records delivery
+as `delivered`. The parent's later runtime context and the `subagents` tool report
+it as `consumed_privately` instead, unless that turn's final reply reached the
+source conversation.
+OpenClaw does not automatically send the child result, parent final, or
 generated media to a channel. The parent can still choose to send a message
 through its permitted tools.
 

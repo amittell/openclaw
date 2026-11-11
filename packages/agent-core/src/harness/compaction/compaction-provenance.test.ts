@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createAssistantMessageEventStream } from "../../llm.js";
 import type { AssistantMessage, StreamFn } from "../../llm.js";
 import type { AgentMessage } from "../../types.js";
-import { buildSessionContext } from "../session/session.js";
+import { buildSessionContext, countCompactionShadowedEntries } from "../session/session.js";
 import {
   compact,
   estimateTokens,
@@ -182,12 +182,17 @@ describe("compaction sender provenance", () => {
         parentId: entries.at(-1)?.id ?? null,
         timestamp: new Date(6).toISOString(),
         ...result.value,
+        shadowedEntryCount: countCompactionShadowedEntries(entries, result.value.firstKeptEntryId),
       },
     ]);
+    // FORK DIVERGENCE (compaction checkpoint handle): the fork appends a checkpoint handle
+    // to a compaction entry's summary in the model context (session-context.ts), so the
+    // replayed summary is the generated text followed by that handle line.
     expect(context.messages[0]).toMatchObject({
       role: "compactionSummary",
       summary:
-        "Alex approved rollout. Bea requires review before deployment. Legacy note remains unattributed.",
+        "Alex approved rollout. Bea requires review before deployment. Legacy note remains unattributed." +
+        "\n[compaction checkpoint compaction-1: shadows 4 earlier entries]",
     });
     expect(context.messages.at(-1)).toEqual(messages.at(-1));
   });

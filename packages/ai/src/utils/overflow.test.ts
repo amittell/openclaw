@@ -57,6 +57,16 @@ describe("provider overflow messages", () => {
     "400 The decoder prompt (length 40000) is longer than the maximum model length of 32768. Make sure that `max_model_len` is no smaller than the number of text tokens.",
     "400 The decoder prompt (length 32768) plus the number of requested output tokens (at least 1) is longer than the maximum model length of 32768.",
     "400 The engine prompt length 40000 exceeds the max_model_len 32768. Please reduce prompt.",
+    "Error: 400 Input length (265330) exceeds model's maximum context length (262144).",
+    "Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131,040 tokens.",
+    "Input length 131393 exceeds maximum allowed input length of 131040 token",
+    "input length and `max_tokens` exceed context limit: 176312 + 32000 > 200000",
+    'HTTP 400: {"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 176312 + 32000 > 200000"}}',
+    "code 1210: tokens in request more than max tokens allowed",
+    "code 1261: Prompt exceeds max length",
+    "500 Context size has been exceeded.",
+    "422 Input validation error: `inputs` tokens + `max_new_tokens` must be <= 32768. Given: 28897 `inputs` tokens and 3872 `max_new_tokens`",
+    "422 Input validation error: `inputs` must have less than 32768 tokens. Given: 40000",
   ])("detects %s", (text) => {
     expect(isContextOverflow(errorMessage(text), 262_144)).toBe(true);
   });

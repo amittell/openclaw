@@ -79,6 +79,8 @@ export type SessionTreeEntry = SessionTreeEntryBase &
         summary: string;
         firstKeptEntryId: string;
         tokensBefore: number;
+        /** Rows this boundary shadows, counted when it was written; absent on older boundaries. */
+        shadowedEntryCount?: number;
         details?: unknown;
         fromHook?: boolean;
       }

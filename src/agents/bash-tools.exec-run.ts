@@ -578,6 +578,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           eventRouting: defaults?.eventRouting,
           notifyDeliveryContext,
           notifyFromConversationTurn,
+          notifyRequester: defaults?.completionRequester,
           timeoutSec: effectiveTimeout,
           processContinuationAvailable: allowBackground,
           startupSignal: signal,

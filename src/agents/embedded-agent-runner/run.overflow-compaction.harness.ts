@@ -26,7 +26,6 @@ import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { createNativeModelOwnedRuntimeModel } from "../defaults.js";
 import { extractObservedOverflowTokenCount } from "../embedded-agent-helpers/context-overflow-observation.js";
 import type { FailoverReason } from "../failover/signal.js";
-import { clearAgentHarnesses, registerAgentHarness } from "../harness/registry.js";
 import type { AgentHarnessAttemptParams } from "../harness/types.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import { preparedModelRuntimeConfigsMatch } from "../prepared-model-runtime.owner.js";
@@ -35,6 +34,7 @@ import type {
   PreparedModelRuntimeLeaseOptions,
 } from "../prepared-model-runtime.types.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
+import { resetMockCodexAgentHarness } from "./run.overflow-compaction.agent-harness.js";
 import { makeAttemptResult, makeMockRuntimePlan } from "./run.overflow-compaction.fixture.js";
 import { createRunWorkspaceMock } from "./run.workspace-ownership.test-support.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
@@ -413,36 +413,12 @@ export function createOverflowRunParams(state: Pick<OpenClawTestState, "workspac
   } as const;
 }
 
-function resetMockAgentHarness(): void {
-  clearAgentHarnesses();
-  registerAgentHarness({
-    id: "codex",
-    label: "Codex",
-    supports: (ctx) =>
-      ctx.provider === "codex" || ctx.provider === "openai"
-        ? { supported: true, priority: 100 }
-        : { supported: false },
-    runAttempt: async (params) => await mockedRunEmbeddedAttempt(params),
-    finalizeSettledTurn: async ({ attempt }) => {
-      const result = await mockedRunEmbeddedAttempt({ ...attempt, disableTools: true });
-      const assistant =
-        result.currentAttemptCompletedAssistant ??
-        result.currentAttemptAssistant ??
-        result.lastAssistant;
-      if (!assistant) {
-        throw new Error("mocked settled-turn finalization returned no assistant message");
-      }
-      return { assistant, ...(result.attemptUsage ? { usage: result.attemptUsage } : {}) };
-    },
-  });
-}
-
 /** Reset every mocked runner dependency to the default successful no-op state. */
 function resetRunOverflowCompactionHarnessMocks(): void {
   // Loading and warmup can run inside an already-owned environment. Only the
   // per-test reset restores stubbed env, before the next fixture applies it.
   resetCommandQueueStateForTest();
-  resetMockAgentHarness();
+  resetMockCodexAgentHarness(mockedRunEmbeddedAttempt);
   mockedGlobalHookRunner.hasHooks.mockReset();
   mockedGlobalHookRunner.hasHooks.mockReturnValue(false);
   mockedGlobalHookRunner.runBeforeAgentReply.mockReset();
@@ -619,7 +595,7 @@ function resetRunOverflowCompactionHarnessMocks(): void {
 export function resetSharedRunIntegrationHarnessMocks(): void {
   vi.unstubAllEnvs();
   resetCommandQueueStateForTest();
-  resetMockAgentHarness();
+  resetMockCodexAgentHarness(mockedRunEmbeddedAttempt);
 
   mockedBuildAgentRuntimePlan.mockReset();
   mockedBuildAgentRuntimePlan.mockImplementation(buildMockAgentRuntimePlan);

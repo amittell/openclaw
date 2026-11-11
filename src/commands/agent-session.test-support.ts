@@ -21,12 +21,18 @@ export function createDefaultAgentResult(params?: {
   payloads?: Array<Record<string, unknown>>;
   durationMs?: number;
   sessionId?: string;
+  provider?: string;
+  model?: string;
 }) {
   return {
     payloads: params?.payloads ?? [{ text: "ok" }],
     meta: {
       durationMs: params?.durationMs ?? 5,
-      agentMeta: { sessionId: params?.sessionId ?? "s", provider: "p", model: "m" },
+      agentMeta: {
+        sessionId: params?.sessionId ?? "s",
+        provider: params?.provider ?? "p",
+        model: params?.model ?? "m",
+      },
     },
   };
 }
@@ -69,6 +75,9 @@ export function expectOwnedCommandSession(params: {
   sessionKey: string;
   sessionId: string;
   storePath: string;
+  /** The model the run asked for; defaults to agent.test.ts's configured primary. */
+  modelProvider?: string;
+  model?: string;
 }): void {
   const entry = loadSessionEntryReadOnly({
     agentId: params.agentId,
@@ -76,7 +85,14 @@ export function expectOwnedCommandSession(params: {
     storePath: params.storePath,
     readConsistency: "latest",
   });
-  expect(entry).toMatchObject({ sessionId: params.sessionId, model: "m", modelProvider: "p" });
+  // The carry persists a run's model only when it is the model the run asked for; a fallback
+  // stays transient (session-store.ts isFromFallback). Callers' mocked runs report the
+  // requested model, so the entry records the configured primary.
+  expect(entry).toMatchObject({
+    sessionId: params.sessionId,
+    model: params.model ?? "claude-opus-4-6",
+    modelProvider: params.modelProvider ?? "anthropic",
+  });
   expect(entry?.restartRecoveryDeliveryRunId).toBeUndefined();
   expect(
     loadSessionEntryReadOnly({

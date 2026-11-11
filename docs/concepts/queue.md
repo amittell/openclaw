@@ -154,6 +154,8 @@ overflow summary.
 - A new prompt accepted after Stop keeps its own cancellation and queue custody.
   If the stopped turn is still settling preparation, the new prompt waits for
   that owner to finish before running; it does not inherit the earlier Stop.
+  A `/stop` sent as a message also holds the new prompt until its reply is
+  delivered and recorded, so the Stop exchange comes first in session history.
 - Queued waits are not projected as active agent runs for `sessions.list` and
   do not own active-run timeout semantics; only the active phase does.
 - A queued request that expires or is cancelled before execution settles only

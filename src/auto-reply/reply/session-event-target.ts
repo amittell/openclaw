@@ -1,4 +1,5 @@
 /** Captured destination identity and live generation facts for ordinary session events. */
+import { stableStringify } from "@openclaw/normalization-core";
 import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
@@ -35,7 +36,7 @@ import {
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
-import type { SessionEventTarget } from "./session-event-contract.js";
+import type { SessionEventRequester, SessionEventTarget } from "./session-event-contract.js";
 import { narrowSessionEventSettings } from "./session-event-policy.js";
 
 type CapturedEventSource = {
@@ -75,6 +76,7 @@ const targetScopes = resolveGlobalSingleton(
         env?: NodeJS.ProcessEnv;
         source?: CapturedEventSource;
         operatorAuthority?: AdmittedRunOperatorAuthority;
+        requester?: SessionEventRequester;
       }
     >(),
 );
@@ -119,6 +121,8 @@ export async function captureSessionEventTargetForHost(
     producerPolicy?: Readonly<Pick<SessionEventTarget, "toolsAllow" | "settings">>;
     /** Original host-issued source; the producer owns its lifetime until enqueue. */
     operatorAuthority?: AdmittedRunOperatorAuthority;
+    /** The host-captured sender whose own turn started the producer; never producer input. */
+    requester?: SessionEventRequester;
   } = {},
 ): Promise<SessionEventTarget> {
   const operatorAuthority = options.operatorAuthority;
@@ -248,7 +252,13 @@ export async function captureSessionEventTargetForHost(
           : destinationSettings,
       ),
     };
-    targetScopes.set(target, { env, source, operatorAuthority });
+    const requester = options.requester && Object.freeze(structuredClone(options.requester));
+    targetScopes.set(target, {
+      env,
+      source,
+      operatorAuthority,
+      ...(requester ? { requester } : {}),
+    });
     return target;
   } finally {
     preparedCaller?.release();
@@ -416,6 +426,17 @@ export function readSessionEventTargetOperatorAuthority(
   return targetScopes.get(target)?.operatorAuthority;
 }
 
+/** The retained requester a completion of this target may restore; see the event context. */
+export function readSessionEventTargetRequester(
+  target: SessionEventTarget,
+): SessionEventRequester | undefined {
+  return targetScopes.get(target)?.requester;
+}
+
+function requesterKey(target: SessionEventTarget): string {
+  return stableStringify(targetScopes.get(target)?.requester ?? null);
+}
+
 /** Coalesced work retains every producer's original destination and permission bound. */
 export function combineSessionEventTargetsForHost(
   targets: readonly SessionEventTarget[],
@@ -431,6 +452,10 @@ export function combineSessionEventTargetsForHost(
       targetScopes.get(target)?.operatorAuthority !== targetScopes.get(first)?.operatorAuthority
     ) {
       throw new Error("Session event batch has different operator authorities");
+    }
+    // The combined turn restores the first target's requester for every target.
+    if (requesterKey(target) !== requesterKey(first)) {
+      throw new Error("Session event batch has different requesters");
     }
     if (
       target.agentId !== first.agentId ||

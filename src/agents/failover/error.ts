@@ -28,6 +28,7 @@ export type FallbackAttemptRecord = {
   model: string;
   reason: FailoverReason;
   status?: number;
+  code?: string;
   error?: string;
   rateLimitRetriesExhausted?: number;
 };

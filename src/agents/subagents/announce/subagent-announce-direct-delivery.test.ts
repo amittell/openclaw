@@ -308,7 +308,6 @@ describe("late exact requester recovery", () => {
       expected: { delivered: true, requesterVisibleFinalDelivered: true },
     },
     ...[
-      { name: "empty final", response: { status: "ok", result: { payloads: [] } } },
       { name: "accepted turn", response: { status: "accepted" } },
       { name: "in-flight turn", response: { status: "in_flight" } },
       { name: "restart interruption", response: { status: "error", stopReason: "restart" } },
@@ -365,7 +364,8 @@ describe("late exact requester recovery", () => {
       },
     ].map(({ reason, ...outcome }) =>
       Object.assign(outcome, {
-        response: { status: "ok", result: { payloads: [] } },
+        // Empty successful parent output settles quietly; an unsent final needs its receipt.
+        response: { status: "ok", result: { payloads: [{ text: "Unsent final" }] } },
         expected: { delivered: false, reason },
       }),
     ),
@@ -416,6 +416,8 @@ describe("late exact requester recovery", () => {
       response: {
         status: "ok",
         result: {
+          // A hook cancels a visible final; a silent turn would settle quietly instead.
+          payloads: [{ text: "Cancelled final" }],
           deliveryStatus: {
             status: "suppressed",
             reason: "cancelled_by_message_sending_hook",
@@ -536,7 +538,10 @@ describe("late exact requester recovery", () => {
       "Announcement did not reach direct delivery",
     );
     fixture.state.entry = { ...fixture.state.entry, ...finalReceipt };
-    fixture.dispatchDone.resolve({ status: "ok", result: { payloads: [] } });
+    fixture.dispatchDone.resolve({
+      status: "ok",
+      result: { payloads: [{ text: "Unsent final" }] },
+    });
     await expect(delivery).resolves.toMatchObject({ delivered: false });
     expect(fixture.read).not.toHaveBeenCalled();
     expect(fixture.dispatch).toHaveBeenCalledOnce();

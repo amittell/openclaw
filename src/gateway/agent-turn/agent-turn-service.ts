@@ -560,6 +560,8 @@ export function createAgentTurnService(
                 assertContextCurrent,
                 prepared: preparedDispatch,
                 mainRestartRecoveryOwnerLease,
+                // The answered-turn marker (agent-run-completed-turn.ts) writes this session row.
+                storePath: sessionStorePath,
                 agentId,
                 imageOrder,
                 media,
