@@ -63,7 +63,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveEventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import { loadExecApprovalsReadOnlyAsync } from "../infra/exec-approvals-store.js";
 import { resolveExactExecModeFromPolicy } from "../infra/exec-approvals.js";
-import { inferChatTypeFromTarget } from "../infra/outbound/targets.js";
 import { logWarn } from "../logger.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import {
@@ -75,6 +74,7 @@ import {
   captureGatewayToolResolutionAuthority,
   resolveGatewayRequesterToolPolicies,
 } from "./tool-resolution-authority.js";
+import { directInvocationChatType } from "./tool-resolution-direct-invocation.js";
 
 type GatewayScopedToolSurface = "http" | "loopback";
 
@@ -379,13 +379,6 @@ export async function resolveGatewayScopedTools(
     agentAccountId: params.accountId,
   });
   const boundChannelId = params.currentChannelId ?? params.agentTo;
-  // A direct invocation is bound to a conversation only by its hints. Report that
-  // conversation's kind as outbound targets infer it, so chat-type confinement
-  // applies as it does to a turn from there.
-  const directInvocationChatType =
-    surface === "http" && messageProvider && boundChannelId
-      ? inferChatTypeFromTarget({ channel: messageProvider, to: boundChannelId })
-      : undefined;
   const openClawToolOptions: Parameters<typeof createOpenClawToolsAsync>[0] = {
     ...commonToolOptions(),
     computerExecutionId: params.admittedRunContext?.operationalRunInstance.instanceId,
@@ -432,7 +425,7 @@ export async function resolveGatewayScopedTools(
     agentTo: params.agentTo,
     agentThreadId: params.agentThreadId,
     currentChannelId: boundChannelId,
-    currentChatType: directInvocationChatType,
+    currentChatType: directInvocationChatType(surface, messageProvider, boundChannelId),
     currentThreadTs: params.currentThreadTs ?? params.agentThreadId,
     replyToMode: params.replyToMode,
     onYield: params.onYield,
