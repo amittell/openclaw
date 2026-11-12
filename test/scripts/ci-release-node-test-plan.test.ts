@@ -9,6 +9,15 @@ import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 
 afterEach(() => vi.restoreAllMocks());
 
+// Release packing may pair measured stripes into one job; each stripe keeps its
+// own process and timing identity as a packed group.
+const splitUnits = (rows: NodeTestShard[]): Array<{ shardName: string; timing_key?: string }> =>
+  rows.flatMap((row) =>
+    row.groups
+      ? row.groups.map((group) => ({ shardName: group.shard_name, timing_key: group.timing_key }))
+      : [{ shardName: row.shardName, timing_key: row.timing_key }],
+  );
+
 it.each([
   { owner: "agentic-agents-support", configs: ["test/vitest/vitest.agents-support.config.ts"] },
   {
@@ -76,19 +85,32 @@ it.each([
       measurements[retired.timingKeys[0]!] = 900;
       const rows = full();
       expect(rows.length).toBeGreaterThan(1);
-      expect(rows.flatMap((row) => row.includePatterns ?? []).toSorted()).toEqual(files.toSorted());
+      // FORK DIVERGENCE (runtime-config inventory, upstream 1f31394cc6d): the fork's 8 extra
+      // src/config/sessions tests take core-runtime-config from 570 to 578 files, past
+      // 9 x 64 = 576, so its release split has 10 stripes of 331-337s that the hosted packer
+      // pairs into release-packed rows. Upstream main crossed the same boundary (#177248)
+      // and asserts the owner-named stripes inside packed rows instead of unpacked jobs.
+      // Take upstream's version once the carry base contains 1f31394cc6d.
+      expect(
+        rows
+          .flatMap((row) => (row.groups ?? [row]).flatMap((group) => group.includePatterns ?? []))
+          .toSorted(),
+      ).toEqual(files.toSorted());
       expect(rows.reduce((sum, row) => sum + row.predictedSeconds!, 0)).toBeGreaterThanOrEqual(
         3355,
       );
+      const units = splitUnits(rows);
+      for (const unit of units) {
+        expect(unit.shardName).toMatch(new RegExp(`^${owner}-hosted-\\d+$`, "u"));
+        measurements[expectDefined(unit.timing_key, "release split timing identity")] = 50;
+      }
       for (const row of rows) {
-        expect(row.shardName).toMatch(new RegExp(`^${owner}-hosted-\\d+$`, "u"));
         expect(row.predictedSeconds).toBeLessThanOrEqual(720);
         expect(row.configs).toEqual(configs);
         expect(row.env).toBeUndefined();
         expect(row.requiresDist).toBe(false);
         expect(row.runner).toBe(beforeBlacksmith[0]!.runner);
         expect(row.timeoutMinutes).toBe(beforeBlacksmith[0]!.timeoutMinutes);
-        measurements[expectDefined(row.timing_key, "release split timing identity")] = 50;
       }
       expect(createNodeTestShardBundles(pullRequest)).toEqual(beforePr);
       expect(createNodeTestShardBundles({ runnerBackend: "blacksmith" })).toEqual(beforeBlacksmith);
@@ -96,9 +118,9 @@ it.each([
       // A complete observation of the current inventory retires the historical floor.
       const refitted = full();
       expect(refitted).toHaveLength(1);
-      expect(refitted[0]?.predictedSeconds).toBe(rows.length * 50);
-      for (const row of rows) {
-        measurements[row.timing_key!] = 0;
+      expect(refitted[0]?.predictedSeconds).toBe(units.length * 50);
+      for (const unit of units) {
+        measurements[unit.timing_key!] = 0;
       }
       expect(full()).toHaveLength(1);
     } finally {
