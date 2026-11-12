@@ -581,7 +581,14 @@ it.each([
         } else if (change === "worker-compaction") {
           await source.appendCompactionAsync("Earlier question summarized", replyId!, 100);
           expectedMessages = [
-            { role: "compactionSummary", summary: "Earlier question summarized" },
+            // FORK DIVERGENCE (compaction checkpoint handle): the fork appends the checkpoint's handle
+            // to the summary the model sees (packages/agent-core/src/harness/session/session.ts).
+            {
+              role: "compactionSummary",
+              summary: expect.stringMatching(
+                /^Earlier question summarized\n\[compaction checkpoint [^\]]+: shadows 1 earlier entries\]$/u,
+              ),
+            },
             { role: "assistant", content: [{ text: "answer" }] },
           ];
         } else if (change === "local-reset") {
