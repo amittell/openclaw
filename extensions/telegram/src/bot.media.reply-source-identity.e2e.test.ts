@@ -2,10 +2,14 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { clearTimeout as cancelTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import { detectAndLoadAgentHarnessPromptImages } from "openclaw/plugin-sdk/agent-harness-runtime";
+import * as keyedAsyncQueue from "openclaw/plugin-sdk/keyed-async-queue";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
+import {
+  holdTelegramMediaTimeouts,
+  runHeldTelegramBufferTimers,
+} from "./bot-media-timers.test-support.js";
 import {
   readRemoteMediaBufferSpy,
   setNextSavedMediaPath,
@@ -62,19 +66,6 @@ type ScheduledTimer = {
   handle: ReturnType<typeof setTimeout>;
 };
 
-// Hold media-group deadlines so the test releases a fully assembled album; every other
-// timer keeps native scheduling. Kept local because the shared hold helper lives in a
-// different test-support module on newer main.
-function holdMediaGroupDeadlines() {
-  return vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
-    const handle = scheduleTimeout(callback, delay, ...args);
-    if (delay === TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs) {
-      cancelTimeout(handle);
-    }
-    return handle;
-  });
-}
-
 // Flush only the media-group deadline timers, mirroring the album e2e suite.
 function resolveActiveScheduledTimersForDelay(
   setTimeoutSpy: ReturnType<typeof vi.spyOn>,
@@ -100,9 +91,12 @@ function resolveActiveScheduledTimersForDelay(
   );
 }
 
+// The deadline callback only releases the album; dispatch runs later in its queued task.
+// Await that task so the assertion does not race a wall-clock polling budget.
 async function flushMediaGroupTimers(
   setTimeoutSpy: ReturnType<typeof vi.spyOn>,
   clearTimeoutSpy: ReturnType<typeof vi.spyOn>,
+  enqueueSpy: Parameters<typeof runHeldTelegramBufferTimers>[1],
   expectedCount: number,
 ): Promise<void> {
   const timers = resolveActiveScheduledTimersForDelay(
@@ -113,8 +107,13 @@ async function flushMediaGroupTimers(
   expect(timers).toHaveLength(expectedCount);
   for (const timer of timers) {
     clearTimeout(timer.handle);
-    await timer.callback();
   }
+  await Promise.all(
+    runHeldTelegramBufferTimers(
+      timers.map((timer) => timer.callback),
+      enqueueSpy,
+    ),
+  );
 }
 
 const originalMessage = {
@@ -247,8 +246,9 @@ describe("telegram reply media source identity", () => {
         // Only album ingress knows the album copy's file_unique_id, so without that
         // handoff the replied-to original hydrates as a third provider image.
         replySpy.mockClear();
-        const setTimeoutSpy = holdMediaGroupDeadlines();
+        const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
         const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+        const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
         try {
           const albumBase = {
             chat: originalMessage.chat,
@@ -286,11 +286,12 @@ describe("telegram reply media source identity", () => {
 
           // The album buffer holds both photos until its flush deadline.
           expect(replySpy).not.toHaveBeenCalled();
-          await flushMediaGroupTimers(setTimeoutSpy, clearTimeoutSpy, 1);
-          await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(1));
+          await flushMediaGroupTimers(setTimeoutSpy, clearTimeoutSpy, enqueueSpy, 1);
+          expect(replySpy).toHaveBeenCalledTimes(1);
         } finally {
           setTimeoutSpy.mockRestore();
           clearTimeoutSpy.mockRestore();
+          enqueueSpy.mockRestore();
         }
 
         expect(runtimeError).not.toHaveBeenCalled();
