@@ -4389,3 +4389,125 @@ pinned above.
 
 Not run: a live re-delivery proof for keeping #132409 over #169202; a real-model run of the nudge change; the
 Telegram live sittings the upstream PRs still lack.
+
+# Carrying onto v2026.11.3 (11.2 -> 11.3), 2026-11-11/12 (session 68acf50e; builds and tests on the M4)
+
+## Refs
+
+| ref                                                       | commit        |
+| --------------------------------------------------------- | ------------- |
+| `v2026.11.3^{commit}` (96 commits past 11.2)              | `847611dcaa3` |
+| the deployed 11.2 carry, fork branch `upgrade-v2026.11.2` | `a6e14b5af8f` |
+| one merge of the two (fork branch `upgrade-v2026.11.3`)   | `7030d0d6c3a` |
+| the last code commit, qualified below                     | `c73cb5acb36` |
+
+## Method
+
+One `git merge` of `a6e14b5af8f` onto the tag. Eight files conflicted, each triaged against the three blobs:
+
+- `src/agents/runtime-auth-refresh.ts`, `.test.ts`, `src/agents/embedded-agent-runner/run/auth-controller.ts`,
+  `auth-controller.refresh-deadline.test.ts`, `auth-controller.test-support.ts`, and
+  `src/agents/auth-profiles/oauth-manager.test.ts`: see "auth" below.
+- `src/infra/heartbeat-events-filter.test.ts`: the carry's rows, written against 11.3's
+  `isExecCompletionSystemEvent({ text, contextKey: "exec" })`.
+- `docs/.generated/config-baseline.sha256`: regenerated.
+
+## auth: 11.3's run deadline owns provider auth, with the fork's hard backstop folded in
+
+11.3 bounds provider auth by the run deadline (`53a9f35dfe6`, `createRuntimeAuthDeadline`). The fork's backstop
+(`withRuntimeAuthRefreshDeadline`, 360 s) also covers runs whose deadline is unlimited: an approval wait, no
+timeout, or the 48 h default. Upstream's bound does not cover those. The merge keeps upstream's owner, with one
+timer that fires at the earlier of the run deadline and `RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS` (360_000) and
+throws `RuntimeAuthDeadlineError`. `withRuntimeAuthRefreshDeadline` is gone. Control: the tag's
+`createRuntimeAuthDeadline` without the backstop fails 3 of 6 rows in `runtime-auth-refresh.test.ts` and 5 of
+21 in the auth-controller files (each hung step runs until the 20 s test timeout).
+
+## Fork changes made with the carry
+
+- `ead5569915a`: #190572 at `a499477f3c6`. Since the 11.2 carry took `1cb5e029db33`, the PR gained `9aadc2bbc5c`
+  (confine `/tools/invoke` calls bound to a listed conversation kind) and `92aee940aa8` (its test allocation, 512
+  here against upstream's 493). Both apply unchanged.
+- `aafb068c562`: that port took `src/gateway/tool-resolution.ts` to 702 counted lines (cap 700). The
+  direct-invocation chat-type inference moves to `tool-resolution-direct-invocation.ts` unchanged in behavior.
+- `e4e46a32ee1`: Alex, 11-11 (room #559): accept the wider silent-stop nudge and pin it. 11.3's #182458
+  (`3881c3a5d1a`) removed `lastToolError` from `hasAttemptTerminalState`, the only condition keeping the
+  nudge off failed-tool turns. A `message_tool_only` turn whose tool failed with a composed but unsent answer
+  now retries through the message tool alone; commentary alone still completes with #182458's warning. With
+  11.2's gate restored, the pin fails (1 of 2 rows).
+- `9c3659db43b`: 11.3's `session-manager-model-context-snapshot` test (`859420bce99`) expects the compaction
+  summary verbatim; the fork appends its checkpoint handle (carried since 9.5). The worker-compaction row now
+  matches that shape, marked FORK DIVERGENCE. Failed on the carry only.
+- `ff99b8103ac`: `ci-release-node-test-plan`. The fork's 8 `src/config/sessions` tests plus 11.3's 2 new
+  `src/config` tests take the runtime-config set to 578 files, past 9 x 64, so the hosted release split packs
+  its stripes. Ports upstream main's `1f31394cc6d` test change (not in 11.3); every per-row assertion kept.
+  Bare 11.3 has 570 files and passes.
+- `c73cb5acb36`: the fork-only `bot.media.reply-source-identity.e2e.test.ts` album case was flaky. It failed 2 of 2
+  runs on the deployed 11.2 carry, and 2 of 7 runs alone on this carry. The media-group deadline callback only
+  releases the album, and the downloads, reply chain and dispatch run later in its queued task. On the M4 that took
+  968-1020 ms after the flush, against `vi.waitFor`'s default 1000 ms budget. A timed-out run also leaked its
+  dispatch into the next case, which then failed with "got 2 times". The case now awaits the album's queued task
+  through the shared `bot-media-timers.test-support` helpers, as the warning-topics album cases do; every assertion
+  is unchanged. Test-only: the product files on this path are identical to the deployed 11.2 carry. With each
+  album download delayed 1.1 s, the old case fails 3 of 3 and the new one passes 3 of 3. At `c73cb5acb36` the case passed 10 of 10 runs.
+
+## What the carry still holds (2026-11-12, at `ff99b8103ac`; `c73cb5acb36` adds only the album test)
+
+- Alex's PRs: all 114, fetched 17:3xZ (17 open, 22 merged, 75 closed; none new since 11-09). Each PR's added
+  lines (>= 24 characters, same path) were counted on the tag, the 11.2 carry and this head. 111 score the same
+  or higher here. The three that score lower are explained: #130393 and #138416 lost lines to upstream's
+  #195028 (`5c582e1b866`), which moved #138416's retention check to `compaction-safeguard-budget.ts` and
+  removed #130393's split-turn reservation by design (these were the tag's lines, not the fork's); #156537's
+  one line is the heartbeat test rewrite above.
+- Every PR the 11.2 carry pulled forward is at the head it was taken at, except #192999 (one new commit, an empty
+  CI re-run) and #190572 (ported above).
+- Merged upstream after the 11.3 cut: #189935 and #174884 are carried whole; #155273's merged head adds test
+  lines only, and the carry holds the same reply-media dedupe in its own shape. #193829 stays uncarried (its
+  defect needs main's #184243).
+- The 11.2 carry's own lines: 26,732 across 726 files; 61 are absent here, all in the eight conflicted files
+  above or regenerated (auth 54, heartbeat test 3, the #190572 allocation record 2, config baseline 2).
+- Dependency patches: identical on the 11.2 tag, the 11.2 carry, the 11.3 tag and this head (11 files, 9
+  workspace entries); the fork adds none.
+- The verifier's fork markers: 45 of 47 in this head's source. The two absent were already absent at
+  `a6e14b5af8f` (`renderTransportFailureReplyCopy`, retired by #191301; `createUnrecordedScheduledAccountRefusal`,
+  beta.4 only).
+- Both bots, read 18:0xZ: checkout `a6e14b5af8f0`, all 24,315 deployed dist files match the bundle (0 changed,
+  0 missing), and no tracked source is modified or untracked under `src`, `extensions`, `packages`, `scripts`,
+  `patches`. No hand patch exists outside the carry.
+
+## Qualification
+
+M4, Node 26.12.1, Vitest on Node.
+
+Final pass at `c73cb5acb36` (2026-11-12 21:34-22:35Z), in a fresh worktree:
+
+- Static gates, all exit 0: install, plain build, `tsgo:all`, assertion-safety, line-cap (687 changed source
+  files), oxlint (0 errors), oxfmt, the wrapper inventory, `plugin-sdk:surface:check`, mock-exports, conflict
+  markers and `prompt:snapshots:check`.
+- The repo's own changed-test plan against the tag: 41 shards, 354 files, 7,402 tests, 0 failed.
+- The album case: 10 of 10 runs pass.
+
+Wider passes, run earlier on the same carry:
+
+- 11.3's own changed tests not in that plan, at `e4e46a32ee1`: 166 files, 164 pass.
+- The tooling config's 1,043 files, at `e4e46a32ee1`: 1,013 pass, 24 fail, 6 skipped.
+- The e2e config's 288 files, every one now run:
+  - 89 through the whole-config pass (`ead5569915a`). 2 fail: `launchd.integration.e2e` and
+    `package-openclaw-for-docker.e2e`.
+  - 121 straight through Vitest (`ff99b8103ac`). 3 fail: the album case, fixed above;
+    `codex-account-model-route.product-proof.e2e` and `openclaw-sandbox-workspace-isolation.e2e`.
+  - 78 one file per process (`ff99b8103ac`). They had never reported, because a worker died with SIGABRT
+    mid-batch in the previous pass; one file per process did not reproduce the crash. 2 fail:
+    `agent-sandboxed-exec-behavior.e2e`, because the M4 runs no Docker daemon, and `ci-prepared-runtime.e2e`.
+- The tool-resolution and terminal-resolution suites at `ff99b8103ac`: 10 files, 118 tests, 0 failed.
+
+Every file that failed in a carry pass was run on bare v2026.11.3. Of the 28 non-e2e failing files, 26 fail
+identically there: `launchd.integration.e2e`, `package-openclaw-for-docker.e2e`, `openclaw-test-instance`,
+`openclaw-prepack`, `update-cli.already-current` and 21 `test/scripts` files. The other two failed on the carry
+only and are fixed by `9c3659db43b` and `ff99b8103ac`. In the four e2e files that failed in the last two passes, every
+failing test also fails on bare 11.3. On bare, `codex-account-model-route` fails one more test than on the
+carry: "keeps the known dual-route model on ChatGPT when an API key is also stored".
+
+Earlier on the way, at `ead5569915a`, line-cap and oxlint failed on `tool-resolution.ts` (fixed by `aafb068c562`).
+
+Not run: a real-model run of the wider nudge; a live sitting for the #190572 confinement; the Telegram live
+sittings the upstream PRs still lack.
