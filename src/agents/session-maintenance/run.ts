@@ -19,7 +19,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
-import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
+import { runWithGatewayDetachedWorkAdmission } from "../../process/gateway-work-admission.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { createCommandBudget } from "../command/maintenance-budget.js";
 import {
@@ -197,7 +197,7 @@ export function scheduleSessionMaintenance(
         return;
       }
       return owner.run(() =>
-        runWithGatewayIndependentRootWorkAdmission(
+        runWithGatewayDetachedWorkAdmission(
           async () => {
             assertCurrent();
             const { captureSessionEntryCurrentRead, withSessionEntryReadOnlyInWorker } =

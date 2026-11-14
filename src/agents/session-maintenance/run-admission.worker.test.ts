@@ -7,6 +7,7 @@ import * as entryReads from "../../config/sessions/session-entry-read-runtime.js
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { AsyncWorkScope, getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -79,6 +80,52 @@ it("rejects a replacement database while waiting for the foreground owner", asyn
       await waitForSessionMaintenance(sessionKey);
       memory.runMemoryFlushIfNeeded.mockClear();
       memory.runSessionCompactionIfNeeded.mockClear();
+    }
+  });
+});
+
+it("finishes post-turn upkeep after the foreground async work scope closes", async () => {
+  await withOpenClawTestState({ label: "maintenance-async-handoff" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKey = "agent:main:maintenance-async-handoff";
+    const entry = {
+      sessionId: "maintenance-async-handoff",
+      lifecycleRevision: "initial",
+      updatedAt: 1,
+    };
+    writeSessionEntry(database, sessionKey, entry);
+    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    const request = {
+      prepared: { cfg: {}, sessionKey, storePath: database.path, timeoutMs: 60_000 },
+      followupRun: createTestFollowupRun({ sessionKey, sessionId: entry.sessionId }),
+      sessionId: entry.sessionId,
+      lifecycleRevision: entry.lifecycleRevision,
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      startedAt: Date.now(),
+    };
+    const finished = createDeferred<boolean>();
+    const foreground = new AsyncWorkScope();
+    memory.runMemoryFlushIfNeeded.mockImplementationOnce(async () => {
+      // Model preparation and its session readers observe the ambient work signal.
+      getAsyncWorkSignal()?.throwIfAborted();
+      return {};
+    });
+    try {
+      foreground.run(() =>
+        withPluginRuntimeGatewayRequestScope(
+          { pluginRegistry: createEmptyPluginRegistry(), isWebchatConnect: () => false },
+          () => scheduleSessionMaintenance(request, finished.promise),
+        ),
+      );
+      await foreground.drain();
+      finished.resolve(true);
+      await waitForSessionMaintenance(sessionKey);
+      expect(memory.runMemoryFlushIfNeeded).toHaveBeenCalledOnce();
+      expect(memory.runSessionCompactionIfNeeded).toHaveBeenCalledOnce();
+    } finally {
+      finished.resolve(false);
+      await waitForSessionMaintenance(sessionKey);
+      await foreground.drain();
     }
   });
 });
