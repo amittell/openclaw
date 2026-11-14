@@ -11,6 +11,7 @@ import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announ
 import { retireSubagentCompletionControllerInput } from "../registry/subagent-controller-inputs.js";
 import { ensureDeliveryState } from "../registry/subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "../registry/subagent-lifecycle-events.js";
+import { subagentRegistryLog } from "../registry/subagent-registry-lifecycle-log.js";
 import {
   getSubagentRunsForChildSession,
   subagentRuns,
@@ -47,6 +48,15 @@ class SubagentRequesterWakeProgressChangedError extends SubagentCompletionSource
 type AdmissionReceipt =
   SessionDeliveryWorkerOperations["sessionDelivery.admitSubagentCompletion"]["output"];
 type MutationReceipt = SubagentCompletionMutationResult & { writeId: string };
+
+/** Names a completion that will not reach its requester, with the reason, in Gateway logs. */
+function logCompletionDeliveryFailure(entry: SubagentRunRecord, reason: string): void {
+  subagentRegistryLog.warn("Subagent completion delivery failed", {
+    runId: entry.runId,
+    requesterSessionKey: entry.requesterSessionKey,
+    reason,
+  });
+}
 
 function parseAcknowledgedRecord(value: unknown): SubagentCompletionRecord {
   if (
@@ -419,6 +429,12 @@ export async function blockSubagentCompletionDelivery(
       },
     },
   );
+  if (
+    result.applied &&
+    (params.suspendedReason === "permanent_failure" || params.disposition === "permanent_failure")
+  ) {
+    logCompletionDeliveryFailure(params.subagent, params.reason);
+  }
   return result.applied === true;
 }
 
@@ -520,7 +536,7 @@ export async function mutateRequesterCompletionBatch(
     operation: RequesterWakeMutation | { kind: "settle"; outcome: SubagentAnnounceDeliveryResult };
   },
 ): Promise<CompletionMutationPublication> {
-  return mutateCompletion(
+  const publication = await mutateCompletion(
     params.entries,
     (rows) => {
       const cohort = {
@@ -549,4 +565,17 @@ export async function mutateRequesterCompletionBatch(
       },
     },
   );
+  if (
+    publication.applied &&
+    params.operation.kind === "settle" &&
+    !params.operation.outcome.delivered
+  ) {
+    for (const entry of params.entries) {
+      logCompletionDeliveryFailure(
+        entry,
+        params.operation.outcome.error ?? params.operation.outcome.disposition ?? "not delivered",
+      );
+    }
+  }
+  return publication;
 }

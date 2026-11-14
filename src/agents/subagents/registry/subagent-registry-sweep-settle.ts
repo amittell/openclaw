@@ -74,6 +74,12 @@ export async function settleUnreachableYieldedSubagentRun(params: {
   if (continuation?.state !== "unreachable") {
     return false;
   }
+  subagentRegistryLog.warn("Settling unreachable yielded subagent", {
+    runId,
+    requesterSessionKey: entry.requesterSessionKey,
+    reason: continuation.error,
+    yieldedAt: entry.execution.endedAt,
+  });
   // An outcome the yield already recorded is kept, as a collector that yields now ends with its
   // yielded turn as its result; only a run with no recorded outcome takes the diagnostic error.
   const outcome = entry.execution.outcome ?? {
