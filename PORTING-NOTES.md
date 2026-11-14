@@ -4511,3 +4511,23 @@ Earlier on the way, at `ead5569915a`, line-cap and oxlint failed on `tool-resolu
 
 Not run: a real-model run of the wider nudge; a live sitting for the #190572 confinement; the Telegram live
 sittings the upstream PRs still lack.
+
+## Carried after the 11.3 deploy (2026-11-14, session 68acf50e; Alex, room #588)
+
+- `34961af850a`: upstream #196115 at `622cf1bd17cf` (open and unmerged; upstream main `cd61ce32dd28` still has the old
+  call). Post-turn session maintenance (the memory flush, then compaction) was admitted with
+  `runWithGatewayIndependentRootWorkAdmission`, which keeps the caller's async work scope. Scheduled from a channel
+  turn, it inherited that turn's scope, and once the scope drained it refused with "Async work scope is closed": neither
+  the flush nor the compaction ran (upstream #196105). mac-mini logged the line at 2026-11-13T19:26:11Z; four later
+  flushes aborted with no reason, and `agent:main:main` compacted only on a context overflow at 20:20Z. rh-bot logged it
+  4 times from 10-25 to 11-13. The fix admits maintenance with `runWithGatewayDetachedWorkAdmission`, which 11.3 already
+  has. 11.3's call site differs from the PR's base, so the one-import, one-call change is made by hand.
+- The PR's regression needs main's `run.test-support.ts`, which 11.3 lacks. The same row is written against 11.3's
+  real-scheduler fixture in `run-admission.worker.test.ts` (47 lines, allocation
+  `196115-post-turn-maintenance-async-scope.txt`). Without the fix it fails: the flush is called 0 times.
+
+Qualification (M4, Node 26.12.1, 2026-11-14 02:27-02:5xZ): `tsgo:all`, oxlint (0 errors), oxfmt, conflict markers and
+the line-cap, max-lines, assertion-safety and test-timeout-race ratchets against `59bd8863eb2`, all exit 0.
+`session-maintenance/run.test.ts`, `run-admission.worker.test.ts`, `coordinator.test.ts` and
+`process/gateway-work-admission.test.ts`: 20 tests, 0 failed. The new row passed 4 of 4 runs. Not run: the repo's
+changed-test plan and the wider passes above, because the change is two lines in one module.
