@@ -12,6 +12,7 @@ import type { SessionEntryCreationOperation } from "../../config/sessions/sessio
 import { SessionWorkStartError } from "../../config/sessions/session-work-start.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context-store.js";
 import { resolveCronRunToolsAllow } from "../../cron/tools-allow.js";
+import { cronRunAcceptance } from "../../infra/agent-run-registry.automation.js";
 import { execRequestAbortSignal } from "../../infra/exec-request-context.js";
 import type { SourceDeliveryOutcome } from "../../infra/outbound/source-delivery-plan.types.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
@@ -81,12 +82,11 @@ function enqueueSessionEventAttempt(
   { assertAcceptanceCurrent, ...options }: SessionEventOptions,
   readmissionAttempt: number,
 ): SessionEventReceipt {
-  let acceptanceAssertion = assertAcceptanceCurrent;
-  acceptanceAssertion?.();
   options.assertCurrent?.();
   options.expectedTarget?.assertCurrent?.();
   const { cfg, configPublication, agentId, sessionKey, env, storePath, operatorAuthority } =
     prepareSessionEventInput(text, options);
+  let acceptanceAssertion = cronRunAcceptance(sessionKey, assertAcceptanceCurrent);
   const cleanupContinuation = prepareCronRunContinuationCleanup(sessionKey, storePath, env);
   let target = options.expectedTarget;
   let generationLease: Awaited<ReturnType<typeof prepareSessionEventTargetForHost>> | undefined;

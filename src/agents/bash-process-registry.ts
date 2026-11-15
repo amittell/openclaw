@@ -165,7 +165,6 @@ export interface ProcessSession {
   /** Start-time sender for the completion's policy; cleared with the other notify facts. */
   notifyRequester?: ExecCompletionRequester;
   notifySessionTarget?: SessionEventTarget;
-  assertExitNotificationAcceptanceCurrent?: () => void;
   /** One-shot run (hidden subagent, cron run): the exit continues it only after sessions_yield. */
   exitWakeAfterYield?: true;
   /** sessions_yield awaits this command, so its exit resumes the yielded origin run. */
