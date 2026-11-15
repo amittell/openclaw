@@ -227,6 +227,8 @@ export async function runExecProcess({
   notifyOnExit: boolean;
   /** Start-time subagent identity resolved from the persisted spawn envelope. */
   subagentSession?: boolean;
+  /** A one-shot run can await this command's exit only through sessions_yield. */
+  sessionsYieldAvailable?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   requestOwners?: readonly ExecRequestOwner[];
   scopeKey?: string;
@@ -314,7 +316,11 @@ export async function runExecProcess({
     retainExecRequestProcess(opts.requestOwners, waitForExecSession(session));
   }
 
-  const notificationTarget = prepareExecExitNotification(session, opts.subagentSession === true);
+  const notificationTarget = prepareExecExitNotification(
+    session,
+    opts.subagentSession === true,
+    opts.sessionsYieldAvailable === true,
+  );
   if (notificationTarget) {
     await notificationTarget;
   }

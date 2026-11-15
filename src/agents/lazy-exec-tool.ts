@@ -45,6 +45,7 @@ export function createLazyExecTool(
     sessionId: defaults?.sessionId,
   });
   const processToolAvailabilityRef = defaults?.processToolAvailabilityRef ?? {};
+  const sessionsYieldAvailabilityRef = defaults?.sessionsYieldAvailabilityRef ?? {};
   // Fork: the carry also keeps an execution-denied or owner-only-stubbed `process` off the
   // callable set (0d7028563ad), so the declaration follows the offered set, as the binding
   // contract says, and stays byte-identical across turns; the ref above still decides
@@ -58,7 +59,10 @@ export function createLazyExecTool(
     loadingTool ??= bashToolsModuleLoader.load().then(({ createExecTool }) => {
       loadedTool = withInstallationTarget(installationTarget, () =>
         createExecTool(
-          withExecRequestOwners({ ...defaults, processToolAvailabilityRef }, requestOwners),
+          withExecRequestOwners(
+            { ...defaults, processToolAvailabilityRef, sessionsYieldAvailabilityRef },
+            requestOwners,
+          ),
         ),
       );
       return loadedTool;
@@ -105,6 +109,7 @@ export function createLazyExecTool(
       prepare: (_tool, callableTools, offeredTools) => {
         processToolAvailabilityRef.value = callableTools.has("process");
         processToolDeclared = offeredTools.has("process");
+        sessionsYieldAvailabilityRef.value = callableTools.has("sessions_yield");
       },
       executionSchema: presentation?.parameters ? undefined : () => execExecutionSchema,
     },
