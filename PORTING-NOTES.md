@@ -4322,6 +4322,9 @@ one commit with a test that fails with the source reverted, all run on the M4 (N
 | #190472 (branch-native) | `ee3411e1a707` | `bf164e56334`                | Alex, 11-10: redesign; upstream's fix needs #157806 and #185476. exec captures the starting turn's sender from the run context; the completion turn gets it back only on an exactly matching route and chat type, so it can only narrow. A completion never becomes an owner turn (upstream's owner path needs #185476). Test file about 50 s wall, over the 30 s budget. Drop when a release with upstream's fix is carried |
 | #195612 (branch-native) | `272d4c60652b` | `b97f7b0c6c0`                | Alex, 11-10: redesign; upstream's fix needs #175837 and #181105. a per-session hold from a recognized `/stop` until its exchange is mirrored to the transcript, capped by the delivery barrier timeout (15 s); only `/stop`, as upstream. Drop when a release with upstream's fix is carried                                                                                                                                 |
 
+On v2026.11.5-beta.4 the fork carries #195612 as the PR itself (head `272d4c60652b`), replacing `b97f7b0c6c0`;
+see "Carrying onto v2026.11.5-beta.4".
+
 Not carried:
 
 - #193829: the defect cannot occur here. It needs main's instance-dropping invocation scope (#184243, `62e0b2b7fcf`)
@@ -4531,3 +4534,229 @@ the line-cap, max-lines, assertion-safety and test-timeout-race ratchets against
 `session-maintenance/run.test.ts`, `run-admission.worker.test.ts`, `coordinator.test.ts` and
 `process/gateway-work-admission.test.ts`: 20 tests, 0 failed. The new row passed 4 of 4 runs. Not run: the repo's
 changed-test plan and the wider passes above, because the change is two lines in one module.
+
+# Carrying onto v2026.11.5-beta.4 (11.3 -> 11.5-beta.4), 2026-11-15/16 (session 68acf50e; builds and tests on the M4)
+
+## Refs
+
+| ref                                                                   | commit        |
+| --------------------------------------------------------------------- | ------------- |
+| `v2026.11.5-beta.4^{commit}` (`release/2026.11.5` head, 2026-11-15)   | `2c173a37a48` |
+| `v2026.11.5-beta.3^{commit}` (the conflict lanes' base; beta.4 = +38) | `c2f4dde2638` |
+| the deployed 11.3 carry, fork branch `upgrade-v2026.11.3`             | `bcbaaea09d7` |
+| beta.4 plus the 21 picks below                                        | `f9bb430d4de` |
+| plus pick 22, upstream's own test fix for pick #189144                | `b98d86fc0d5` |
+| the merge: first parent pick 22, second parent the 11.3 carry         | `9cbd3ca2c29` |
+
+The 11.5 line was cut from upstream main on 2026-10-29; the 11.3 line on 2026-10-14. beta.4 holds 11,745
+commits that 11.3 does not, among them #175837 (one controller per session for turns, queues and Stop) and #185730
+(resume running sessions after graceful restarts), which retire the fork's main-session restart recovery.
+
+## Rulings
+
+- Alex, room #611 (2026-11-15): port, qualify and deploy 11.5-beta.3; then "Ok sounds good, let's do the latest tag
+  we can", so the target became beta.4, tagged the same day.
+- Room #613: carry all 16 fixes the bots run on 11.3 that beta.4 lacks. 14 needed carrying. #186666 and #196277
+  are already in beta.4 under other commits: 123 of #186666's 126 added lines (>= 20 characters, same path) and 37
+  of #196277's 38 are in the tag.
+- Room #615 (2026-11-16T01:20Z):
+  - Q1: carry the 7 further fixes from the 11.3 line whose subjects carry no PR number. The first census matched
+    `(#N)` in subjects; 562 of the 1,558 commits on the 11.3 line have none.
+  - Q2: keep the fork's answer-only pass (Alex, 10-02) exempt from upstream #182231. A reply that spent its whole
+    budget on reasoning gets one tools-off pass; that answer is delivered with no "cut off" notice and the run
+    counts as a success.
+- Room #616 and #617 (2026-11-16T13:01Z and 13:07Z) narrow Q2: the exemption holds only when the turn ran no tools.
+  After tool work, upstream #178300's notice ("The model was cut off at its output token limit, so the summary
+  above was written afterwards without tools. ...") and the failed status stand. #617 restates #616 after a
+  correction: the 2026-10-01 mac-mini turn the pass was built from had run tools, so it is flagged too.
+
+## Method
+
+1. One merge of `bcbaaea09d7` onto beta.3 with `v2026.11.3` as the base. 308 paths conflicted. Nine lanes
+   (gateway; runner; channels; auto-reply and cron; agents, subagents and tools; agents core; recovery; config and
+   infra; extensions and tooling) resolved each file as beta.3's file plus the fork's delta (11.3 -> carry),
+   with the per-file rulings in this file binding. Open items came to the lead, and each decision is below.
+2. The 21 picks onto beta.4 (`git cherry-pick -x`, in upstream merge order), then pick 22 (qualification).
+3. The resolved beta.3 tree moved forward onto the picks (merge base beta.3). 6 paths conflicted, resolved below.
+4. The history: one merge commit whose first parent is the picks' tip and second parent the deployed carry
+   `bcbaaea09d7`, with the resolved and qualified tree; then a `docs(porting)` commit with this section.
+
+## The 22 picks
+
+| pick          | upstream source | PR      | what                                                                         |
+| ------------- | --------------- | ------- | ---------------------------------------------------------------------------- |
+| `968f9ad9683` | `0a171b4f631`   | #184433 | long punctuation runs stall abort-trigger detection                          |
+| `9e9d7d4e362` | `5958c8191e0`   | #191146 | the next turn starts blank when the previous one exceeds the byte cap        |
+| `47626f724a4` | `c5c37ca1b95`   | #191318 | redact secrets with interspersed `config set` options                        |
+| `9add0edfe20` | `232147c49bc`   | #191422 | the cron scheduler fails to start after a long job is interrupted            |
+| `d3d04ab8fab` | `c9d9baced1f`   | #191523 | Doctor requires repair consent for unattended plugin downloads               |
+| `0fb358d6ba4` | `3e3935a6b4a`   | #191748 | web search honours sandbox provider trust                                    |
+| `5e88d7785e9` | `4f21b50f669`   | #191819 | durable message retries keep their original sender                           |
+| `92246e30aa3` | `c5c4ec06d1f`   | #191980 | release MCP grants after warm CLI turns                                      |
+| `c4bbb2759bb` | `076924b41ef`   | #191102 | workspace environment roots cannot add local tools to PATH                   |
+| `54af543b695` | `d7ab9ccf153`   | #190770 | synchronous exec through the macOS app node repeats as an Exec finished wake |
+| `389df656d5e` | `87ba3bf150d`   | #193452 | cancel Telegram initialization during Gateway shutdown                       |
+| `23e0665fbbd` | `5918b1d7bf4`   | #191693 | configured plugin executables keep working after updates                     |
+| `e5b6fc3f260` | `3f7ee388a1f`   | #187884 | dynamic shell predicates require approval                                    |
+| `2efaebebb1b` | `2d4ec7bf48c`   | #195028 | compaction keeps a long session's own decisions when tool output overflows   |
+| `a0b5a0b9871` | `b277db00687`   | #186787 | update repair loops on its own error after a crashed update                  |
+| `c6ff5be7ffd` | `7bd53ff28f6`   | #189144 | stalled provider authentication fails at the run deadline                    |
+| `10a56f21075` | `159d00bed3f`   | #175678 | the Gateway exits on resume when a queued cron run hits a storage error      |
+| `9c54ad0b61f` | `b3991b182c0`   | #190665 | Doctor allows config promotion after plugin migration guidance changes       |
+| `99a9ce62fab` | `00ffb825ec6`   | #190698 | collected turns keep per-message context ("Queued #N" labels)                |
+| `5ff161c5ba9` | `d6c8ad3ff2f`   | #191251 | a clean stop no longer waits for systemd's timeout when a handle leaks       |
+| `f9bb430d4de` | `9676ea517d5`   | #192686 | response recovery honours user constraints                                   |
+| `b98d86fc0d5` | `f34fb556b7b`   | #193451 | test only: #189144's auth test loads auth metadata before fake timers        |
+
+Pick 22 came out of qualification: #189144's test "settles slow runtime auth inside the budget" failed in
+a file group on the M4 (a tsx disk-cache timer counted as a leaked auth timer) and passed alone; upstream fixed the
+test four days later. The carry's file was byte-identical to that fix's parent (`2d25958b847`).
+
+The first 14 are room #613's (five adapted to beta.4 with their tests: #195028, #187884, #191693 and the two
+absorbed above); the last 7 are room #615's. #191251's doc conflict keeps beta.4's wording plus the fix's
+sentences: beta.4 still retires the watchdog on a clean stop (`run-loop-cleanup.ts`), so the gap it closes is real
+there.
+
+## Fork code retired with this carry
+
+- **Main-session restart recovery** (23 files plus 5 fork-only ones). beta.3's #185730 (`9344233e7a6`) deleted
+  every file; its owner is now `src/gateway/session-restart-resume.ts`, which marks running sessions only on a
+  committed graceful close and resumes them with one model-facing input at startup. Every anchor symbol of the
+  fork's recovery (`transitionMainSessionRecovery`, `markRestartAbortedMainSessions`,
+  `createReplyRestartRecoveryClaimController`, `announceRestartRecoveryResumption` and the rest) has 0 hits in
+  beta.3, and beta.3 strips the `restartRecovery*` keys from persisted entries at read, so the bots' rows stay
+  readable. What changes for the bots (upstream behaviour, not fork delta):
+  - a crash, SIGKILL, OOM or reboot resumes nothing; queued inputs are settled as cancelled and resendable (#187083);
+  - the Telegram "I'm continuing your interrupted request now" notice (#141797) is gone;
+  - the first beta.4 boot after the 11.3 carry resumes only rows the 11.3 Gateway's close marked, and only within
+    6 h of that stop.
+- **The answered-turn replay rule keeps no restart arm.** beta.4's `pre-persisted-user-turn.ts` "already-delivered"
+  says only that an input is already in the transcript, not that its turn was answered, so the fork's
+  `lastCompletedTurnRequestHash` rule stays; its restart-recovery arm and the six claim-dependent test cases go.
+- **Subagent transcript recovery** (`resolveSubagentRecoveryCompletion`): beta.3's #164445 (`e02ae3ecb66`) retains
+  stale unended runs instead of error-finalizing them, so the helper had no caller.
+- **#156537's `metadataOnlySignalKill` filter and heartbeat target awareness**: beta.3's heartbeat turn paths
+  (#180563, #180192) replaced them. The writer-less `lastHeartbeatAwareness*` keys stay reserved.
+- **The fork's compaction cut direction** (`open-tool-call-cut-guard.ts`): beta.3 keeps a tool call with its result
+  by moving the cut back to the call, the same invariant.
+- **`scripts/lib/openclaw-test-state.mts`**: beta.3's version. The fork's canonical `upgradeSurvivorConfig` came
+  from 8.1-beta.2 release-branch commits (`34f468cde2e`, `d494aec270b`) that no later release carried.
+- **diagnostics-otel**: the fork's #158145 normalizer is kept (ruling above); beta.3's second redactor
+  (`createOtelContentRedactor`) is dropped.
+
+## Carry decisions on the new base
+
+- **#195612** (Alex's open PR): the fork now carries the PR itself, head `272d4c60652b`, replacing the
+  branch-native hold `b97f7b0c6c0`. Alex's 11-10 ruling chose branch-native because #175837 and #181105 were
+  absent; both are in beta.3, and beta.3's file equals the PR's base.
+- **#192999** (open): PR head `eae91e923b9b` verbatim in `pipe.ts` and its test; the PR's two lines in `host.ts`.
+- **#190472** (Alex's open PR, head `14e7606d4249`): the branch-native requester plumbing stays. The PR was rebased
+  onto main `18a62d6ff934` and its base blobs differ from beta.4 in `session-event-context.ts`,
+  `session-event-target.ts` and the handoff test. Revisit when a carried tag contains its base.
+- **#190017** (cron context totals): beta.3 moved the cron merge into the `cron-session` writer operation; upstream
+  #190017 (`e0ed68c7b84`, in main, not in beta.4) made the same fix in that shape, and the carry holds exactly its
+  lines.
+- **#93952** (the fork's provider-auth backstop): beta.4 + #189144's `runtime-auth-refresh.ts`, with the fork's
+  11.3 delta on top as 11.3 had it: one timer at the earlier of the run deadline and
+  `RUNTIME_AUTH_REFRESH_HARD_TIMEOUT_MS` (360 s), throwing `RuntimeAuthDeadlineError`.
+  `runtime-auth-refresh.test.ts` (deleted upstream by #182997) holds only the backstop's cases.
+- **Answer-only pass** (rulings Q2, #617): `settled-turn-finalization.ts` skips `recoveredOutputLimit` and the
+  cut-off notice only for an answer-only pass whose turn shows no tool work: no `toolMetas` in the cut-off attempt
+  and no `replayMetadata.hadPotentialSideEffects` for the run. upstream's three #178300 cases pass unchanged; the
+  fork's answer-only test expects the notice and an `incomplete_turn` error for its two tool-work rows.
+- **Group prompt order**: beta.3's #170534 order (the "If no text reply is needed" line last); `groups.test.ts`
+  asserts it.
+- **`/temperature`**: the session read now runs in the session worker, per the rule against new synchronous
+  SQLite reads on the Gateway main thread, through the read-only reader `readSessionEntryReadOnlyInWorker`. The
+  first version used `readSessionEntryInWorker`, whose writable open created the agent database on a detached run
+  (upstream's `run-orchestrator.projection.test.ts` asserts `<stateDir>/agents` stays absent); 11.3 read with
+  `loadSessionEntryReadOnly`.
+- **Lazy exec schema** (`lazy-exec-tool.ts`): beta.4 #182865 builds the exec definition from whether `process` is
+  callable; the fork's unavailable-tool marking (`0d7028563ad`) takes `process` out of a completion run's callable
+  set, so the CLI catalog lost `background`/`yieldMs`. The definition now follows the offered tools and the runtime
+  binding follows the callable ones (exec then runs synchronously, with beta.4's warning).
+- **Forward merge onto beta.4** (6 paths): telegram `action-runtime.ts` drops its local target helpers (beta.4
+  has them in `targets.ts` and `action-params.ts`); `approval-native.ts` takes beta.4's async capability;
+  `agent-session-compaction.ts` takes beta.4's `projectCompactionReplacement`, with the fork's
+  `shadowedEntryCount` moved there; `session.ts` keeps both beta.4's `projectSessionContextMessage` and the fork's
+  `withCompactionCheckpointHandle`.
+- **Line caps** (oxlint `max-lines`: 700 counted lines for source, 1000 for tests; a file over the cap at the tag
+  may not grow). 13 files failed the ratchet after the merge; each now passes by moving a unit into a new sibling
+  module. Where no fork unit was big enough, upstream code moved too, and that is future conflict surface:
+  - fork code only: `polling-session.test.ts` 1904 -> 1803 (`polling-session.startup.test.ts`),
+    `attempt-stream-prepare.test.ts` 1056 -> 991, `queue.collect.test.ts` 2548 -> 2515, `deliver.test.ts`
+    2944 -> 2927, `memory-lancedb/index.ts` 702 -> 693 (`isHeartbeatHookContext` to `memory-policy.ts`).
+    Three of the moved test units are the picks' upstream tests (#193452, #190698, #191819): delete the moved
+    copies when a carried tag contains them.
+  - upstream code moved as well: `ingress-drain.ts` 808 -> 753 (`ingress-drain-watchdog.ts`,
+    `ingress-drain-stall-settlement.ts`), `server-close.ts` 730 -> 696, `chat-history-handler.ts` 734 -> 693,
+    `sessions-patch.ts` 705 -> 693, `server-lifecycle.ts` 701 -> 692, `run-attempt-dispatch.ts` 706 -> 696,
+    `agent-session-compaction.ts` 710 -> 689, `session-accessor.pending-inputs.ts` 726 -> 694.
+  - `ingress-drain.ts` (753) and `ingress-monitor.ts` (701) still fail oxlint `max-lines`. Both already fail it at
+    the tag (765 and 731), neither is in `config/max-lines-baseline.txt`, and the line-cap ratchet against the tag
+    passes. upstream main has since cut `ingress-drain.ts` to 692; the next carry takes that split instead of
+    moving more upstream code now.
+
+## Deploy kit
+
+The 115b4 kit is the 11.3 kit with its version tokens renamed (comments, which carry its history, untouched), plus:
+
+- **Send count.** #174260 removed `telegram outbound send ok`, so the old count would read 0 on a working bot.
+  `verify-115b4.sh` and `soak-check.sh` count `tool_delivered` rows in each agent database's
+  `message_tool_run_outcomes` since the restart, plus the fork's `telegram final delivery outcome=` lines and
+  `Telegram send failed` errors. The verify gate never keyed on that count. Control on rh-bot, read-only: 16 rows
+  in the last 24 h, 0 for a start time in the future.
+- **Retired heartbeat config.** Both bots' `openclaw.json` set `agents.defaults.heartbeat` (disabled on both:
+  `every: "0m"`, `target: "none"`), which 11.5 refuses (the Gateway exits 78, "Unrecognized key"). The kit's `doctor --fix --non-interactive` migrates it into a cron
+  automation, but only when the default cron partition selection is resolved; otherwise Doctor keeps the original
+  config. On both bots the state database has no binding and one partition keyed
+  `/Users/alexm/.openclaw/cron/jobs.json`, which is 11.5's default path, so the selection resolves (read from the
+  source and both databases; not yet executed). The kit now rolls back before the restart if the key survives
+  Doctor. `agents.defaults.models` is legacy too, but it still validates; Doctor moves its refs into
+  `agents.defaults.modelPolicy.allow`.
+
+## Qualification
+
+All on the M4 (Node 26.12.1), 2026-11-16, under the heavy-job lock.
+
+- **The changed-test plan** (09:48-11:36Z, at the pre-qualification head `9643e7ee1ce`): 673 test files (548, plus
+  125 gateway files one per process). 14 files failed. `heartbeat-repeated-relay.test.ts` is retired with the
+  heartbeat target awareness it tested. Controls for the other 13: bare beta.4, which says nothing for a file a pick
+  touched, and the picks' tip `f9bb430d4de`.
+  - Inherited, failing on the same cases at the tag and at the picks' tip: `update-repair-cancellation.test.ts`
+    (2 of 7, a "Settled keys:" detail on the M4's TMPDIR; upstream later reworked the fixture, #197831) and
+    `server-close.sandbox-registry.test.ts` (1 of 1).
+  - Carry defect, fixed in source: the `/temperature` read's writable open (Carry decisions).
+  - Carry defect, fixed in source: the lazy exec schema (Carry decisions).
+  - Upstream test defect: #189144's auth test counted a tsx disk-cache timer as leaked; fixed by pick 22.
+  - Ruling: the three #178300 cases, now passing under #617.
+  - Fork tests moved to beta.4's contracts:
+    - `session-event-exec-requester.test.ts`: silence is read from `meta.terminalReply`, not the payload text.
+      Its command-owner row expects owner status (#185476), as #190472's own test does.
+    - The Telegram replay-guard cases publish the runtime config snapshot (#174256 removed the bot's
+      config dependency).
+    - `session-store.test.ts` passes explicit default models (#177284).
+    - `ingress-monitor.scheduling.test.ts` releases the deferred claim the fork's watchdog holds (#132409, kept
+      over #182237).
+    - `media-reference.test.ts` folds the fork's URI-authority cases into beta.4's flattened test.
+    - The WhatsApp media test passes the fork's scope argument.
+- **The final tree** (13:09-13:27Z; `6244ad87709`, then a format-only commit):
+  - tsgo, 7 lanes with `CI=1`: 0 errors. The lanes are incremental. A positive control injected one type error
+    into a changed file per lane (core, core:test with every shard, extensions:test), and each lane reported it
+    at that line.
+  - oxlint on the 667 changed `.ts` files: only `max-lines` on `ingress-drain.ts` and `ingress-monitor.ts`. Both
+    fail at the tag.
+  - `oxfmt --check` on the same files: clean.
+  - Tests: 40 files (the 13, every test file changed since `9643e7ee1ce`, the exec-tool coverage and the
+    finalizer's sibling tests). 491 passed, 3 failed, all 3 the inherited cases above. The three files touched
+    by the format commit passed again afterwards.
+  - `pnpm build`: rc 0, 122 s. Exactly one dist chunk defines `Symbol("gatewayReloadWaitingRoots")`
+    (`gateway-work-admission-state-*.mjs`; 8 files reference it). The gateway therefore has one reload-roots
+    AsyncContext, and the 11.3 line's `Symbol.for` carrier change (`77a79f67719`) is not needed here.
+- **Not run:** the full `pnpm test` suite and live channel proof. Live proof is the deploy kit's verify and soak.
+- **Instruments that were void**:
+  - Bare-tag controls for pick-touched files.
+  - Debug copies run as separate test files. They run outside their file's project setup. In-place
+    instrumentation, restored from HEAD on exit, was the valid instrument.
+  - The first carrier count: it filtered `*.js` and the build emits `.mjs`, so the count and its control both
+    read 0.
