@@ -215,6 +215,7 @@ async function createGatewayKernelWithSdkHost(
         logCron,
         shutdownRuntime,
         exitAfterStartupFailure: opts.exitAfterStartupFailure,
+        postShutdownExitWatchdogEnabled: opts.postShutdownExitWatchdog === true,
       }),
     );
     lifecycleRuntime = preparedLifecycleRuntime;

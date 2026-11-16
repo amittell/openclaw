@@ -22,6 +22,7 @@ import {
   createFreshRunIntegrationState,
   loadSharedRunIntegrationHarness,
 } from "./run.shared-integration-harness.test-support.js";
+import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "./run/incomplete-turn-recovery.js";
 import type { CompactionAccountingFact } from "./run/internal-params.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
@@ -534,6 +535,13 @@ it.each(["generated", "host-owned", "tts", "foreign-tts"])(
         : mediaAttempt;
     });
     finalAttempt(finalText);
+    // FORK DIVERGENCE (silent-stop delivery nudge, bab392de8d3): under message_tool_only,
+    // visible text that never went through the message tool gets one bounded delivery
+    // retry. The nudged pass answers with the same text, so selection is unchanged.
+    const nudged = kind !== "generated";
+    if (nudged) {
+      finalAttempt(finalText);
+    }
     buildPayloads.mockImplementation(textPayloads);
     const result = await runAgent({
       ...runParams,
@@ -544,7 +552,16 @@ it.each(["generated", "host-owned", "tts", "foreign-tts"])(
       preparedRunAdmission: admission,
       ...(kind === "generated" ? {} : { sourceReplyDeliveryMode: "message_tool_only" as const }),
     }).finally(() => admission.close());
-    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(attempt).toHaveBeenCalledTimes(nudged ? 3 : 2);
+    if (nudged) {
+      expect(attempt.mock.calls[2]?.[0]?.prompt).toBe(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION);
+      // Only the delivery retry is limited to the message tool.
+      expect(attempt.mock.calls.map(([call]) => call?.toolsAllow)).toEqual([
+        undefined,
+        undefined,
+        ["message"],
+      ]);
+    }
     expect(result.didSendViaMessagingTool).not.toBe(true);
     expect(result.messagingToolSentMediaUrls ?? []).toEqual([]);
     expect(result.meta.agentMeta?.terminalReceipt?.sourceReplyDelivered).not.toBe(true);

@@ -20,11 +20,7 @@ import type { PluginHookHandlerMap } from "../../plugins/hook-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { commitConfirmedVisibleMessage } from "../../sessions/confirmed-visible-message.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  createChannelTestPluginBase,
-  createOutboundTestPlugin,
-  createTestRegistry,
-} from "../../test-utils/channel-plugins.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
@@ -38,6 +34,7 @@ import { deliverOutboundPayloadsCore } from "./deliver-core.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import { countPhysicalOutboundSends, PlatformMessageNotDispatchedError } from "./deliver-types.js";
 import { matrixOutboundForTest } from "./deliver.matrix.test-support.js";
+import { setTestPlugin } from "./deliver.plugin-registry.test-support.js";
 import {
   registerOutboundImageProjectionTests,
   registerOutboundPreparationMetadataTests,
@@ -283,21 +280,6 @@ function requireMatrixSendCall(sendMatrix: ReturnType<typeof vi.fn>, index = 0):
 
 function createNetworkError(message: string, code: string, syscall?: string) {
   return Object.assign(new Error(message), { code, ...(syscall ? { syscall } : {}) });
-}
-
-function setTestPlugin(
-  plugin: Pick<ChannelPlugin, "id"> & Partial<ChannelPlugin>,
-  pluginId = plugin.id,
-) {
-  setActivePluginRegistry(
-    createTestRegistry([
-      {
-        pluginId,
-        source: "test",
-        plugin: { ...createChannelTestPluginBase({ id: plugin.id }), ...plugin },
-      },
-    ]),
-  );
 }
 
 function createTestOutbound(

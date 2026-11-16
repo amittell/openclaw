@@ -96,21 +96,27 @@ describe("ingress wake scheduling", () => {
   it("retries a watchdog-released claim without waiting for recovery", async () => {
     await withTimedMonitor(async ({ queue, monitor, deliver, admit, advance }) => {
       let attempts = 0;
+      let deferredLifecycle: Parameters<Parameters<typeof createMonitor>[1]>[1] | undefined;
       const released = createDeferred();
       const release = queue.release.bind(queue);
-      vi.spyOn(queue, "release").mockImplementation(async (...args) => {
+      const releaseSpy = vi.spyOn(queue, "release").mockImplementation(async (...args) => {
         const result = await release(...args);
         released.resolve();
         return result;
       });
-      deliver.mockImplementation(() => {
+      deliver.mockImplementation((_raw, lifecycle) => {
         if (attempts++ === 0) {
+          deferredLifecycle = lifecycle;
           return { kind: "deferred" };
         }
         return { kind: "completed" };
       });
       await admit(event);
       await vi.advanceTimersByTimeAsync(5_000);
+      // Fork divergence (#132409, kept by Alex 2026-11-10): the stall watchdog holds a
+      // timed-out deferred claim until its dispatch settles; upstream releases it here.
+      expect(releaseSpy).not.toHaveBeenCalled();
+      await deferredLifecycle?.onFailed?.(new Error("deferred dispatch failed after the timeout"));
       await released.promise;
       await monitor.waitForIdle();
       expect(attempts).toBe(1);

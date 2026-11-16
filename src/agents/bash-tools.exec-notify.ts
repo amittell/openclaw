@@ -70,10 +70,17 @@ export function prepareExecExitNotification(
   if (!owner) {
     return undefined;
   }
+  // Fork branch-native #190472 (bf164e56334), beside upstream #185476's tool-caller capture. Drop
+  // notifyRequester/completionRequester and exec-completion-requester.ts when a tag carries #190472.
+  // The completion continues its starting sender's work only on that turn's own route.
+  const route = session.notifyDeliveryContext;
+  const requester =
+    session.notifyRequester && route?.channel ? { ...session.notifyRequester, route } : undefined;
   return captureSessionEventTarget(owner, targetKey, {
     operatorAuthority: getGatewayToolCallerIdentity()?.operatorAuthority,
     // The completion continues the requester's own command, not a new sender's request.
     retainRequesterOwner: true,
+    ...(requester ? { requester } : {}),
   }).then(
     (target) => {
       if (isCronRunSessionKey(targetKey)) {

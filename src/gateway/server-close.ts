@@ -28,12 +28,22 @@ import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.j
 import { settlesWithin } from "../shared/settle-within.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { clearArtifactDownloads } from "./artifact-download-grants.js";
+// Shutdown lifecycle state lives in `gateway-shutdown-state.ts` so callers that
+// only need the running / shutting-down distinction (gateway startup, HTTP probe
+// handler) do not pull in this close module's dependency graph; they import it
+// from there directly.
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import {
   collectGatewayProcessMemoryUsageMb,
   measureGatewayCloseStep,
   recordGatewayRestartTrace,
 } from "./restart-trace.js";
 import type { ChatRunState } from "./server-chat-state.js";
+import { waitForHttpClose } from "./server-close.http-wait.js";
+import {
+  armPostCloseExitWatchdog,
+  type GatewayPostShutdownExitWatchdogParams,
+} from "./server-close.post-shutdown-exit.js";
 import { WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import type { GatewayMaintenanceHandles } from "./server-maintenance-lifecycle.js";
 import {
@@ -127,20 +137,6 @@ export async function runGatewayClosePrelude(params: {
   );
 }
 
-async function waitForHttpClose(params: {
-  closePromise: Promise<void>;
-  timeoutMs: number;
-  label: string;
-  warnings: string[];
-}): Promise<boolean> {
-  return await settlesWithin(params.closePromise, params.timeoutMs).catch((err: unknown) => {
-    const detail = err instanceof Error ? err.message : String(err);
-    shutdownLog.warn(`${params.label}: ${detail}`);
-    recordShutdownWarning(params.warnings, params.label);
-    return true;
-  });
-}
-
 async function closeHttpListener(params: {
   server: HttpServer;
   label: string;
@@ -186,7 +182,7 @@ async function closeHttpListener(params: {
   }
 }
 
-export type GatewayCloseParams = {
+export type GatewayCloseParams = GatewayPostShutdownExitWatchdogParams & {
   retainSharedState?: boolean;
   resolveGatewayContext: GatewayRunShutdownParams["resolveGatewayContext"];
   closePluginRegistry: ReturnType<typeof createPluginRegistryOwner>["close"];
@@ -253,6 +249,10 @@ export async function prepareGatewayClose(
     cleanupWork,
     exitAfterClose,
   );
+  // Flip the shutdown flag before any await so /healthz starts returning 503
+  // immediately. Lock-recovery preflight uses that 503 to tell a live gateway
+  // from a zombie that still holds the port.
+  markGatewayShuttingDown();
   // Fence async session-state writes before the first awaited shutdown step.
   fenceSessionSuspensionWritesForGatewayShutdown();
 
@@ -331,6 +331,7 @@ export async function prepareGatewayClose(
       retainedErrors,
       failure,
       exitAfterClose,
+      postShutdownExitCode: opts?.postShutdownExitCode,
     };
   } catch (error) {
     if (!isGatewayCleanupRetainedError(error)) {
@@ -736,5 +737,6 @@ async function closeGatewayResources(
       cause: resourceCleanupErrors[0],
     });
   }
+  armPostCloseExitWatchdog(params, reason, durationMs, preparation.postShutdownExitCode);
   return { durationMs, warnings };
 }

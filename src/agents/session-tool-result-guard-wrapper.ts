@@ -24,6 +24,7 @@ import {
   resolveLiveToolResultMaxChars,
   truncateToolResultMessage,
 } from "./embedded-agent-runner/tool-result-truncation.js";
+import { recordToolResultLocalMediaReplayAuthorization } from "./embedded-agent-tool-media.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "./harness/hook-helpers.js";
 import { projectAgentHarnessTranscriptMessageForDisplay } from "./harness/transcript-visibility.js";
 import type { EmbeddedRunTrigger } from "./run-trigger.js";
@@ -56,6 +57,8 @@ type GuardedSessionManager = SessionManager &
     setTranscriptRunContext?: (options: Parameters<typeof guardSessionManager>[1]) => void;
     /** Retire only this binding after its accepted transcript writes drain. */
     clearTranscriptRunCallbacks?: () => void;
+    /** Replace the tools whose local media this run may authorize for replay. */
+    setTrustedLocalMediaToolNames?: (names: ReadonlySet<string>) => void;
   };
 
 function publishPersistedUserEnvelope(
@@ -94,6 +97,7 @@ type GuardOptions = {
   allowSyntheticToolResults?: boolean;
   missingToolResultText?: string;
   allowedToolNames?: Iterable<string>;
+  trustedLocalMediaToolNames?: ReadonlySet<string>;
   trigger?: EmbeddedRunTrigger;
   preparedUserTurnMessage?: PersistedUserTurnMessage;
   preparedUserTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
@@ -153,6 +157,8 @@ function createTranscriptRunContext(
     onUserMessageBlocked,
   }: GuardOptions = {},
   reusing = false,
+  // The guard owns the run's trusted set; same-run reuse without a set keeps it.
+  readTrustedLocalMediaToolNames: () => ReadonlySet<string> | undefined = () => undefined,
 ): TranscriptRunContext {
   let prepareAssistantTranscriptMessage =
     trigger === "memory" ? undefined : initialPrepareAssistantTranscriptMessage;
@@ -229,6 +235,15 @@ function createTranscriptRunContext(
     const sanitized = sanitizeTranscriptMessage(message);
     if (sanitized !== message) {
       message = sanitized;
+      changed = true;
+    }
+    const trustedLocalMediaToolNames = readTrustedLocalMediaToolNames();
+    if (message.role === "toolResult" && trustedLocalMediaToolNames) {
+      message = recordToolResultLocalMediaReplayAuthorization(
+        message,
+        message.toolName,
+        trustedLocalMediaToolNames,
+      );
       changed = true;
     }
     const projectedMessage = projectAgentHarnessTranscriptMessageForDisplay({
@@ -368,11 +383,22 @@ export function guardSessionManager(
   const guardedSessionManager: GuardedSessionManager = sessionManager;
   if (typeof guardedSessionManager.flushPendingToolResultsAsync === "function") {
     guardedSessionManager.setTranscriptRunContext?.(options);
+    // Same-run helpers such as compaction reuse the manager without a set and keep the run's.
+    if (options?.trustedLocalMediaToolNames) {
+      guardedSessionManager.setTrustedLocalMediaToolNames?.(options.trustedLocalMediaToolNames);
+    }
     return guardedSessionManager;
   }
   const { agentId, sessionKey } = options ?? {};
   const hookRunner = getGlobalHookRunner();
-  let context = createTranscriptRunContext(sessionManager, options);
+  let trustedLocalMediaToolNames = options?.trustedLocalMediaToolNames;
+  const readTrustedLocalMediaToolNames = () => trustedLocalMediaToolNames;
+  let context = createTranscriptRunContext(
+    sessionManager,
+    options,
+    false,
+    readTrustedLocalMediaToolNames,
+  );
   const transform = hookRunner?.hasHooks("tool_result_persist")
     ? (
         message: AgentMessage,
@@ -425,9 +451,17 @@ export function guardSessionManager(
   guardedSessionManager.setNextUserMessagePersistence = context.setNextUserMessagePersistence;
   guardedSessionManager.clearTranscriptRunCallbacks = context.release;
   guardedSessionManager.setTranscriptRunContext = (nextOptions) => {
-    context = createTranscriptRunContext(sessionManager, nextOptions, true);
+    context = createTranscriptRunContext(
+      sessionManager,
+      nextOptions,
+      true,
+      readTrustedLocalMediaToolNames,
+    );
     guardedSessionManager.setNextUserMessagePersistence = context.setNextUserMessagePersistence;
     guardedSessionManager.clearTranscriptRunCallbacks = context.release;
+  };
+  guardedSessionManager.setTrustedLocalMediaToolNames = (names) => {
+    trustedLocalMediaToolNames = names;
   };
   return guardedSessionManager;
 }

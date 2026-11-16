@@ -9,11 +9,11 @@ import { isReplaySafeToolCall } from "../../tool-mutation.js";
 import { TOOL_FAILURE_INSTRUCTION } from "../../tool-outcome-instructions.js";
 import { buildAttemptReplayMetadata } from "./attempt-terminal-evidence.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
+import { resolveSettledTurnFinalizationRequest } from "./settled-turn-finalization-request.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import {
   createTerminalToolPresentationTracker,
   resolveEmbeddedRunTerminal,
-  resolveSettledTurnFinalizationRequest,
 } from "./terminal-resolution.js";
 import { makeTerminalInput } from "./terminal-resolution.test-support.js";
 

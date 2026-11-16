@@ -45,7 +45,7 @@ export function decodeChatHistoryPageCursor(
 }
 
 export function resolveChatHistorySelectorError(
-  { offset, messageId, cursor, sessionId }: ChatHistoryParams,
+  { offset, messageId, cursor, sessionId, compactionId }: ChatHistoryParams,
   pageCursor: ChatHistoryPageCursor | null | undefined,
   retainedSessionId: string | undefined,
 ): string | undefined {
@@ -55,8 +55,15 @@ export function resolveChatHistorySelectorError(
   if (offset !== undefined && messageId !== undefined) {
     return "offset and messageId cannot be used together";
   }
-  if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
-    return "cursor cannot be used with offset or messageId";
+  // Fork: a compaction span (`compactionId`) is its own anchored window.
+  if (compactionId !== undefined && messageId !== undefined) {
+    return "compactionId and messageId cannot be used together";
+  }
+  if (
+    cursor !== undefined &&
+    (offset !== undefined || messageId !== undefined || compactionId !== undefined)
+  ) {
+    return "cursor cannot be used with offset, messageId, or compactionId";
   }
   if (sessionId !== undefined && messageId === undefined) {
     return "sessionId requires messageId";

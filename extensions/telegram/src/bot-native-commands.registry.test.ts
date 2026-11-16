@@ -5,7 +5,7 @@ import {
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 let registerTelegramNativeCommands: typeof import("./bot-native-commands.js").registerTelegramNativeCommands;
 let menu: typeof import("./bot-native-commands.menu-test-support.js");
@@ -222,5 +222,30 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
       userId: 111,
     });
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("yields the core /dashboard native surface to a channel-owned plugin command (#142336)", async () => {
+    // Register a plugin command that collides with the core /dashboard native name,
+    // mirroring the Telegram Mini App dashboard command.
+    const miniAppHandler = vi.fn(async () => ({ text: "mini-app-dashboard" }));
+    registerCommand("telegram-miniapp", {
+      name: "dashboard",
+      description: "Open the OpenClaw dashboard",
+      channels: ["telegram"],
+      handler: miniAppHandler,
+    });
+
+    const { commandHandlers, setMyCommands } = await registerMenu();
+    const registeredCommands = await menu.waitForRegisteredCommands(setMyCommands);
+
+    // The plugin /dashboard must appear in the Telegram menu: the core native
+    // /dashboard must not shadow it.
+    expect(registeredCommands.filter(({ command }) => command === "dashboard")).toEqual([
+      { command: "dashboard", description: "Open the OpenClaw dashboard" },
+    ]);
+
+    // The plugin handler must own the grammy bot.command("dashboard") registration.
+    await expectCommandReply(commandHandlers, "dashboard", "mini-app-dashboard");
+    expect(miniAppHandler).toHaveBeenCalledOnce();
   });
 });

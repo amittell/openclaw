@@ -1,5 +1,8 @@
 // Gateway WebSocket connect completion sends hello-ok and commits post-handshake state.
-import { GATEWAY_CLIENT_CAPS } from "../../../../packages/gateway-protocol/src/client-info.js";
+import {
+  GATEWAY_CLIENT_CAPS,
+  hasGatewayClientCap,
+} from "../../../../packages/gateway-protocol/src/client-info.js";
 import {
   GATEWAY_SERVER_CAPS,
   ErrorCodes,
@@ -39,6 +42,7 @@ import {
 } from "../../device-pair-setup-completion.js";
 import { canReadDetailedUpdateMetadata } from "../../events.js";
 import { projectHealthSummary } from "../../health/presentation.js";
+import { omitRuntimeConfigHealthForClient } from "../../health/runtime-config-cap.js";
 import { getRemoteControlUiIngressContext } from "../../ingress-attribution.js";
 import { ADMIN_SCOPE } from "../../method-scopes.js";
 import { scheduleNodeConnectionNotification } from "../../node-connection-notifications.js";
@@ -55,7 +59,12 @@ import { getSessionRowProjection } from "../../session-row-projection-access.js"
 import { allowedSessionVisibilities } from "../../session-sharing.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { shouldScheduleBackgroundHealthRefresh } from "../health-refresh-admission.js";
-import { buildGatewaySnapshot, getHealthCache, getHealthVersion } from "../health-state.js";
+import {
+  buildGatewaySnapshot,
+  getHealthCache,
+  getHealthVersion,
+  readCurrentRuntimeConfigHealth,
+} from "../health-state.js";
 import { emitGatewayAuthSecurityEvent } from "./connect-auth-security.js";
 import type {
   DeviceAuthorizedGatewayConnect,
@@ -135,13 +144,6 @@ export async function sendGatewayHello(
     revisionProjector: buildRequestContext().configRevisionProjector,
     sessionRowProjection,
   });
-  const cachedHealth = getHealthCache();
-  if (cachedHealth && !connectParams.caps?.includes(GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND)) {
-    snapshot.health = connectParams.caps?.includes(GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY)
-      ? projectHealthSummary(cachedHealth)
-      : cachedHealth;
-    snapshot.stateVersion.health = getHealthVersion();
-  }
   context.recordAttachTiming?.("snapshotMs", snapshotStartedAt);
   const descriptorsStartedAt = performance.now();
   const controlUiTabs = listControlUiPluginTabs(scopes, {
@@ -321,6 +323,29 @@ export async function sendGatewayHello(
       );
       await releasePendingNodePairingCleanup();
       throw err;
+    }
+  }
+  // Bootstrap bookkeeping above can await durable state. Finalize health only
+  // after it completes so hello cannot serialize an earlier config generation.
+  const cachedHealth = getHealthCache();
+  snapshot.stateVersion.health = getHealthVersion();
+  if (cachedHealth && !connectParams.caps?.includes(GATEWAY_CLIENT_CAPS.HELLO_HEALTH_ON_DEMAND)) {
+    snapshot.health = omitRuntimeConfigHealthForClient(
+      connectParams.caps?.includes(GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY)
+        ? projectHealthSummary(cachedHealth)
+        : cachedHealth,
+      connectParams.caps,
+    );
+  } else {
+    snapshot.health = {};
+    const runtimeConfig = hasGatewayClientCap(
+      connectParams.caps,
+      GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH,
+    )
+      ? readCurrentRuntimeConfigHealth()
+      : undefined;
+    if (runtimeConfig) {
+      snapshot.health.runtimeConfig = runtimeConfig;
     }
   }
   let helloWriteStarted = false;

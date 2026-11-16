@@ -168,6 +168,55 @@ test.each(["lifecycle", "outstanding"] as const)(
             expect(await turn("Summarize this session.", "agent:main:unrelated")).not.toContain(
               result,
             );
+
+            // Fork (#154834; upstream #155019 fixed it, this real-Gateway case stays):
+            // a delivery that gave up and whose cleanup completed is settled, so it must
+            // stop rendering on later parent turns. Retire the outstanding row through
+            // the same fixture owner first so it cannot satisfy or mask the assertion.
+            await resetSubagentRegistryForTests();
+            persistRegistryFixture(new Map(), [retained.runId]);
+            const settledResult = `Settled-result-${randomUUID()}`;
+            const settledEndedAt = Date.now() - 7_200_000;
+            const settled: SubagentRunRecord = {
+              runId: "persisted-settled-failure",
+              childSessionKey: CHILD_SESSION_KEY,
+              requesterSessionKey: PARENT_SESSION_KEY,
+              requesterStorePath: resolvePhysicalSessionStorePath(
+                { sessionKey: PARENT_SESSION_KEY },
+                cfg,
+              ),
+              requesterAgentId: "main",
+              requesterDisplayKey: "main",
+              task: "child task whose completion delivery gave up",
+              cleanup: "keep",
+              expectsCompletionMessage: true,
+              createdAt: settledEndedAt - 1_000,
+              execution: {
+                status: "terminal",
+                endedAt: settledEndedAt,
+                outcome: { status: "error", error: "network connection error" },
+              },
+              completion: { required: true, resultText: settledResult, capturedAt: settledEndedAt },
+              delivery: { status: "failed", attemptCount: 3, lastError: "message tool missing" },
+              cleanupHandled: true,
+              cleanupCompletedAt: settledEndedAt + 60_000,
+            };
+            // Pin that the row landed, or the negative checks below are vacuous.
+            persistRegistryFixture(new Map([[settled.runId, settled]]), [settled.runId]);
+            const settledStore = loadSubagentRegistryFromSqlite();
+            expect([...settledStore.keys()]).toEqual([settled.runId]);
+            const settledBefore = settledStore.get(settled.runId);
+            expect(settledBefore).toMatchObject({
+              runId: settled.runId,
+              completion: { required: true, resultText: settledResult },
+              delivery: { status: "failed" },
+              cleanupCompletedAt: settled.cleanupCompletedAt,
+            });
+            const settledRequest = await turn("Continue using any outstanding child result.");
+            expect(settledRequest).not.toContain("## Child results awaiting delivery");
+            expect(settledRequest).not.toContain(settledResult);
+            expect(settledRequest).not.toContain(settled.runId);
+            expect(loadSubagentRegistryFromSqlite().get(settled.runId)).toEqual(settledBefore);
             return;
           }
 

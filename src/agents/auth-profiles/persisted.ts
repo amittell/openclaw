@@ -390,6 +390,7 @@ export function mergeAuthProfileStores(
     store: runtimeMerged,
     base,
     replacements,
+    // SAFETY: runtimeMerged adds the runtime metadata block on top of a complete store and the replacement pass returns it spread, which is exactly what RuntimeAuthProfileStore adds to AuthProfileStore.
   }) as RuntimeAuthProfileStore;
   if (base.runtimeCredentialSources || override.runtimeCredentialSources) {
     // Reconciliation can select main's OAuth row instead of the local override.

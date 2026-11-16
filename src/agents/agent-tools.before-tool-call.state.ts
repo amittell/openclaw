@@ -1,8 +1,9 @@
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 
+export const MAX_TRACKED_TOOL_CALL_IDS = 1024;
 /** Detached execution facts; internal readers borrow the same snapshot. */
 const adjustedParamsByToolCallId = new Map<string, unknown>();
-export const preExecutionBlockedToolCallIds = new Set<string>();
+const preExecutionBlockedToolCallIds = new Set<string>();
 export const structuredReplaySafeToolCallIds = new Set<string>();
 // A tracked call starts pending (false), then crosses the implementation boundary (true).
 const trackedToolCallIds = new Map<string, boolean>();
@@ -32,6 +33,20 @@ export function recordAdjustedParamsForToolCall(
   }
   adjustedParamsByToolCallId.set(buildAdjustedParamsKey({ runId, toolCallId }), snapshot);
   pruneMapToMaxSize(adjustedParamsByToolCallId, 1024);
+}
+
+export function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {
+  if (!toolCallId) {
+    return;
+  }
+  preExecutionBlockedToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
+  while (preExecutionBlockedToolCallIds.size > MAX_TRACKED_TOOL_CALL_IDS) {
+    const oldest = preExecutionBlockedToolCallIds.values().next().value;
+    if (!oldest) {
+      break;
+    }
+    preExecutionBlockedToolCallIds.delete(oldest);
+  }
 }
 
 /** Consume and remove hook-adjusted params for a completed tool call. */

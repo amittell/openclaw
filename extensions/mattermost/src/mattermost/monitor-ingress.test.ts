@@ -61,6 +61,7 @@ function startMonitor(
     error: vi.fn(),
     log: vi.fn(),
   },
+  adoptionStallTimeoutMs = 5_000,
 ) {
   const monitor = createMattermostIngressMonitor({
     accountId,
@@ -68,7 +69,7 @@ function startMonitor(
     dispatch,
     runtime,
     pollIntervalMs: 60_000,
-    adoptionStallTimeoutMs: 5_000,
+    adoptionStallTimeoutMs,
   });
   monitors.add(monitor);
   const stop = monitor.stop;
@@ -77,6 +78,15 @@ function startMonitor(
     monitors.delete(monitor);
   };
   return monitor;
+}
+
+function resolvesWithin(task: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    task.then(() => true),
+    new Promise<false>((resolve) => {
+      setTimeout(() => resolve(false), timeoutMs);
+    }),
+  ]);
 }
 
 function createQueue(directory: string, accountId: string): MattermostIngressQueue {
@@ -191,6 +201,93 @@ it("dispatches same-channel steering while preserving a deferred follow-up claim
     finish.resolve();
     await adoptFollowup?.();
     await monitor.stop();
+  }
+});
+
+// FORK DIVERGENCE (#132409): a watchdog-stalled claim stays fenced for its live owner
+// instead of being released for an immediate retry.
+it("keeps unrelated channels moving while a watchdog-stalled claim stays fenced", async () => {
+  const runtime = { error: vi.fn(), log: vi.fn() };
+  let stalledLifecycle: Parameters<MattermostIngressDispatch>[2] | undefined;
+  const dispatched: string[] = [];
+  const dispatch = vi.fn<MattermostIngressDispatch>(async (post, _payload, lifecycle) => {
+    dispatched.push(post.id);
+    if (post.id === "post-stalled") {
+      stalledLifecycle = lifecycle;
+      lifecycle.onDeferred();
+      return { kind: "deferred" } as const;
+    }
+    await lifecycle.onAdopted();
+    return undefined;
+  });
+  const monitor = startMonitor(queue, dispatch, "default", runtime, 20);
+  try {
+    await monitor.receive(postedEvent("post-stalled", "posted", "channel-stalled"));
+    await vi.waitFor(() =>
+      expect(runtime.log).toHaveBeenCalledWith(expect.stringContaining("claim→adoption stalled")),
+    );
+
+    await monitor.receive(postedEvent("post-independent", "posted", "channel-b"));
+    await monitor.receive(postedEvent("post-follower", "posted", "channel-c"));
+
+    await vi.waitFor(
+      () => expect(dispatched).toEqual(["post-stalled", "post-independent", "post-follower"]),
+      { timeout: 1_000 },
+    );
+    expect(await queue.listClaims()).toEqual([expect.objectContaining({ id: "post-stalled" })]);
+  } finally {
+    await stalledLifecycle?.onAbandoned();
+    await monitor.stop();
+  }
+});
+
+it("retires a watchdog-stalled owner on stop so a fresh monitor can recover it", async () => {
+  const runtime = { error: vi.fn(), log: vi.fn() };
+  let stalledLifecycle: Parameters<MattermostIngressDispatch>[2] | undefined;
+  const interruptedDispatch = vi.fn<MattermostIngressDispatch>(
+    async (post, _payload, lifecycle) => {
+      if (post.id === "post-stalled-restart") {
+        stalledLifecycle = lifecycle;
+        lifecycle.onDeferred();
+        return { kind: "deferred" } as const;
+      }
+      await lifecycle.onAdopted();
+      return undefined;
+    },
+  );
+  const interrupted = startMonitor(queue, interruptedDispatch, "default", runtime, 20);
+  let stopping: Promise<void> | undefined;
+  try {
+    await interrupted.receive(postedEvent("post-stalled-restart"));
+    await vi.waitFor(() =>
+      expect(runtime.log).toHaveBeenCalledWith(expect.stringContaining("claim→adoption stalled")),
+    );
+    await interrupted.receive(postedEvent("post-before-stop", "posted", "channel-before-stop"));
+    await vi.waitFor(() => expect(interruptedDispatch).toHaveBeenCalledTimes(2));
+
+    stopping = interrupted.stop();
+    expect(await resolvesWithin(stopping, 500)).toBe(true);
+    expect(await queue.listClaims()).toEqual([
+      expect.objectContaining({ id: "post-stalled-restart" }),
+    ]);
+
+    const recoveredDispatch = vi.fn<MattermostIngressDispatch>(
+      async (_post, _payload, lifecycle) => {
+        await lifecycle.onAdopted();
+      },
+    );
+    const recovered = startMonitor(queue, recoveredDispatch);
+    try {
+      await recovered.waitForIdle();
+      expect(recoveredDispatch).toHaveBeenCalledTimes(1);
+      await stalledLifecycle?.onAbandoned();
+      expect(recoveredDispatch).toHaveBeenCalledTimes(1);
+    } finally {
+      await recovered.stop();
+    }
+  } finally {
+    await stalledLifecycle?.onAbandoned();
+    await Promise.allSettled([stopping, interrupted.stop()].filter(Boolean) as Promise<void>[]);
   }
 });
 

@@ -44,6 +44,7 @@ import { prepareGatewaySkillAuthoring } from "../skill-library-authoring.js";
 import { captureGatewayUiCommandTarget } from "../ui-command-target.js";
 import { yieldAfterAgentAcceptedAck } from "./agent-handler-helpers.js";
 import { captureAgentJobSession } from "./agent-job.js";
+import { recordAgentRunCompletedTurnMarker } from "./agent-run-completed-turn.js";
 import { createAgentRunDiagnostics } from "./agent-run-diagnostics.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
 import { prepareAgentRunExecutionIdentityFacts } from "./agent-run-execution-lineage.js";
@@ -576,6 +577,8 @@ async function executeAgentRun(
             executionIdentitySpawnFacts,
           ),
         );
+        // Success exit only: a run that threw or was aborted stays re-drivable.
+        recordAgentRunCompletedTurnMarker(params, diagnostics);
       } catch (err) {
         if (
           prepared.activeRunAbort.controller.signal.aborted &&

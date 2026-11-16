@@ -210,43 +210,48 @@ describe("getReplyFromConfig message hooks", () => {
   beforeEach(resetMocks);
 
   it.each([
-    ["claude-cli", "audio/ogg", "audio-and-files"],
-    ["codex", "text/plain", "files-only"],
-  ])("preprocesses model-locked %s %s before dispatch", async (harness, mime, mode) => {
-    const sessionKey = `agent:main:harness:${harness}:locked-media`;
-    const preprocessingState = createLockedReplyPreprocessingState({
-      sessionKey,
-      sessionId: "locked-session",
-      agentHarnessId: harness,
-    });
-    const preparedText =
-      mime === "text/plain"
-        ? "Pasted diagnostic: synthetic connection refused"
-        : "voice transcript";
-    mocks.resolveReplySessionPreprocessingState.mockReturnValueOnce(preprocessingState);
-    mocks.applyMediaUnderstanding.mockImplementationOnce(async ({ ctx }) => {
-      ctx.agentText = preparedText;
-      ctx.BodyForAgent = preparedText;
-    });
-    await reply(
-      buildCtx({
-        SessionKey: sessionKey,
-        media: [
-          {
-            path: mime === "text/plain" ? "/tmp/pasted-text-123.txt" : "/tmp/voice.ogg",
-            contentType: mime,
-          },
-        ],
-      }),
-      mime === "audio/ogg" ? { tools: { media: { audio: { enabled: true } } } } : {},
-    );
-    expect(mocks.applyMediaUnderstanding).toHaveBeenCalledWith(
-      expect.objectContaining({ processingMode: mode }),
-    );
-    expect(mocks.resolveReplyDirectives.mock.calls[0]?.[0]).toMatchObject({
-      ctx: { agentText: preparedText },
-    });
-  });
+    ["claude-cli", "audio/ogg", false, "audio-and-files"],
+    ["claude-cli", "audio/ogg", true, "audio-and-files"],
+    ["codex", "text/plain", false, "files-only"],
+  ])(
+    "preprocesses model-locked %s %s (quoted: %s) before dispatch",
+    async (harness, mime, quoted, mode) => {
+      const sessionKey = `agent:main:harness:${harness}:locked-media`;
+      const preprocessingState = createLockedReplyPreprocessingState({
+        sessionKey,
+        sessionId: "locked-session",
+        agentHarnessId: harness,
+      });
+      const preparedText =
+        mime === "text/plain"
+          ? "Pasted diagnostic: synthetic connection refused"
+          : "voice transcript";
+      mocks.resolveReplySessionPreprocessingState.mockReturnValueOnce(preprocessingState);
+      mocks.applyMediaUnderstanding.mockImplementationOnce(async ({ ctx }) => {
+        ctx.agentText = preparedText;
+        ctx.BodyForAgent = preparedText;
+      });
+      await reply(
+        buildCtx({
+          SessionKey: sessionKey,
+          media: [
+            {
+              path: mime === "text/plain" ? "/tmp/pasted-text-123.txt" : "/tmp/voice.ogg",
+              contentType: mime,
+              quoted,
+            },
+          ],
+        }),
+        mime === "audio/ogg" ? { tools: { media: { audio: { enabled: true } } } } : {},
+      );
+      expect(mocks.applyMediaUnderstanding).toHaveBeenCalledWith(
+        expect.objectContaining({ processingMode: mode }),
+      );
+      expect(mocks.resolveReplyDirectives.mock.calls[0]?.[0]).toMatchObject({
+        ctx: { agentText: preparedText },
+      });
+    },
+  );
 
   const hostDocumentCtx = {
     SessionKey: "agent:main:main",

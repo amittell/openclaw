@@ -208,6 +208,7 @@ describe("channel ingress monitor asynchronous inspection", () => {
     const { release, entered, inspectAsync } = holdClaimInspection();
     const controller = new AbortController();
     const activity: boolean[] = [];
+    const logs: string[] = [];
     const deliver = vi.fn(() => {
       if (mode === "deliver") {
         expect(activity).not.toContain(false);
@@ -219,7 +220,15 @@ describe("channel ingress monitor asynchronous inspection", () => {
       abortSignal: controller.signal,
       waitForDeliveryIdleOnStop,
       onActivityChange: (active) => activity.push(active),
-      ...(mode === "watchdog" ? { drain: { startLimit: 1, adoptionStallTimeoutMs: 10 } } : {}),
+      ...(mode === "watchdog"
+        ? {
+            drain: {
+              startLimit: 1,
+              adoptionStallTimeoutMs: 10,
+              onLog: (message: string) => logs.push(message),
+            },
+          }
+        : {}),
     });
     await monitor.admit({ id: "held", lane: "a" });
     monitor.start();
@@ -228,7 +237,12 @@ describe("channel ingress monitor asynchronous inspection", () => {
       controller.abort();
     }
     if (mode === "watchdog") {
-      await vi.waitFor(async () => expect(await queue.listClaims()).toEqual([]));
+      // FORK DIVERGENCE (#132409, carried): the stall watchdog keeps the claim fenced until the
+      // stalled dispatch settles, where upstream retires it at once.
+      await vi.waitFor(() =>
+        expect(logs.some((message) => message.includes("handler-timeout"))).toBe(true),
+      );
+      expect(await queue.listClaims()).toMatchObject([{ id: "held", attempts: 0 }]);
     }
     let settled = false;
     const waiting = (

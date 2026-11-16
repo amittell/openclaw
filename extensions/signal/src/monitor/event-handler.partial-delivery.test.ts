@@ -259,10 +259,18 @@ describe("Signal durable ingress and final delivery", () => {
       const handler = createHandler(durable ? { blockStreaming: true } : {});
       const event = eventAt(timestamp, "send a block and a final");
       const initialTexts = [...(sendBlock ? ["Delivered block"] : []), text];
+      // The fork sends a visible non-outcome fallback when a dispatch produces nothing the
+      // user can see (core channels/turn/delivery-visibility.ts, fork-only). Upstream pins
+      // only the attempted sends because it has no such fallback. A durable final is queued
+      // for recovery, so only the non-durable attempt reaches the fallback. The text is
+      // inlined rather than imported: an extension test may not reach into core internals,
+      // and what is being asserted here is the user-visible string itself.
+      const fallback = "I hit a problem handling that message. Please try again, or use /new.";
+      const attemptTexts = [...initialTexts, ...(durable ? [] : [fallback])];
       await start(handler);
       await receive(event);
       await stop();
-      expect(sentTexts()).toEqual(initialTexts);
+      expect(sentTexts()).toEqual(attemptTexts);
       if (durable) {
         expect(await queue.listPending({ limit: "all" })).toEqual([]);
         expect(deliveries()).toHaveLength(1);
@@ -308,8 +316,9 @@ describe("Signal durable ingress and final delivery", () => {
         registerPlugin(false);
         await start();
         await receive(event);
+        // getReplyFromConfig stays at 2: the fallback is a delivery, not a second reply.
         expect(getReplyFromConfigMock).toHaveBeenCalledTimes(2);
-        expect(sentTexts()).toEqual([...initialTexts, text]);
+        expect(sentTexts()).toEqual([...attemptTexts, text]);
         expect(deliveries()).toEqual([]);
         expect(await queue.listPending({ limit: "all" })).toEqual([]);
         await expect(
@@ -320,7 +329,8 @@ describe("Signal durable ingress and final delivery", () => {
         ).resolves.toMatchObject({ kind: "completed", duplicate: true });
         await receive(event);
       }
-      expect(sentTexts()).toEqual([...initialTexts, text]);
+      // Redelivering a completed event sends nothing new.
+      expect(sentTexts()).toEqual([...attemptTexts, text]);
       expect(await queue.listPending({ limit: "all" })).toEqual([]);
     },
   );

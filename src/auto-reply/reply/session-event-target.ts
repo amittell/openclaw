@@ -1,5 +1,6 @@
 /** Captured destination identity and live generation facts for ordinary session events. */
 
+import { stableStringify } from "@openclaw/normalization-core";
 import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
@@ -36,7 +37,7 @@ import { readAgentDeletionJournalStatusInWorker } from "../../state/agent-deleti
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import type { PreparedCommandOwnerAuthority } from "../command-auth.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
-import type { SessionEventTarget } from "./session-event-contract.js";
+import type { SessionEventRequester, SessionEventTarget } from "./session-event-contract.js";
 import { narrowSessionEventSettings } from "./session-event-policy.js";
 
 const targetScopes = resolveGlobalSingleton(
@@ -55,6 +56,7 @@ const targetScopes = resolveGlobalSingleton(
           requester: CommandOwnerRequester;
         };
         deletion?: { agentId: string; isBlocked: () => boolean };
+        requester?: SessionEventRequester;
       }
     >(),
 );
@@ -106,6 +108,8 @@ export async function captureSessionEventTargetForHost(
      * The identity comes from the host-owned caller, never from the producer.
      */
     retainRequesterOwner?: true;
+    /** The host-captured sender whose own turn started the producer; never producer input. */
+    requester?: SessionEventRequester;
   } = {},
 ): Promise<SessionEventTarget> {
   const operatorAuthority = options.operatorAuthority;
@@ -229,6 +233,8 @@ export async function captureSessionEventTargetForHost(
         ? narrowSessionEventSettings(producerSettings, destinationSettings)
         : structuredClone(destinationSettings),
     };
+    const retainedRequester =
+      options.requester && Object.freeze(structuredClone(options.requester));
     targetScopes.set(target, {
       env,
       operatorAuthority,
@@ -254,6 +260,7 @@ export async function captureSessionEventTargetForHost(
           }
         : {}),
       deletion,
+      ...(retainedRequester ? { requester: retainedRequester } : {}),
     });
     return target;
   } finally {
@@ -432,6 +439,17 @@ function commandOwnerRequesterKey(target: SessionEventTarget): string | undefine
     : undefined;
 }
 
+/** The retained requester a completion of this target may restore; see the event context. */
+export function readSessionEventTargetRequester(
+  target: SessionEventTarget,
+): SessionEventRequester | undefined {
+  return targetScopes.get(target)?.requester;
+}
+
+function requesterKey(target: SessionEventTarget): string {
+  return stableStringify(targetScopes.get(target)?.requester ?? null);
+}
+
 /** Coalesced work retains every producer's original destination and permission bound. */
 export function combineSessionEventTargetsForHost(
   targets: readonly SessionEventTarget[],
@@ -443,6 +461,12 @@ export function combineSessionEventTargetsForHost(
   const retained = [...targets];
   const route = channelRouteDedupeKey(first.deliveryContext);
   for (const target of retained) {
+    if (
+      // The combined turn restores the first target's requester for every target.
+      requesterKey(target) !== requesterKey(first)
+    ) {
+      throw new Error("Session event batch has different requesters");
+    }
     if (
       target.agentId !== first.agentId ||
       target.sessionKey !== first.sessionKey ||

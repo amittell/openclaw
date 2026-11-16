@@ -13,10 +13,12 @@ const mocks = vi.hoisted(() => ({
   modelsStatusCommand: vi.fn().mockResolvedValue(undefined),
   modelsSetCommand: vi.fn().mockResolvedValue(undefined),
   modelsAliasesListCommand: vi.fn().mockResolvedValue(undefined),
+  modelsAuthCleanCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthListCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthLoginCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthLogoutCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthOrderUpdateCommand: vi.fn().mockResolvedValue(undefined),
+  modelsAuthPasteTokenCommand: vi.fn().mockResolvedValue(undefined),
   modelsAuthSetupTokenCommand: vi.fn().mockResolvedValue(undefined),
   modelsAccountsListCommand: vi.fn().mockResolvedValue(undefined),
   modelsAccountsLoginCommand: vi.fn().mockResolvedValue(undefined),
@@ -32,6 +34,7 @@ vi.mock("../commands/models/list.status-command.js", () => ({
 // mock-isolation: Observe auth command routing without invoking interactive provider sign-in.
 vi.mock("../commands/models/auth.js", () => ({
   modelsAuthLoginCommand: mocks.modelsAuthLoginCommand,
+  modelsAuthPasteTokenCommand: mocks.modelsAuthPasteTokenCommand,
   modelsAuthSetupTokenCommand: mocks.modelsAuthSetupTokenCommand,
 }));
 vi.mock("../commands/models/auth-list.js", () => ({
@@ -45,6 +48,10 @@ vi.mock("../commands/models/accounts.js", async (importOriginal) => ({
 }));
 vi.mock("../commands/models/auth-logout.js", () => ({
   modelsAuthLogoutCommand: mocks.modelsAuthLogoutCommand,
+}));
+vi.mock("../commands/models/auth-clean.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../commands/models/auth-clean.js")>()),
+  modelsAuthCleanCommand: mocks.modelsAuthCleanCommand,
 }));
 vi.mock("../commands/models/auth-order.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../commands/models/auth-order.js")>()),
@@ -132,6 +139,8 @@ describe("models cli", () => {
       yes: true,
     }),
     authCase("--agent poe setup-token --provider anthropic", "modelsAuthSetupTokenCommand"),
+    // login-github-copilot routes through modelsAuthLoginCommand with the
+    // github-copilot provider and device method preselected.
     authCase("--agent poe login-github-copilot --yes", "modelsAuthLoginCommand", {
       provider: "github-copilot",
       method: "device",
@@ -189,6 +198,28 @@ describe("models cli", () => {
       defaultRuntime,
       "imageModel",
     );
+  });
+
+  it("rejects invalid --profile-id for paste-token", async () => {
+    // The same exit spy as the "rejects unsupported agent scope" cases.
+    vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation((code) => {
+      throw new ExitError(code);
+    });
+    await expect(
+      runModelsCommand([
+        "models",
+        "auth",
+        "paste-token",
+        "--provider",
+        "anthropic",
+        "--profile-id",
+        "bad id",
+      ]),
+    ).rejects.toMatchObject({ code: 1 });
+
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(mocks.modelsAuthPasteTokenCommand).not.toHaveBeenCalled();
   });
 
   it("shows help for models auth without error exit", async () => {

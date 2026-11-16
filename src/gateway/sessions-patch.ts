@@ -54,7 +54,6 @@ import {
   type SessionCreatedVia,
 } from "../config/sessions/session-entry-provenance.js";
 import { createAgentPatchedSessionModelFallback } from "../config/sessions/session-model-fallback.js";
-import { normalizeSessionToolOverrides } from "../config/sessions/session-tool-overrides.js";
 import { projectCanonicalSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -96,6 +95,8 @@ import {
 } from "./sessions-patch-display-metadata.js";
 import { applySessionPatchLifecycleFlags } from "./sessions-patch-lifecycle-flags.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
+import { applySessionPatchTemperature } from "./sessions-patch-temperature.js";
+import { applySessionPatchToolOverrides } from "./sessions-patch.tool-overrides.js";
 
 type SessionPatchProjectionParams = {
   cfg: OpenClawConfig;
@@ -421,20 +422,12 @@ function* projectSessionPatchSteps(
     return invalid(fastModeError);
   }
 
-  if ("toolOverrides" in patch) {
-    const raw = patch.toolOverrides;
-    if (raw === null) {
-      delete next.toolOverrides;
-    } else if (raw !== undefined) {
-      // Session patches replace this sparse overlay atomically; they never deep-merge old policy.
-      const normalized = normalizeSessionToolOverrides(raw);
-      if (normalized) {
-        next.toolOverrides = normalized;
-      } else {
-        delete next.toolOverrides;
-      }
-    }
+  const temperatureError = applySessionPatchTemperature(next, patch);
+  if (temperatureError) {
+    return invalid(temperatureError);
   }
+
+  applySessionPatchToolOverrides(next, patch);
 
   if (patch.communication === null) {
     delete next.communication;

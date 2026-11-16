@@ -229,6 +229,8 @@ export function createEmbeddedRunAuthController(params: EmbeddedRunAuthControlle
       return;
     }
     if (runtimeAuthState.refreshInFlight) {
+      // Settles: its only await is a withAuthDeadline step, which the hard
+      // backstop bounds even when the run deadline is unlimited or paused.
       await runtimeAuthState.refreshInFlight;
       return;
     }

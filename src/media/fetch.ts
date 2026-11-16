@@ -113,6 +113,7 @@ type SaveResponseMediaOptions = {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 type SaveRemoteMediaOptions = FetchMediaOptions & {
@@ -121,6 +122,7 @@ type SaveRemoteMediaOptions = FetchMediaOptions & {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
+  scope?: string;
 };
 
 type GuardedMediaResponse = {
@@ -531,6 +533,7 @@ async function saveOkMediaResponse(
       params.maxBytes,
       params.originalFilename,
       detectionFilePathHint,
+      { scope: params.scope },
     );
     // Keep the response decoder hint when staging an attachment for a channel.
     // MIME sniffing still owns the type; it must not erase the charset.

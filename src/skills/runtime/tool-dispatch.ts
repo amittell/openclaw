@@ -2,6 +2,7 @@ import { applyToolAvailabilityDescriptions } from "../../agents/agent-tools.defe
 import { resolveEffectiveToolPolicy } from "../../agents/agent-tools.policy.js";
 import type { AnyAgentTool } from "../../agents/agent-tools.types.js";
 import { resolveConversationQuestionInputMode } from "../../agents/conversation-capability-profile.js";
+import { isOwnerOnlyToolStub } from "../../agents/owner-only-tool-stub-marker.js";
 import { resolveRequesterToolPolicies } from "../../agents/requester-tool-policy.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { withPreparedSessionCapabilityRead } from "../../agents/subagents/spawn/subagent-session-store.js";
@@ -200,7 +201,8 @@ export async function resolveSkillDispatchTools(params: {
     inheritedToolPolicySource: requesterPolicies.inheritedToolPolicySource,
   });
   const policyFiltered = applyToolPolicyPipeline({
-    tools,
+    // Skill dispatch omits owner-only tools for non-owners; stubs serve agent prompts.
+    tools: tools.filter((tool) => !isOwnerOnlyToolStub(tool)),
     toolMeta: getPluginToolMeta,
     warn: logVerbose,
     steps: [

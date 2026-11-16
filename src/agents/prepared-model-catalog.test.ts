@@ -17,6 +17,13 @@ const mocks = vi.hoisted(() => ({
   isFullCatalog: vi.fn(),
   releaseSnapshot: vi.fn(async () => {}),
   releasePublishedSnapshot: vi.fn(async () => {}),
+  // When set, drive the ambient owner resolvers in agent-scope.js mock (default None preserves
+  // the prior always-"main" behavior for every existing test).
+  legacyCompatAgentId: undefined as string | undefined | null,
+  defaultAgentResolver: undefined as (() => string) | undefined,
+  // resolveInputs calls resolveAmbientOwnerAgentId, NOT resolveDefaultAgentId. Stubbing the
+  // latter alone leaves the ambient lookup hard-coded, so the degrade branch is unreachable.
+  ambientOwnerResolver: undefined as (() => string) | undefined,
 }));
 const { agentDir, workspaceDir } = mocks;
 
@@ -24,6 +31,10 @@ vi.mock("../config/config.js", () => ({
   getRuntimeConfig: () => mocks.config,
 }));
 
+import {
+  AgentSelectionRequiredError,
+  AgentSelectionRequiredError as RealAgentSelectionRequiredError,
+} from "./agent-scope-config.js";
 // mock-isolation: Use fixed agent directories without ambient workspace discovery.
 vi.mock("./agent-scope.js", () => ({
   listAgentIds: () => mocks.agentIds,
@@ -33,10 +44,17 @@ vi.mock("./agent-scope.js", () => ({
       : (mocks.agentDirs.get(agentId) ?? mocks.agentDir),
   resolveAgentWorkspaceDir: (_config: object, agentId: string, env?: NodeJS.ProcessEnv) =>
     env?.OPENCLAW_STATE_DIR ? `${env.OPENCLAW_STATE_DIR}/workspace-${agentId}` : mocks.workspaceDir,
-  resolveAmbientOwnerAgentId: () => "main",
+  resolveAmbientOwnerAgentId: () =>
+    mocks.ambientOwnerResolver ? mocks.ambientOwnerResolver() : "main",
   resolveDefaultAgentDir: () => mocks.agentDir,
-  resolveDefaultAgentId: () => "main",
-  tryResolveLegacyCompatibilityAgentId: () => "main",
+  resolveDefaultAgentId: () => (mocks.defaultAgentResolver ? mocks.defaultAgentResolver() : "main"),
+  tryResolveLegacyCompatibilityAgentId: () =>
+    mocks.legacyCompatAgentId === null
+      ? undefined
+      : mocks.legacyCompatAgentId !== undefined
+        ? mocks.legacyCompatAgentId
+        : "main",
+  AgentSelectionRequiredError: RealAgentSelectionRequiredError,
 }));
 
 // mock-isolation: Control runtime leases and publication without starting catalog owners.
@@ -130,6 +148,9 @@ describe("prepared model catalog access", () => {
         mock.mockReset();
       }
     }
+    mocks.legacyCompatAgentId = undefined;
+    mocks.defaultAgentResolver = undefined;
+    mocks.ambientOwnerResolver = undefined;
   });
 
   // Projection rejection/release is covered with real SQLite by the resources sibling.
@@ -155,6 +176,75 @@ describe("prepared model catalog access", () => {
     await outcome;
     expect(release).toHaveBeenCalledOnce();
     expect(project).not.toHaveBeenCalled();
+  });
+
+  it("resolves the sole ambient owner for an unscoped catalog read on a single-agent host", () => {
+    // Explicit per-agent reads keep the intentional AgentSelectionRequiredError contract: an
+    // unscoped ambient read on a single-agent host still resolves that one owner instead of
+    // degrading to a no-owner shape.
+    mocks.agentIds = ["main"];
+    mocks.getSnapshot.mockReturnValue(fullSnapshot);
+    const resolved = getCatalog({});
+    expect(resolved).toBe(fullSnapshot.modelCatalog);
+    expect(mocks.getSnapshot).toHaveBeenCalledOnce();
+    const lifecycleInput = mocks.getSnapshot.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(lifecycleInput).toHaveProperty("agentId", "main");
+  });
+
+  it("degrades an unscoped multi-agent catalog read to a no-owner shape instead of throwing", () => {
+    // Self-poll regression: an explicit multi-agent roster with no default owner made the
+    // unscoped ambient read throw AgentSelectionRequiredError out of resolveInputs (the
+    // tryResolveLegacyCompatibilityAgentId ?? resolveDefaultAgentId lookup). The producer now
+    // degrades that ambient case to a no-owner shape (agentId omitted) and resolves one catalog
+    // owner instead of failing the read. Driven through the real catch branch by overriding the
+    // ambient resolvers to their multi-agent no-default behavior.
+    mocks.agentIds = ["main", "voice", "ratbot"];
+    mocks.legacyCompatAgentId = null; // force the legacy resolver to return undefined (no owner)
+    const noDefaultOwner = () => {
+      throw new AgentSelectionRequiredError(["main", "voice", "ratbot"], {
+        surface: "this Gateway request",
+        hint: "Set agentId to one of the configured agents.",
+      });
+    };
+    mocks.defaultAgentResolver = noDefaultOwner;
+    // resolveInputs reaches the ambient lookup through resolveAmbientOwnerAgentId; overriding
+    // only resolveDefaultAgentId left it returning "main" and the degrade branch never ran.
+    mocks.ambientOwnerResolver = noDefaultOwner;
+    // The single unscoped read must NOT propagate AgentSelectionRequiredError (the self-poll
+    // regression). It degrades to a no-owner shape: the ambient owner lookup resolves no agentId,
+    // so the lifecycle input omits agentId and the owner-snapshot read returns undefined rather
+    // than throwing (callers already handle the no-owner shape).
+    const read: () => unknown = () => getCatalog({});
+    expect(read).not.toThrow(AgentSelectionRequiredError);
+    // The no-owner read resolves (returns undefined, not a thrown error).
+    const result = read();
+    expect(result).toBeUndefined();
+    // resolveInputs degraded to a no-owner shape: agentId omitted from the lifecycle input.
+    expect(mocks.getSnapshot).toHaveBeenCalled();
+    const lifecycleInput = mocks.getSnapshot.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(lifecycleInput).not.toHaveProperty("agentId");
+  });
+
+  it("keeps the per-agent-owner path failing closed on an ambiguous directory", async () => {
+    // The per-agent-owner resolution (prepared-model-catalog-owner.ts) must still fail closed:
+    // a shared directory with multiple configured agents names no single owner and rejects.
+    mocks.agentIds = ["main", "worker"];
+    mocks.agentDirs.set("main", "/tmp/shared-agent-dir");
+    mocks.agentDirs.set("worker", "/tmp/shared-agent-dir");
+    const committedSnapshot = {
+      ...fullSnapshot,
+      agentDir: "/tmp/shared-agent-dir",
+      config: { agents: { list: [{ id: "main", default: true }, { id: "worker" }] } },
+      // fullSnapshot carries catalogOwner for "main". Spreading it leaves the guard at
+      // prepared-model-catalog-owner.ts:46 unreachable, since that only fires on an absent
+      // owner. A shared directory names no single owner, which is what this asserts.
+      catalogOwner: undefined,
+    };
+    mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
+
+    await expect(resolvePublishedOwner({ agentId: "worker", readOnly: true })).rejects.toThrow(
+      "did not identify one configured agent",
+    );
   });
 
   it("uses the requested environment for directory selection and workspace activation", async () => {

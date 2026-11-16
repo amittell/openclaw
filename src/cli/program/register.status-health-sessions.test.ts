@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   cleanup: vi.fn(),
   tail: vi.fn(),
   compact: vi.fn(),
+  abort: vi.fn(),
   lifecycle: vi.fn(),
   exportTrajectory: vi.fn(),
   ownerLoaded: vi.fn(),
@@ -38,6 +39,13 @@ vi.mock("../../commands/sessions-tail.js", () => {
 vi.mock("../../commands/sessions-compact.js", () => {
   mocks.ownerLoaded();
   return { sessionsCompactCommand: mocks.compact };
+});
+vi.mock("../../commands/sessions-abort.js", async (importOriginal) => {
+  mocks.ownerLoaded();
+  return {
+    ...(await importOriginal<typeof import("../../commands/sessions-abort.js")>()),
+    sessionsAbortCommand: mocks.abort,
+  };
 });
 vi.mock("../../commands/sessions-lifecycle.js", async (importOriginal) => {
   mocks.ownerLoaded();
@@ -104,6 +112,12 @@ it.each([
     "--max-lines must be a positive integer.",
   ],
   [`sessions compact ${key} --timeout 0 --json`, mocks.compact, timeoutError],
+  [
+    `sessions --store /tmp/other.sqlite abort ${key} --json`,
+    mocks.abort,
+    "`sessions abort` does not support the parent `sessions` option --store; the gateway resolves the target store from <key> and --agent.",
+  ],
+  [`sessions abort ${key} --timeout 0 --json`, mocks.abort, timeoutError],
 ] as const)("rejects %s before loading the session owner", async (args, owner, message) => {
   const execution = run(args);
   await expect(execution).rejects.toBeInstanceOf(ExpectedCliError);
@@ -179,6 +193,20 @@ it.each([
 it("compact inherits parent agent and JSON options (#91378)", async () => {
   await run(`sessions --agent work --json compact ${key}`);
   expectOptions(mocks.compact, { key, agent: "work", json: true });
+});
+// Same hazard as compact's #91378 regression, with a worse outcome: dropping an
+// inherited --agent would abort a different agent's live session.
+it("inherits the parent sessions --agent for abort", async () => {
+  await run(`sessions --agent work abort ${key}`);
+  expectOptions(mocks.abort, { key, agent: "work" });
+});
+it("forwards abort run scoping and queue clearing", async () => {
+  await run("sessions abort agent:main:main --run-id run-77 --clear-queued");
+  expectOptions(mocks.abort, {
+    key: "agent:main:main",
+    runId: "run-77",
+    clearQueued: true,
+  });
 });
 it("forwards archive keys, inherited scope and RPC options", async () => {
   await run(

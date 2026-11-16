@@ -19,6 +19,7 @@ import { notifyListeners } from "../shared/listeners.js";
 import { encodeOwnedBuffer } from "../shared/owned-buffer.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
+import type { ExecCompletionRequester } from "./exec-completion-requester.js";
 
 const DEFAULT_JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MIN_JOB_TTL_MS = 60 * 1000; // 1 minute
@@ -159,6 +160,8 @@ export interface ProcessSession {
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  /** Start-time sender for the completion's policy; cleared with the other notify facts. */
+  notifyRequester?: ExecCompletionRequester;
   notifySessionTarget?: SessionEventTarget;
   assertExitNotificationAcceptanceCurrent?: () => void;
   notifyOnExit?: boolean;

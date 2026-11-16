@@ -45,6 +45,11 @@ export function createLazyExecTool(
     sessionId: defaults?.sessionId,
   });
   const processToolAvailabilityRef = defaults?.processToolAvailabilityRef ?? {};
+  // Fork: the carry also keeps an execution-denied or owner-only-stubbed `process` off the
+  // callable set (0d7028563ad), so the declaration follows the offered set, as the binding
+  // contract says, and stays byte-identical across turns; the ref above still decides
+  // whether this turn may background a command.
+  let processToolDeclared = processToolAvailabilityRef.value;
   const execSchema = createExecSchema(defaults);
   const execCompletionSchema = createExecCompletionSchema(defaults);
   let loadedTool: LoadedExecTool | undefined;
@@ -72,7 +77,7 @@ export function createLazyExecTool(
           presentation?.description ??
           describeExecTool({
             hasCronTool: defaults?.hasCronTool === true,
-            hasProcessTool: processToolAvailabilityRef.value,
+            hasProcessTool: processToolDeclared,
             autoReview: defaults?.mode === "auto",
           })
         );
@@ -80,7 +85,7 @@ export function createLazyExecTool(
       get parameters() {
         return (
           presentation?.parameters ??
-          (processToolAvailabilityRef.value === false ? execCompletionSchema : execSchema)
+          (processToolDeclared === false ? execCompletionSchema : execSchema)
         );
       },
       prepareBeforeToolCallParams: async (...args) =>
@@ -97,8 +102,9 @@ export function createLazyExecTool(
     } as AnyAgentTool,
     {
       prepareBeforeNormalization: true,
-      prepare: (_tool, callableTools) => {
+      prepare: (_tool, callableTools, offeredTools) => {
         processToolAvailabilityRef.value = callableTools.has("process");
+        processToolDeclared = offeredTools.has("process");
       },
       executionSchema: presentation?.parameters ? undefined : () => execExecutionSchema,
     },

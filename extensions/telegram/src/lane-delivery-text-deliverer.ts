@@ -15,6 +15,7 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { markTelegramVisibleReplyDelivered } from "./bot-processing-outcome.js";
 import { resolveTelegramReplyId } from "./bot/helpers.js";
 import type { TelegramInlineButtons } from "./button-types.js";
 import type { TelegramDraftStream } from "./draft-stream.js";
@@ -361,6 +362,10 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
         return undefined;
       }
       lane.finalized = true;
+      // A finalized answer preview is the reply, and no send funnel confirmed it.
+      if (laneName === "answer") {
+        markTelegramVisibleReplyDelivered();
+      }
       const delivery = {
         content: previewText,
         messageId,

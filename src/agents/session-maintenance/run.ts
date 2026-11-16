@@ -19,7 +19,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
-import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
+import { runWithGatewayDetachedWorkAdmission } from "../../process/gateway-work-admission.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
   beginSessionEffect,
@@ -222,7 +222,7 @@ export function scheduleSessionMaintenance(
         }
         await owner.run({
           admit: (runAdmitted) =>
-            runWithGatewayIndependentRootWorkAdmission(
+            runWithGatewayDetachedWorkAdmission(
               async () =>
                 await withSessionTurn(
                   {

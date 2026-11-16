@@ -14,12 +14,10 @@ import type {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   assignOtelContentAttr,
-  createOtelContentRedactor,
   MAX_OTEL_CONTENT_ARRAY_ITEMS,
   MAX_OTEL_CONTENT_ATTRIBUTE_CHARS,
   normalizeOtelContentValue,
   safeJsonString,
-  type OtelContentRedactor,
 } from "./service-content-normalization.js";
 
 function textPart(content: string): Record<string, unknown> {
@@ -286,9 +284,9 @@ function assignJsonAttributes(
   attributes: Record<string, string | number | boolean>,
   keys: readonly string[],
   value: unknown,
-  redact: OtelContentRedactor,
 ): boolean {
-  const json = safeJsonString(value, redact);
+  // Mirrored keys carry the same value; serialize and redact it once for all of them.
+  const json = safeJsonString(value);
   if (!json) {
     return false;
   }
@@ -325,45 +323,27 @@ export function assignOtelModelContentAttributes(
   // message parts, whose reasoning schema requires exportable content.
   const redactedInput = redactInternalReasoningFromMessages(content?.inputMessages);
   const redactedOutput = redactInternalReasoningFromMessages(content?.outputMessages);
-  // Every attribute below re-serializes the same captured strings; one redactor
-  // redacts each of them once for the whole model call.
-  const redact = createOtelContentRedactor();
   const inputMessages = normalizeGenAiMessages(redactedInput, "user");
   if (
     inputMessages.length > 0 &&
-    assignJsonAttributes(
-      attributes,
-      [ATTR_GEN_AI_INPUT_MESSAGES, "input.value"],
-      inputMessages,
-      redact,
-    )
+    assignJsonAttributes(attributes, [ATTR_GEN_AI_INPUT_MESSAGES, "input.value"], inputMessages)
   ) {
     attributes["input.mime_type"] = "application/json";
   }
   const toolDefinitions = normalizeGenAiToolDefinitions(content?.toolDefinitions);
   if (toolDefinitions.length > 0) {
-    assignJsonAttributes(attributes, [ATTR_GEN_AI_TOOL_DEFINITIONS], toolDefinitions, redact);
+    assignJsonAttributes(attributes, [ATTR_GEN_AI_TOOL_DEFINITIONS], toolDefinitions);
   }
   const outputMessages = normalizeGenAiMessages(redactedOutput, "assistant");
   if (
     outputMessages.length > 0 &&
-    assignJsonAttributes(
-      attributes,
-      [ATTR_GEN_AI_OUTPUT_MESSAGES, "output.value"],
-      outputMessages,
-      redact,
-    )
+    assignJsonAttributes(attributes, [ATTR_GEN_AI_OUTPUT_MESSAGES, "output.value"], outputMessages)
   ) {
     attributes["output.mime_type"] = "application/json";
   }
-  assignOtelContentAttr(attributes, "openclaw.content.input_messages", redactedInput, redact);
-  assignOtelContentAttr(
-    attributes,
-    "openclaw.content.tool_definitions",
-    content?.toolDefinitions,
-    redact,
-  );
-  assignOtelContentAttr(attributes, "openclaw.content.output_messages", redactedOutput, redact);
+  assignOtelContentAttr(attributes, "openclaw.content.input_messages", redactedInput);
+  assignOtelContentAttr(attributes, "openclaw.content.tool_definitions", content?.toolDefinitions);
+  assignOtelContentAttr(attributes, "openclaw.content.output_messages", redactedOutput);
 }
 
 export function assignOtelToolContentAttributes(

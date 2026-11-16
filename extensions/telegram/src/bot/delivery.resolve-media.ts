@@ -228,6 +228,22 @@ function isTrustedLocalTelegramFileMissing(error: unknown): boolean {
   );
 }
 
+/**
+ * Builds the media-store provenance scope for a Telegram chat, e.g. "tg--5240776892" or
+ * "tg--5240776892-t123" for a forum topic / DM thread. Chat ids are numeric and may be
+ * negative; the leading hyphen in the prefix is intentional.
+ */
+export function buildTelegramMediaScope(
+  chatId: number | undefined,
+  threadId?: number,
+): string | undefined {
+  if (typeof chatId !== "number" || !Number.isFinite(chatId)) {
+    return undefined;
+  }
+  const base = `tg-${chatId}`;
+  return typeof threadId === "number" && Number.isFinite(threadId) ? `${base}-t${threadId}` : base;
+}
+
 export async function resolveMedia(params: {
   ctx: TelegramMediaContext;
   maxBytes: number;
@@ -237,6 +253,7 @@ export async function resolveMedia(params: {
   trustedLocalFileRoots?: readonly string[];
   dangerouslyAllowPrivateNetwork?: boolean;
   abortSignal?: AbortSignal;
+  scope?: string;
 }): Promise<(TelegramResolvedMedia & { path: string; fileName?: string }) | null> {
   const { ctx, ...downloadOptions } = params;
   const msg = ctx.message;
@@ -292,6 +309,8 @@ export async function resolveMedia(params: {
         "inbound",
         downloadOptions.maxBytes,
         telegramFileName ?? path.basename(localFile.realPath),
+        undefined,
+        { scope: downloadOptions.scope },
       );
     }
     if (path.isAbsolute(filePath)) {
@@ -331,6 +350,7 @@ export async function resolveMedia(params: {
       ),
       fallbackContentType: mimeType,
       originalFilename: telegramFileName,
+      scope: downloadOptions.scope,
     });
   })();
   let stickerMetadata: TelegramResolvedMedia["stickerMetadata"];

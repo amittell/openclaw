@@ -14,6 +14,7 @@ import {
 import { isAuthErrorMessage } from "./message-patterns.js";
 
 describe("renderAssistantRequestFailureCopy", () => {
+  const target = { provider: "openai", model: "test-model" };
   const runFailure =
     "⚠️ OpenClaw couldn't finish this reply. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
   const live = (fields: Parameters<typeof makeAssistant>[0]) =>
@@ -226,6 +227,18 @@ describe("renderAssistantRequestFailureCopy", () => {
 
   it("handles partial model context", () => {
     expect(renderAssistantRequestFailureCopy({ model: "test-model" })).toBe(runFailure);
+  });
+
+  it("reports the classified reason for 5xx failures instead of re-deriving it", () => {
+    // The classifier owns the reason. A gateway timeout really did time out,
+    // and an untyped 5xx is already classified server_error upstream, so this
+    // layer must not second-guess either from the status.
+    expect(renderAssistantRequestFailureCopy({ ...target, reason: "timeout", status: 504 })).toBe(
+      "⚠️ The request took too long. Check the conversation for any completed work before trying again.",
+    );
+    expect(
+      renderAssistantRequestFailureCopy({ ...target, reason: "server_error", status: 502 }),
+    ).toBe("⚠️ The AI service is having trouble. Please try again in a moment.");
   });
 });
 

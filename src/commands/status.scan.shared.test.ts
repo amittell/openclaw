@@ -2,6 +2,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import type { OpenClawConfig } from "../config/types.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import { createUnreachableGatewayProbe } from "./gateway-status/test-support.js";
 import { createStatusGatewayProbeBudget } from "./status.gateway-probe-budget.js";
 import {
@@ -234,6 +236,146 @@ describe("resolveGatewayProbeSnapshot", () => {
       expect(result.gatewayProbe?.status).toEqual({ sessions: 1 });
     },
   );
+
+  it("keeps unresolved local SecretRef probes eligible for the status RPC fallback", async () => {
+    const warning =
+      "gateway.auth.token SecretRef is unresolved in this command path; checking without configured auth credentials.";
+    mocks.resolveGatewayProbeTarget.mockReturnValue({
+      mode: "local",
+      gatewayMode: "local",
+      remoteUrlMissing: false,
+    });
+    mocks.resolveGatewayProbeAuthResolution.mockResolvedValue({
+      auth: {},
+      warning,
+    });
+    mocks.probeGateway.mockResolvedValue({
+      ok: false,
+      url: "ws://127.0.0.1:18789",
+      connectLatencyMs: null,
+      error: "timeout",
+      close: null,
+      auth: {
+        role: null,
+        scopes: [],
+        capability: "unknown",
+      },
+      health: null,
+      status: null,
+      presence: null,
+      configSnapshot: null,
+    });
+    mocks.callGateway.mockResolvedValue({ sessions: 1 });
+
+    const result = await resolveGatewayProbeSnapshot();
+
+    const probeCall = readProbeCall();
+    expect(probeCall.auth).toEqual({});
+    const gatewayCall = readGatewayCall();
+    expect(gatewayCall.method).toBe("status");
+    expect(gatewayCall.token).toBeUndefined();
+    expect(gatewayCall.password).toBeUndefined();
+    expect(result.gatewayReachable).toBe(true);
+    expect(result.gatewayProbe).toMatchObject({
+      ok: true,
+      error: "timeout",
+      status: { sessions: 1 },
+      auth: { capability: "read_only" },
+    });
+    expect(result.gatewayProbeAuthWarning).toBe(warning);
+  });
+
+  it("keeps unresolved local SecretRefs eligible for the status RPC fallback", async () => {
+    const warning =
+      "gateway.auth.token SecretRef is unresolved in this command path; checking without configured auth credentials.";
+    const missingSecretEnv = "OPENCLAW_TEST_MISSING_GATEWAY_TOKEN";
+    const stateDir = makeTempDir(tempDirs, "openclaw-status-secret-ref-");
+    const cfg = {
+      gateway: {
+        mode: "local",
+        auth: {
+          mode: "token",
+          token: { source: "env", provider: "default", id: missingSecretEnv },
+        },
+      },
+      secrets: {
+        providers: {
+          default: { source: "env" },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const [connectionDetailsModule, probeTargetModule, gatewayProbeAuthModule] = await Promise.all([
+      vi.importActual<typeof import("../gateway/connection-details.js")>(
+        "../gateway/connection-details.js",
+      ),
+      vi.importActual<typeof import("../gateway/probe-target.js")>("../gateway/probe-target.js"),
+      vi.importActual<typeof import("./status.gateway-probe.js")>("./status.gateway-probe.js"),
+    ]);
+    mocks.buildGatewayConnectionDetailsWithResolvers.mockImplementation(
+      connectionDetailsModule.buildGatewayConnectionDetailsWithResolvers,
+    );
+    mocks.resolveGatewayProbeTarget.mockImplementation(probeTargetModule.resolveGatewayProbeTarget);
+    let observedAuthResolution: unknown;
+    mocks.resolveGatewayProbeAuthResolution.mockImplementation(
+      async (config: OpenClawConfig, env?: NodeJS.ProcessEnv) => {
+        const resolution = await gatewayProbeAuthModule.resolveGatewayProbeAuthResolution(
+          config,
+          env,
+        );
+        observedAuthResolution = resolution;
+        return resolution;
+      },
+    );
+    mocks.probeGateway.mockResolvedValue({
+      ok: false,
+      url: "ws://127.0.0.1:18789",
+      connectLatencyMs: null,
+      error: "timeout",
+      close: null,
+      auth: {
+        role: "operator",
+        scopes: ["operator.read"],
+        capability: "read_only",
+      },
+      health: null,
+      status: null,
+      presence: null,
+      configSnapshot: null,
+    });
+    mocks.callGateway.mockResolvedValue({ sessions: 1 });
+
+    await withEnvAsync(
+      {
+        OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
+        OPENCLAW_GATEWAY_PASSWORD: undefined,
+        OPENCLAW_GATEWAY_PORT: undefined,
+        OPENCLAW_GATEWAY_TOKEN: undefined,
+        OPENCLAW_GATEWAY_URL: undefined,
+        OPENCLAW_STATE_DIR: stateDir,
+        [missingSecretEnv]: undefined,
+      },
+      async () => {
+        const result = await resolveGatewayProbeSnapshot(cfg);
+
+        expect(result.gatewayProbeAuth).toStrictEqual({});
+        expect(readProbeCall().auth).toStrictEqual({});
+        const gatewayCall = readGatewayCall();
+        expect(gatewayCall.config).toBe(cfg);
+        expect(gatewayCall.method).toBe("status");
+        expect(gatewayCall.token).toBeUndefined();
+        expect(gatewayCall.password).toBeUndefined();
+        expect(result.gatewayReachable).toBe(true);
+        expect(result.gatewayProbe).toMatchObject({
+          ok: true,
+          error: "timeout",
+          status: { sessions: 1 },
+          auth: { capability: "read_only" },
+        });
+        expect(result.gatewayProbeAuthWarning).toBe(warning);
+        expect(observedAuthResolution).toStrictEqual({ auth: {}, warning });
+      },
+    );
+  });
 
   it("does not use the local status RPC fallback for dotted localhost", async () => {
     gatewayTarget("ws://localhost.:18789");

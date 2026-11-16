@@ -1,0 +1,3 @@
+# Private parent consumption must not read as user delivery; settlement records it in both writers.
+# 79 on this branch (upstream 54): three cases spell out fixtures and mocks that main has as shared helpers.
+79

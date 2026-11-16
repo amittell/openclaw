@@ -72,6 +72,18 @@ function createHistoryToolWithMessage(content: unknown, sessionLinkBase?: string
   ).tool;
 }
 
+function readMessageSeq(message: unknown): number | undefined {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return undefined;
+  }
+  const meta = (message as Record<string, unknown>)["__openclaw"];
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    return undefined;
+  }
+  const seq = (meta as Record<string, unknown>).seq;
+  return typeof seq === "number" ? seq : undefined;
+}
+
 function scopedHistoryFixture(name: string, mutate?: (storePath: string) => void) {
   const requesterSessionKey = `agent:main:clickclack:${name}`;
   const targetSessionKey = "agent:main:main";
@@ -209,7 +221,7 @@ it("declares complete success and closed error contracts", async () => {
     true,
   );
   expect(compactToolOutputHint(tool.outputSchema)).toBe(
-    '{ bytes: number; contentRedacted: boolean; contentTruncated: boolean; droppedMessages: boolean; messages: Array<unknown>; sessionKey: string; truncated: boolean; hasMore?: boolean; nextOffset?: number; offset?: number; pendingInputs?: { items: Array<{ acceptedAt: number; id: string; message: unknown; state: "queued" | "cancelled" | "interrupted"; queued?: true; runId?: string }>; total: number; nextBefore?: number; queuedCount?: number }; sessionLinkRule?: string; totalMessages?: number; windowReset?: boolean } | { error: string; status: "error" | "forbidden" }',
+    '{ bytes: number; contentRedacted: boolean; contentTruncated: boolean; droppedMessages: boolean; messages: Array<unknown>; sessionKey: string; truncated: boolean; hasMore?: boolean; nextOffset?: number; offset?: number; pendingInputs?: { items: Array<{ acceptedAt: number; id: string; message: unknown; state: "queued" | "cancelled" | "interrupted"; queued?: true; runId?: string }>; total: number; nextBefore?: number; queuedCount?: number }; returnedCount?: number; sessionLinkRule?: string; shadowedCount?: number; totalMessages?: number; windowReset?: boolean } | { error: string; status: "error" | "forbidden" }',
   );
 });
 
@@ -323,6 +335,10 @@ it.each([
   { args: { limit: 0 }, error: "limit must be a positive integer" },
   { args: { offset: "1abc" }, error: "offset must be a non-negative integer" },
   { args: { sessionId: "session-1" }, error: "sessionId requires messageId" },
+  {
+    args: { compactionId: "c1", messageId: "m1" },
+    error: "compactionId and messageId cannot be used together",
+  },
 ])("rejects invalid history arguments: $error", async ({ args, error }) => {
   const { tool, requests } = historyFixture({ messages: [] });
   await expect(tool.execute("call-1", { sessionKey: "main", ...args })).rejects.toThrow(error);
@@ -413,6 +429,104 @@ it("keeps the anchored message when the history byte cap trims neighbors", async
   expect(details.offset).toBeUndefined();
   expect(details.nextOffset).toBeUndefined();
   expect(details.hasMore).toBeUndefined();
+});
+
+it("reads a compaction span with tool filtering and paging", async () => {
+  useLoggingConfig("span-redaction-off.json", { redactSensitive: "off" });
+  const span = [
+    { role: "tool", content: "hidden", __openclaw: { seq: 3 } },
+    {
+      role: "assistant",
+      content: "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789",
+      __openclaw: { seq: 4 },
+    },
+    { role: "user", content: "newest shadowed", __openclaw: { seq: 5 } },
+  ];
+  const { tool, requests } = historyFixture((request) =>
+    (request.params as { compactionId?: string }).compactionId === "checkpoint-1"
+      ? { messages: span, offset: 0, nextOffset: 3, hasMore: true, totalMessages: 5 }
+      : { messages: [{ role: "user", content: "live tail" }] },
+  );
+
+  const result = await tool.execute("span", {
+    sessionKey: "main",
+    compactionId: "checkpoint-1",
+    limit: 3,
+  });
+  const withTools = await tool.execute("span-tools", {
+    sessionKey: "main",
+    compactionId: "checkpoint-1",
+    includeTools: true,
+  });
+  const details = readHistoryDetails(result);
+
+  expect(requireGatewayRequest(requests, "chat.history").params).toMatchObject({
+    sessionKey: "main",
+    compactionId: "checkpoint-1",
+    limit: 3,
+  });
+  expect(details.messages).toHaveLength(2);
+  // #169063: recalled transcript text is preserved; masking stays at log boundaries.
+  expect(JSON.stringify(details)).toContain("sk-or-v1-abcdef0123456789");
+  expect(details).toMatchObject({
+    contentRedacted: false,
+    truncated: false,
+    shadowedCount: 5,
+    returnedCount: 2,
+    offset: 0,
+    nextOffset: 2,
+    hasMore: true,
+    totalMessages: 5,
+  });
+  expect((readHistoryDetails(withTools).messages as unknown[]).length).toBe(3);
+  expect(Value.Check(tool.outputSchema!, details)).toBe(true);
+});
+
+it("reports the span rows the byte cap dropped and keeps paging past them", async () => {
+  const span = Array.from({ length: 30 }, (_, index) => ({
+    role: "assistant",
+    content: `shadowed-${index + 1} ${"x".repeat(10_000)}`,
+    __openclaw: { seq: index + 1 },
+  }));
+  const { tool } = historyFixture({
+    messages: span,
+    offset: 0,
+    nextOffset: 30,
+    hasMore: false,
+    totalMessages: 30,
+  });
+
+  const details = readHistoryDetails(
+    await tool.execute("span-cap", { sessionKey: "main", compactionId: "checkpoint-1" }),
+  );
+  const returned = details.messages as unknown[];
+  const oldestReturnedSeq = readMessageSeq(returned[0]);
+
+  expect(returned.length).toBeGreaterThan(0);
+  expect(returned.length).toBeLessThan(span.length);
+  expect(details).toMatchObject({
+    shadowedCount: 30,
+    returnedCount: returned.length,
+    truncated: true,
+    droppedMessages: true,
+    hasMore: true,
+    nextOffset: 30 - oldestReturnedSeq! + 1,
+  });
+});
+
+it("surfaces the gateway rejection for an id that is not a compaction checkpoint", async () => {
+  const rejection =
+    'compactionId "nope" is not a compaction checkpoint in this session; compaction rows in history carry __openclaw.kind "compaction" and the id in __openclaw.id';
+  const { tool } = historyFixture((request) => {
+    if ((request.params as { compactionId?: string }).compactionId) {
+      throw new Error(rejection);
+    }
+    return { messages: [{ role: "user", content: "live tail" }] };
+  });
+
+  await expect(
+    tool.execute("bad-id", { sessionKey: "main", compactionId: "nope" }),
+  ).rejects.toThrow(rejection);
 });
 
 it("paginates history with default filtering and explicit tool inclusion", async () => {

@@ -50,7 +50,7 @@ import {
   type MediaGroupEntry,
 } from "./bot-updates.js";
 import type { TelegramMediaKind } from "./bot/body-helpers.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   buildTelegramGroupPeerId,
   buildTelegramThreadParams,
@@ -412,7 +412,12 @@ export function createTelegramInboundMedia({
         albumMediaKinds.add(nativeKind);
         let media;
         try {
-          media = await resolveMedia({ ctx, maxBytes: mediaMaxBytes, ...mediaRuntime });
+          media = await resolveMedia({
+            ctx,
+            maxBytes: mediaMaxBytes,
+            ...mediaRuntime,
+            scope: buildTelegramMediaScope(entry.chatId, entry.threadSpec.id),
+          });
         } catch (error) {
           if (
             mediaRuntime.abortSignal?.aborted ||
@@ -433,6 +438,7 @@ export function createTelegramInboundMedia({
             contentType: media.contentType,
             ...(media.fileName ? { fileName: media.fileName } : {}),
             kind: media.kind,
+            fileUniqueId: media.fileUniqueId,
             stickerMetadata: media.stickerMetadata,
             sourceMessageId,
           });

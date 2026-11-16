@@ -26,6 +26,7 @@ import {
   createSwarmCollectorWriteAuthority,
   resolveSwarmCollectorToolContext,
 } from "../agents/openclaw-tools.swarm.js";
+import { isOwnerOnlyToolStub } from "../agents/owner-only-tool-stub-marker.js";
 import { resolveSandboxRuntimeStatusAsync } from "../agents/sandbox/runtime-status.js";
 import { createScheduledMessageInvocationAdmission } from "../agents/scheduled-message-invocation.js";
 import { resolveScheduledToolCallerContext } from "../agents/scheduled-tool-policy.js";
@@ -76,6 +77,7 @@ import {
   resolveGatewayRequesterToolPolicies,
   resolveGatewaySenderAuthority,
 } from "./tool-resolution-authority.js";
+import { directInvocationChatType } from "./tool-resolution-direct-invocation.js";
 
 type GatewayScopedToolSurface = "http" | "loopback";
 
@@ -380,6 +382,7 @@ export async function resolveGatewayScopedTools(
     overrides: params.execOverrides,
     permissionPolicy: sessionPermissionPolicy,
   });
+  const boundChannelId = params.currentChannelId ?? params.agentTo;
   const openClawToolOptions: Parameters<typeof createOpenClawToolsAsync>[0] = {
     ...commonToolOptions(),
     computerExecutionId: params.admittedRunContext?.operationalRunInstance.instanceId,
@@ -433,7 +436,8 @@ export async function resolveGatewayScopedTools(
     sourceReplyOnly: params.sourceReplyOnly,
     agentTo: params.agentTo,
     agentThreadId: params.agentThreadId,
-    currentChannelId: params.currentChannelId ?? params.agentTo,
+    currentChannelId: boundChannelId,
+    currentChatType: directInvocationChatType(surface, messageProvider, boundChannelId),
     currentThreadTs: params.currentThreadTs ?? params.agentThreadId,
     replyToMode: params.replyToMode,
     onYield: params.onYield,
@@ -547,9 +551,12 @@ export async function resolveGatewayScopedTools(
   assertCurrent();
   // CLI backends already own their local shell. This extra surface is deliberately
   // fixed to node so it cannot become a second path to Gateway-local execution.
-  const baseTools = nodeExecSurface
-    ? openClawTools.filter((tool) => tool.name.trim().toLowerCase() !== "exec")
-    : openClawTools;
+  // Owner-only stubs keep an agent turn's prompt owner-shaped; this surface omits
+  // owner-only tools for non-owners instead, as it does the core ones.
+  const baseTools = openClawTools.filter(
+    (tool) =>
+      !isOwnerOnlyToolStub(tool) && !(nodeExecSurface && tool.name.trim().toLowerCase() === "exec"),
+  );
   const toolsWithMediatedCoding = [
     // Once a name is server-minted as mediated, only the canonical coding
     // factory may supply it. A policy-filtered tool must not fall back to a

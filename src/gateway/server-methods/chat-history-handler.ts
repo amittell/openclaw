@@ -33,14 +33,11 @@ import {
   decodeChatHistoryPageCursor,
   resolveChatHistorySelectorError,
 } from "../chat-history-page-cursor.js";
-import { prepareChatHistoryResponsePage } from "../chat-history-response-page.js";
 import { resolveInFlightRunSnapshot } from "../chat-inflight-snapshot.runtime.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.claude.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { resolveOperatorRolePolicy } from "../operator-role-policy.js";
-import { SerializedJsonArray } from "../serialized-json.js";
 import { readPreparedGatewayModelMetadata } from "../server-model-catalog-view.js";
-import { registerDeflatedSegment } from "../server/ws-compression.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { prepareSessionFastModePresentation } from "../session-fast-mode-presentation.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
@@ -53,7 +50,11 @@ import { buildGatewaySessionRow } from "../session-utils-row.js";
 import { getSessionDefaults, resolveSessionModelRef } from "../session-utils.js";
 import { withPreparedSessionResolve } from "../sessions-resolve.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
-import { readChatHistoryPage } from "./chat-history-pages.js";
+import {
+  chatHistoryCompactionNotFoundError,
+  readChatHistoryPageOrCompactionSpan,
+} from "./chat-history-handler.compaction-span.js";
+import { resolveChatHistoryResponsePage } from "./chat-history-handler.response-page.js";
 import {
   resolveEmbeddedAgentRunRecoverySnapshot,
   respondChatHistoryUnavailable,
@@ -97,6 +98,7 @@ export async function handleChatHistoryRequest({
     cursor,
     knownState,
     messageId: wireMessageId,
+    compactionId,
     sessionId: wireSessionId,
     maxChars,
     toolResultMaxChars,
@@ -233,7 +235,7 @@ export async function handleChatHistoryRequest({
         ? [{ runId: receipt.runId, consumedByEventId: receipt.consumedByEventId }]
         : [],
     );
-    let historyPage: Awaited<ReturnType<typeof readChatHistoryPage>>;
+    let historyPage: Awaited<ReturnType<typeof readChatHistoryPageOrCompactionSpan>>;
     // Internal adapters may inspect message objects before responding.
     const encodeResponse = acceptsSerializedJson && method === req.method;
     // Model projection replaces serialized messages, so their compressed bytes go unused.
@@ -248,7 +250,7 @@ export async function handleChatHistoryRequest({
           : await measureDiagnosticsTimelineSpan(
               `gateway.${method}.history_page`,
               () =>
-                readChatHistoryPage(
+                readChatHistoryPageOrCompactionSpan(
                   {
                     encodeResponse,
                     deflateResponse,
@@ -267,6 +269,7 @@ export async function handleChatHistoryRequest({
                     offset,
                     messageId,
                     ...(pageCursor ? { pageCursor } : {}),
+                    compactionId,
                   },
                   signal,
                 ),
@@ -284,26 +287,16 @@ export async function handleChatHistoryRequest({
       respondReadError(error);
       return;
     }
-    if (historyPage.encodedResponse && historyPage.encodedMessagesDeflate) {
-      registerDeflatedSegment(
-        historyPage.encodedResponse.messages,
-        historyPage.encodedMessagesDeflate,
-      );
+    if (!historyPage) {
+      respond(false, undefined, chatHistoryCompactionNotFoundError(compactionId));
+      return;
     }
-    const responsePage = historyPage.encodedResponse
-      ? {
-          ...historyPage.encodedResponse,
-          messages: new SerializedJsonArray(historyPage.encodedResponse.messages),
-          activity: historyPage.encodedResponse.activity
-            ? new SerializedJsonArray(historyPage.encodedResponse.activity)
-            : undefined,
-        }
-      : prepareChatHistoryResponsePage(historyPage, {
-          entry: historyEntry,
-          maxHistoryBytes,
-          responseHistoryBytes: maxResponseBytes,
-          messageId,
-        });
+    const responsePage = resolveChatHistoryResponsePage(historyPage, {
+      entry: historyEntry,
+      maxHistoryBytes,
+      responseHistoryBytes: maxResponseBytes,
+      messageId,
+    });
     const { messages, messagesBytes, responseHistoryBytes, omission, ...responseFields } =
       responsePage;
     if (omission) {

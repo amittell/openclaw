@@ -301,7 +301,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: capability-aware auth context and transport model types in core/plugin-entry.
       // +2: the shared automation tool-default resolver and its exact-selection mode type.
       // +19: reconcile the accepted public export inventory after the cron budget update.
-      3843,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      3846,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -350,7 +351,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: the same shared SystemOne codec functions.
       // +1: the same shared automation tool-default resolver.
       // +12: reconcile the accepted callable export inventory after the cron budget update.
-      2227,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      2230,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

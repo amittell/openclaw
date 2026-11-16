@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 // Cron validation tests cover channel target validation against plugin
 // prefixes/aliases and runtime config for cron delivery destinations.
+import "./cron.validation.mocks.test-support.js";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -75,80 +76,14 @@ import type { GatewayClient } from "./types.js";
 const cronLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness({ prefix: "cron-gateway-validation-" });
 
-const getRuntimeConfig = vi.hoisted(() =>
-  vi.fn<() => OpenClawConfig>(() => ({}) as OpenClawConfig),
-);
-const cronRunRecordsOverride = vi.hoisted(() =>
-  vi.fn<
-    (
-      ...args: Parameters<
-        typeof import("../../cron/store/read-only.js").readCronRunHistoryCandidates
-      >
-    ) => Promise<CronRunRecord[]> | undefined
-  >(),
-);
-const cronRunDetailsOverride = vi.hoisted(() =>
-  vi.fn<() => Promise<CronRunRecord[]> | undefined>(),
-);
-const resolveCronDeliveryPreview = vi.hoisted(() =>
-  vi.fn(async () => ({ label: "not requested", detail: "not requested" })),
-);
-const resolveCronDeliveryPreviews = vi.hoisted(() =>
-  vi.fn(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-    Object.fromEntries(
-      jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-    ),
-  ),
-);
-
-vi.mock("../../cron/store/read-only.js", async () => {
-  const actual = await vi.importActual<typeof import("../../cron/store/read-only.js")>(
-    "../../cron/store/read-only.js",
-  );
-  return {
-    ...actual,
-    readCronRunHistoryCandidates: async (
-      ...args: Parameters<typeof actual.readCronRunHistoryCandidates>
-    ) => {
-      const records = cronRunRecordsOverride(...args);
-      return records ? { records: await records } : actual.readCronRunHistoryCandidates(...args);
-    },
-    readCronRunHistoryRecords: async (
-      ...args: Parameters<typeof actual.readCronRunHistoryRecords>
-    ) => {
-      const records = cronRunDetailsOverride() ?? cronRunRecordsOverride(args[0]);
-      return records
-        ? (await records).filter((record) => args[1].includes(record.id))
-        : actual.readCronRunHistoryRecords(...args);
-    },
-  };
-});
-
-vi.mock("../../config/config.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../config/config.js")>("../../config/config.js");
-  return {
-    ...actual,
-    getRuntimeConfig,
-  };
-});
-
-// Credential capture is exercised by cron.inference-binding.test.ts and
-// isolated-agent.auth-continuity.integration.test.ts. These delivery/management
-// validation fixtures intentionally have no inference account.
-vi.mock("../../cron/inference-binding.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../cron/inference-binding.runtime.js")>()),
-  captureCronInferenceBinding: async () => undefined,
-}));
-
-// mock-isolation: Validation fixtures do not read live session delivery metadata.
-vi.mock("../../cron/delivery-preview.js", () => ({
-  resolveCronDeliveryFailurePreview: async () => undefined,
-  resolveCronDeliveryPreview,
-  resolveCronDeliveryPreviews,
-}));
-
 import { cronHandlers } from "./cron.js";
+const {
+  cronRunDetailsOverride,
+  cronRunRecordsOverride,
+  getRuntimeConfig,
+  resetCronValidationMocks,
+  resolveCronDeliveryPreview,
+} = await import("./cron.validation.mocks.test-support.js");
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   return createCronTestContext(currentJobs, getRuntimeConfig);
@@ -390,22 +325,7 @@ describe("cron method validation", () => {
     },
   );
   beforeEach(() => {
-    getRuntimeConfig.mockReset().mockReturnValue({} as OpenClawConfig);
-    cronRunRecordsOverride.mockReset();
-    cronRunDetailsOverride.mockReset();
-    resolveCronDeliveryPreview
-      .mockReset()
-      .mockResolvedValue({ label: "not requested", detail: "not requested" });
-    resolveCronDeliveryPreviews
-      .mockReset()
-      .mockImplementation(async ({ jobs }: { jobs: Array<{ id: string }> }) =>
-        Object.fromEntries(
-          jobs.map((job) => [job.id, { label: "not requested", detail: "not requested" }]),
-        ),
-      );
-    loadGatewaySessionEntry
-      .mockReset()
-      .mockImplementation((sessionKey: string) => ({ canonicalKey: sessionKey, entry: undefined }));
+    resetCronValidationMocks();
     setCronValidationTestRegistry();
   });
 

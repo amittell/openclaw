@@ -1,6 +1,9 @@
 import type { CompactionResult } from "../../../../packages/agent-core/src/harness/compaction/compaction.js";
 import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../../packages/agent-core/src/harness/compaction/compaction.js";
-import { buildSessionContext } from "../../../../packages/agent-core/src/harness/session/session.js";
+import {
+  buildSessionContext,
+  countCompactionShadowedEntries,
+} from "../../../../packages/agent-core/src/harness/session/session.js";
 import type { SessionTreeEntry } from "../../../../packages/agent-core/src/harness/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import type { PromptOptions } from "../agent-session-types.js";
@@ -184,6 +187,8 @@ export function projectCompactionReplacement(
       parentId: entries.at(-1)?.id ?? null,
       timestamp: new Date().toISOString(),
       summary,
+      // The committed boundary renders this count, so the budget estimate must too.
+      shadowedEntryCount: countCompactionShadowedEntries(entries, result.firstKeptEntryId),
     },
   ]).messages;
 }

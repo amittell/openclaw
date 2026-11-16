@@ -178,11 +178,21 @@ export class MemoryDB {
     }
   }
 
-  async store(agentId: string, entry: Omit<MemoryEntry, "id" | "createdAt">): Promise<MemoryEntry> {
+  async store(
+    agentId: string,
+    entry: Omit<MemoryEntry, "id" | "createdAt">,
+    options: { id?: string } = {},
+  ): Promise<MemoryEntry> {
+    // memory_refresh passes the existing id so a replace preserves the stable
+    // identifier callers may have cached. Validate the shape so a malformed id
+    // can never reach the SQL filter or the row payload.
+    if (options.id !== undefined && !UUID_PATTERN.test(options.id)) {
+      throw new Error(`Invalid memory ID format: ${options.id}`);
+    }
     return await this.useTable(async (table) => {
       const fullEntry: MemoryEntry = {
         ...entry,
-        id: randomUUID(),
+        id: options.id ?? randomUUID(),
         createdAt: Date.now(),
       };
       const storedEntry: StoredMemoryRow = { ...fullEntry, agentId };
@@ -214,12 +224,12 @@ export class MemoryDB {
       const score = 1 / (1 + distance);
       return {
         entry: {
-          id: row.id as string,
-          text: row.text as string,
-          vector: row.vector as number[],
-          importance: row.importance as number,
-          category: row.category as MemoryEntry["category"],
-          createdAt: row.createdAt as number,
+          id: row.id as string, // SAFETY: column declared by createMemoryTableSchema.
+          text: row.text as string, // SAFETY: column declared by createMemoryTableSchema.
+          vector: row.vector as number[], // SAFETY: column declared by createMemoryTableSchema.
+          importance: row.importance as number, // SAFETY: column declared by createMemoryTableSchema.
+          category: row.category as MemoryEntry["category"], // SAFETY: category is written only by store(), which takes it from MemoryEntry.
+          createdAt: row.createdAt as number, // SAFETY: column declared by createMemoryTableSchema.
         },
         score,
       };
@@ -238,11 +248,11 @@ export class MemoryDB {
       limit: options.orderByCreatedAt ? undefined : limit,
     });
     const entries = rows.map((row) => ({
-      id: row.id as string,
-      text: row.text as string,
-      importance: row.importance as number,
-      category: row.category as MemoryEntry["category"],
-      createdAt: row.createdAt as number,
+      id: row.id as string, // SAFETY: column declared by createMemoryTableSchema.
+      text: row.text as string, // SAFETY: column declared by createMemoryTableSchema.
+      importance: row.importance as number, // SAFETY: column declared by createMemoryTableSchema.
+      category: row.category as MemoryEntry["category"], // SAFETY: category is written only by store(), which takes it from MemoryEntry.
+      createdAt: row.createdAt as number, // SAFETY: column declared by createMemoryTableSchema.
     }));
     if (options.orderByCreatedAt) {
       entries.sort((a, b) => b.createdAt - a.createdAt);
@@ -263,7 +273,7 @@ export class MemoryDB {
       if (options.limit !== undefined) {
         query = query.limit(options.limit);
       }
-      return (await query.toArray()) as Record<string, unknown>[];
+      return (await query.toArray()) as Record<string, unknown>[]; // SAFETY: toArray yields plain row records keyed by the column names selected above.
     });
   }
 
@@ -274,6 +284,35 @@ export class MemoryDB {
     const predicate = scopedPredicate(agentId, { column: "id", operator: "=", value: id });
     const result = await this.useTable((table) => table.delete(predicate));
     return result.numDeletedRows > 0;
+  }
+
+  async getById(agentId: string, id: string): Promise<MemoryEntry | null> {
+    if (!UUID_PATTERN.test(id)) {
+      throw new Error(`Invalid memory ID format: ${id}`);
+    }
+    const predicate = scopedPredicate(agentId, { column: "id", operator: "=", value: id });
+    const rows = await this.useTable((table) => table.query().where(predicate).toArray());
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id as string, // SAFETY: column declared Utf8 by createMemoryTableSchema.
+      text: row.text as string, // SAFETY: column declared Utf8 by createMemoryTableSchema.
+      vector: Array.from(row.vector as ArrayLike<number>), // SAFETY: fixed-size Float32 list column.
+      importance: row.importance as number, // SAFETY: column declared Float64.
+      category: row.category as MemoryEntry["category"], // SAFETY: category is written only by store().
+      createdAt: row.createdAt as number, // SAFETY: column declared Float64.
+    };
+  }
+
+  // Raw re-insert that preserves the caller-supplied id/createdAt. Only for
+  // memory_refresh rollback, where the original entry must come back under
+  // its original id so callers never hold a stale reference.
+  async storeRaw(agentId: string, entry: MemoryEntry): Promise<MemoryEntry> {
+    const storedEntry: StoredMemoryRow = { ...entry, agentId };
+    await this.useTable((table) => table.add([storedEntry]));
+    return entry;
   }
 
   async optimize(assertCurrent: () => void = () => {}): Promise<{

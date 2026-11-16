@@ -517,6 +517,7 @@ async function runEmbeddedAttemptOwned(
       return {
         ...executionResult,
         codeModeEngaged: codeModeControlsEnabledForRun,
+        messageToolCallable: toolSearchRunPlan.capabilityToolNames.has("message"),
         providerRetryMaxRetries: providerRetry.maxRetries,
         providerRequestTimeoutExplicit:
           providerRetry.timeoutMs !== undefined || params.model.requestTimeoutMs !== undefined,

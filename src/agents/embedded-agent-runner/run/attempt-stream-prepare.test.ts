@@ -23,6 +23,7 @@ import {
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { getActiveNativeAttempt, getEmbeddedRunAttachment } from "../run-state.js";
+import { registerContextTotalTests } from "./attempt-stream-prepare.context-total.test-support.js";
 import { registerReplyPromotionTests } from "./attempt-stream-prepare.reply-promotion.test-support.js";
 import { registerPreparationSteeringTests } from "./attempt-stream-prepare.steering.test-support.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
@@ -423,6 +424,8 @@ describe("prepareEmbeddedAttemptStream", () => {
     expect(session.messages).toEqual([message]);
     expect(content[0]?.text).toBe("parent history");
   });
+
+  registerContextTotalTests(mocks);
 
   it.each([
     ["replacement", "steering"],

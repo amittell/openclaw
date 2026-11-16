@@ -100,6 +100,7 @@ export const GATEWAY_CLIENT_CAPS = {
   NO_QUESTION_INPUT: "no-question-input",
   RUN_TOOL_BINDINGS: "run-tool-bindings",
   ROSTER_MESSAGE_BODIES_OPTIONAL: "roster-message-bodies-optional",
+  RUNTIME_CONFIG_HEALTH: "runtime-config-health",
   SESSION_SCOPED_EVENTS: "session-scoped-events",
   SESSION_ROW_DELTAS: "session-row-deltas",
   SESSION_EVENT_FIELD_REFS: "session-event-field-refs",

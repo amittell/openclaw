@@ -24,6 +24,7 @@ function createRuntime(
   options: {
     stopAfterPollSuccesses?: number;
     timeoutSeconds?: number;
+    initialUpdateId?: number | null;
     acknowledge?: () => Promise<number>;
   } = {},
 ) {
@@ -82,7 +83,7 @@ function createRuntime(
     options: {
       token: "test-auth-token",
       accountId: "acct",
-      initialUpdateId: null,
+      initialUpdateId: options.initialUpdateId ?? null,
       apiRoot: "https://api.telegram.test",
       timeoutSeconds: options.timeoutSeconds ?? 1,
     },
@@ -129,6 +130,55 @@ it("keeps short polling until a getUpdates request succeeds", async () => {
     );
     expect(body.allowed_updates).not.toContain("stopped_message_generation");
   }
+});
+
+it("adopts the server's update ids when getUpdates ignores a foreign offset", async () => {
+  // A local Bot API server answers a cloud-era offset from its own queue head.
+  // Measured on mac-mini 2026-09-02: offset 760546623 -> update 592426180, forever.
+  const runtime = createRuntime(
+    [
+      jsonResponse(200, {
+        ok: true,
+        result: [{ update_id: 592_426_180, message: { text: "head" } }],
+      }),
+      emptyPoll(),
+    ],
+    {
+      stopAfterPollSuccesses: 2,
+      initialUpdateId: 760_546_622,
+      acknowledge: async () => 592_426_180,
+    },
+  );
+
+  await flushRuntime();
+  await vi.advanceTimersByTimeAsync(0);
+  await runtime.done;
+
+  expect(runtime.pollBodies[0]?.offset).toBe(760_546_623);
+  expect(runtime.messages).toContainEqual({
+    type: "offset-rejected",
+    requestedOffset: 760_546_623,
+    adoptedUpdateId: 592_426_180,
+  });
+  // The rejection is announced before the update is spooled, so the parent can
+  // reset its persisted watermark before the adopted id is persisted.
+  const rejectedIndex = runtime.messages.findIndex((m) => m.type === "offset-rejected");
+  const updateIndex = runtime.messages.findIndex((m) => m.type === "updates");
+  expect(rejectedIndex).toBeLessThan(updateIndex);
+  // Next poll confirms the server's head instead of re-fetching it forever.
+  expect(runtime.pollBodies[1]?.offset).toBe(592_426_181);
+});
+
+it("keeps a higher-than-offset batch on the normal path without announcing a rejection", async () => {
+  const runtime = createRuntime(
+    [
+      jsonResponse(200, { ok: true, result: [{ update_id: 43, message: { text: "hi" } }] }),
+      jsonResponse(200, { ok: true, result: [] }),
+    ],
+    { stopAfterPollSuccesses: 2 },
+  );
+  await runtime.done;
+  expect(runtime.messages.some((m) => m.type === "offset-rejected")).toBe(false);
 });
 
 it("backs off idle polls without hot spinning and resets immediately when activity resumes", async () => {

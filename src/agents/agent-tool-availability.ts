@@ -1,3 +1,4 @@
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { markToolExecutionRefused } from "./tool-effect-receipt.js";
 import { createToolExecutionMatcher } from "./tool-policy-shared.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -22,7 +23,7 @@ export type AgentToolAvailabilityBinding = {
 const availabilityBindings = new WeakMap<
   object,
   {
-    binding: AgentToolAvailabilityBinding;
+    binding?: AgentToolAvailabilityBinding;
     executionDenied?: true;
   }
 >();
@@ -56,10 +57,8 @@ export function copyAgentToolAvailability<T extends object>(source: object, targ
 
 /** Record an executor denial so later schema-only catalog projections cannot undo it. */
 export function markAgentToolExecutionUnavailable<T extends object>(tool: T): T {
-  const metadata = availabilityBindings.get(tool);
-  if (metadata) {
-    availabilityBindings.set(tool, { ...metadata, executionDenied: true });
-  }
+  // An unbound tool is still a dependency other bindings test for callability.
+  availabilityBindings.set(tool, { ...availabilityBindings.get(tool), executionDenied: true });
   return tool;
 }
 
@@ -105,6 +104,7 @@ export function finalizeAgentToolAvailability<T extends ToolDefinition>(
     [...winners].filter(
       ([, tool]) =>
         !availabilityBindings.get(tool)?.executionDenied &&
+        !isOwnerOnlyToolStub(tool) &&
         (!executionAllowed || executionAllowed(tool.name)),
     ),
   );
@@ -119,5 +119,5 @@ export function finalizeAgentToolAvailability<T extends ToolDefinition>(
 }
 
 export function resolveAgentToolExecutionSchema(tool: object, schema: unknown): unknown {
-  return availabilityBindings.get(tool)?.binding.executionSchema?.(schema) ?? schema;
+  return availabilityBindings.get(tool)?.binding?.executionSchema?.(schema) ?? schema;
 }

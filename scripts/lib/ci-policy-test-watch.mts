@@ -601,6 +601,8 @@ const policyTestWatches: readonly PolicyTestWatch[] = [
       "src/sessions/session-controller.queries.ts",
       "src/sessions/session-controller.state.ts",
       "src/agents/embedded-agent-runner/runs.ts",
+      "src/channels/message/ingress-drain-stall-settlement.ts",
+      "src/channels/message/ingress-drain-watchdog.ts",
       "src/channels/message/ingress-drain.ts",
       "src/channels/message/ingress-queue.ts",
       "src/cli/gateway-cli/run-loop.ts",

@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   GATEWAY_CLIENT_CAPS,
   hasGatewayClientCap,
@@ -6,6 +7,9 @@ import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import { createEventWebPushDelivery } from "./event-web-push.js";
+import { projectHealthSummary } from "./health/presentation.js";
+import { omitRuntimeConfigHealthForClient } from "./health/runtime-config-cap.js";
+import type { HealthSummary } from "./health/types.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
@@ -143,6 +147,21 @@ export function createGatewayConnectionState(params: {
       }
     },
     prepareSessionEventProjection(event, payload, eventScope) {
+      // The broadcaster consults this per-recipient hook for every event family.
+      // A projected payload replaces the broadcaster's own health-summary frame, so
+      // health-summary clients get that summary here before runtimeConfig is gated.
+      if (event === "health") {
+        if (!isRecord(payload) || payload.runtimeConfig === undefined) {
+          return undefined;
+        }
+        return (client) => {
+          const caps = client.connect.caps;
+          const summary = hasGatewayClientCap(caps, GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY);
+          // SAFETY: Only internal health producers can publish this reserved event.
+          const health = summary ? projectHealthSummary(payload as HealthSummary) : payload;
+          return { payload: omitRuntimeConfigHealthForClient(health, caps) };
+        };
+      }
       const projection = sessionRowProjection;
       if (!projection) {
         return undefined;

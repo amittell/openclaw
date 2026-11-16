@@ -253,3 +253,24 @@ test.each(["http", "websocket"] as const)(
       ).rejects.toBe(reason);
     }),
 );
+
+// The strict marker is what lets supervised-lock recovery tell a draining gateway
+// (503) from a zombie still holding the port (200). An earlier port applied it to a
+// helper production did not call, which left the production probe inert while every
+// test still passed. This pins the configured probe production wires, with and
+// without the marker (the legacy marker-free contract).
+test("carries the strict marker on the configured probe and omits it by default", async () => {
+  const paths: string[] = [];
+  const port = await listen(
+    http.createServer((request, response) => {
+      paths.push(request.url ?? "");
+      response.statusCode = 200;
+      response.end(JSON.stringify({ ok: true }));
+    }),
+  );
+  const probe = createConfiguredGatewayLocalProbe({});
+  await requestHttp(probe, port, { strictLiveProbe: true });
+  await requestHttp(probe, port);
+
+  expect(paths).toEqual(["/healthz?strict=1", "/healthz"]);
+});

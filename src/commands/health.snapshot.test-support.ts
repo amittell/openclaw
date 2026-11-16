@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { createSessionStoreSummaryReaderStub } from "../config/sessions/session-store-summary.test-support.js";
+import { installHealthConfigMock } from "./health.config.test-mocks.js";
 
 export type HealthTestPlugin = Pick<
   ChannelPlugin,
@@ -13,10 +14,7 @@ export async function loadFreshHealthModulesForTest(params: {
   getSessionStorePath: () => string;
   getPlugins: () => HealthTestPlugin[];
 }) {
-  vi.doMock("../config/config.js", () => ({
-    getRuntimeConfig: params.getConfig,
-    loadConfig: params.getConfig,
-  }));
+  installHealthConfigMock(params.getConfig);
   vi.doMock("../config/sessions/paths.js", () => ({
     resolveSessionStorePathCore: params.getSessionStorePath,
   }));

@@ -1,5 +1,4 @@
 import { isContextOverflow } from "@openclaw/ai/internal/runtime";
-import { parseCompactionDetails } from "../../../packages/agent-core/src/harness/compaction/compaction-details.js";
 import {
   capCompactionSummary,
   compactWithoutSummary,
@@ -20,6 +19,7 @@ import {
   type CompactionResult,
   type AgentMessage,
 } from "../runtime/index.js";
+import { buildCompletedCompactionEndEvent } from "./agent-session-compaction.completed-event.js";
 import { AgentSessionInspection } from "./agent-session-inspection.js";
 import {
   agentSessionDeferThresholdCompaction,
@@ -225,7 +225,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
         throw new Error("Compaction cancelled");
       }
 
-      this.emitCompletedCompaction("manual", itemId, outcome, false);
+      this.emit(buildCompletedCompactionEndEvent("manual", itemId, outcome, false));
       return outcome;
     } finally {
       if (this.compactionAbortController === abortController) {
@@ -233,28 +233,6 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       }
       this.reconnectToAgent();
     }
-  }
-
-  private emitCompletedCompaction(
-    reason: CompactionReason,
-    itemId: string,
-    outcome: Extract<CompactionWorkOutcome, { status: "completed" }>,
-    willRetry: boolean,
-  ): void {
-    this.emit({
-      type: "compaction_end",
-      reason,
-      itemId,
-      outcome: {
-        status: "completed",
-        tokensBefore: outcome.result.tokensBefore,
-        tokensAfter: outcome.tokensAfter,
-        willRetry,
-        ...(parseCompactionDetails(outcome.result.details)?.qualityDegraded
-          ? { qualityDegraded: true }
-          : {}),
-      },
-    });
   }
 
   /** Cancel in-progress compaction (manual or auto). */
@@ -305,6 +283,10 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
 
     const bounded = getPreparedCompaction(this.sessionManager);
     const pathEntries = this.sessionManager.getBranch();
+    // The branch prepared here and the leaf committed onto below must be the same leaf:
+    // the awaited hook/summarizer can outlive an append, and a compaction committed under
+    // a moved leaf would shadow entries it never summarized.
+    const preparedLeafId = this.sessionManager.getLeafId();
     const requestBudget =
       options.requestBudget ??
       createStandaloneCompactionRequestBudget({
@@ -537,6 +519,12 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       // Revalidate after admission too. In-memory transcripts have no SQLite
       // writer fence, and cancellation must not publish a replaced context.
       assertContextReplacementActive?.();
+      // Re-check the leaf captured before the awaited hook/summarizer: committing under a
+      // moved leaf would shadow entries this summary never covered. Complementary to the
+      // owner revalidation above, which proves liveness but not leaf identity.
+      if (this.sessionManager.getLeafId() !== preparedLeafId) {
+        return "leaf-moved" as const;
+      }
       const replacementMessages = sanitizeCompactionReplayMessages(
         projectCompactionReplacement(
           pathEntries,
@@ -587,6 +575,12 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     });
     if (committed === undefined) {
       return { status: "aborted" };
+    }
+    if (committed === "leaf-moved") {
+      return {
+        status: "skipped",
+        reason: "Session leaf moved during compaction; nothing committed",
+      };
     }
     const { entryId: compactionEntryId, tokensAfter } = committed;
 
@@ -734,7 +728,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
         this.emit({ type: "compaction_end", reason, itemId, outcome });
         return false;
       }
-      this.emitCompletedCompaction(reason, itemId, outcome, willRetry);
+      this.emit(buildCompletedCompactionEndEvent(reason, itemId, outcome, willRetry));
 
       if (willRetry) {
         const messages = this.agent.state.messages;

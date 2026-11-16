@@ -21,6 +21,7 @@ import { estimateToolResultTextChars } from "../embedded-agent-runner/tool-resul
 import { MAX_AGENT_HOOK_HISTORY_MESSAGES } from "../harness/hook-history.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { buildAssistantMessage, buildUsageWithNoCost } from "../stream-message-shared.js";
+import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import { cliBackendLog } from "./log.js";
 import {
   buildCliSessionHistoryPrompt,
@@ -274,8 +275,15 @@ describe("canonical CLI history", () => {
       const manager = SessionManager.inMemory();
       const first = manager.appendMessage({ role: "user", content: "OWNED_PREFIX", timestamp: 11 });
       const retained = manager.appendMessage(makeUserMessage("OWNED_RETAINED", 12));
+      let ownedSummary: string | undefined;
       if (shape === "compacted") {
-        manager.appendCompaction("OWNED_SUMMARY", retained, 1000, { source: "owned" });
+        const ownedCompactionId = manager.appendCompaction("OWNED_SUMMARY", retained, 1000, {
+          source: "owned",
+        });
+        ownedSummary = expectedCompactionSummary("OWNED_SUMMARY", {
+          entryId: ownedCompactionId,
+          shadowedEntryCount: 1,
+        });
       }
       const tail = manager.appendMessage({ role: "user", content: "OWNED_TAIL", timestamp: 13 });
       const owned = { ...params, sessionManager: manager };
@@ -290,8 +298,8 @@ describe("canonical CLI history", () => {
       ]);
       for (const messages of [replay, reseed]) {
         expect(messages).toMatchObject([
-          ...(shape === "compacted"
-            ? [{ role: "compactionSummary", summary: "OWNED_SUMMARY" }]
+          ...(ownedSummary
+            ? [{ role: "compactionSummary", summary: ownedSummary }]
             : [{ content: "OWNED_PREFIX" }]),
           { content: "OWNED_RETAINED" },
           { content: "OWNED_TAIL" },
@@ -325,7 +333,7 @@ describe("canonical CLI history", () => {
       content: "older large " + "x".repeat(5 * 1024 * 1024),
       timestamp: 1,
     });
-    manager.appendCompaction("OWNED_SUMMARY", retained, 1000);
+    const boundedCompactionId = manager.appendCompaction("OWNED_SUMMARY", retained, 1000);
     for (let index = 0; index < MAX_CLI_SESSION_HISTORY_MESSAGES + 1; index++) {
       manager.appendMessage({ role: "user", content: `tail-${index}`, timestamp: index });
     }
@@ -336,7 +344,13 @@ describe("canonical CLI history", () => {
     expect(hooks[0]).toMatchObject({ content: "tail-1" });
     const context = await loadCliSessionContextEngineMessages(params);
     expect(context).toHaveLength(MAX_CLI_SESSION_HISTORY_MESSAGES + 2);
-    expect(context[0]).toMatchObject({ role: "compactionSummary", summary: "OWNED_SUMMARY" });
+    expect(context[0]).toMatchObject({
+      role: "compactionSummary",
+      summary: expectedCompactionSummary("OWNED_SUMMARY", {
+        entryId: boundedCompactionId,
+        shadowedEntryCount: 0,
+      }),
+    });
     expect(context[1]).toMatchObject({ content: "tail-0" });
     const reseed = await loadCliSessionReseedMessages(params);
     expect(reseed).toHaveLength(100);
@@ -449,14 +463,20 @@ describe("canonical CLI history", () => {
         timestamp: 2,
       });
       const retained = manager.appendMessage({ role: "user", content: "retained", timestamp: 3 });
+      let boundarySummary: string | undefined;
       if (boundary === "compaction") {
-        manager.appendCompaction("summary", firstKept, 1000);
+        const boundaryCompactionId = manager.appendCompaction("summary", firstKept, 1000);
+        boundarySummary = expectedCompactionSummary("summary", {
+          entryId: boundaryCompactionId,
+          // Both owners hold the persisted "summarized" row when the boundary is written.
+          shadowedEntryCount: 1,
+        });
       } else {
         manager.appendResetBoundary("reset", firstKept);
       }
       manager.appendMessage({ role: "user", content: "tail", timestamp: 4 });
       const expected = [
-        ...(boundary === "compaction" ? [{ role: "compactionSummary", summary: "summary" }] : []),
+        ...(boundarySummary ? [{ role: "compactionSummary", summary: boundarySummary }] : []),
         { role: "user", content: "retained" },
         { role: "user", content: "tail" },
       ];
@@ -527,7 +547,8 @@ describe("canonical CLI history", () => {
       await expect(loadCliSessionContextEngineMessages(params)).resolves.toMatchObject([
         {
           role: "compactionSummary",
-          summary: "summary",
+          // Appended without a count, as boundaries written before it was stored are.
+          summary: expectedCompactionSummary("summary", { entryId: "compact" }),
           timestamp: "2026-01-01T00:00:00.000Z",
           tokensBefore: 100,
           tokensAfter: 10,

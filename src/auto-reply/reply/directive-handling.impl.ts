@@ -38,6 +38,7 @@ import { applyModelRuntimeDirective } from "./directive-handling.model-runtime.j
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import { maybeHandleModelDirectiveInfo } from "./directive-handling.model.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
+import { appendQueueDirectiveAcks } from "./directive-handling.queue-ack.js";
 import { maybeHandleQueueDirective } from "./directive-handling.queue-validation.js";
 import {
   acknowledgeIgnoredSessionDirective,
@@ -53,6 +54,8 @@ import {
   resolveDirectiveTouchedSessionFields,
   withOptions,
 } from "./directive-handling.shared.js";
+import { resolveTemperatureQueryReply } from "./directive-handling.temperature-query.js";
+import { appendTemperatureAck } from "./directive-handling.temperature.js";
 import {
   findSelectedCatalogEntry,
   prepareModelSelectionRuntime,
@@ -159,6 +162,10 @@ export async function handleDirectiveOnly(
   });
   if (modelInfo) {
     return acknowledgeIgnoredDirective(modelInfo, "hasModelDirective");
+  }
+  const temperatureQueryReply = resolveTemperatureQueryReply(directives, sessionEntry);
+  if (temperatureQueryReply) {
+    return acknowledgeIgnoredDirective(temperatureQueryReply, "hasTemperatureDirective");
   }
 
   const modelResolution = await resolveModelSelectionFromDirective({
@@ -573,6 +580,7 @@ export async function handleDirectiveOnly(
         : `Thinking level set to ${directives.thinkLevel}.`,
     );
   }
+  appendTemperatureAck(directives, parts);
   if (directives.clearFastMode) {
     addSystemAck("Fast mode reset to default.");
   } else if (directives.hasFastDirective && directives.fastMode !== undefined) {
@@ -642,20 +650,9 @@ export async function handleDirectiveOnly(
       parts.push(`Runtime set to ${modelRuntimeResolution.runtime} for this session.`);
     }
   }
-  if (directives.hasQueueDirective && directives.queueMode) {
-    addSystemAck(`Queue mode set to ${directives.queueMode}.`);
-  } else if (directives.hasQueueDirective && directives.queueReset) {
-    addSystemAck("Queue mode reset to default.");
-  }
-  if (directives.hasQueueDirective && typeof directives.debounceMs === "number") {
-    addSystemAck(`Queue debounce set to ${directives.debounceMs}ms.`);
-  }
-  if (directives.hasQueueDirective && typeof directives.cap === "number") {
-    addSystemAck(`Queue cap set to ${directives.cap}.`);
-  }
-  if (directives.hasQueueDirective && directives.dropPolicy) {
-    addSystemAck(`Queue drop set to ${directives.dropPolicy}.`);
-  }
+  // Fork: queue acks live in directive-handling.queue-ack.ts (line cap); each is
+  // prefixSystemMessage(...), the same as 10.5's inline addSystemAck.
+  appendQueueDirectiveAcks(directives, parts);
   if (fastModeChanged && !params.persistenceState) {
     const nextFastMode = directives.clearFastMode ? fastModeState.mode : sessionEntry.fastMode;
     enqueueSystemEvent(formatFastModeConfirmation(nextFastMode), {

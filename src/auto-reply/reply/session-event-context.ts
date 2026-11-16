@@ -1,4 +1,5 @@
 import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -32,6 +33,7 @@ import {
   readSessionEventTargetEnvironment,
   readSessionEventTargetOperatorAuthority,
   readSessionEventTargetOwnerContinuation,
+  readSessionEventTargetRequester,
   resolveSessionEventKey,
 } from "./session-event-target.js";
 import { setChannelSourceTurnId } from "./source-turn-id.js";
@@ -206,6 +208,29 @@ export function buildSessionEventContext(params: {
       ? `${occurrenceId}:readmission-${params.readmissionAttempt}`
       : occurrenceId,
   };
+  // A completion continues its requester's own work: restore the sender and the group facts
+  // their policy keys on, so the turn resolves that sender's current toolsBySender entry and
+  // group policy instead of the "*" entry. Only on the requester's exact route and conversation
+  // type; elsewhere the turn stays senderless. This grants nothing itself: the turn stays within
+  // the producer's captured tool surface, and never derives owner authority from it (command-auth).
+  // Fork branch-native #190472 (bf164e56334). Upstream's PR is still open and rebased on a main
+  // whose session-event files differ from this tag's; replace this with it once a tag carries it.
+  const eventRequester = readSessionEventTargetRequester(target);
+  if (
+    eventRequester &&
+    ctx.ChatType &&
+    normalizeChatType(ctx.ChatType) === eventRequester.chatType &&
+    channelRouteTargetsMatchExact({ left: deliveryContext, right: eventRequester.route })
+  ) {
+    Object.assign(ctx, {
+      SenderId: eventRequester.senderId,
+      SenderE164: eventRequester.senderE164,
+      SenderName: eventRequester.senderName,
+      SenderUsername: eventRequester.senderUsername,
+      GroupSpace: eventRequester.groupSpace,
+      GroupChannel: eventRequester.groupChannel,
+    });
+  }
   if (automation && !target.sessionId) {
     // The ordinary session writer owns creation; preserve the job's captured facts.
     ctx.SessionCreation = {

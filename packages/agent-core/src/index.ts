@@ -9,7 +9,12 @@ export * from "./validation.js";
 export * from "./harness/env/kill-tree.js";
 export * from "./harness/messages.js";
 export * from "./harness/prompt-template-arguments.js";
-export { buildSessionContext } from "./harness/session/session.js";
+export {
+  type BuildSessionContextOptions,
+  type CompactionCheckpointHandle,
+  buildSessionContext,
+  formatCompactionCheckpointHandle,
+} from "./harness/session/session.js";
 export { uuidv7 } from "./harness/session/uuid.js";
 export type {
   BranchSummaryResult,

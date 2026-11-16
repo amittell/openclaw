@@ -623,6 +623,9 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     }
   }
   const cfg = confirmedWorkspace?.config ?? finalized.cfg;
+  if (legacyDefaultAgentId) {
+    retainLegacyDefaultAgentId(cfg, legacyDefaultAgentId);
+  }
   const includeBoundaryWrite =
     shouldWriteConfig &&
     canWriteDoctorInclude(

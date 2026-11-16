@@ -5,6 +5,7 @@ import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import * as entryReads from "../../config/sessions/session-entry-read-runtime.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { AsyncWorkScope, getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { waitForSessionMaintenance } from "./coordinator.js";
 import { blockFlush, expectEffects, memory, setup } from "./run.test-support.js";
@@ -94,6 +95,31 @@ it.each([
       predecessor.resolve(false);
       flush?.release();
       await waitForSessionMaintenance(scope.sessionKey);
+    }
+  });
+});
+
+// Upstream #196115 (open, head 622cf1bd17cf): its regression row, written against beta.3's run.test-support.ts.
+it("finishes post-turn upkeep after the foreground async work scope closes", async () => {
+  await withOpenClawTestState({ label: "maintenance-async-handoff" }, async ({ env }) => {
+    const { scope, schedule } = await setup(env, "maintenance-async-handoff");
+    const foreground = new AsyncWorkScope();
+    const finished = createDeferred<boolean>();
+    memory.runMemoryFlushIfNeeded.mockImplementationOnce(async () => {
+      // Model preparation and its session readers observe the ambient work signal.
+      getAsyncWorkSignal()?.throwIfAborted();
+      return {};
+    });
+    try {
+      foreground.run(() => schedule(finished.promise));
+      await foreground.drain();
+      finished.resolve(true);
+      await waitForSessionMaintenance(scope.sessionKey);
+      expectEffects(1);
+    } finally {
+      finished.resolve(false);
+      await waitForSessionMaintenance(scope.sessionKey);
+      await foreground.drain();
     }
   });
 });
