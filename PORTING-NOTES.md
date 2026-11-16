@@ -4760,3 +4760,27 @@ All on the M4 (Node 26.12.1), 2026-11-16, under the heavy-job lock.
     instrumentation, restored from HEAD on exit, was the valid instrument.
   - The first carrier count: it filtered `*.js` and the build emits `.mjs`, so the count and its control both
     read 0.
+
+## After the push: 11.4 and the /dashboard yield (2026-11-16)
+
+- **Upstream v2026.11.4** (stable, 04:17:42Z) came out after beta.4 (03:12:26Z). It descends from 11.3 on the
+  release line (merge base with beta.4 `459cad76530`, 2026-10-14). Census of its 218 non-merge commits since 11.3
+  against this carry. A commit counts as in the carry by:
+  - the same commit;
+  - its `-x` source;
+  - its PR number in any carry message, read as a backport list;
+  - its patch reverse-applying to the carry's tree.
+
+  The control is 9 bot-surface fixes known to be in the carry; all 9 classify as in.
+  - 91 in the carry. That includes the 9: `88787149555` (#190242, #197484, #197658, #197606), `9afcc1b7b29`
+    (#196217, #198038, #197519), `9e9bb278418` (#198357), and #196282 by patch. A first census by `(#N)` subject
+    alone scored them absent; Alex's #618 "pick the 9 first" was answered on that premise and needed no picks.
+  - 6 apply cleanly, so they are absent. One is a product change: `50e6a4a1e19` "fix(gateway): preserve effective
+    model policy across migration".
+  - 121 apply in neither direction because the two lines' code differs. 72 of them touch production code: release-line
+    repairs, not settled here.
+
+- **/dashboard yield dropped** (Alex, room #618): `bot-native-commands.ts` and its registry test are beta.4's bytes
+  again. The yield (#142532, closed upstream unmerged) protected a Mini App `/dashboard`. Since #161369 the Mini App
+  registers `/controlui`, so the yield only hid core `/dashboard`. Upstream's `bot-native-command-dispatch.miniapp`
+  test passes again. Earlier carries recorded it as failing (the 10.1 notes).
