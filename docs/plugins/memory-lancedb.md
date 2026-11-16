@@ -368,13 +368,34 @@ Agents get four tools from the active memory plugin:
 
 ### Owner-only memories
 
-Each row carries a `visibility` tag, `team` or `owner`. A row tagged `owner` is
-returned only to a turn the runtime marks as the owner's (`senderIsOwner`); every
-other turn reads, forgets, and refreshes only `team` rows. The owner bit comes from
-the inbound context, never from a tool argument. Automatic recall has no owner bit,
-so it reads only `team` rows for every turn; the owner reaches `owner` rows with
-`memory_recall`. Host memory search (Memory Wiki and voice context) reads every row,
-because it already requires the operator or the owner's private audience.
+Each row carries a `visibility` tag, `team` or `owner`. By default, `memory_recall`,
+`memory_forget`, and `memory_refresh` see `owner` rows only in the owner's direct
+chat, which the runtime marks with the owner-private memory audience. Every other
+turn, including the owner's own turns in a group, sees only `team` rows. Set
+`ownerRecallInGroups: true` to let the owner's turns in group and channel chats see
+`owner` rows too. Replies there are visible to everyone in the chat. Both the
+audience and the owner bit (`senderIsOwner`) come from the inbound context, never
+from a tool argument.
+
+Automatic recall reads only `team` rows for every turn, because the prompt hook has
+no owner bit. The owner reaches `owner` rows with `memory_recall`. Host memory search
+(Memory Wiki and voice context) reads every row, because it already requires the
+operator or the owner's private audience.
+
+```json5
+{
+  plugins: {
+    entries: {
+      "memory-lancedb": {
+        config: {
+          // Default false: owner-only memories stay in the owner's direct chat.
+          ownerRecallInGroups: true,
+        },
+      },
+    },
+  },
+}
+```
 
 New rows are `team`, including rows stored by the owner. Tag rows after review:
 

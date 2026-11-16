@@ -116,7 +116,7 @@ describe("memory visibility through the memory tools", () => {
     vi.doUnmock("openai");
   });
 
-  test("a non-owner turn cannot recall, forget or refresh an owner row; the owner can", async () => {
+  test("owner rows reach the owner's direct chat, and group turns only when configured", async () => {
     // text-embedding-3-small is 1536-dimensional; every vector is the same unit vector.
     const unit = Array.from({ length: 1536 }, (_, index) => (index === 0 ? 1 : 0));
     const embeddingsCreate = vi.fn(async () => ({ data: [{ embedding: unit }] }));
@@ -151,30 +151,46 @@ describe("memory visibility through the memory tools", () => {
       registeredTools,
     });
     registerTestPlugin(memoryPlugin, mockApi);
-    const tool = (name: string, senderIsOwner?: boolean) =>
+    // The host mints `owner-private` only for the owner's direct chat.
+    const guest = { senderIsOwner: false };
+    const ownerDirect = {
+      senderIsOwner: true,
+      memoryAudience: { kind: "owner-private", agentId: "main" },
+    };
+    const ownerInGroup = {
+      senderIsOwner: true,
+      memoryAudience: { kind: "conversation", agentId: "main", sessionKey: "g", sessionId: "g" },
+    };
+    const tool = (name: string, caller: Record<string, unknown>) =>
       materializeRegisteredTool(
         registeredTools.find((entry) => entry.opts?.name === name)?.tool,
-        senderIsOwner === undefined ? {} : { senderIsOwner },
+        caller,
       );
-    const recalled = async (senderIsOwner?: boolean) =>
-      (
-        (await tool("memory_recall", senderIsOwner).execute("recall", { query: "fact" })).details
-          .memories as Array<{ text: string }>
-      )
-        .map((memory) => memory.text)
-        .toSorted((left, right) => left.localeCompare(right));
+    const recalled = async (caller: Record<string, unknown>) =>
+      sortedTexts(
+        (
+          (await tool("memory_recall", caller).execute("recall", { query: "fact" })).details
+            .memories as Array<{ text: string }>
+        ).map((memory) => memory.text),
+      );
 
     try {
-      expect(await recalled()).toEqual(["team fact"]);
-      expect(await recalled(false)).toEqual(["team fact"]);
-      expect(await recalled(true)).toEqual(["owner fact", "team fact"]);
+      expect(await recalled({})).toEqual(["team fact"]);
+      expect(await recalled(guest)).toEqual(["team fact"]);
+      expect(await recalled(ownerInGroup)).toEqual(["team fact"]);
+      expect(await recalled(ownerDirect)).toEqual(["owner fact", "team fact"]);
+      // The live config is read per call; the option admits the owner's group turns only.
+      Object.assign(mockApi.pluginConfig, { ownerRecallInGroups: true });
+      expect(await recalled(ownerInGroup)).toEqual(["owner fact", "team fact"]);
+      expect(await recalled(guest)).toEqual(["team fact"]);
+      Object.assign(mockApi.pluginConfig, { ownerRecallInGroups: false });
 
-      const refreshAsGuest = await tool("memory_refresh", false).execute("refresh", {
-        text: "rewritten by a guest",
+      const refreshInGroup = await tool("memory_refresh", ownerInGroup).execute("refresh", {
+        text: "rewritten from a group",
         memoryId: personal.id,
       });
-      expect(refreshAsGuest.details).toMatchObject({ error: "not_found" });
-      const refreshAsOwner = await tool("memory_refresh", true).execute("refresh", {
+      expect(refreshInGroup.details).toMatchObject({ error: "not_found" });
+      const refreshAsOwner = await tool("memory_refresh", ownerDirect).execute("refresh", {
         text: "owner fact, updated",
         memoryId: personal.id,
       });
@@ -184,16 +200,16 @@ describe("memory visibility through the memory tools", () => {
         visibility: "owner",
       });
 
-      const forgetAsGuest = await tool("memory_forget", false).execute("forget", {
+      const forgetAsGuest = await tool("memory_forget", guest).execute("forget", {
         memoryId: personal.id,
       });
       expect(forgetAsGuest.details).toMatchObject({ action: "not_found" });
-      expect(await recalled(true)).toEqual(["owner fact, updated", "team fact"]);
-      const forgetAsOwner = await tool("memory_forget", true).execute("forget", {
+      expect(await recalled(ownerDirect)).toEqual(["owner fact, updated", "team fact"]);
+      const forgetAsOwner = await tool("memory_forget", ownerDirect).execute("forget", {
         memoryId: personal.id,
       });
       expect(forgetAsOwner.details).toMatchObject({ action: "deleted", id: personal.id });
-      expect(await recalled(true)).toEqual(["team fact"]);
+      expect(await recalled(ownerDirect)).toEqual(["team fact"]);
       expect(shared.visibility).toBe("team");
     } finally {
       const service = (mockApi.registerService as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];

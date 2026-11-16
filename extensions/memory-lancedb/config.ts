@@ -7,7 +7,12 @@ import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 type ProducedMemoryConfig = ReturnType<typeof memoryConfigSchema.parse>;
-type OptionalMemoryFields = "dreaming" | "dbPath" | "autoCapture" | "autoRecall";
+type OptionalMemoryFields =
+  | "dreaming"
+  | "dbPath"
+  | "autoCapture"
+  | "autoRecall"
+  | "ownerRecallInGroups";
 // `fallbackBaseUrl` is an optional secondary OpenAI-compatible endpoint. When set, the embedder
 // fails over to it if the primary baseUrl is unreachable (client-side failover; see
 // OpenAiCompatibleEmbeddings).
@@ -115,6 +120,7 @@ export const memoryConfigSchema = {
         "autoRecall",
         "captureMaxChars",
         "customTriggers",
+        "ownerRecallInGroups",
         "recallMaxChars",
         "storageOptions",
       ],
@@ -207,6 +213,7 @@ export const memoryConfigSchema = {
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : resolveDefaultDbPath(),
       autoCapture: cfg.autoCapture === true,
       autoRecall: cfg.autoRecall !== false,
+      ownerRecallInGroups: cfg.ownerRecallInGroups === true,
       captureMaxChars,
       ...(customTriggers ? { customTriggers } : {}),
       recallMaxChars,

@@ -6,7 +6,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "typebox";
 import { MEMORY_CATEGORIES, type MemoryConfig } from "./config.js";
 import type { Embeddings } from "./embeddings.js";
-import { memoryVisibilityScopeForSender } from "./lancedb-schema.js";
+import { memoryVisibilityScopeForCaller } from "./lancedb-schema.js";
 import type { MemoryDB, MemoryEntry } from "./lancedb-store.js";
 
 // Keep conflict previews aligned with MemoryDB.search's default threshold.
@@ -156,7 +156,8 @@ export function registerMemoryRefreshTool(params: {
           // Tool definitions outlive hot config reloads; revalidate before memory I/O.
           assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
           // A turn previews and replaces only rows it can read.
-          const scope = { visibilityScope: memoryVisibilityScopeForSender(ctx.senderIsOwner) };
+          const visibilityScope = memoryVisibilityScopeForCaller(ctx, resolveCurrentConfig());
+          const scope = { visibilityScope };
           // SAFETY: the runtime validates rawParams against the typebox schema declared above.
           const { text, category, importance, memoryId } = rawParams as {
             text: string;

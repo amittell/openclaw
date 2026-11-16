@@ -13,13 +13,19 @@ export function isMemoryVisibility(value: unknown): value is MemoryVisibility {
 }
 
 /**
- * Only a turn the host marks as the owner's reads owner rows. The bit comes from the
+ * Owner rows reach the owner's direct chat, which the host marks with the `owner-private`
+ * memory audience. `ownerRecallInGroups` also admits the owner's own turns in group and
+ * channel chats, where the reply is visible to everyone there. Both facts come from the
  * runtime's inbound context, never from a tool argument the model controls.
  */
-export function memoryVisibilityScopeForSender(
-  senderIsOwner: boolean | undefined,
+export function memoryVisibilityScopeForCaller(
+  caller: { senderIsOwner?: boolean; memoryAudience?: { kind: string } },
+  config: { ownerRecallInGroups?: boolean },
 ): MemoryVisibilityScope {
-  return senderIsOwner === true ? "owner" : "team";
+  if (caller.memoryAudience?.kind === "owner-private") {
+    return "owner";
+  }
+  return config.ownerRecallInGroups === true && caller.senderIsOwner === true ? "owner" : "team";
 }
 
 export function quoteLanceSqlString(value: string): string {

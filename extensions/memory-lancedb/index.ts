@@ -31,7 +31,7 @@ import {
   isMemoryRecallTimeoutError,
   MemoryRecallEmbeddingError,
 } from "./embeddings.js";
-import { memoryVisibilityScopeForSender } from "./lancedb-schema.js";
+import { memoryVisibilityScopeForCaller } from "./lancedb-schema.js";
 import { MemoryDB, type MemoryEntry } from "./lancedb-store.js";
 import { dropMediaNoteLines, sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
@@ -281,9 +281,9 @@ export default definePluginEntry({
         const rawParams = params as Record<string, unknown>;
         const query = rawParams.query as string;
         const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
-        const visibilityScope = memoryVisibilityScopeForSender(ctx.senderIsOwner);
 
         const currentCfg = resolveCurrentHookConfig();
+        const visibilityScope = memoryVisibilityScopeForCaller(ctx, currentCfg);
         const recallMaxChars = currentCfg.recallMaxChars;
         const cooldown = readMemoryRecallCooldown(agentId);
         if (cooldown) {
@@ -437,7 +437,7 @@ export default definePluginEntry({
         assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
         const { query, memoryId } = params as { query?: string; memoryId?: string };
         // A turn can forget only rows it can read.
-        const visibilityScope = memoryVisibilityScopeForSender(ctx.senderIsOwner);
+        const visibilityScope = memoryVisibilityScopeForCaller(ctx, resolveCurrentHookConfig());
 
         if (memoryId) {
           // Acquire the per-ID lock so a concurrent memory_refresh replace on the
