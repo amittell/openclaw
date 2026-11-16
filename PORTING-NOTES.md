@@ -4784,3 +4784,80 @@ All on the M4 (Node 26.12.1), 2026-11-16, under the heavy-job lock.
   again. The yield (#142532, closed upstream unmerged) protected a Mini App `/dashboard`. Since #161369 the Mini App
   registers `/controlui`, so the yield only hid core `/dashboard`. Upstream's `bot-native-command-dispatch.miniapp`
   test passes again. Earlier carries recorded it as failing (the 10.1 notes).
+
+## The 72 11.4 repairs reviewed against the carry (2026-11-16)
+
+Alex, room #620: "Review the 72 first", then port what applies, requalify, deploy rh-bot first. The census above
+counted 72 of its 121 as touching production code; 11 of those change only tests and fixtures, and were not reviewed
+further. Five read-only lanes read the other 61 against the carry's code. Before porting, each NEEDED verdict was checked again: no ancestry, no `-x` source in the carry, and merge-tree
+onto the carry. Where main has its own version of the fix, the port takes main's, since beta.4 is cut from main.
+
+**Ported** (six `-x` picks of main's commits, in PR-number order):
+
+| pick    | upstream                | what it fixes                                                                               | how it applied                                                                                                                                                                                        |
+| ------- | ----------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| f6b4f60 | #187499 (`f980e011502`) | exec approval for recursive shell assignments                                               | conflict only in the integration test: both the carry's dynamic-predicate test and the pick's test kept; product files equal upstream's                                                               |
+| 4e8b681 | #187653 (`3f34977399e`) | exec approval for legacy `$[...]` arithmetic                                                | the pick's test inserted; the change equals the pick's own                                                                                                                                            |
+| 35e5301 | #188023 (`9ca944e298b`) | Code Mode cells stop when tool reply decoding fails (11.4's `25bc7fd6007`)                  | clean                                                                                                                                                                                                 |
+| 9bb63ba | #195400 (`e2a180733f7`) | Telegram restart recovery leaving final replies silent (11.4's `cf9a023c222`)               | clean                                                                                                                                                                                                 |
+| f156f1a | #196297 (`ac797242b03`) | conversations with enabled automations kept from automatic archiving (11.4's `a447dc11a65`) | import conflict: the carry keeps `resolveCronJobBoundSessionKeys` where main has `resolveCronJobSessionBindings`; the new maintenance test adapted to beta.4's one-argument `classifyScheduledParent` |
+| f3ef01c | #197960 (`285f053854c`) | auth refresh retaining a closed plugin scope (11.4's `7420e1f3807`)                         | import conflict; the change equals the pick's own                                                                                                                                                     |
+
+`623fd6dad99` (beta.4's #199512 backport, automation links follow the conversation) is a different PR from #196297:
+beta.4's automation index registers no session-maintenance preserve provider, and the pick adds it.
+
+**Deferred, each with its reason:**
+
+- `25ba38e6ebf` / main `56493a1a999` (#195459, Doctor transcript repair heap). The carry's file differs from the
+  pick's base by 52 lines from main `fce0e56fc0a` (schema 39) and `7ce05f41e0a`, which beta.4 lacks, so the pick does
+  not apply. The bots' exposure is small (read-only, 2026-11-16 15:49Z). Every agent database's repair cursor is
+  `{"phase":"complete"}` (version 1), so this carry's Doctor reopens only the masked-provider pass. That pass reads only
+  rows containing `"provider":"***"`. The counts are 0 rows on rh-bot, 1 on mac-mini ailybot, and 6 (0.01 MB) on
+  mac-mini ratbot; archives are streamed.
+- `747fb081578` (disk scans joining database cleanup): does not apply to the carry's tree and needs helpers the carry
+  lacks; a race between a disk-budget scan and agent-database cleanup.
+- `580028454fb` (a), lease release under maintenance contention: the carry already retries contention; the 11.4 throw
+  changes a best-effort release contract for callers not audited here.
+- `edd8fbc3ed9` / main `71a7e546a1e` (Doctor widening restrictive allowlists): its trigger is absent on both bots
+  (no `skills.allowBundled`, and rh-bot's `secrets.egressProxy` has no `allowedHosts`; read-only, 15:40Z).
+- `fd357d6d3f8` (#196570, busy config reloads): relevance low-medium. An automatic plugin reload fences new model
+  admissions before it waits for busy work. Main's `e230abd098e` spans 52 production files, so it needs a real port
+  at the next rebase rather than a hunk; four 11.4 follow-ups depend on it.
+- The transport-host trio `25a72bd5ef1`, `787ce0ad312`, `70586c2f219`: needs a second copy of `@openclaw/ai` in one
+  thread, which the built gateway does not have.
+- `23ece463973` (Tool Search schema validation): depends on the provider's tool schema profile; looser, not stricter,
+  for the bots' providers.
+- `a38363bbb0e` (delegation reader): a narrow race on a config change; upstream main has the same gap.
+- `11a0a9680d2` (runtime reader ownership): low; port main's version via the 11.4 close-out merge `ea69fcbb62f` with
+  the next rebase.
+- `71629978971` (#191389, reserved keys in operator CLI `KEY=VALUE` entries): operator CLI input only.
+- `b70175def54` (#190497, MEMORY.md on a failed Doctor merge), `9aede0c1e48` (latent, unreachable on the bots by default), and the gateway, channel and exec rows
+  rated low or none: `6faf9d96185`, `480d7812929`, `50e6a4a1e19`, `9cb390834ac`, `d760f236366`, `ebee8e52eb9`
+  (10a, 10e), `1c0bec9af60` (11c), `7b5e966f1b9`, plus `7f8d87a58c0`, `c73839039a8`, `1cd37884e33`, `6381531048e`
+  off the bots' paths.
+
+Two were UNSURE:
+
+- `00275d273c1` (#194362, canonical replay context) is MOOT here. It matters only to a non-legacy context engine,
+  and the carry picks the engine from `plugins.slots.contextEngine`, falling back to `"legacy"`. Both bots set only
+  the `memory` slot (`memory-lancedb`; read-only, 2026-11-16).
+- The `3f2a99268e3` residual (a chat.history assert on rows nested over 1000 levels deep) is deferred. It needs
+  pathological input, and upstream main has the same assert.
+
+The rest were PRESENT (beta.4 has the fix in another form), MOOT (the code it patches is not in the carry) or
+RELEASE-ONLY (release scripts and formatting). The lane reports are not kept in the repo; the verdicts above are the
+record.
+
+**Qualified on the M4** (Node 26.12.1, 2026-11-16), on top of the pushed `3c9b3962c3b`:
+
+- tsgo, all seven lanes with `CI=1`: 0 errors at `f3ef01c6399`. Before the fold, `tsgo:core:test` reported the one
+  error the adapted test fixes. A deliberate type error in `session-automation-index.ts` and in
+  `test/telegram-lifecycle-notice-send.test.ts` surfaced in `tsgo:core` and `tsgo:test:root`, and nothing else did.
+- oxlint and oxfmt on the 38 changed `.ts` files: clean.
+- The test-lines, line-cap and max-lines ratchets against `3c9b3962c3b` (`--base ... --no-merge-base`): OK. Without
+  `--base` they compare against the M4's `origin/main`, which is from 2026-07-05, and report hundreds of unrelated files.
+- 103 test files: each pick's own tests, the tests beside each changed module, and 32 files that import the changed
+  delivery-recovery modules. 102 passed. The 103rd, the new automation maintenance test, failed 3 of 18 cases, all at
+  main's two-argument `classifyScheduledParent` call and after their archiving assertions had passed. After the fold
+  it passes 18 of 18, and `session-automation-index.test.ts` 4 of 4.
+- `pnpm build` rc 0 (154 s). One dist chunk defines the reload-roots AsyncContext, counted over `.js` and `.mjs`.
