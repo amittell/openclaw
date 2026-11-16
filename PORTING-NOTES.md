@@ -4914,3 +4914,35 @@ and `rollback_full` puts that copy back.
     default scope.
   - oxlint found a spread inside `.map`, and sorts without a compare function.
   - `memory-cli.test.ts` still expected the CLI search without its owner scope.
+
+## Owner memories in groups is a config option (2026-11-16)
+
+Room #626 (18:23:21Z), A2: "Make it a config option, default to owner DM only, set my bots to include groups for
+owners". `5660b1eb8a7` adds `ownerRecallInGroups` (boolean, default false) to the memory-lancedb plugin config. By
+default `memory_recall`, `memory_forget` and `memory_refresh` read owner rows only when the host passes the owner-private
+memory audience. The host mints that audience only for the owner's direct chat and that chat's lineage
+(`src/plugins/memory-audience.ts`). With the option true, any turn the runtime marks `senderIsOwner` reads owner rows
+too, which is the rule `5e5ca005d3c` shipped. Automatic recall is unchanged and stays `team` for every turn.
+
+**Rollout.** rh-bot runs `bc3935e26ee`, whose rule is the same as the option set to true, so its behaviour already
+matches Alex's choice for his bots. The deploy kit's new step 6b writes `ownerRecallInGroups: true` into
+`openclaw.json` after doctor, while the gateway is stopped. It writes only when the target's manifest declares the key;
+`OWNER_RECALL_IN_GROUPS=false` leaves the default. An older build refuses the key: its manifest has
+`additionalProperties: false`, and the gateway exits 78 on an unrecognized key. Both kit rollbacks restore
+`openclaw.json` from the backup, which removes the key. Any other move to a build before `5660b1eb8a7` must remove it
+first. Both bots' files reproduce byte-exact as 2-space JSON and have a `memory-lancedb` config object (read-only,
+2026-11-16), so step 6b applies on each.
+
+**Qualification** (M4, 2026-11-16, `5660b1eb8a7` on `758a9f572a4`, clean tree):
+
+- tsgo: 7 lanes with `CI=1`, 0 errors. The positive control fired in `extensions:all` and `extensions:test` (product 1,
+  test 1, other 0).
+- oxlint (11 files), oxfmt, and the test-lines, line-cap, max-lines and assertion-safety ratchets against `758a9f572a4`:
+  all rc 0. oxfmt ignores `**/*.json`, so nothing checks the manifest's formatting.
+- Tests: 27 of 27 files pass, the same set as before.
+- Two mutations of `memoryVisibilityScopeForCaller` each fail `lancedb-store.visibility.test.ts`. The pre-A2 rule
+  (`senderIsOwner` alone) returns the owner row to the owner in a group with the option off. Audience-only returns
+  none with the option on. The restored code passes.
+- Step 6b's writer was run on eight synthetic configs. It applies true, and is a no-op when the value is already set.
+  It skips under the old manifest and when no entry exists. It applies false over true. It refuses a missing config
+  object and a file whose formatting does not reproduce. It keeps mode 600 when it writes.
