@@ -4,6 +4,7 @@ import { defaultRuntime } from "openclaw/plugin-sdk/runtime";
 import { isMemoryMachineOutput } from "./cli-output-mode.js";
 import type { MemoryConfig } from "./config.js";
 import type { Embeddings } from "./embeddings.js";
+import { isMemoryVisibility, MEMORY_VISIBILITY_COLUMN } from "./lancedb-schema.js";
 import {
   MEMORY_QUERY_COLUMNS,
   type MemoryQueryColumn,
@@ -52,7 +53,9 @@ function parseMemoryCliOrder(value: unknown): {
     !MEMORY_QUERY_COLUMNS.includes(column as MemoryQueryColumn) ||
     !["asc", "desc"].includes(direction.toLowerCase())
   ) {
-    throw new Error("--order-by must be <id|text|importance|category|createdAt>:<asc|desc>");
+    throw new Error(
+      "--order-by must be <id|text|importance|category|createdAt|visibility>:<asc|desc>",
+    );
   }
   return {
     column: column as MemoryQueryColumn,
@@ -72,12 +75,12 @@ function parseMemoryCliFilter(rawValue: unknown): MemoryQueryFilter | undefined 
     throw new Error("Filter condition exceeds maximum length of 200 characters");
   }
   const match =
-    /^(id|text|importance|category|createdAt)\s*(=|!=|<>|<=|>=|<|>|LIKE)\s*(?:'((?:''|[^'])*)'|(-?(?:\d+(?:\.\d+)?|\.\d+)))$/i.exec(
+    /^(id|text|importance|category|createdAt|visibility)\s*(=|!=|<>|<=|>=|<|>|LIKE)\s*(?:'((?:''|[^'])*)'|(-?(?:\d+(?:\.\d+)?|\.\d+)))$/i.exec(
       filter,
     );
   if (!match) {
     throw new Error(
-      "--filter must be one comparison using id, text, importance, category, or createdAt",
+      "--filter must be one comparison using id, text, importance, category, createdAt, or visibility",
     );
   }
   const rawColumn = match[1]!;
@@ -101,6 +104,9 @@ function parseMemoryCliFilter(rawValue: unknown): MemoryQueryFilter | undefined 
   }
   if (operator === "LIKE" && typeof value !== "string") {
     throw new Error("--filter LIKE requires a quoted string");
+  }
+  if (column === MEMORY_VISIBILITY_COLUMN && !isMemoryVisibility(value)) {
+    throw new Error("--filter visibility must compare with 'team' or 'owner'");
   }
   return { column, operator, value };
 }
@@ -149,8 +155,10 @@ export function registerMemoryCli(
         .action(async (opts) => {
           const agentId = resolveCliAgentId(opts.agent);
           const limit = parseLimit(opts.limit);
+          // The operator's own inspection commands read owner rows too.
           const entries = await db.list(agentId, limit, {
             orderByCreatedAt: Boolean(opts.orderByCreatedAt),
+            visibilityScope: "owner",
           });
           defaultRuntime.writeJson(entries);
         });
@@ -172,7 +180,9 @@ export function registerMemoryCli(
               normalizeRecallQuery(query, config.recallMaxChars),
               config.embedding,
             );
-            const results = await db.search(agentId, vector, limit, 0.3);
+            const results = await db.search(agentId, vector, limit, 0.3, {
+              visibilityScope: "owner",
+            });
             defaultRuntime.writeJson(results.map(projectMemorySearchResult));
           } catch (error) {
             failure = { error };
@@ -208,6 +218,7 @@ export function registerMemoryCli(
             columns: selectedColumns,
             filter: parseMemoryCliFilter(opts.filter),
             ...(order ? {} : { limit }),
+            visibilityScope: "owner",
           });
           if (order) {
             rows.sort((a, b) => {
@@ -240,6 +251,21 @@ export function registerMemoryCli(
           const agentId = resolveCliAgentId(opts.agent);
           const count = await readMemoryStats(statsSource, agentId);
           console.log(`Total memories: ${count}`);
+        });
+
+      memory
+        .command("visibility")
+        .description("Tag memories owner (hidden from non-owner turns) or team")
+        .argument("<visibility>", "owner or team")
+        .argument("<ids...>", "Memory ids")
+        .option("--agent <id>", "Agent id (default: configured default agent)")
+        .action(async (visibility: string, ids: string[], opts) => {
+          if (!isMemoryVisibility(visibility)) {
+            throw new Error("visibility must be owner or team");
+          }
+          const agentId = resolveCliAgentId(opts.agent);
+          const updated = await db.setVisibility(agentId, ids, visibility);
+          defaultRuntime.writeJson({ visibility, requested: ids.length, updated });
         });
     },
     {

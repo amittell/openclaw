@@ -31,6 +31,7 @@ import {
   isMemoryRecallTimeoutError,
   MemoryRecallEmbeddingError,
 } from "./embeddings.js";
+import { memoryVisibilityScopeForSender } from "./lancedb-schema.js";
 import { MemoryDB, type MemoryEntry } from "./lancedb-store.js";
 import { dropMediaNoteLines, sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
@@ -280,6 +281,7 @@ export default definePluginEntry({
         const rawParams = params as Record<string, unknown>;
         const query = rawParams.query as string;
         const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
+        const visibilityScope = memoryVisibilityScopeForSender(ctx.senderIsOwner);
 
         const currentCfg = resolveCurrentHookConfig();
         const recallMaxChars = currentCfg.recallMaxChars;
@@ -299,6 +301,7 @@ export default definePluginEntry({
           search: (vector, timeoutMs) =>
             db.search(agentId, vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1, {
               timeoutMs,
+              visibilityScope,
             }),
         });
         let recall: Awaited<typeof recallOperation.result>;
@@ -433,11 +436,15 @@ export default definePluginEntry({
       async execute(_toolCallId, params) {
         assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
         const { query, memoryId } = params as { query?: string; memoryId?: string };
+        // A turn can forget only rows it can read.
+        const visibilityScope = memoryVisibilityScopeForSender(ctx.senderIsOwner);
 
         if (memoryId) {
           // Acquire the per-ID lock so a concurrent memory_refresh replace on the
           // same ID cannot race this delete.
-          const deleted = await withMemoryLock(memoryId, () => db.delete(agentId, memoryId));
+          const deleted = await withMemoryLock(memoryId, () =>
+            db.delete(agentId, memoryId, { visibilityScope }),
+          );
           if (!deleted) {
             return memoryDeleteFailureResult(memoryId);
           }
@@ -455,7 +462,7 @@ export default definePluginEntry({
             normalizeRecallQuery(query, recallMaxChars),
             currentCfg.embedding,
           );
-          const results = await db.search(agentId, vector, 5, 0.7);
+          const results = await db.search(agentId, vector, 5, 0.7, { visibilityScope });
 
           if (results.length === 0) {
             return textResult("No matching memories found.", { found: 0 });
@@ -463,7 +470,7 @@ export default definePluginEntry({
 
           const singleResult = results.length === 1 ? results[0] : undefined;
           if (singleResult && singleResult.score > 0.9) {
-            const deleted = await db.delete(agentId, singleResult.entry.id);
+            const deleted = await db.delete(agentId, singleResult.entry.id, { visibilityScope });
             if (!deleted) {
               return memoryDeleteFailureResult(singleResult.entry.id);
             }
@@ -568,6 +575,8 @@ export default definePluginEntry({
             embed: (timeoutMs) =>
               embeddings.embed(agentId, recallQuery, currentCfg.embedding, timeoutMs()),
             beforeSearch: () => toolAuthority.assertActive(),
+            // The prompt hook carries no owner bit, so this keeps the store's default team
+            // scope for every turn; the owner reads owner rows through memory_recall.
             search: (vector, timeoutMs) =>
               db.search(agentId, vector, AUTO_RECALL_OVERFETCH_LIMIT, 0.3, { timeoutMs }),
           });

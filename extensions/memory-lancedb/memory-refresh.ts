@@ -6,6 +6,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "typebox";
 import { MEMORY_CATEGORIES, type MemoryConfig } from "./config.js";
 import type { Embeddings } from "./embeddings.js";
+import { memoryVisibilityScopeForSender } from "./lancedb-schema.js";
 import type { MemoryDB, MemoryEntry } from "./lancedb-store.js";
 
 // Keep conflict previews aligned with MemoryDB.search's default threshold.
@@ -154,6 +155,8 @@ export function registerMemoryRefreshTool(params: {
         async execute(_toolCallId, rawParams) {
           // Tool definitions outlive hot config reloads; revalidate before memory I/O.
           assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
+          // A turn previews and replaces only rows it can read.
+          const scope = { visibilityScope: memoryVisibilityScopeForSender(ctx.senderIsOwner) };
           // SAFETY: the runtime validates rawParams against the typebox schema declared above.
           const { text, category, importance, memoryId } = rawParams as {
             text: string;
@@ -164,7 +167,7 @@ export function registerMemoryRefreshTool(params: {
 
           if (!memoryId) {
             const vector = await embeddings.embed(agentId, text, resolveCurrentConfig().embedding);
-            const results = await db.search(agentId, vector, 3, REFRESH_CONFLICT_MIN_SCORE);
+            const results = await db.search(agentId, vector, 3, REFRESH_CONFLICT_MIN_SCORE, scope);
             const matches = results.map((result) => ({
               id: result.entry.id,
               text: result.entry.text,
@@ -189,7 +192,7 @@ export function registerMemoryRefreshTool(params: {
 
           // Avoid a remote embedding call for a stale ID, then embed outside
           // the lock so another refresh for the same row is not blocked on I/O.
-          const precheck = await db.getById(agentId, memoryId);
+          const precheck = await db.getById(agentId, memoryId, scope);
           if (!precheck) {
             return {
               content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
@@ -199,7 +202,7 @@ export function registerMemoryRefreshTool(params: {
           const vector = await embeddings.embed(agentId, text, resolveCurrentConfig().embedding);
 
           return withMemoryLock(memoryId, async () => {
-            const existing = await db.getById(agentId, memoryId);
+            const existing = await db.getById(agentId, memoryId, scope);
             if (!existing) {
               return {
                 content: [{ type: "text", text: `Memory ${memoryId} not found.` }],
@@ -210,15 +213,23 @@ export function registerMemoryRefreshTool(params: {
             const resolvedCategory = category ?? existing.category;
             const resolvedImportance = importance ?? existing.importance;
             const oldTextPreview = existing.text.slice(0, 80);
-            await db.delete(agentId, memoryId);
+            await db.delete(agentId, memoryId, scope);
 
             let newEntry: MemoryEntry;
             let rollbackWarning: string | undefined;
             let rollbackSucceeded = false;
             try {
+              // The replacement keeps the row's tag: an owner row rewritten as `team`
+              // would reach every team-scoped read.
               newEntry = await db.store(
                 agentId,
-                { text, vector, importance: resolvedImportance, category: resolvedCategory },
+                {
+                  text,
+                  vector,
+                  importance: resolvedImportance,
+                  category: resolvedCategory,
+                  ...(existing.visibility ? { visibility: existing.visibility } : {}),
+                },
                 { id: memoryId },
               );
             } catch (insertError) {

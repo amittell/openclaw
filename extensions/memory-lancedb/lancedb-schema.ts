@@ -1,6 +1,27 @@
 export const MEMORY_TABLE_NAME = "memories";
 export const MEMORY_AGENT_ID_COLUMN = "agentId";
 
+// Rows tagged `owner` are hidden from every `team`-scoped read. A NULL tag, or a
+// table that has no visibility column yet, means `team`.
+export const MEMORY_VISIBILITY_COLUMN = "visibility";
+export type MemoryVisibility = "team" | "owner";
+/** Which rows a read may return: `team` hides owner rows, `owner` returns every row. */
+export type MemoryVisibilityScope = "team" | "owner";
+
+export function isMemoryVisibility(value: unknown): value is MemoryVisibility {
+  return value === "team" || value === "owner";
+}
+
+/**
+ * Only a turn the host marks as the owner's reads owner rows. The bit comes from the
+ * runtime's inbound context, never from a tool argument the model controls.
+ */
+export function memoryVisibilityScopeForSender(
+  senderIsOwner: boolean | undefined,
+): MemoryVisibilityScope {
+  return senderIsOwner === true ? "owner" : "team";
+}
+
 export function quoteLanceSqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -9,8 +30,26 @@ export function memoryAgentPredicate(agentId: string): string {
   return `${MEMORY_AGENT_ID_COLUMN} = ${quoteLanceSqlString(agentId)}`;
 }
 
+/**
+ * The clause a `team`-scoped read adds, or null when it needs none: the `owner` scope
+ * reads every row, and a table without the column cannot hold an owner row.
+ */
+export function memoryVisibilityPredicate(
+  scope: MemoryVisibilityScope,
+  columnPresent: boolean,
+): string | null {
+  if (scope === "owner" || !columnPresent) {
+    return null;
+  }
+  return `${MEMORY_VISIBILITY_COLUMN} IS NULL OR ${MEMORY_VISIBILITY_COLUMN} = ${quoteLanceSqlString("team")}`;
+}
+
 export function hasAgentScopeColumn(schema: { fields: Array<{ name: string }> }): boolean {
   return schema.fields.some((field) => field.name === MEMORY_AGENT_ID_COLUMN);
+}
+
+export function hasVisibilityColumn(schema: { fields: Array<{ name: string }> }): boolean {
+  return schema.fields.some((field) => field.name === MEMORY_VISIBILITY_COLUMN);
 }
 
 export function legacyMemorySchemaError(): Error {

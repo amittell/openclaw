@@ -301,6 +301,7 @@ to save them. Explicit tool calls still follow their normal data-handling rules.
 openclaw ltm list [--agent <id>] [--limit <n>] [--order-by-created-at]
 openclaw ltm search <query> [--agent <id>] [--limit <n>]
 openclaw ltm stats [--agent <id>]
+openclaw ltm visibility <owner|team> <id...> [--agent <id>]
 openclaw ltm optimize
 ```
 
@@ -345,13 +346,13 @@ openclaw ltm query --agent research --cols id,text,createdAt --limit 20
 openclaw ltm query --filter "category = 'preference'" --order-by createdAt:desc
 ```
 
-| Flag                              | Default                                 | Notes                                                                                                                                     |
-| --------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `--agent <id>`                    | configured default agent                | Selects the private agent namespace. Available on `list`, `search`, `query`, and `stats`.                                                 |
-| `--cols <columns>`                | `id,text,importance,category,createdAt` | Comma-separated column allowlist.                                                                                                         |
-| `--filter <condition>`            | none                                    | One comparison over an output column, such as `category = 'preference'` or `importance >= 0.8`. String values must be quoted.             |
-| `--limit <n>`                     | `10`                                    | Positive integer.                                                                                                                         |
-| `--order-by <column>:<asc\|desc>` | none                                    | Sorted in memory after the filter runs; the sort column is auto-added to the projection and stripped from output if it was not requested. |
+| Flag                              | Default                                            | Notes                                                                                                                                     |
+| --------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `--agent <id>`                    | configured default agent                           | Selects the private agent namespace. Available on `list`, `search`, `query`, `stats`, and `visibility`.                                   |
+| `--cols <columns>`                | `id,text,importance,category,createdAt,visibility` | Comma-separated column allowlist.                                                                                                         |
+| `--filter <condition>`            | none                                               | One comparison over an output column, such as `category = 'preference'` or `importance >= 0.8`. String values must be quoted.             |
+| `--limit <n>`                     | `10`                                               | Positive integer.                                                                                                                         |
+| `--order-by <column>:<asc\|desc>` | none                                               | Sorted in memory after the filter runs; the sort column is auto-added to the projection and stripped from output if it was not requested. |
 
 Agents get four tools from the active memory plugin:
 
@@ -364,6 +365,29 @@ Agents get four tools from the active memory plugin:
   match above 90% score, otherwise lists candidate IDs to disambiguate).
 - `memory_refresh`: preview similar memories, or atomically replace one by
   `memoryId` (two-phase replace with rollback and an audit log).
+
+### Owner-only memories
+
+Each row carries a `visibility` tag, `team` or `owner`. A row tagged `owner` is
+returned only to a turn the runtime marks as the owner's (`senderIsOwner`); every
+other turn reads, forgets, and refreshes only `team` rows. The owner bit comes from
+the inbound context, never from a tool argument. Automatic recall has no owner bit,
+so it reads only `team` rows for every turn; the owner reaches `owner` rows with
+`memory_recall`. Host memory search (Memory Wiki and voice context) reads every row,
+because it already requires the operator or the owner's private audience.
+
+New rows are `team`, including rows stored by the owner. Tag rows after review:
+
+```bash
+openclaw ltm query --filter "visibility = 'team'" --cols id,text --limit 50
+openclaw ltm visibility owner 890e1fae-1234-4678-abcd-ef0123456789
+```
+
+`ltm list`, `ltm search`, and `ltm query` show every row with its tag. A
+`memory_refresh` replace keeps the row's tag. The plugin adds the column the first
+time it opens an existing table, with every existing row set to `team`, so the
+upgrade changes no read. If the column cannot be added, reads continue untagged
+and `ltm visibility` reports why.
 
 ### `memory_refresh`
 
