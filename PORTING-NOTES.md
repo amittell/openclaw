@@ -4861,3 +4861,56 @@ record.
   main's two-argument `classifyScheduledParent` call and after their archiving assertions had passed. After the fold
   it passes 18 of 18, and `session-automation-index.test.ts` 4 of 4.
 - `pnpm build` rc 0 (154 s). One dist chunk defines the reload-roots AsyncContext, counted over `.js` and `.mjs`.
+
+## Owner-only memory visibility from rh-bot (2026-11-16)
+
+On 2026-11-15 Alex approved "Option A" in his Telegram DM to rh-bot: group and team users get memory-backed answers,
+but his personal memories stay out of every non-owner read. A subagent of rh-bot's main agent wrote it as `3daa4568bc4`
+on the bot's local branch `patch/memory-visibility-20261115` (the 11.3 plugin, +536 -26). The commit was never built,
+pushed or deployed. Room #622 (17:16:59Z): "Port A first, one deploy". The source does not apply to this carry: beta.4
+changed 36 of the plugin's files, deleted `auto-recall.ts` and changed `lancedb-store.ts` by 233 lines. So the carry
+rewrites it on beta.4's store as `5e5ca005d3c` ("feat(memory-lancedb): owner-only memory visibility"). That commit's
+message lists what is kept from the source and what differs: every read defaults to `team`; forget and refresh use
+the caller's scope; the operator CLI reads as owner and gains `ltm visibility`; the host provider runtime reads as
+owner; an owner tag is never written untagged.
+
+**Rollout.** Each row gets a `visibility` tag. The first memory open after the deploy adds the column with every
+existing row set to `team`, so no read changes until rows are tagged with `openclaw ltm visibility owner <id...>`.
+rh-bot's table holds 662 rows and 18 MB (read-only, 2026-11-16). Once the column exists, a build without this commit
+cannot store memories: LanceDB 0.40 refuses the append ("Append with different schema: ... missing=[visibility]",
+measured on the M4). The deploy kit therefore copies the LanceDB directory in step 3, while the writers are stopped,
+and `rollback_full` puts that copy back.
+
+**What it does not do.**
+
+- Automatic recall is `team` for every turn, as in the source: the prompt hook has no `senderIsOwner`. Beta.4's hook
+  context does carry `memoryAudience`, which the host mints as owner-private only for the owner's direct chat, so it
+  could scope automatic recall for the owner later.
+- `memory_recall` keys on `senderIsOwner` alone, as the source does. In a group where Alex is the sender, it returns
+  owner rows, and the reply goes to the whole group.
+
+**Kit changes for this deploy.**
+
+- The schema targets are read from `src/state/openclaw-schema-versions.ts`, where beta.4 moved both constants; the
+  contract files only re-export them. The old parse found nothing at `758a9f572a4`, and the rh-bot preflight failed
+  "schema targets not parsed". This affects `preflight-115b4.sh`, `deploy-115b4.sh` 0d and `verify-115b4.sh`. Controls:
+  agent 27 / state 22 at `bcbaaea09d7` (old layout), agent 38 / state 36 at `758a9f572a4`.
+- Step 0c names one exception to "HEAD == running build". It applies only when rh-bot's checkout is exactly
+  `3daa4568bc4` on `patch/memory-visibility-20261115`, that commit's parent is the running build, and it changes only
+  `extensions/memory-lancedb`. The deploy detaches HEAD and never touches the branch. A rollback restores the running
+  build's commit.
+
+**Qualification** (M4, 2026-11-16, `5e5ca005d3c` on `758a9f572a4`, clean tree):
+
+- tsgo: 7 lanes with `CI=1`, 0 errors. The positive control fired in `extensions:all` and `extensions:test`
+  (product 1, test 1, other 0), and the tree was clean after the restore.
+- oxlint (10 files), oxfmt, and the test-lines, line-cap, max-lines and assertion-safety ratchets against `758a9f572a4`:
+  all rc 0.
+- Tests: 27 of 27 files pass. These are the 26 non-live `extensions/memory-lancedb` files,
+  `test/memory-lancedb-system-turn-capture.test.ts` and `src/plugins/contracts/boundary-invariants.test.ts`. The new
+  `lancedb-store.visibility.test.ts` takes 8 s wall.
+- The first pass (`148ddb31d8c`) failed four checks, and each was fixed in the commit rather than waived:
+  - `index.ts` went to 702 counted lines against its 700 cap. Automatic recall now keeps upstream's call and the store's
+    default scope.
+  - oxlint found a spread inside `.map`, and sorts without a compare function.
+  - `memory-cli.test.ts` still expected the CLI search without its owner scope.
