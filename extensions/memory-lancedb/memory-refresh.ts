@@ -176,13 +176,14 @@ export function registerMemoryRefreshTool(params: {
               importance: result.entry.importance,
               similarity: result.score,
             }));
+            // The model passes a listed ID back as memoryId, and replace mode needs the full UUID.
             const summaryText =
               matches.length === 0
                 ? "No similar memories found."
                 : `Found ${matches.length} similar memories:\n\n${matches
                     .map(
                       (match, index) =>
-                        `${index + 1}. [${match.id.slice(0, 8)}] (${(match.similarity * 100).toFixed(0)}%) ${match.text}`,
+                        `${index + 1}. [${match.id}] (${(match.similarity * 100).toFixed(0)}%) ${match.text}`,
                     )
                     .join("\n")}`;
             return {
@@ -290,7 +291,7 @@ export function registerMemoryRefreshTool(params: {
               content: [
                 {
                   type: "text",
-                  text: `Replaced memory ${memoryId.slice(0, 8)}… → ${newEntry.id.slice(0, 8)}…\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
+                  text: `Replaced memory ${memoryId} → ${newEntry.id}\n\nOld: "${oldTextPreview}"\nNew: "${text.slice(0, 80)}"`,
                 },
               ],
               details: {

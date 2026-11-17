@@ -657,7 +657,7 @@ describe("memory plugin e2e", () => {
     }
   });
 
-  test("memory_refresh replace preserves the original memoryId across the delete+insert", async () => {
+  test("memory_refresh replace accepts the id its preview shows and keeps it across the delete+insert", async () => {
     const existingId = "bbbbbbbb-1111-1111-1111-000000000001";
     const existingEntry = {
       id: existingId,
@@ -676,7 +676,9 @@ describe("memory plugin e2e", () => {
     const toArray = vi.fn(async () => [existingEntry]);
     const queryWhere = vi.fn(() => ({ toArray }));
     const vectorSearch = vi.fn(() =>
-      createAgentScopedVectorQuery(vi.fn(() => ({ toArray: vi.fn(async () => []) }))),
+      createAgentScopedVectorQuery(
+        vi.fn(() => ({ toArray: vi.fn(async () => [{ ...existingEntry, _distance: 0.05 }]) })),
+      ),
     );
 
     vi.resetModules();
@@ -730,9 +732,14 @@ describe("memory plugin e2e", () => {
       }
       expect(refreshTool.execute).toBeTypeOf("function");
 
+      // Replace with the id the preview showed the model, as an agent would.
+      const preview = await refreshTool.execute("test-refresh-preview", {
+        text: "Updated memory text with new information",
+      });
+      const shownId = /^1\. \[([^\]]+)\]/m.exec(preview.content[0].text)?.[1];
       const result = await refreshTool.execute("test-refresh-id-preserve", {
         text: "Updated memory text with new information",
-        memoryId: existingId,
+        memoryId: shownId,
       });
 
       expect(result.details.operation).toBe("replaced");
