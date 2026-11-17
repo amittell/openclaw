@@ -24,9 +24,9 @@ import {
 } from "../../admitted-run-context.js";
 import { Agent } from "../../runtime/index.js";
 import type { SessionEntry } from "../../sessions/session-manager-types.js";
+import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
 import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
-import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
 
 const mocks = vi.hoisted(() => ({
   createAnthropicPayloadLogger: vi.fn(),
