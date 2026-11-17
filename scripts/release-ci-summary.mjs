@@ -1168,7 +1168,7 @@ export function validateParentManifest(value, expected) {
       : validateQualificationCoverage(value.qualificationCoverage);
   if (
     Boolean(qualificationCoverage) !== Boolean(value.sourceAdmission?.qualificationAdmission) ||
-    (qualificationCoverage && (!value.qualificationInputs || value.targetSha !== value.workflowSha))
+    (qualificationCoverage && !value.qualificationInputs)
   ) {
     throw new Error("Candidate-owned evidence omitted its admission, inputs, or frozen coverage");
   }
@@ -2488,12 +2488,16 @@ function qualificationReusePolicyIdentity(admission) {
   const identity = qualificationReuseIdentity(admission);
   const inputs = { ...identity.inputs };
   const envelope = JSON.parse(inputs.trusted_workflow_json);
+  // Changelog-only C descendants can advance their C-owned Q with C. An
+  // independently selected Q is policy, not product identity, and stays exact.
+  const qualificationSha =
+    identity.qualificationSha === identity.candidateSha ? "<candidate>" : identity.qualificationSha;
   inputs.ref = "<candidate>";
   inputs.expected_sha = "<candidate>";
   inputs.trusted_workflow_json = JSON.stringify(
     sortReleaseJsonValueKeys({
       ...envelope,
-      trustedWorkflow: { sha: "<candidate>" },
+      trustedWorkflow: { sha: qualificationSha },
     }),
   );
   // A main-dispatched admission always runs at the main tip, so a changelog
@@ -2506,7 +2510,7 @@ function qualificationReusePolicyIdentity(admission) {
   return {
     ...identity,
     candidateSha: "<candidate>",
-    qualificationSha: "<candidate>",
+    qualificationSha,
     publisher,
     inputs,
   };
@@ -2690,7 +2694,6 @@ export async function validateReleaseRunEvidence(
     const [path, pathRef] = String(parentRun.path).split("@", 2);
     if (
       manifest.version !== 4 ||
-      manifest.targetSha !== manifest.workflowSha ||
       manifest.targetRef !== manifest.targetSha ||
       manifest.workflowFullRef !== fullRef ||
       !SHA_PINNED_BRANCH_PATTERN.test(manifest.workflowRef) ||
@@ -3137,7 +3140,7 @@ export async function validateReleaseRunEvidence(
   const childConclusions = Object.fromEntries(
     children.map((child) => [child.role, child.conclusion]),
   );
-  return sortReleaseJsonValueKeys({
+  const evidence = sortReleaseJsonValueKeys({
     children,
     waivers,
     conclusions: {
@@ -3183,6 +3186,26 @@ export async function validateReleaseRunEvidence(
     validationInputs: rootEvidence.manifest.validationInputs ?? null,
     verifier,
   });
+  return { ...evidence, qualification: qualificationFacts(evidence) };
+}
+
+// Normalize only after the owner has authenticated the complete evidence graph.
+// Recovery retains its original admission here, never in the aggregate source field.
+function qualificationFacts(evidence) {
+  const admission = evidence.qualificationAdmission ?? null;
+  const manifest = evidence.current.manifest;
+  /** @type {"direct" | "recovery" | "historical"} */
+  const kind = admission ? (manifest.receiptRecovery ? "recovery" : "direct") : "historical";
+  return {
+    kind,
+    candidateSha: evidence.current.targetSha,
+    qualificationSha: admission?.request.qualificationSha ?? evidence.current.workflowSha,
+    admission,
+    coverage: admission?.coverage ?? null,
+    coveragePolicy: admission
+      ? manifest.sourceAdmission.coverage.coverage_policy || undefined
+      : manifest.validationInputs?.coveragePolicy,
+  };
 }
 
 function parseReleaseCiSummaryArgs(argv) {

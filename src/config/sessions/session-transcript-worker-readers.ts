@@ -3,7 +3,6 @@ import type { OpenClawConfig } from "../types.openclaw.js";
 import type { CombinedSessionStoreTopologyRequest } from "./combined-store.types.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import type { SessionEntrySummary } from "./session-accessor.types.js";
-import { withSessionCompactionSource } from "./session-compaction-source.js";
 import { decodeSessionTranscriptWorkerReadError } from "./session-history-worker-errors.js";
 import {
   measureSessionStoreTargetInventoryInputBytes,
@@ -110,7 +109,7 @@ const readers: Readers & ThisType<ReaderContext> = {
       (value) => value.plan,
       options.signal,
       undefined,
-      options.timeoutMs,
+      { timeoutMs: options.timeoutMs },
     );
   },
   readCleanup: reader(
@@ -302,9 +301,6 @@ const readers: Readers & ThisType<ReaderContext> = {
   async run(prepare, inputBytes) {
     return this.runRequest(prepare, inputBytes, (value) => value);
   },
-  withCompactionSource(input, consume, signal, timeoutMs) {
-    return withSessionCompactionSource(this.runRequest, input, consume, signal, timeoutMs);
-  },
   async readTranscript(input, signal) {
     const events: TranscriptEvent[] = [];
     const eventJson: string[] | undefined = input.includeEventJson ? [] : undefined;
@@ -415,13 +411,15 @@ const readers: Readers & ThisType<ReaderContext> = {
     (input) => ({ kind: "session-reactions", ...input }),
     (value) => value.reactions,
   ),
-  async readExactEntries(input, signal) {
+  async readExactEntries({ pointRead, ...input }, signal) {
     const captured = { ...input, env: captureSessionTranscriptStorageEnvironment(input.env) };
     return this.runRequest(
       () => ({ kind: "session-exact-entries", ...captured }),
       JSON.stringify(captured).length * 2,
       shareSummaryRowStrings,
       signal,
+      undefined,
+      { pointRead },
     );
   },
   async readRowFacts(input) {

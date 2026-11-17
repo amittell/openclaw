@@ -67,12 +67,6 @@ import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-trans
 import type { SessionTranscriptReadScope } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type {
-  SessionCompactionPlanRequest,
-  SessionCompactionSourceRequest,
-  SessionCompactionSourceConsumer,
-  SessionCompactionSourceReply,
-} from "./session-compaction-source.types.js";
-import type {
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
   SessionEntryReadWorkerInput,
@@ -280,7 +274,6 @@ type TrajectoryEventsWorkerInput = {
 };
 
 export type SessionHistoryWorkerInput =
-  | SessionCompactionSourceRequest
   | SessionRetirementReadWorkerInput
   | TrajectoryRetentionWorkerInput
   | TrajectoryEventsWorkerInput
@@ -372,7 +365,6 @@ export type SessionHistoryWorkerPreparedInput =
 
 export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValues &
   SessionTranscriptHydrationWorkerValues & {
-    "compaction-source": { kind: "compaction-source"; reply: SessionCompactionSourceReply };
     "session-retirement-read": {
       kind: "session-retirement-read";
       result: SessionRetirementReadResult;
@@ -546,12 +538,6 @@ type CancellableSessionHistoryReader<
 
 export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders &
   SessionTranscriptHydrationReaders & {
-    withCompactionSource: (
-      input: Omit<SessionCompactionPlanRequest, "kind" | "database" | "phase">,
-      consume: SessionCompactionSourceConsumer,
-      signal?: AbortSignal,
-      timeoutMs?: number,
-    ) => Promise<string | undefined>;
     readRetirement: CancellableSessionHistoryReader<"session-retirement-read", "result">;
     readTrajectoryEvents: CancellableSessionHistoryReader<"trajectory-events", "events">;
     readTrajectoryRetention: (
@@ -647,5 +633,8 @@ export type SessionHistoryWorkerRequestRunner = <
   receive: (value: SessionTranscriptWorkerValues[Request["kind"]]) => TResult,
   signal?: AbortSignal,
   onRequest?: (value: unknown, signal: AbortSignal) => void | Promise<WorkerTaskResponse>,
-  timeoutMs?: number,
+  options?: SessionHistoryWorkerRequestOptions,
 ) => Promise<TResult>;
+
+/** Admission options stay in the host and do not enter the worker payload. */
+export type SessionHistoryWorkerRequestOptions = { timeoutMs?: number; pointRead?: true };

@@ -9,7 +9,10 @@ import {
   registerHeadlessToolSearchCatalog,
 } from "./tool-search-catalog.js";
 import { resolveToolSearchConfig } from "./tool-search-config.js";
-import { buildToolSchemaDirectoryPrompt } from "./tool-search-directory.js";
+import {
+  buildRunGrantedToolDirectory,
+  buildToolSchemaDirectoryPrompt,
+} from "./tool-search-directory.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import type { ToolSearchCatalogRef } from "./tool-search-types.js";
 
@@ -38,6 +41,38 @@ function catalogRef(tools: ReturnType<typeof localCatalog>): ToolSearchCatalogRe
   registerHeadlessToolSearchCatalog({ catalogRef: ref, tools });
   return ref;
 }
+
+describe("run-granted tools in the Tool Search directory", () => {
+  it.each(["suggest_task", "dismiss_task"])(
+    "keeps the cached directory identical whether or not the turn holds the %s grant",
+    (name) => {
+      const base = localCatalog().slice(0, 3);
+      const granted = [...base, createStubTool(name)];
+      const grantedRef = catalogRef(granted);
+      const withoutGrant = buildToolSchemaDirectoryPrompt({ catalogRef: catalogRef(base) });
+
+      expect(buildToolSchemaDirectoryPrompt({ catalogRef: grantedRef })).toBe(withoutGrant);
+      expect(buildRunGrantedToolDirectory(grantedRef)).toContain(`- ${name} (core)`);
+      expect(buildRunGrantedToolDirectory(catalogRef(base))).toBeUndefined();
+    },
+  );
+
+  it("lists an exact id that resolves when another source shares the granted name", async () => {
+    const ref = catalogRef([createStubTool("suggest_task")]);
+    addClientToolsToToolCatalog({
+      enabled: true,
+      tools: [createStubTool("suggest_task")],
+      catalogRef: ref,
+    });
+    const listing = buildRunGrantedToolDirectory(ref) ?? "";
+    const listed = /^- (\S+): /m.exec(listing)?.[1];
+
+    expect(listed).toBeDefined();
+    expect(listed).not.toBe("suggest_task");
+    const runtime = new ToolSearchRuntime({ catalogRef: ref }, resolveToolSearchConfig());
+    await expect(runtime.describe(listed!)).resolves.toMatchObject({ name: "suggest_task" });
+  });
+});
 
 describe("lean Tool Search directory", () => {
   it("does not spend removed tools' prompt savings on longer descriptions", () => {

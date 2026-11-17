@@ -1254,6 +1254,7 @@ src/infra/sqlite-schema-sql.ts
 src/infra/sqlite-snapshot-diagnostics.ts
 src/infra/sqlite-snapshot-file.ts
 src/infra/sqlite-snapshot-policy.ts
+src/infra/sqlite-snapshot-publication-cleanup.ts
 src/infra/sqlite-snapshot-retirement.ts
 src/infra/sqlite-snapshot-single-flight.ts
 src/infra/sqlite-temp-generation-schema.ts
@@ -2800,9 +2801,6 @@ src/gateway/worker-environments/local-workspace-cas.ts
 src/gateway/worker-environments/local-workspace-cas.kernel.ts
 src/gateway/worker-environments/local-workspace-gc.ts
 packages/agent-core/src/harness/compaction/compaction-cut-point.ts
-packages/agent-core/src/harness/compaction/file-operations.ts
-packages/agent-core/src/harness/compaction/summary-truncation.ts
 packages/agent-core/src/harness/compaction/utils.ts
-src/config/sessions/session-compaction-source.ts
 src/agents/sessions/context-token-pressure.ts
 src/config/sessions/session-context-seed.ts

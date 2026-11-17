@@ -127,8 +127,6 @@ export const transcriptSearchLane = createHistoryLane(
 );
 // List materialization and full-store snapshots keep independent readers.
 export const projectionLane = createHistoryLane("Session projection");
-// Compaction setup and hooks may read other session projections while a model waits.
-export const compactionLane = createHistoryLane("Session compaction");
 export const maintenanceLane = createHistoryLane("Session maintenance");
 // Cold discovery retains writer FIFO without waiting behind history's host writes.
 export const targetDiscoveryLane = createHistoryLane("Session target discovery");
@@ -145,7 +143,6 @@ const historyWorkerLanes = [
   historyLane,
   transcriptSearchLane,
   projectionLane,
-  compactionLane,
   maintenanceLane,
   targetDiscoveryLane,
 ];
@@ -543,6 +540,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
   }) => Promise<T>,
   lane: SessionHistoryWorkerLane = historyLane,
   signal?: AbortSignal,
+  pointRead?: true,
 ): Promise<T> {
   const capturedCandidates = candidates.map(
     ({ path: requestedPath, physicalPath, scope, identity }) => ({
@@ -694,7 +692,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
                 lane.native = true;
                 return input;
               },
-              { inputBytes, timeoutMs: 60_000, signal },
+              { inputBytes, timeoutMs: 60_000, signal, pointRead },
             ),
           admissionFamilies,
           signal,

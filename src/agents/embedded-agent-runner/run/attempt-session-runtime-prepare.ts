@@ -154,6 +154,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const sessionPromptState = promptStateLease.state;
   const usesSystemPromptSeries =
     !input.isRawModelRun && attempt.operation !== "settled-tool-finalization";
+  const pinsSystemPrompt = transcriptPolicy.pinnedSystemPrompt === true;
   const promptRouteKey = buildSystemPromptRouteKey({
     provider: attempt.provider,
     model: attempt.modelId,
@@ -178,7 +179,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     beginSessionSystemPrompt({
       state: sessionPromptState,
       routeKey: promptRouteKey,
-      enabled: transcriptPolicy.inHistorySystemUpdates === true,
+      enabled: pinsSystemPrompt,
       getEntries: () => sessionManager.getBranch(),
     })
   ) {
@@ -187,7 +188,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   let freshSystemPrompt = systemPromptText;
   let projectedSystemPrompt: string | undefined;
   const prepareSystemPromptUpdate =
-    usesSystemPromptSeries && transcriptPolicy.inHistorySystemUpdates
+    usesSystemPromptSeries && pinsSystemPrompt
       ? async (systemPrompt: string, freshlyRendered = false) => {
           if (freshlyRendered || systemPrompt !== projectedSystemPrompt) {
             freshSystemPrompt = systemPrompt;

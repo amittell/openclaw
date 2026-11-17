@@ -2386,7 +2386,7 @@ require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRA
     {
       file: "openclaw-npm-preflight.yml",
       runner: "blacksmith-32vcpu-ubuntu-2404",
-      job: "check_openclaw_npm",
+      job: "check_openclaw_npm_stage",
     },
   ])("honors the global hosted runner override for $file/$job", ({ file, runner, job }) => {
     const workflow = readWorkflow(`.github/workflows/${file}`);
@@ -4471,7 +4471,20 @@ ${buildScript}`,
     const packages = workflow.jobs["macos-swift-packages"];
     expect(native.needs).toEqual(["preflight", "build-artifacts"]);
     expect(packages.needs).toEqual(["preflight"]);
-    expect(packages.strategy.matrix.phase).toEqual(["packages"]);
+    for (const [releaseGate, expected] of [
+      [false, ["release", "packages"]],
+      [true, ["packages"]],
+    ] as const) {
+      expect(
+        evaluateWorkflowExpression(packages.strategy.matrix.phase, {
+          eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          releaseGate,
+          preflightOutputs: { validation_tier: "release", release_scope: "full" },
+        }),
+      ).toEqual(expected);
+    }
     expect(packages.steps).toEqual(native.steps);
     expect(packages["timeout-minutes"]).toBe(30);
     for (const result of ["success", "skipped", "failure", "cancelled"] as const) {

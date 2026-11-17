@@ -7,7 +7,7 @@ import * as fixtures from "./openai-responses-prompt-observer.test-support.js";
 import { convertResponsesMessages } from "./openai-responses-replay-internal.js";
 
 const model = fixtures.createReplayModel();
-const replayIdentity = { sessionId: "session-a", authProfileId: "profile-a" };
+const replayIdentity = { sessionId: "session-a" };
 const metadata = buildOpenAIResponsesReasoningReplayMetadata(model, replayIdentity);
 const thinking = (item: object) => ({
   type: "thinking" as const,
@@ -138,10 +138,8 @@ describe("OpenAI Responses reasoning replay", () => {
         null,
         { ...metadata, v: 2 },
         { ...metadata, provider: "other-provider" },
-        { ...metadata, model: "other-model" },
         { ...metadata, baseUrlHash: "other-endpoint" },
         { ...metadata, sessionHash: "other-session" },
-        { ...metadata, authProfileHash: "other-auth" },
       ]) {
         const block = {
           ...thinking(item),
