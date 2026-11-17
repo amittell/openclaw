@@ -18,10 +18,9 @@ configured model metadata while other sessions remain available. Native metadata
 is refreshed when that row is next invalidated; an unchanged list read does not
 retry it.
 
-Reading a compressed transcript file allows at most its stored size plus 1 MiB of
-decompressed output. Archives exceeding that budget fail with a visible error and
-remain unchanged. This includes valid archives with larger expansion; export
-those as uncompressed JSONL to read them.
+Compressed transcript archives are decompressed as a stream into a read cache,
+so memory use stays constant however far an archive expands. An archive that
+would expand past 4 GiB fails with a visible error and remains unchanged.
 Archive publication verifies compressed output against the original plaintext byte
 count, preserving compression and disk-budget retention.
 

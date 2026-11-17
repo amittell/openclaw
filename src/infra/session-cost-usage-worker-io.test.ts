@@ -303,19 +303,30 @@ const zlib = require("node:zlib");
 const { BroadcastChannel, getEnvironmentData, isMainThread, threadId } = require("node:worker_threads");
 if (!isMainThread) {
   const compressed = Buffer.from(${JSON.stringify(encoded.bytes.toString("base64"))}, "base64");
-  const decompress = zlib.zstdDecompressSync;
-  zlib.zstdDecompressSync = function(bytes, ...args) {
-    if (!Buffer.from(bytes).equals(compressed)) return Reflect.apply(decompress, this, [bytes, ...args]);
-    fs.writeFileSync(${JSON.stringify(entered)}, String(threadId));
-    const activity = new BroadcastChannel(${JSON.stringify(`${entered}:activity`)});
-    activity.postMessage(threadId);
-    activity.close();
-    const release = new Int32Array(getEnvironmentData(${JSON.stringify(entered)}));
-    while (Atomics.load(release, 0) === 0) Atomics.wait(release, 0, 0);
-    const result = Reflect.apply(decompress, this, [bytes, ...args]);
-    fs.writeFileSync(${JSON.stringify(completed)}, "complete");
-    return result;
-  };
+  // Materialization streams the archive; hold the decoder on its one compressed chunk.
+  // zlib's stream factories are non-writable, so plain assignment is silently ignored.
+  const createZstdDecompress = zlib.createZstdDecompress;
+  Object.defineProperty(zlib, "createZstdDecompress", {
+    configurable: true,
+    enumerable: true,
+    value: function(...args) {
+      const stream = Reflect.apply(createZstdDecompress, this, args);
+      const transform = stream._transform;
+      stream._transform = function(chunk, encoding, callback) {
+        if (Buffer.from(chunk).equals(compressed)) {
+          fs.writeFileSync(${JSON.stringify(entered)}, String(threadId));
+          const activity = new BroadcastChannel(${JSON.stringify(`${entered}:activity`)});
+          activity.postMessage(threadId);
+          activity.close();
+          const release = new Int32Array(getEnvironmentData(${JSON.stringify(entered)}));
+          while (Atomics.load(release, 0) === 0) Atomics.wait(release, 0, 0);
+          stream.once("end", () => fs.writeFileSync(${JSON.stringify(completed)}, "complete"));
+        }
+        return Reflect.apply(transform, this, [chunk, encoding, callback]);
+      };
+      return stream;
+    },
+  });
   require("node:module").syncBuiltinESMExports();
 }
 `,
@@ -379,7 +390,7 @@ if (!isMainThread) {
   } finally {
     setEnvironmentData(entered, undefined);
     await fs.rm(archive, { force: true });
-    expect(() => materializeSessionArchiveForRead(archive)).toThrow(/ENOENT/);
+    await expect(materializeSessionArchiveForRead(archive)).rejects.toThrow(/ENOENT/);
   }
 }, 20_000);
 
