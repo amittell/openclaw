@@ -251,7 +251,7 @@ it("sends no request for another operator's session but forks for its owner at t
                 system: [{ type: "text", text: "Stable parent instructions" }],
                 messages: [
                   user(
-                    "The conversation history before this point was compacted into the following summary:\n\n<summary>\nEarlier request summarized for review\n</summary>",
+                    `The conversation history before this point was compacted into the following summary:\n\n<summary>\nEarlier request summarized for review\n[compaction checkpoint ${compactionId}: shadows 1 earlier entries]\n</summary>`,
                   ),
                   user(expect.stringContaining("[Thu 1970-01-01 00:00 UTC] Parent question")),
                   user("Review the parent"),
