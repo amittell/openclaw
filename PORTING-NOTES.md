@@ -5264,3 +5264,135 @@ in 5 of the internal copy's (`a39d444826b`), which was then deleted: free space 
 to 39,561 MiB. Not yet seen live: a CLI send to the DM followed by an inbound turn. The next 6:00 AM workspace audit is
 the natural one. mac-mini runs `20fda90a320`, which has the same CLI-send path and logged 174 CLI sends with no conflict
 from 2026-11-17 to 2026-11-19; it is not deployed there.
+
+## 11.6: the carry moves to the v2026.11.6 tag (2026-11-20)
+
+Upstream v2026.11.6 (commit `06afb10d3272`, tag object `e780fed30f3a`) is v2026.11.5 plus 406 linear commits. It does
+not contain #199365: `callerRecordsDestinationHistory` is in 4 files of 11.6's `src` and of 11.10-beta.1's, and in 0 of
+`ec06c3a5efa`'s (beta.1 was cut at 05:24Z on 11-19; the fix merged at 13:52Z). Alex, room #657: skip the 11.5 deploy on
+mac-mini, carry 11.6 plus the fix, and deploy it to both bots.
+
+**The merge.** `d577aa1fa52` merges the tag into the 11.5 carry `f0b428b8c5d` (first parent the carry, as the 11.5
+merge `d3948eb27f2` did), so `ec06c3a5efa` and the rest of the fork's history stay ancestors. 165 files changed on both
+sides; 19 conflicted; the commit message lists each resolution. Two more fixes came from typecheck, not from conflict
+hunks: `config-reload.ts` kept a `homedir` import with no caller left (the fork moved its last use into
+`config-reload-external-audit.ts`), and `deliver.test.ts` kept 11.6's local `setTestPlugin` beside the fork's import of
+the same name from `deliver.plugin-registry.test-support.ts`.
+
+- `subagent-completion-mutation.kernel.ts` merged wrongly, not just with a conflict: 11.6 re-indented the settlement
+  block and ort matched the fork's two added lines against the wrong region. The file is 11.6's blob plus those two
+  lines (#191857), applied by hand.
+- `bash-tools.exec-authorization.integration.test.ts`: taking the fork's side of the hunk would have defined two tests
+  twice, because 11.6 already carries both further down. A scan of the 135 code files both sides changed found no other
+  test name or declaration defined twice (positive control: it reports exactly those two in the pre-resolution file).
+- 31 upstream PRs are carried on both sides. 11 files they touch still differ from 11.6; each difference is fork-only
+  work. The fork's moved helpers (`exec-authorization-risks.ts`, `command-explainer/shell-text.ts`) match 11.6's inline
+  copies line for line.
+
+`8658b584134` moves `normalizeDenylist`, `denylistBlocksName` and `denylistBlocksPlugin` from `src/plugins/tools.ts`
+into `src/plugins/tool-denylist.ts`: the file is exactly at the 700-line cap in 11.6 and the fork's owner-only gate adds
+4 lines (`check:line-cap-ratchet --base v2026.11.6`: 700 -> 704).
+
+**On top of the merge**, in order:
+
+- `8658b584134`: the denylist helpers move (above).
+- `5b87cf6d31c`: #195612's final maintainer commit `324e470eb41`, which landed after the head the fork carried.
+- `6a32b11b768`: the qa-lab thread-memory fixture gives its `memory_search` output a `call_id` (11.6's
+  `696f1b3712e` counts only linked outputs).
+- `142991bb371`, `156d2f2ae2d`, `de4447b2660`: upstream #198908, #199003 and #199122.
+- `7e206675895`: Alex's #200854 at `a84c030947a`, with two fixes the gates here found in the PR head itself:
+  `lines[i]?.trim()` (TS2532 under `noUncheckedIndexedAccess` in tsgo:core and check:test-types), and
+  `sliceUtf16Safe` from `@openclaw/normalization-core/utf16-slice` in place of `tail` from
+  `bash-process-registry.ts`, whose import put two files outside `scripts/pr-lib/wrapper-components.txt` into the
+  trusted PR wrapper's closure (`eager-import-closure.test.ts`, "PR wrapper inventory"). Both failed on the PR head
+  on its own main base; the same two fixes went to the PR as `7199e72e732` and `f92d202c20c` (Alex, room #660/#661).
+- `8e26fe7655c`, `482f646d717`: two fork tests brought to 11.6 (below).
+- `fcf025dd6f8`: the config baseline and three codex prompt snapshots, regenerated for #199003/#199122.
+
+**PR audit** (heads fetched 21:1xZ, 2026-11-20; Alex: "finish the upgrade-v2026.11.6 branch with all our carried
+forward patches, fixes, and PRs"). Every line each of Alex's 14 open PRs adds over its main base is present in this
+head exactly as often as in the deployed 11.5 carry (the merge lost none). Against the current heads:
+
+- At the carried head, or moved only by merges of main with no own commits since: #170110, #189956, #190513,
+  #191301, #191649, #191787, #191857, #190572 (its 11-10 confinement commit is in the 11.3 carry point
+  `a499477f3c6`), #192999 (one empty CI re-run commit). #191857's newer head also records private consumption in
+  main's `consumed` branch of `prepareBlockedSubagentCompletion`; 11.6 has no such branch.
+- #170110: the outcome line stays at INFO, for a new reason. The 11.2 one (this branch lacked #174260/#174402) no
+  longer holds, as 11.6 has both. Since 11.5 the bots log no `outbound send ok` (rh-bot's last is 2026-11-16), so
+  `[telegram] final delivery outcome=` is their only per-answer delivery record at the default level: 265 lines in
+  rh-bot's `gateway.log`, 26 on mac-mini on 2026-11-20 by 4:39 PM EST. The PR's `logVerbose` would hide it.
+- #190472 stays branch-native: the PR's main base (11-14) is still not in 11.6.
+- Test-only, as before: #168611 (also a dependency patch, `@openclaw/crabline`), #175029.
+- #200282 is not carried. The fork's owner-only memory visibility (Alex's Option A, room #622, and `A2`,
+  room #626: `ownerRecallInGroups`, set true on both bots) owns this policy; the PR's `ownerOnly` (default true) would
+  give group chats no stored memories at all, team rows included.
+- #200854 is carried on upstream #199122, which it builds on (Alex, room #659), with #199122's own base: #198908
+  and #199003. On 11.6 the wake kept the first 179 characters of the last 400 output characters, whitespace
+  collapsed, so any longer output lost its ending. `exec-request-preparation.ts` keeps 11.6's shape for the default
+  flip (true unless the operator sets false); docs keep 11.6's wording where main's describes work absent here
+  (#188465 durable processes, #192369 visible spawned-session wakes, the Control UI `wakesSession` card).
+
+Alex's PRs merged upstream but absent from v2026.11.6 (checked by ancestry, by PR number in the tag's history, and by
+line presence): #191687, #151923, #151099, #178677 and #189935 are carried, their remaining differences being test
+lines or main's merge shape; #155273 as before (the carry holds the same dedupe). #195612 merged with a maintainer
+commit after the head the fork carried; `324e470eb41` is cherry-picked (no behavior change: the Stop source is
+released on the fast-abort result and reply settlement instead of in a `finally`). #193829 stays uncarried: #184243 is
+still not in 11.6, and its merged test cannot speak to 11.6 (6 of 17 fail on bare 11.6, one on the main-only
+`createDirectDeliveryDispatch`).
+
+Schema and toolchain are unchanged from the deployed 11.5 carry: agent 38, state 36, pnpm 12.15.0, node
+`>=24.16.0 <25 || >=26.1.0`. No migration runs on deploy, and the 11.5 carry stays a valid rollback.
+
+**Qualification** (M4, Node 26.12.1, `8658b584134`):
+
+- tsgo:core (cold cache), tsgo:extensions, check:test-types: 0 errors. config:docs, prompt snapshots, runtime sidecars
+  and the sessions schema check pass after regeneration. Assertion safety and the line cap pass against
+  `--base v2026.11.6`.
+- Static gate (`qual-116.sh`): build rc 0 (190 s), tsgo:all rc 0, assertion safety and line cap rc 0, format,
+  wrapper inventory, plugin SDK surface, test mock exports and conflict markers rc 0. oxlint rc 1 on two `max-lines`
+  errors, both inherited: bare v2026.11.6 fails the same rule on the same files with more lines
+  (`ingress-drain.ts` 765 there, 753 on the carry; `ingress-monitor.ts` 731 there, 701 on the carry), as 11.5 did.
+  Prompt snapshots, the test-lines ratchet and the config docs check rc 0.
+- Changed tests at `8658b584134` (`fast-split-116.sh`: 568 files in chunks of 40, then 147 under `src/gateway/`
+  one per process; 2026-11-20 20:42Z to 22:35Z): 713 of the 715 files report results (the other two are
+  `.live.test.ts` files, which do not run without live opt-in). Counting each test once (Vitest prints some shard
+  summaries twice): 9,472 tests, 9,466 passed, 4 failed, 2 skipped. Each failure was run alone on the carry, on
+  bare v2026.11.6 and on the deployed 11.5 carry:
+  - `extensions/qa-lab/.../server.thread-memory.test.ts` (fork-only): 11.6's `696f1b3712e` counts a tool output
+    only when it carries a `call_id`, and the fork's fixture had none. Fails on the carry and on bare 11.6 with
+    the fork's test; passes on the deployed carry and on bare 11.6 with the fixture fixed. Fixed in `6a32b11b768`.
+  - `src/config/sessions/transcript-grounding.test.ts` (fork-only), "preserves history above 128 while
+    preparing its media root once": 6 `stat` calls where 2 were expected, four of them on the test's own
+    `state/openclaw-quarantine.sqlite`. 2 of 3 in-order runs of its shard failed; 4 of 4 runs alone passed, and
+    so did the deployed carry. Fixed in `8e26fe7655c` by counting the stats under the media root, as its
+    `realpath` assertion already does. The file that leaves the SQLite work running was not identified.
+  - `test/telegram-final-restart.e2e.test.ts` (fork-only, from the #195400 carry): v2026.11.6 backports #200553
+    (`9c20ca8bbb5`), which resends an ordinary final text left in `send_attempt_started` once instead of
+    refusing it. The restarted gateway logged `retrying an unconfirmed final text reply` and delivered the
+    answer; the test waited for `refusing blind replay` and the notice. Passes on the deployed carry, which has
+    the old rule. `482f646d717` asserts the new contract (resent once, delivered once, model not asked again,
+    no notice); `telegram-lifecycle-notice-send.test.ts` still covers the notice. Upstream main's copy still
+    expects the refusal with the same policy code; it was not run here.
+  - `src/gateway/server-close.sandbox-registry.test.ts` (11.6's file, unchanged by the carry), "joins accepted
+    sandbox removal across scheduler cancellation after database reopen": `promise resolved "undefined" instead
+    of rejecting` at line 89 on the carry, on bare v2026.11.6 and on the deployed carry alike. Inherited: the
+    tag's copy of the test differs from main's (+6/-3).
+- #199365 negative control on the bare tag: the fix's integration test and e2e, copied into a v2026.11.6 worktree where
+  every helper they import exists, both fail on assertions, not on loading. The integration test fails 5 of 5
+  (`expected [] to have a length of 1`, the destination's assistant row `undefined`); the e2e fails 1 of 1
+  (`expected undefined to be truthy`, the same signature as 11.5's negative control). On the carry both pass: the
+  integration test 5 of 5 and the e2e 1 of 1 (below).
+
+**Qualification of the head** (M4, Node 26.12.1, `fcf025dd6f8`, clean tree, 2026-11-20 23:20Z to 23:39Z):
+
+- tsgo:core, tsgo:extensions and check:test-types: 0 errors. config:docs, prompt snapshots, runtime sidecars and the
+  sessions schema check pass with no regeneration.
+- Static gate: build rc 0 (119 s; `dist/build-info.json` names `fcf025dd6f8`), tsgo:all, assertion safety, line cap,
+  format, wrapper inventory, plugin SDK surface, test mock exports, conflict markers, prompt snapshots, the test-lines
+  ratchet and the config docs check rc 0. oxlint rc 1 on the same two inherited `max-lines` errors (753 and 701).
+- 152 test files: every test file added or changed after `8658b584134` (the fixed failures' files among them), the
+  exec, process, abort, dispatch, system prompt, cron tool, config schema, session memory, outbound send and delivery
+  queue suites around them, and #199365's `send.destination-transcript.integration.test.ts` and `send.test.ts`. 152
+  of 152 report: 2,246 tests, 2,239 passed, 0 failed, 7 skipped.
+- e2e: `test/telegram-final-restart.e2e.test.ts` 1 of 1 (83 s) and #199365's
+  `test/cli-send-destination-transcript.runtime.e2e.test.ts` 1 of 1 (23 s).
