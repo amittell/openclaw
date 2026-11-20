@@ -21,7 +21,11 @@ import {
   recordNotifyOnExitRemoval,
   type ProcessSession,
 } from "./bash-process-registry.js";
-import { appendExecTimeoutRetryGuidance, renderExecExitLabel } from "./bash-tools.exec-output.js";
+import {
+  appendExecTimeoutRetryGuidance,
+  renderExecExitLabel,
+  selectExecCompletionContent,
+} from "./bash-tools.exec-output.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 function enqueueExecExitNotification(
@@ -128,8 +132,12 @@ export async function maybeNotifyOnExit(
     return;
   }
   // The retained tail (last 2,000 chars) lets the woken turn act without process log.
+  // Output that fit keeps the full tail; a truncated tail prefers its last non-empty line so
+  // the wake names the outcome, not a mid-line fragment. A structured tail (e.g. a JSON blob)
+  // keeps the whole tail.
   const tail = session.tail;
-  const output = tail.trim();
+  const output =
+    session.totalOutputChars > tail.length ? selectExecCompletionContent(tail.trim()) : tail.trim();
   if (
     status === "completed" &&
     session.exitCode === 0 &&
