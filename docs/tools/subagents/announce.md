@@ -23,6 +23,14 @@ delivery notice. The child result remains available in its session and the
 to answer the user: later parent turns own any outstanding answer. A child task
 itself still owes its result; this quiet settlement applies to the parent reviewing it.
 
+An aborted requester completion turn is not a quiet settlement. When the execution
+owner positively proves that the whole run was replay-safe, its completion uses
+the existing bounded requester retry schedule (three attempts, with 30-second and
+two-minute delays). Runs with committed or unknown effects remain failed for
+explicit recovery, with the existing blocked-delivery notice.
+Explicit Stop, retired work, and intentional delivery suppression still take
+precedence; cancellation does not revive work those owners have closed.
+
 By default, delivery depends on requester depth:
 
 - Top-level requester sessions use a follow-up `agent` call. External conversations use `deliver=true`; WebChat conversations stay in-session with `deliver=false`.
@@ -56,6 +64,12 @@ That keeps completions on the right chat/topic even when the completion
 origin only identifies the channel. When an override selects a different
 chat or topic, it does not inherit the previous route's thread. An explicit
 thread from the binding or hook is preserved.
+
+Finished results follow the current requester agent and session key even when the
+recorded session store path changes. Live completion custody is retained only for
+same-source, same-invocation, same-ceiling batches; missing, revoked, or mixed
+custody uses a System write-only baseline. This does not relax private requester
+session ID or lifecycle-revision checks, nor replay an already consumed result.
 
 Child completion aggregation is scoped to the current requester run when
 building nested completion findings, preventing stale prior-run child

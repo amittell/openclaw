@@ -404,8 +404,8 @@ export class SqliteWorkerBroker {
           this.clients.delete(client);
           releasePaths();
         }
-        if (this.draining && !reclaiming) {
-          // Ordinary releases join host drainage; reclamation avoids its open-tail cycle.
+        if (this.draining && !reclaiming && !owned.stateContext) {
+          // Canonical shared-state close must release its clients before host drainage joins it.
           await this.draining;
         } else if (owned.slot.failed) {
           // A nonlast client must still join the failed worker's native cleanup.
@@ -701,16 +701,20 @@ export class SqliteWorkerBroker {
     });
   }
 
-  close(): Promise<void> {
+  close(beforeSharedStateClose?: () => Promise<void>): Promise<void> {
+    if (beforeSharedStateClose) {
+      this.lifecycle.sealClients(this.waiters.values(), true);
+      // Lease finalizers open cleanup workers before host admission can close.
+      return beforeSharedStateClose().then(() => this.close());
+    }
     this.draining ??= this.lifecycle
       .closeHost({
         inputAdmission: this.inputAdmission,
         operations: this.operations,
         waiters: this.waiters.values(),
       })
+      .then(() => this.clients.clear())
       .finally(() => {
-        this.clients.clear();
-        this.stores.clear();
         this.draining = undefined;
       });
     return this.draining;

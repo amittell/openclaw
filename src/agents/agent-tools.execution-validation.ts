@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { validateToolArguments } from "../../packages/agent-core/src/validation.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 type ToolExecutionValidator = (params: unknown) => void | Promise<void>;
@@ -40,5 +42,43 @@ export async function validateToolExecutionParams(
   const scopedValidator = executionValidators.getStore();
   if (scopedValidator?.toolCallId === toolCallId) {
     await scopedValidator.validate(params);
+  }
+}
+
+function isToolParameters(
+  value: unknown,
+): value is Parameters<typeof validateToolArguments>[0]["parameters"] {
+  return isRecord(value);
+}
+
+/**
+ * Coerce model arguments the way the agent loop does for direct calls.
+ * Input the schema still rejects is returned as-is for the caller's validator to report.
+ */
+export function coerceToolExecutionArguments(
+  tool: { name: string; description?: string },
+  parameters: unknown,
+  args: unknown,
+): unknown {
+  if (!isToolParameters(parameters) || !isRecord(args)) {
+    return args;
+  }
+  try {
+    const coerced = validateToolArguments(
+      { name: tool.name, description: tool.description ?? "", parameters },
+      { type: "toolCall", id: tool.name, name: tool.name, arguments: args },
+    );
+    // Model-argument cloning omits host-only launch identity and other private custody.
+    return isRecord(coerced)
+      ? Object.defineProperties(
+          {},
+          {
+            ...Object.getOwnPropertyDescriptors(args),
+            ...Object.getOwnPropertyDescriptors(coerced),
+          },
+        )
+      : coerced;
+  } catch {
+    return args;
   }
 }

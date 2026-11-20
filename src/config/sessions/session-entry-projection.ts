@@ -14,6 +14,7 @@ type RetiredSessionMetadata = {
 };
 
 export const SESSION_ENTRY_PRIVATE_CLEAR_PATCH = {
+  localWorkspaceHandoff: undefined,
   activeWriterRunId: undefined,
   lastRunId: undefined,
   lifecycleRunId: undefined,
@@ -27,8 +28,10 @@ export const SESSION_ENTRY_PRIVATE_CLEAR_PATCH = {
 } satisfies Partial<InternalSessionEntry>;
 
 const PRIVATE_SESSION_ENTRY_KEYS = [
+  "localWorkspaceHandoff",
   "inheritedGitContributorProfileIds",
   "profileInvolvement",
+  "operatorSources",
   "cliHistoryBoundary",
   "publicShare",
   "activeWriterRunId",

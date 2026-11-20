@@ -13,7 +13,10 @@ import { createWriteTool } from "../agents/sessions/tools/write.js";
 import { getCommandOwnerAuthority } from "../auto-reply/command-owner-authority.js";
 import { withAdminIngress } from "../channels/message-access/operator-authority.test-support.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  deleteSessionEntryLifecycle,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
@@ -62,6 +65,7 @@ import {
 } from "./operator-run-recovery-source.codec.js";
 import { captureQueuedOperatorRecoverySource } from "./operator-run-recovery-source.js";
 import {
+  captureGatewayOperatorContinuation,
   restoreGatewayOperatorSource,
   restoreGatewayQueuedOperatorRecovery,
 } from "./operator-run-recovery.js";
@@ -81,6 +85,7 @@ import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
   SharedGatewaySessionGenerationState,
 } from "./server-shared-auth-generation.js";
+import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
 
 function modelRef(model: string) {
   return { provider: "fixture", model };
@@ -386,6 +391,68 @@ describe("scheduled authenticated operator source", () => {
       }),
   );
 
+  it("keeps accepted sibling work after a parent edit without retaining its input authority", () =>
+    withRecovery(async (fixture) => {
+      const authorization = await resolveSessionMutationAuthorizationAsync({
+        client: fixture.client,
+        method: "chat.send",
+        requestParams: { sessionKey: fixture.target.sessionKey },
+        context: fixture.context,
+      });
+      expect(authorization.error).toBeNull();
+      const parent = expectDefined(
+        await captureGatewayOperatorRunAuthority({
+          client: captureAgentTurnPrincipal(fixture.client),
+          context: fixture.context,
+          sourceAuthority: {
+            assertCurrent: expectDefined(authorization.authorization, "parent input authority")
+              .assertCurrent,
+            gatewayAccessGrant: null,
+          },
+        }),
+        "live parent authority",
+      );
+      const client = createSyntheticPluginRuntimeClient({
+        authenticatedUserProfile: fixture.client.authenticatedUserProfile,
+        operatorRoleActor: { kind: "operator", profileId: parent.authority.profileId },
+        operatorRunAuthority: parent.authority,
+        scopes: ["operator.write"],
+      });
+      const capture = () =>
+        withPluginRuntimeGatewayRequestScope(
+          { client, context: fixture.context, isWebchatConnect: () => false },
+          () =>
+            withOperatorToolGatewayAuthority(
+              { operatorRunAuthority: parent.authority, scopes: ["operator.write"] },
+              async () => await captureOperatorToolGatewayContinuationContext(),
+            ),
+        );
+      const first = expectDefined(await capture(), "first child");
+      const second = expectDefined(await capture(), "second child");
+      try {
+        // The same committed lifecycle revision change used by transcript edits
+        // invalidates the original chat.send input, not the person's policy.
+        await replaceSessionEntry(fixture.target, {
+          ...fixture.entry,
+          lifecycleRevision: "edited-parent-input",
+        });
+        expect(parent.authority.assertCurrent).toThrow("session changed before chat.send");
+        expect(first.operatorAuthority?.source).toBe(parent.authority.source);
+        expect(second.operatorAuthority?.source).toBe(parent.authority.source);
+        expect(first.operatorAuthority?.scopes).toEqual(["operator.write"]);
+        expect(first.assertCurrent).not.toThrow();
+        expect(second.assertCurrent).not.toThrow();
+        invalidateGatewayDeviceRevocation(fixture.context, "recovery-device", "operator");
+        expect(first.assertCurrent).toThrow();
+        expect(second.assertCurrent).toThrow();
+      } finally {
+        first.release();
+        second.release();
+        parent.release();
+        authorization.authorization?.release?.();
+      }
+    }));
+
   it.each(["current", "owner closed", "device revoked"] as const)(
     "checks independently owned continuation custody after preparation: %s",
     (change) =>
@@ -543,6 +610,28 @@ describe("scheduled authenticated operator source", () => {
     );
   });
 
+  it("keeps restored authority through edits and resets; deleting the chat ends it", () =>
+    withRecovery(async (fixture) => {
+      using restored = await restoreFixture(fixture);
+      await replaceSessionEntry(fixture.target, {
+        ...fixture.entry,
+        sessionId: "edited-session",
+      });
+      expectCurrent(restored.authority);
+      await replaceSessionEntry(fixture.target, {
+        ...fixture.entry,
+        sessionId: "edited-session",
+        lifecycleRevision: "reset-lifecycle",
+      });
+      expectCurrent(restored.authority);
+      await deleteSessionEntryLifecycle({
+        archiveTranscript: false,
+        storePath: fixture.target.storePath,
+        target: { canonicalKey: fixture.target.sessionKey, storeKeys: [fixture.target.sessionKey] },
+      });
+      expectRevoked(restored.authority);
+    }));
+
   it("keeps restored authority current during unrelated issuance", () =>
     withRecovery(async (fixture, stateDir) => {
       using restored = await restoreFixture(fixture);
@@ -563,6 +652,43 @@ describe("scheduled authenticated operator source", () => {
       },
       { tokenlessDevice: true },
     ));
+  it("keeps tokenless device revocation on a detached continuation", () =>
+    withRecovery(
+      async (fixture) => {
+        const caller = acceptedCaller(fixture);
+        const source = expectDefined(await caller.capture(), "accepted tokenless source");
+        try {
+          const continuation = expectDefined(
+            await captureGatewayOperatorContinuation({
+              client: {
+                ...fixture.client,
+                internal: { ...fixture.client.internal, operatorRunAuthority: source.authority },
+              },
+              context: fixture.context,
+            }),
+            "detached tokenless continuation",
+          );
+          try {
+            expect(continuation.authority.recoverySnapshot?.device).toBeUndefined();
+            expectCurrent(continuation.authority);
+            retireDeviceTokenClients(
+              fixture.context,
+              "recovery-device",
+              ["operator"],
+              "device-token-revoked",
+            );
+            expectRevoked(continuation.authority);
+          } finally {
+            continuation.release();
+          }
+        } finally {
+          source.release();
+          caller.release();
+        }
+      },
+      { tokenlessDevice: true },
+    ));
+
   it.each(["before capture", "after admission", "after restoration"] as const)(
     "revokes the original device authority on Gateway retirement %s",
     (timing) =>
@@ -861,7 +987,7 @@ describe("scheduled authenticated operator source", () => {
     }),
   );
 
-  it.each(["claim retired", "device revoked", "session replaced"] as const)(
+  it.each(["claim retired", "device revoked", "session deleted"] as const)(
     "fences retained recovered authority after %s",
     (change) =>
       withRecovery(async (fixture) => {
@@ -873,10 +999,14 @@ describe("scheduled authenticated operator source", () => {
         if (change === "device revoked") {
           invalidateGatewayDeviceRevocation(fixture.context, "recovery-device", "operator");
         }
-        if (change === "session replaced") {
-          await replaceSessionEntry(fixture.target, {
-            ...fixture.entry,
-            sessionId: "replacement-session",
+        if (change === "session deleted") {
+          await deleteSessionEntryLifecycle({
+            archiveTranscript: false,
+            storePath: fixture.target.storePath,
+            target: {
+              canonicalKey: fixture.target.sessionKey,
+              storeKeys: [fixture.target.sessionKey],
+            },
           });
         }
         expect(restored.authority.assertCurrent).toThrow();

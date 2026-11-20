@@ -3,11 +3,13 @@ import type {
   AdmittedRunContext,
   AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
+import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import type { MessagingToolSend } from "../../agents/embedded-agent-messaging.types.js";
 import type {
   EmbeddedAgentRunMeta,
   EmbeddedAgentRunPayload,
 } from "../../agents/embedded-agent-runner/result.types.js";
+import type { FailoverReason } from "../../agents/failover/signal.js";
 import type { ResolvedToolPromptFinalizer } from "../../agents/resolved-tool-prompt.types.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
@@ -19,6 +21,7 @@ import type {
   CronRunTelemetry,
   CronStoredJob,
 } from "../../cron/types.js";
+import type { AgentEventPayload } from "../../infra/agent-events.js";
 import type { ExecRequestOwner } from "../../infra/exec-request-context.js";
 import type {
   SourceDeliveryOutcome,
@@ -42,6 +45,9 @@ export type SessionEventOutcome = {
   /** Recorded controller restart outcome, before the error is flattened. */
   interruptedByRestart?: boolean;
   error?: string;
+  terminalOutcome?: AgentRunTerminalOutcome;
+  /** Structured cause from the selected, settled runtime attempt. */
+  errorReason?: FailoverReason;
   /** Admission policy decides whether a durable producer may retry this refusal. */
   retryable?: boolean;
   deliveryAttempted?: boolean;
@@ -129,6 +135,8 @@ export type SessionEventOptions = {
   preserveOccurrenceOnRejection?: true;
   /** An explicitly silent source records its result without transport delivery. */
   deliver?: boolean;
+  /** Host-owned: the producer's prompt permits NO_REPLY; input provenance never selects it. */
+  replyExpectation?: "optional";
   /** Host producer remains live through admission, execution and delivery. */
   assertCurrent?: () => void;
 };
@@ -208,6 +216,8 @@ export type SessionEventExecution = {
     reason: "send-policy" | "room-event" | "silent" | "message-tool-only" | "aborted",
   ) => void;
   onStarted: (runId: string) => void;
+  /** Final runtime event, after fallback selection and terminal overrides. */
+  onTerminalEvent?: (event: Omit<AgentEventPayload, "seq" | "ts">) => void;
   onTerminal: (
     runId: string,
     outcome: "completed" | "failed" | "aborted",

@@ -138,7 +138,7 @@ That split lets OpenClaw validate config, explain missing/disabled plugins, and 
 
 Failed registrations remain visible in plugin diagnostics after their contributions are rolled back. Those records do not enter execution scopes or block healthy plugins and core context-engine admission; the loader still owns their cleanup.
 
-Runtime preparation checks pending data migrations through the shared-state read worker before registering plugins. Once checked, the process reuses that ledger result across plugin generations until a committed deferred-migration write invalidates it. Unrelated state writes do not repeat the check. Explicit artifact-preserving inspection keeps its isolated snapshot, and plugins with pending data migrations remain blocked until Doctor completes them.
+Runtime preparation checks pending data migrations through the shared-state read worker before registering plugins. Once checked, the process reuses that ledger result across plugin generations until a committed deferred-migration write invalidates it. Unrelated state writes do not repeat the check. Explicit artifact-preserving inspection keeps its isolated snapshot, and plugins with pending data migrations remain blocked until Doctor completes them. A plugin may separately declare explicit recovery CLI subtrees in its Doctor contract. The CLI can register those subtrees while migration withholds normal entrypoints; this never admits normal runtime code or invokes automatic recovery.
 
 Gateway startup and reload yield to the event loop between plugin registrations so health probes and existing requests can run. Registration order is unchanged, and the Gateway publishes the registry only after the complete generation is ready. Each plugin's module evaluation and `register()` remain synchronous; plugins should defer expensive work to their asynchronous service lifecycle or load execution-only modules on first asynchronous use. Register callable hooks before readiness, even when their implementations load lazily.
 
@@ -222,6 +222,10 @@ A delivery-enabled requester continuation refused at its initial runtime acquisi
 While admitted work drains, ordinary model catalog, auth-status, and chat metadata reads continue using the active publication. Catalog refresh work, downloaded catalog adoption, and new execution still wait. Published facts retire when resource replacement begins; an admitted-work timeout keeps those facts available without rebuilding them. An unfinished startup publication still follows its existing cancellation and recovery path.
 
 Session lists wait for replacement provider policy when the previous runtime has retired. Disconnecting a reader cancels only that reader’s wait; other readers and the reload continue. Lists resume with the published replacement catalog and never invoke retired provider callbacks.
+
+Queued replies refused during plugin replacement wait for that replacement to settle while retaining FIFO custody. Source cancellation, mailbox cancellation, and Gateway shutdown release the replacement wait. Every pre-execution retry yields for at least 250 ms before releasing its claim, including errors without a replacement promise, then rechecks live authority. Deferred durable input keeps an in-flight deduplication receipt until adoption or terminal consumption. A replay arriving before the old source finishes cleanup backs off from one second up to the channel retry cap without spending its failure budget for up to 30 minutes. After that, ordinary attempt and age limits apply, so a stuck source cannot hold its lane invisibly forever. A retained dead-letter row can coexist with an original source that finishes later; the wait budget does not cancel that source. A queued runner failure before adoption abandons its source so durable ingress can retry it. Channel shutdown can return unexecuted durable input to ingress for the replacement channel to reclaim. A failed reload can resume the original instance. If the plugin stays disabled, the source records abandonment and remains durable for re-enablement; it does not keep an in-process retry loop alive.
+
+A deferred source admitted through `api.runtime.channel.inbound` retains a work consumer until source settlement. If preparation waits for the same replacement, the pre-stop drain can wait on that consumer before it reaches channel shutdown. The shared 60-second drain budget bounds this cycle: expiration fails the reload and resumes the previous generation so pending work can continue. `--wait` extends the bound to ten minutes.
 
 Retained work and in-flight calls share a 60-second pre-stop budget. Retained runs finish before ordinary call admission closes. Existing calls then settle while published metadata remains readable. Sidecars release their capability consumers before the remaining finite consumers drain; memory teardown retains cleanup authority for its exact retiring provider instances until the raw cleanup settles. Replacement stops services and channels only after that handoff. Idle service and channel custody stops later with its owners. If work does not finish, the reload fails once, resumes admission, and clears the reload status; the previous plugin generation keeps serving. The deadline does not cancel agent runs or permit disposal of unfinished writes. Retry `openclaw plugins reload <id>` after that work finishes, or explicitly select `--wait` for a shared ten-minute pre-stop drain budget, matching the plugin lifecycle wait budget. Both modes hold new agent runs behind the replacement gate until completion or rollback; `status` exposes the pending reload and its drain deadline in JSON. The extended wait also expires with the previous generation serving. The explicit wait belongs to its requesting connection: Ctrl+C or disconnect cancels the pre-publication wait and runs the same rollback. Cancellation never disposes admitted work, bypasses cleanup, or reverses a committed publication. Service shutdown and recovery retain their bounded deadlines. Successful publication logs the applied replacement and emits `plugins.changed`.
 
@@ -1082,3 +1086,20 @@ For the load pipeline, registry model, provider runtime hooks, Gateway HTTP rout
 - [Plugin SDK setup](/plugins/sdk-setup)
 - [Context engines](/concepts/context-engine)
 - [Plugin Runtime](/plugins/sdk-runtime) - the `api.runtime` helpers plugins call
+
+### Capture custody during asynchronous preparation
+
+Asynchronous plugin preparation allocates source and native roots through the existing
+broker resource owner. Execution workers borrow paths; host cache and recovery leases
+retain native custody independently, including after preparation-worker exit or an
+ordinary Gateway restart. Loaded native code retains its physical token and unrefed
+broker until host exit. A failed broker remains terminal; a fresh execution source
+may use a new broker without reviving the old authority. Installed-index publication
+settles before native commit is acknowledged.
+
+Asynchronous reload recovery sends the whole copy operation to that same broker,
+including capture-root creation, symlink filtering, native-reference validation,
+and cleanup. Preparation workers borrow their existing capture domain; host-local
+recovery receives independent custody. Confirmed worker exit releases derived source
+roots without revoking native leases already exported to a surviving owner.
+Synchronous custody forks retain their existing contract and share the copy policy.

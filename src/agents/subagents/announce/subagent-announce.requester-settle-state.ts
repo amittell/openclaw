@@ -12,7 +12,7 @@ import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatc
 
 export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "retireAfterSettle">;
 
-export const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
+const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
 const REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS = [30_000, 120_000] as const;
 
 export function isRequesterSettleMemberReady(entry: SubagentRunRecord): boolean {
@@ -29,7 +29,7 @@ export function needsRequesterSettleFindings(entry: SubagentRunRecord): boolean 
 
 /**
  * Only a known missing result, or an effect-free run whose transcript write was
- * rejected, may mint another public continuation; private retries reconcile.
+ * rejected or aborted, or saved-state repair may mint another public continuation; private retries reconcile.
  */
 export function resolveRequesterSettleRetryState(params: {
   state: RequesterSettleWakeBatchState;
@@ -44,6 +44,8 @@ export function resolveRequesterSettleRetryState(params: {
     delivery.disposition !== "retryable" ||
     (!parentOnly &&
       delivery.reason !== "visible_reply_missing" &&
+      delivery.reason !== "requester_state_conflict" &&
+      delivery.reason !== "requester_aborted" &&
       delivery.reason !== "requester_transcript_conflict") ||
     delivery.reason === "requester_abandoned" ||
     attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS ||
@@ -61,10 +63,16 @@ export function resolveRequesterSettleRetryState(params: {
 }
 
 type RequesterSettleWakeBatchCallbacks = {
+  recordRequesterDelivery?: (
+    batch: readonly SubagentRunRecord[],
+    fact: NonNullable<NonNullable<SubagentRunRecord["delivery"]>["requesterDelivery"]>,
+    onPublished: (entries: readonly SubagentRunRecord[]) => void,
+  ) => Promise<void>;
   transitionBatch: (
     batch: readonly SubagentRunRecord[],
     state: RequesterSettleWakeBatchState,
     onPublished?: (entries: readonly SubagentRunRecord[]) => void,
+    requesterDelivery?: NonNullable<SubagentRunRecord["delivery"]>["requesterDelivery"],
   ) => void | Promise<void>;
   completeBatch: (
     batch: readonly SubagentRunRecord[],
@@ -235,4 +243,9 @@ export function resolveRequesterSettlePolicy(
   const requireVisibleReply =
     requesterYielded && !hasPrivateRows && completionRows.some(needsRequesterSettleFindings);
   return { privateRows, requireVisibleReply, parentOnly, requesterBinding, admissionMarker };
+}
+
+/** The bounded dispatch budget does not limit receipt-only settlement. */
+export function hasExhaustedRequesterSettleAttempts(state: RequesterSettleWakeState): boolean {
+  return state.status === "pending" && state.attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS;
 }

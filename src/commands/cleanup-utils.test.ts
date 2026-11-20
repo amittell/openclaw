@@ -18,9 +18,14 @@ import { createTestRuntime } from "./test-runtime-config-helpers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-async function attemptGatewayLockInChild(env: NodeJS.ProcessEnv): Promise<string> {
+async function attemptGatewayLockInChild(env: NodeJS.ProcessEnv, logFile: string): Promise<string> {
   const lockModuleUrl = pathToFileURL(path.resolve("src/infra/gateway-lock.ts")).href;
+  const loggerModuleUrl = pathToFileURL(path.resolve("src/logging/logger.ts")).href;
   const script = `
+    const { setLoggerOverride } = await import(${JSON.stringify(loggerModuleUrl)});
+    // The contender emits a real wait warning. Keep it outside the directory
+    // being removed so this probe exercises exclusion, not new-state refusal.
+    setLoggerOverride({ file: ${JSON.stringify(logFile)} });
     const { acquireGatewayLock } = await import(${JSON.stringify(lockModuleUrl)});
     const report = (message) => process.send?.(message, () => process.exit(0));
     try {
@@ -278,7 +283,7 @@ describe("cleanup path removals", () => {
   it.each(["shared", "separate"] as const)(
     "retains current and published Gateway exclusion through linked-path cleanup (%s lock directory)",
     async (layout) => {
-      const { stateDir, configPath, env, remove } = await cleanupFixture(true, "{}\n");
+      const { tmpRoot, stateDir, configPath, env, remove } = await cleanupFixture(true, "{}\n");
       const markerPath = path.join(stateDir, "marker.txt");
       const lockDir =
         layout === "shared" ? resolveGatewayLockDir(stateDir) : path.join(stateDir, "custom-locks");
@@ -319,7 +324,10 @@ describe("cleanup path removals", () => {
             fsSync.unlinkSync(stateLockPath);
           }
         }
-        const lockAttempt = await attemptGatewayLockInChild(env);
+        const lockAttempt = await attemptGatewayLockInChild(
+          env,
+          path.join(tmpRoot, "contender.log"),
+        );
         pause.resume();
         const [cleanupResult] = await Promise.allSettled([cleanup]);
 
@@ -512,6 +520,23 @@ describe("cleanup path removals", () => {
     await expect(fs.stat(configPath)).rejects.toThrow();
     await expect(fs.stat(cacheFile)).rejects.toThrow();
   });
+
+  it.runIf(process.platform !== "win32")(
+    "preserves a workspace spelled through a state-dir alias",
+    async () => {
+      // Config names ~/.openclaw/workspace while OPENCLAW_STATE_DIR is the real directory.
+      const { tmpRoot, stateDir, remove } = await cleanupFixture();
+      const alias = path.join(tmpRoot, "state-alias");
+      await fs.symlink(stateDir, alias);
+      const workspaceFile = path.join(stateDir, "workspace", "project.txt");
+      await fs.mkdir(path.dirname(workspaceFile));
+      await fs.writeFile(workspaceFile, "keep me");
+      await fs.writeFile(path.join(stateDir, "cache.json"), "remove me");
+      await remove({}, { preservePaths: [path.join(alias, "workspace")] });
+      await expect(fs.readFile(workspaceFile, "utf8")).resolves.toBe("keep me");
+      await expect(fs.stat(path.join(stateDir, "cache.json"))).rejects.toThrow();
+    },
+  );
 
   it.each(["remove", "preview", "failure"] as const)(
     "settles workspace rows after filesystem %s",

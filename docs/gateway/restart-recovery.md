@@ -68,10 +68,18 @@ scans, or crash-time execution reconstruction.
 ## Graceful shutdown
 
 Once a stop or restart is committed, the Gateway fences new admission, snapshots
-running sessions, writes their markers, and aborts active runs. It waits only a
-short bounded time for in-flight persistence and gives other resource cleanup a
-bounded grace. A long model stream, tool call, or background process does not get
+running sessions, writes their markers, and aborts active runs. It joins accepted
+persistence before retiring state and gives other resource cleanup a bounded
+grace. A long model stream, tool call, or background process does not get
 a full run-completion drain before shutdown.
+
+After marker persistence and cancellation, process-owned shutdown logs a warning
+when required connection cleanup exceeds five seconds, then keeps joining its
+accepted finalizers before releasing the Gateway lock and state admission. The
+existing process shutdown deadline still bounds this join. Shared-state leases
+finish their cleanup before the SQLite worker host closes. Completed orderly
+cleanup preserves exit status `0`; cleanup failures still produce a failed exit.
+Embedded hosts also join those resources before reusing the runtime.
 
 A plain stop (`SIGTERM` or `SIGINT`) arriving during an in-process restart makes
 the Gateway finish its bounded shutdown and exit instead of starting again.
@@ -94,6 +102,9 @@ On Linux and macOS, a stop with exit status `0` then ends with `SIGTERM`, which
 supervisors count as a clean stop. A non-zero status, which can be a supervisor
 restart instruction, and Windows keep the report only. That signal exit is
 accepted, and the supervisor starts a fresh Gateway.
+
+A settled process-supervisor failure no longer prevents agent-database close;
+supervisor cleanup still pending past its grace retains those databases.
 
 Reversible suspension and host freeze preparation keep their own semantics. A
 suspension does not mark sessions or abort them. Preparation with `drain: true`

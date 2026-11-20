@@ -164,6 +164,25 @@ the owned service PID. Listener ownership, the lock, and native service identity
 are rechecked before stopping. Missing listener attribution or an unrelated
 connection error keeps the normal drain path.
 
+With `--no-restart`, the package is replaced under a running Gateway, and that
+Gateway restarts itself when its installation check sees the new files. On a
+Linux systemd service the restart can land while a maintenance stop, such as
+update Doctor's, is draining and stopping the Gateway. The stop then finds a
+different process than the one it inspected. If the latest shutdown the Gateway
+recorded belongs to the inspected process and names the replaced installation,
+the stop inspects the service once more, rechecks its ownership and definition,
+records a warning in update history, and drains and stops the restarted process.
+The update continues. A process change without that record is still refused with
+`Gateway process changed during maintenance drain`, and so is a second change.
+A stop that inspects the service during systemd's restart delay (`RestartSec=5`
+in the managed unit), while neither process is running, is also still refused. Its
+service ownership check then reports the service as unavailable.
+
+This handling is part of the new version's maintenance stop, which the installed
+updater runs from the replaced package. It applies to the first update to a
+release that contains it, provided the running Gateway records its
+installation-replacement restart.
+
 Maintenance drain uses the service's local credentials, including an existing
 paired operator identity when no shared token or password is configured. It does
 not create an identity or request new pairing. Older installed updaters that omit
@@ -261,6 +280,15 @@ still require the recorded launcher identity before replacing it. New symlinks
 preserve the existing launcher's ownership when possible; otherwise they use the
 updater's effective user and group instead of inheriting an unusable bin-directory
 group. An ownership fallback produces a warning.
+
+On Linux and macOS, mutable package updates try an atomic directory exchange
+so the normal package path stays runnable if the updater is killed during
+publication. npm publication keeps recovery in its existing journal; pnpm and
+Bun exchange the staged project with the live project. Unsupported filesystems
+or unavailable exchange tools retain the two-move fallback, which can leave a
+missing package path if interrupted. Source-linked npm installations also keep
+their existing publication path. The installed updater must contain this fix;
+a downloaded candidate cannot change an updater already running.
 
 Package publication verifies the candidate before activation and the installed
 package after publication. Launcher publication checks package identities without
@@ -639,6 +667,10 @@ Live snapshots use SQLite read transactions and private backups while writers
 continue. Artifact-preserving planning and Doctor checks retain byte-neutral
 copies that leave source SHM unchanged. WAL copies capture a bounded prefix
 within one verified WAL generation, so appended commits do not require a quiet database.
+When a live writer checkpoints during every copy attempt, the WAL family takes
+one read transaction instead of refusing: that writer keeps the WAL index current,
+so SQLite may update reader slots but not the commit header that update captures
+compare. Families without a live index never churn and stay byte-neutral.
 Incomplete WAL families and crash journals are recovered privately without
 creating missing source sidecars. Inspection budgets include database
 and journal sizes, cold startup, and repeated IO passes for every discovered
@@ -1316,7 +1348,7 @@ the sentinel.
 
     Dev updates fetch only the configured tracking remote for `main`, or the remote identified by an explicit tracked target. Unrelated remotes remain untouched, with a scope warning in update history; their availability cannot fail the update. When no local `main` exists, or an explicit commit or tag needs discovery, candidate remotes may be tried. Failed optional attempts are warnings, and stale refs from failed fetches cannot select a branch. A failed fetch from the configured authority still reports `fetch-failed` before activation. Fetching does not rewrite Git configuration.
 
-    Git fetches and remote-ref probes, including dry runs, retry once after a transient transport failure or incomplete ref advertisement. The retry shares an explicit timeout budget; omitted work deadlines remain unbounded. Cancellation, authentication failures, and ref-lock conflicts are not retried. This behavior belongs to the installed updater, so an older updater may still need a manual retry to obtain the fix.
+    Update Git fetches and transactional clones retry transient transport failures (including EOF, connection resets, timeouts, and HTTP 5xx) after 1, 5, and 15 seconds, for at most four attempts. Remote-ref probes and dry runs retain one retry. All attempts share the original explicit timeout budget; omitted fetch deadlines remain unbounded. A failed clone is cleaned before a new attempt; uncertain cleanup stops retries with a warning. Cancellation, authentication, certificate, integrity, and ref-lock failures are not retried. Each retry logs a warning. This behavior belongs to the installed updater, so an older updater may still need a manual retry to obtain the fix.
 
     An explicit detached full commit ID already present locally skips optional remote discovery. This does not skip candidate validation or promise an offline update: missing tree/blob objects in partial clones are still hydrated privately before activation. Symbolic and tracked targets retain their remote freshness and ancestry checks.
 
@@ -1463,6 +1495,15 @@ use `openclaw doctor --fix` for load problems.
 A failed plugin operation retains previous payloads and install records where
 possible and preserves registry choices, plugin settings, enable/disable choices,
 and active slots. A plugin can remain unavailable until repaired.
+
+Plugin finalization re-reads config under the config write lock and retries
+publication up to five times. It preserves unrelated edits and accepts changes
+that are already applied. If a field being finalized conflicts with another edit,
+or publication keeps racing another writer, finalization rolls back its pending
+plugin transaction and records a warning with `openclaw plugins doctor` and
+`openclaw doctor --fix` follow-up guidance. That warning does not fail the core
+update or prevent Gateway recovery. The candidate must contain this repair;
+older candidates retain their previous finalization behavior.
 
 After installing the core and before restarting the managed Gateway,
 `openclaw update` runs mandatory **post-core convergence**: it repairs missing

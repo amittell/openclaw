@@ -9424,7 +9424,7 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(job.with).not.toHaveProperty("allow_frozen_target_scenario_omissions");
     expect(workflow).toContain("telegram_mode: none");
     expect(job.secrets).toBeUndefined();
-    expect(packageWorkflow).toContain("supported-lines for latest/previous/extended/floor");
+    expect(packageWorkflow).toContain("supported-lines for latest/previous/extended,");
   });
 });
 
@@ -10586,7 +10586,7 @@ describe("package artifact reuse", () => {
     );
     expect(repoE2eHarnessCheckout.with).toMatchObject({
       "sparse-checkout":
-        "/.github/actions/setup-playwright-chromium/\n/package.json\n/scripts/\n/src/shared/non-packaged-plugin-dirs.ts\n",
+        "/.github/actions/setup-playwright-chromium/\n/.github/actions/setup-playwright-webkit/\n/package.json\n/scripts/\n/src/shared/non-packaged-plugin-dirs.ts\n",
       "sparse-checkout-cone-mode": false,
     });
     expectTextToIncludeAll(workflow, [

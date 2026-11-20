@@ -31,6 +31,7 @@ import {
   linkPluginNativeReference,
 } from "./plugin-native-reference.js";
 import { retainPluginNativeRoot } from "./plugin-native-root-lease.js";
+import type { PluginNativeCaptureRoot } from "./plugin-native-root.types.js";
 import { resolvePluginModulePackageRoot } from "./plugin-package-metadata-capture.js";
 import { getPluginSourceAdmissionPublisher } from "./plugin-source-admission-context.js";
 import type {
@@ -38,7 +39,6 @@ import type {
   PluginNativeNamespaceFact,
 } from "./plugin-source-admission.types.js";
 import {
-  type createPluginNativeCaptureRoot,
   isPluginSourceCaptureRetained,
   retainPluginNativeCapturePath,
 } from "./plugin-source-capture-directory.js";
@@ -50,7 +50,7 @@ import {
   pluginSourceStatIdentity,
 } from "./plugin-source-file.js";
 
-type NativeSnapshot = ReturnType<typeof createPluginNativeCaptureRoot>;
+type NativeSnapshot = PluginNativeCaptureRoot;
 type NativeReceipt = { signature: string; sourceDigest: string };
 export type PluginNativeRecovery = {
   receipt: NativeReceipt;
@@ -230,7 +230,7 @@ export function createPluginNativeAdmission(
   const priorNamespaces = new Set<PluginNativeNamespaceFact>();
   const files = new Map<string, PluginNativeArtifactFact>();
   const targets = new Map<string, string>();
-  const hardlinkedTargets = new Set<string>();
+  const fileReferenceTargets = new Set<string>();
   const pendingTargets = new Set<string>();
   let assertReference = createPluginNativeReferenceValidator(directory, owner?.pluginId ?? rootDir);
   const recoveredFiles = new Map<string, PluginNativeArtifactFact>();
@@ -418,10 +418,10 @@ export function createPluginNativeAdmission(
       ...fact,
       sourceIdentity: pluginSourceStatIdentity(fs.statSync(input, { bigint: true })),
     };
-    if (linkPluginNativeReference(input, target, linked) === "hardlink") {
-      hardlinkedTargets.add(target);
+    if (linkPluginNativeReference(input, target, linked) !== "symlink") {
+      fileReferenceTargets.add(target);
     } else {
-      hardlinkedTargets.delete(target);
+      fileReferenceTargets.delete(target);
     }
     const oldIdentity = member.capturedIdentity;
     member.capturedIdentity = linked.capturedIdentity;
@@ -434,7 +434,7 @@ export function createPluginNativeAdmission(
   };
   const assertReferenceNamespaces = (references: Iterable<string> = pendingTargets) => {
     for (const target of references) {
-      if (!hardlinkedTargets.has(target)) {
+      if (!fileReferenceTargets.has(target)) {
         continue;
       }
       const fact = files.get(targets.get(target)!)!;
@@ -698,7 +698,7 @@ export function createPluginNativeAdmission(
       // Explicit host selection is a new admission boundary, even without newly captured files.
       assertReference = createPluginNativeReferenceValidator(directory, owner?.pluginId ?? rootDir);
       linkHost(selectedHost);
-      assertReferenceNamespaces(hardlinkedTargets);
+      assertReferenceNamespaces(fileReferenceTargets);
       publish();
       pendingTargets.clear();
     },

@@ -524,6 +524,8 @@ export type SessionControllerInput = {
   sequence: number;
   readonly sourceTurnId?: string;
   protocolRunId?: string;
+  /** Producer records transcript custody after the input owner commits it. */
+  onTranscriptCommitted?: (runId: string) => void | Promise<void>;
   policy: Readonly<QueueSettings>;
   mailbox: SessionControllerMailbox;
   readonly custody: SessionControllerSourceCustody;
@@ -550,7 +552,6 @@ export type SessionControllerInput = {
     predecessor: Promise<boolean>;
     settled: Promise<boolean>;
     settle(accepted: boolean): void;
-    accepted?: boolean;
     admitted?: boolean;
   };
   claim?: SessionControllerMailboxClaim;
@@ -647,6 +648,7 @@ export type SessionControllerSourceAdapter = {
 export type SessionControllerSourceInjection = {
   admit(): Promise<boolean>;
   accepted(accepted: boolean): void;
+  /** Authoritative final custody; only proven withdrawal can undo native acceptance. */
   finish(consumed: boolean): void;
 };
 

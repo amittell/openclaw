@@ -2,6 +2,7 @@
 // oxfmt-ignore
 import { emptyReply, mock, queueTask, source, tempDirs } from "./openclaw-state-read-worker.test-harness.js";
 import fs from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { threadId } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -26,6 +27,11 @@ import type {
 } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, stat: vi.fn(original.stat) };
+});
 
 it.each(["complete", "cancel", "revoke", "consumer-error", "worker-failure"] as const)(
   "joins asynchronous stream consumption before releasing its reader (%s)",
@@ -201,6 +207,41 @@ it("captures queued read routing and schema facts without reading unrelated envi
     await Promise.allSettled([result]);
   }
 });
+
+it.skipIf(process.platform === "win32").each(["queued", "custody"] as const)(
+  "rejects a file replaced during %s read admission",
+  async (phase) => {
+    const { pathname, options } = source();
+    const dispatch = createDeferredCore();
+    const task = queueTask(dispatch.promise);
+    void task.captured.then(
+      () => task.result.resolve(emptyReply),
+      () => {},
+    );
+    const reading = executeExistingOpenClawStateRead(options, { type: "backup.runs" });
+    const rejected = expect(reading).rejects.toThrow(/identity changed/);
+    await task.submitted;
+    const replace = () => {
+      const replacement = pathname + ".replacement";
+      fs.writeFileSync(replacement, "replacement source");
+      fs.renameSync(replacement, pathname);
+    };
+    if (phase === "queued") {
+      replace();
+    } else {
+      const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      vi.mocked(stat).mockImplementationOnce(async (...args) => {
+        // Replace the source at the awaited dispatch-time identity check, after
+        // the queued request has captured its original admission identity.
+        replace();
+        return await original.stat(...args);
+      });
+    }
+    dispatch.resolve();
+    await rejected;
+    await expect(task.captured).rejects.toThrow(/identity changed/);
+  },
+);
 
 it("lets an active reader's host callback finish a nested read before the parent settles", async () => {
   const { pathname, options } = source();
@@ -566,6 +607,8 @@ it.each(captures)(
     const baseline = baselineTransport
       ? baselineTransport.startRead(location, authority)
       : executeExistingOpenClawStateRead(options, { type: "backup.runs" });
+    // The mock assigns tasks at submission; asynchronous source preparation may finish out of order.
+    await baselineTask.submitted;
     const result = transport
       ? transport.startRead(location, authority)
       : executeExistingOpenClawStateRead(options, fixture.command);

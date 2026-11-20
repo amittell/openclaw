@@ -7,7 +7,10 @@ import { collectPluginSourceEntries } from "../scripts/lib/bundled-plugin-build-
 import { createManagedHandoffBuildConfigs } from "../scripts/lib/managed-handoff-build-config.mts";
 import { createNativeTypeScriptParser } from "../scripts/lib/native-typescript.mts";
 import { runtimeProcessBuildEntries } from "../scripts/lib/runtime-process-build-entries.mts";
-import { readUpdateCompatibilityInventory } from "../scripts/lib/update-compat-chunks.mts";
+import {
+  isInlineUpdateCompatibilityExport,
+  readUpdateCompatibilityInventory,
+} from "../scripts/lib/update-compat-chunks.mts";
 import { ModuleGraph } from "../scripts/lib/update-compat-module-graph.mts";
 import { buildPackageDistEntriesFromExports } from "../scripts/lib/workspace-package-entries.mts";
 import {
@@ -143,6 +146,8 @@ const repositoryScriptEntries = [
   ".github/actions/frozen-node-test-compat/apply.mjs!",
   // The compiler below exposes this workflow's inline and generated-config imports.
   ".github/workflows/plugin-prerelease.yml!",
+  // Full Release Validation launches this selector from its trusted harness by path.
+  "scripts/find-reusable-release-child.mjs!",
   // Labeler steps import their shared helper through workspace file URLs.
   ".github/workflows/labeler.yml!",
   // Prepared publication imports its verifier from the frozen release harness.
@@ -1268,9 +1273,33 @@ function compileWorkflowConsumers(source: string, filePath: string): string {
       }
     }
   }
-  return names.size
-    ? `import { ${[...names].join(", ")} } from "../../scripts/frv-test-exclusions.mjs";`
-    : "";
+  // Target planners are selected by a path table and consumed through namespace members.
+  // Derive both ends from source so removed consumers become unused again.
+  const plannerImports: string[] = [];
+  for (const match of source.matchAll(
+    /\bconst\s+(\w+)\s*=\s*await\s+import\(\s*targetPlanPath\("([^"]+)"\)\s*\);/gu,
+  )) {
+    const [, planner, key] = match;
+    const specifier = source.match(new RegExp(`"${key}": "(\\./scripts/[^"]+)"`))?.[1];
+    if (!specifier) {
+      continue;
+    }
+    const body = source.slice(match.index, source.indexOf("} catch", match.index));
+    const members = new Set(
+      [...body.matchAll(new RegExp(`\\b${planner}\\.(\\w+)`, "gu"))].map((member) => member[1]),
+    );
+    if (members.size) {
+      plannerImports.push(
+        `import { ${[...members].join(", ")} } from "../../${specifier.slice(2)}";`,
+      );
+    }
+  }
+  return [
+    ...(names.size
+      ? [`import { ${[...names].join(", ")} } from "../../scripts/frv-test-exclusions.mjs";`]
+      : []),
+    ...plannerImports,
+  ].join("\n");
 }
 
 function compileShellConsumers(source: string, filePath: string): string {
@@ -1620,6 +1649,10 @@ function compileUpdateCompatibilityConsumers(rootDir: string): string[] {
     `${left.module}:${left.symbol}`.localeCompare(`${right.module}:${right.symbol}`),
   );
   for (const [index, origin] of origins.entries()) {
+    // Inline historical implementations consume no current source binding.
+    if (isInlineUpdateCompatibilityExport(origin)) {
+      continue;
+    }
     const sourceFile = path.join(rootDir, origin.module);
     if (graph.names(sourceFile).includes(origin.symbol)) {
       imports.push(

@@ -12,10 +12,7 @@ import {
 } from "../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { sleep } from "../utils/sleep.js";
-import {
-  hasAcceptedSessionSpawn,
-  hasCompletionMessageSessionSpawn,
-} from "./accepted-session-spawn.js";
+import { hasCompletionMessageSessionSpawn } from "./accepted-session-spawn.js";
 import { bindOperatorModelExecution, readRunOperatorAuthority } from "./admitted-run-context.js";
 import type { CliOutput } from "./cli-output-contracts.js";
 import { runCliBeforeAgentReply } from "./cli-runner/before-agent-reply.js";
@@ -49,7 +46,11 @@ import {
   attachCliMessagingDeliveryEvidence,
   getCliMessagingDeliveryEvidence,
 } from "./cli-runner/delivery-evidence.js";
-import { createCliFailoverError } from "./cli-runner/exit-error.js";
+import {
+  createCliFailoverError,
+  readCliStreamRefusalOutput,
+  stopFallbackAfterToolEffects,
+} from "./cli-runner/exit-error.js";
 import { loadCliPromptImages } from "./cli-runner/helpers.js";
 import { cliBackendLog } from "./cli-runner/log.js";
 import type { ClaudeCliRunDiagnosticLifecycle } from "./cli-runner/run-diagnostics.js";
@@ -64,7 +65,7 @@ import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/type
 import { claudeCliSessionTranscriptHasContent } from "./command/attempt-execution.helpers.js";
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner.js";
 import { resolveSourceReplyDelivery } from "./embedded-agent-runner/delivery-evidence.js";
-import { coerceToFailoverError, recordModelFallbackStop } from "./failover-error.js";
+import { coerceToFailoverError } from "./failover-error.js";
 import { runBeforeAgentRunGate } from "./harness/before-agent-run.js";
 import { bootstrapHarnessContextEngine } from "./harness/context-engine-lifecycle.js";
 import { buildAgentHookContext } from "./harness/hook-context.js";
@@ -318,8 +319,10 @@ async function runPreparedCliAgentOwned(
   let userTurnHandled = false;
   // A directly stopped first turn rethrows its abort unsettled: no transcript, hooks,
   // or replay. Its flushed native session is the chat's only continuity, so bind
-  // it into the still-empty binding. Superseded, restarted, resumed, and forked
-  // runs keep the abort guards from #147139 and bind nothing here.
+  // it into the still-empty binding. A first turn whose stream was refused as
+  // unparseable is kept the same way so the fallback retry resumes it.
+  // Superseded, restarted, resumed, and forked runs keep the abort guards from
+  // #147139 and bind nothing here.
   const persistStoppedFirstCliSession = async (
     error: unknown,
     output: CliOutput,
@@ -328,12 +331,14 @@ async function runPreparedCliAgentOwned(
     const sessionId = output.sessionId;
     if (
       !params.persistStoppedFirstCliSession ||
-      !output.terminalInterruption ||
+      !(
+        (output.terminalInterruption && isAgentRunDirectAbortReason(error)) ||
+        readCliStreamRefusalOutput(error) === output
+      ) ||
       !sessionId ||
       cliSessionIdToUse ||
       resolveCliSessionId(context.reusableCliSession) ||
       sessionBindingDisabled ||
-      !isAgentRunDirectAbortReason(error) ||
       !isClaudeCliBackend(params.provider) ||
       !(await isCliBindingFlushed(sessionId, params.provider, context.cwd ?? context.workspaceDir))
     ) {
@@ -405,7 +410,14 @@ async function runPreparedCliAgentOwned(
               : {}),
           }
         : undefined,
-    );
+    ).catch(async (error: unknown) => {
+      const refused = readCliStreamRefusalOutput(error);
+      if (refused) {
+        stopFallbackAfterToolEffects(error, refused);
+        await persistStoppedFirstCliSession(error, refused, cliSessionIdToUse);
+      }
+      throw error;
+    });
     try {
       params.assertCurrent?.();
     } catch (error) {
@@ -456,13 +468,7 @@ async function runPreparedCliAgentOwned(
         "empty_response",
         cliFailoverContext,
       );
-      if (
-        (output.toolSummary?.calls ?? 0) > 0 ||
-        hasAcceptedSessionSpawn(output.acceptedSessionSpawns)
-      ) {
-        // Missing a final answer cannot authorize replaying completed tool effects.
-        recordModelFallbackStop(error);
-      }
+      stopFallbackAfterToolEffects(error, output);
       throw attachCliMessagingDeliveryEvidence(error, output);
     }
     const assistantTexts = assistantText ? [assistantText] : [];

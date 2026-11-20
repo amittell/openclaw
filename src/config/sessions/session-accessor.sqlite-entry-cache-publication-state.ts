@@ -505,9 +505,11 @@ export function retainPreparedSessionGenerationFacts(params: {
   databaseIdentity: string;
   sessionKey: string;
   entry: SessionSharingEntry | undefined;
+  followSessionKey?: "transcript" | "lifecycle";
 }) {
   const generation: NonNullable<PreparedSessionSharingRead["generation"]> = {
     current: params.entry ?? null,
+    followSessionKey: params.followSessionKey,
     initiallyAbsent: params.entry ? undefined : true,
   };
   const retained = retainPreparedSessionSharingFacts({

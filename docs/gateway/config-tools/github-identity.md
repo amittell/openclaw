@@ -128,7 +128,7 @@ it checks the selected publisher at the publication boundary. A bot-authored PR
 from another conversation is not eligible for own-PR import just because the
 publisher created it; continue in its original publication conversation.
 
-For an open PR originally published from this conversation, `refresh_base`
+For an open PR prepared or originally published from this conversation, `refresh_base`
 selects its current GitHub destination before integrating the base into the
 managed workspace. This includes a base branch changed outside the conversation.
 Ordinary publication then continues the same PR and head branch. The Gateway
@@ -175,8 +175,11 @@ adoption uses the PR workspace.
 Initial preparation of an already managed workspace requires a clean workspace without dirty, untracked, or
 unpublished work, except for a PR this conversation published, described above. Otherwise it preserves that work and asks you to keep or finish
 it separately before continuing. A clean workspace receives exactly the verified
-PR head's files, even when the selected project's base is newer. Preparation
-keeps an already managed directory and sandbox scope, and records the original PR
+PR head's files, even when the selected project's published base is newer than
+the base recorded by the PR or comes from a different project branch. Preparation
+verifies that newer history against the project's recorded source branch in its
+original repository; a clean checkout with unpublished commits remains
+protected. Preparation keeps an already managed directory and sandbox scope, and records the original PR
 association. The sandbox's current branch and HEAD remain intact; the source
 files are staged for work on the PR.
 
@@ -215,6 +218,14 @@ head while GitHub has since advanced; repeat preparation to integrate the newer
 head. Preparation makes no GitHub writes
 and is not a publication receipt.
 
+After preparation, `refresh_base` integrates the PR's target branch into the saved
+source. It preserves the accepted PR head, original branch, and requester permissions.
+Finish pending `prepare_pr` conflicts before refreshing the base; finish pending
+`refresh_base` conflicts before preparing another head. A retry completes its
+already accepted base first, even if the target advances or changes; refresh again
+to integrate the newer target. Repeating preparation after base integration retains
+the integrated history in the review comparison.
+
 After preparation, ordinary shared publication appends changes to the original
 PR's head repository and branch. It preserves the PR number, author, existing
 commits, discussion and draft state, including an update that reverts the original
@@ -233,6 +244,12 @@ and await that request's result in the conversation; do not submit another
 publication to recover it. Inspecting the remote PR does not settle the
 publication receipt. The Gateway's existing recovery continues the original
 request and reports its result without starting another agent turn.
+
+Local workspace snapshot staging allows up to ten minutes while Git reports
+progress, with a three-minute idle limit. Capture failures identify the staging phase
+and the reason, preserve the source index, and suggest what to inspect before
+retrying. A large file, scan, or buffered Git output can reach the idle limit
+even while Git is working.
 
 After preparation, existing metadata, readiness, fixed re-review and evidence
 actions select the original bound PR, including before any new push and when an

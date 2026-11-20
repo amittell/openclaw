@@ -9,6 +9,7 @@ import type {
   SqliteReadOnlyOperationCommand,
   SqliteReadOnlyOperationResult,
 } from "./sqlite-readonly-operation-types.js";
+import { SqliteSnapshotCapacityError } from "./sqlite-snapshot-capacity-error.js";
 import { readDatabaseFileIdentity, type DatabaseFileIdentity } from "./sqlite-worker-identity.js";
 
 // Keep the one-shot execFile output limit when inspections use IPC.
@@ -18,6 +19,7 @@ export type SqliteReadOnlyWorkerMode =
   | "sync"
   | "backup-engine"
   | "backup-engine-preserving"
+  | "state-sqlite-populated"
   | "private-fork"
   | "content-version"
   | "file-generation"
@@ -45,6 +47,7 @@ export function isSqliteSnapshotStagingMode(mode: unknown): boolean {
 
 export type SqliteReadOnlyWorkerResult =
   | { ok: true; engine: BackupEngine }
+  | { ok: true; hasExistingData: boolean }
   | { ok: true; location: string }
   | { ok: true; contentVersion: string }
   | { ok: true; generation: string }
@@ -58,12 +61,14 @@ export class SqliteReadOnlyInspectionContentionError extends Error {}
 export const SQLITE_INSPECTION_CONTENTION_PREFIX = "Retryable SQLite inspection contention: ";
 export const SQLITE_SNAPSHOT_ALLOCATION_REFUSED_PREFIX =
   "SQLite snapshot directory creation refused: ";
+export const SQLITE_SNAPSHOT_CAPACITY_PREFIX = "SQLite snapshot capacity unavailable: ";
 
 export type SqliteAuthProfileRows = { store: unknown; state: unknown; cacheable: boolean };
 export type SqliteAuthProfileReadOptions = {
   mode: "auth-profile-rows";
   source: "canonical" | "snapshot";
   expectedIdentity: string;
+  expectedBirthtime?: string;
   artifactPreserving?: true;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -133,6 +138,7 @@ export type SqliteReadOnlyWorkerOutput =
   | { kind: "launch-failed"; error: Error };
 export type SqliteReadOnlyWorkerValue =
   | BackupEngine
+  | boolean
   | string
   | string[]
   | SqliteAuthProfileRows
@@ -170,6 +176,9 @@ export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteRea
         (value.engine.engine === "postgres" &&
           typeof value.engine.storeId === "string" &&
           typeof value.engine.namespace === "string"))) ||
+    (value.ok === true &&
+      "hasExistingData" in value &&
+      typeof value.hasExistingData === "boolean") ||
     (value.ok === true && "location" in value && typeof value.location === "string") ||
     (value.ok === true &&
       "contentVersion" in value &&
@@ -214,6 +223,10 @@ function parseSqliteReadOnlyWorkerResult(
 
 export function readSqliteReadOnlyWorkerValue(
   params: SqliteReadOnlyWorkerOutput,
+  mode: "state-sqlite-populated",
+): boolean;
+export function readSqliteReadOnlyWorkerValue(
+  params: SqliteReadOnlyWorkerOutput,
   mode: "backup-engine" | "backup-engine-preserving",
 ): BackupEngine;
 export function readSqliteReadOnlyWorkerValue(
@@ -255,12 +268,19 @@ export function readSqliteReadOnlyWorkerValue(
     throw error;
   }
   if (params.status !== 0 || params.failure || !result.ok) {
-    const contention = !result.ok && result.message.startsWith(SQLITE_INSPECTION_CONTENTION_PREFIX);
-    const message = !result.ok
-      ? contention
-        ? result.message.slice(SQLITE_INSPECTION_CONTENTION_PREFIX.length)
+    const capacity =
+      !result.ok &&
+      (params.status === 0 || params.status === 1) &&
+      result.message.startsWith(SQLITE_SNAPSHOT_CAPACITY_PREFIX);
+    const failureMessage = !result.ok
+      ? capacity
+        ? result.message.slice(SQLITE_SNAPSHOT_CAPACITY_PREFIX.length)
         : result.message
       : (params.failure ?? `exited with code ${params.status}`);
+    const contention = !result.ok && failureMessage.startsWith(SQLITE_INSPECTION_CONTENTION_PREFIX);
+    const message = contention
+      ? failureMessage.slice(SQLITE_INSPECTION_CONTENTION_PREFIX.length)
+      : failureMessage;
     const allocationRefused =
       params.failure === undefined &&
       !result.ok &&
@@ -274,10 +294,15 @@ export function readSqliteReadOnlyWorkerValue(
     if (
       !result.ok &&
       result.errcode !== undefined &&
-      (mode === "backup-engine" || mode === "backup-engine-preserving") &&
+      (mode === "backup-engine" ||
+        mode === "backup-engine-preserving" ||
+        mode === "state-sqlite-populated") &&
       (params.status === 0 || params.status === 1)
     ) {
       Object.assign(error, { errcode: result.errcode });
+    }
+    if (capacity) {
+      throw new SqliteSnapshotCapacityError(error.message, { cause: params.cause });
     }
     if (contention) {
       const failure = new SqliteReadOnlyInspectionContentionError(error.message);
@@ -300,6 +325,9 @@ export function readSqliteReadOnlyWorkerValue(
   }
   if ((mode === "backup-engine" || mode === "backup-engine-preserving") && "engine" in result) {
     return result.engine;
+  }
+  if (mode === "state-sqlite-populated" && "hasExistingData" in result) {
+    return result.hasExistingData;
   }
   if (mode === "content-version" && "contentVersion" in result) {
     return result.contentVersion;

@@ -1,4 +1,5 @@
 import { channel } from "node:diagnostics_channel";
+import { stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { isMainThread, threadId } from "node:worker_threads";
 import { racePromiseWithAbortSignal } from "../../packages/retry/src/index.js";
@@ -6,6 +7,8 @@ import { runWithSqliteDatabaseAdmissionTurn } from "../infra/sqlite-database-adm
 import { getSqliteDatabaseAdmissionIdentityForPath } from "../infra/sqlite-database-admission.js";
 import {
   assertExistingDatabaseIdentity,
+  assertDatabaseFileIdentity,
+  readDatabasePathIdentity,
   readDatabasePathIdentitySync,
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
@@ -21,7 +24,6 @@ import {
   type StoreWriterTiming,
 } from "../shared/store-writer-queue.js";
 import { shortenHomePath } from "../utils.js";
-import { isAgentDatabaseStartupReadReady } from "./agent-database-admission.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import { agentDatabaseWriteAdmissionState as admission } from "./openclaw-agent-write-admission-state.js";
@@ -131,6 +133,7 @@ export function runOpenClawAgentWriteAdmission<T>(
   signal?: AbortSignal,
   caller?: DirectReservationCaller,
   concurrentBoardReads?: "transcript-only",
+  preparedIdentity?: DatabasePathIdentity,
 ): Promise<T> {
   return runOpenClawAgentPathWriteAdmission(
     resolveOpenClawAgentSqlitePath(options),
@@ -140,6 +143,7 @@ export function runOpenClawAgentWriteAdmission<T>(
     signal,
     caller,
     concurrentBoardReads,
+    preparedIdentity,
   );
 }
 
@@ -152,10 +156,17 @@ export function runOpenClawAgentPathWriteAdmission<T>(
   signal?: AbortSignal,
   caller?: DirectReservationCaller,
   concurrentBoardReads?: "transcript-only",
+  preparedIdentity?: DatabasePathIdentity,
 ): Promise<T> {
-  const identity = readDatabasePathIdentitySync(pathname);
+  const identity = preparedIdentity ?? readDatabasePathIdentitySync(pathname);
   const storePath = identity.canonicalPath;
   const assertCurrent = () => {
+    signal?.throwIfAborted();
+    // Prepared worker dispatch pins the physical identity and rechecks in the queued turn.
+    // Its native opener checks the same identity again at effect time.
+    if (preparedIdentity) {
+      return;
+    }
     if (identity.key.startsWith("file:")) {
       try {
         assertExistingDatabaseIdentity(pathname, identity.key, identity.birthtime);
@@ -188,6 +199,13 @@ export function runOpenClawAgentPathWriteAdmission<T>(
             // writer lock. Their foreground writes must queue, never reenter that owner.
             reentrant: reentrant && !admission.queues.get(storePath)?.holder?.worker,
             fn: async () => {
+              if (preparedIdentity) {
+                if (identity.key.startsWith("file:")) {
+                  assertDatabaseFileIdentity(await stat(pathname, { bigint: true }), identity);
+                } else if ((await readDatabasePathIdentity(pathname)).canonicalPath !== storePath) {
+                  throw new Error("Agent database target changed before write admission");
+                }
+              }
               assertCurrent();
               const queue = admission.queues.get(storePath)!;
               const previousHolder = queue.holder;
@@ -203,6 +221,7 @@ export function runOpenClawAgentPathWriteAdmission<T>(
           }),
         [],
         signal,
+        preparedIdentity ? { readIdentities: new Map([[pathname, preparedIdentity]]) } : undefined,
       );
     },
     caller,
@@ -218,6 +237,7 @@ export async function runOpenClawAgentWorkerWrite<T>(
   priority?: "background",
   caller?: WorkerReservationCaller,
   concurrentBoardReads?: "transcript-only",
+  preparedIdentity?: DatabasePathIdentity,
 ): Promise<T> {
   if (priority === "background") {
     const storePath = readDatabasePathIdentitySync(
@@ -243,6 +263,7 @@ export async function runOpenClawAgentWorkerWrite<T>(
         signal,
         undefined,
         concurrentBoardReads,
+        preparedIdentity,
       ),
     caller,
     worker,
@@ -255,12 +276,12 @@ export function runOpenClawAgentBoardReadAdmission<T>(
   run: () => Promise<T>,
   snapshotOnly = false,
 ): Promise<T> {
-  const pathname = resolveOpenClawAgentSqlitePath(options);
-  // Display snapshots need no write ordering while startup refuses all board mutations.
-  // Authority-consumer callbacks retain the FIFO even during startup.
-  if (snapshotOnly && isAgentDatabaseStartupReadReady(pathname, { env: options.env })) {
+  // Display snapshots read committed rows; document and capability consumers
+  // retain the FIFO and check current grants at their own effect boundary.
+  if (snapshotOnly) {
     return run();
   }
+  const pathname = resolveOpenClawAgentSqlitePath(options);
   const storePath = readDatabasePathIdentitySync(pathname).canonicalPath;
   return runWithSqliteDatabaseAdmissionTurn([pathname], () =>
     runQueuedStoreWrite({

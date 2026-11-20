@@ -28,6 +28,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
+import { proveResumedBaseRefresh } from "./local-workspace-base-refresh.test-support.js";
 import { readLocalWorkspaceTree } from "./local-workspace-cas.kernel.js";
 import {
   prepareLegacyArchiveRetention,
@@ -38,7 +39,6 @@ import {
   observeAcknowledgedUpdate,
   prepareLocalWorkspaceArchiveFixture,
   prepareSandboxCheckpointFixture,
-  proveAbsentProjectionCheckpoints,
   proveHostAdmittedBuildInputs,
   proveInterruptedWorkspaceCheckpoint,
   proveIncrementalWorkspaceEdits,
@@ -166,9 +166,6 @@ afterEach(async () => {
 });
 
 it("checkpoints sandbox file writes once", () => proveSandboxMutationCheckpoints(owner));
-
-it("avoids lease requests for absent projections and checkpoints a later projection", () =>
-  proveAbsentProjectionCheckpoints(owner));
 
 it("joins waiting sandbox checkpoints across handles without losing later writes", ({ signal }) =>
   proveSharedSandboxCheckpoints(owner, signal));
@@ -568,6 +565,9 @@ it.each([
   });
 });
 
+it("resumes an interrupted base refresh from the files it already applied", () =>
+  proveResumedBaseRefresh({ owner, root, repo, canonical }));
+
 it.for([false, true])(
   "waits for checkpoint resume before guest command preparation and cleanup (stopped: %s)",
   async (stopped, { signal }) => {
@@ -795,10 +795,10 @@ it("reports successful native eviction and restores accepted workspace contents"
   const authored = "accepted guest edit before native eviction\n";
   await writeText(projection, "source.txt", authored);
   await synchronize();
-  const { withWorktreeAllocationLease } = await import("../../agents/worktrees/allocation.js");
+  const { withWorktreeMutationLease } = await import("../../agents/worktrees/allocation.js");
   const { evictManagedWorktree } = await import("../../agents/worktrees/eviction.js");
   await expect(
-    withWorktreeAllocationLease({ env: process.env }, (guard) =>
+    withWorktreeMutationLease({ env: process.env, id: owner.worktree.id }, (guard) =>
       evictManagedWorktree({
         env: process.env,
         record: owner.worktree,

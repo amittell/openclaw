@@ -41,9 +41,11 @@ import {
   SQLITE_READONLY_WORKER_MAX_BUFFER,
   SQLITE_INSPECTION_CONTENTION_PREFIX,
   SQLITE_SNAPSHOT_ALLOCATION_REFUSED_PREFIX,
+  SQLITE_SNAPSHOT_CAPACITY_PREFIX,
   isSqliteSnapshotStagingMode,
   type SqliteReadOnlyWorkerResult,
 } from "./sqlite-readonly-worker-protocol.js";
+import { isSqliteSnapshotCapacityError } from "./sqlite-snapshot-capacity-error.js";
 import { beginSqliteSnapshotRetirement } from "./sqlite-snapshot-retirement.js";
 import {
   createSqliteSnapshotStagingTokenSync,
@@ -75,6 +77,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
       mode !== "metadata" &&
       mode !== "backup-engine" &&
       mode !== "backup-engine-preserving" &&
+      mode !== "state-sqlite-populated" &&
       mode !== "consolidated" &&
       mode !== "reclaim" &&
       !isSqliteSnapshotStagingMode(mode)) ||
@@ -106,8 +109,22 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
     if (staged && !stagingRoot) {
       throw new Error("SQLite staged snapshot requires its owner-allocated directory");
     }
+    if (mode === "state-sqlite-populated") {
+      const [{ inspectPhysicalStoreInProcess }, { inspectStateSqlite }] = await Promise.all([
+        import("./database-engine/physical-store-inspection.js"),
+        import("../state/openclaw-state-db-engine.js"),
+      ]);
+      return {
+        ok: true,
+        hasExistingData: await inspectPhysicalStoreInProcess(pathname, true, (db) => {
+          const facts = inspectStateSqlite(db);
+          return !facts.hasEngineAnchor && facts.hasExistingData;
+        }),
+      };
+    }
     if (mode === "backup-engine" || mode === "backup-engine-preserving") {
-      const { readBackupEngineInProcess } = await import("./database-engine/physical-store.js");
+      const { readBackupEngineInProcess } =
+        await import("./database-engine/physical-store-inspection.js");
       return {
         ok: true,
         engine: await readBackupEngineInProcess(pathname, mode === "backup-engine-preserving"),
@@ -237,11 +254,14 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
       (mode === "staging-create" || mode === "staging-create-legacy") &&
       isPrivateDirectoryCreationRefused(error);
     const prefix =
+      (isSqliteSnapshotCapacityError(error) ? SQLITE_SNAPSHOT_CAPACITY_PREFIX : "") +
       (contention ? SQLITE_INSPECTION_CONTENTION_PREFIX : "") +
       (allocationRefused ? SQLITE_SNAPSHOT_ALLOCATION_REFUSED_PREFIX : "");
     // Only engine probes transport native codes; released snapshot responses stay unchanged.
     const errcode =
-      mode === "backup-engine" || mode === "backup-engine-preserving"
+      mode === "backup-engine" ||
+      mode === "backup-engine-preserving" ||
+      mode === "state-sqlite-populated"
         ? sqliteExtendedResultCode(error)
         : undefined;
     return {
@@ -380,7 +400,8 @@ function runSession(): void {
         if (
           !isRecord(read) ||
           typeof read.expectedIdentity !== "string" ||
-          !read.expectedIdentity.startsWith("file:")
+          !read.expectedIdentity.startsWith("file:") ||
+          (read.expectedBirthtime !== undefined && typeof read.expectedBirthtime !== "string")
         ) {
           throw new Error(
             operation
@@ -388,7 +409,7 @@ function runSession(): void {
               : "Auth profile read requires captured physical ownership",
           );
         }
-        const { expectedIdentity } = read;
+        const { expectedIdentity, expectedBirthtime } = read;
         if (operation) {
           if (typeof read.command !== "string") {
             throw new Error("Invalid SQLite read-only operation encoding");
@@ -405,12 +426,12 @@ function runSession(): void {
           if (!sqliteReadOnlyOperations.has(request)) {
             throw new Error(`Unknown SQLite read-only operation: ${request.type}`);
           }
-          assertExistingDatabaseIdentity(pathname, expectedIdentity);
+          assertExistingDatabaseIdentity(pathname, expectedIdentity, expectedBirthtime);
           const value = sqliteReadOnlyOperations.execute(request, {
             path: pathname,
             env: process.env,
           });
-          assertExistingDatabaseIdentity(pathname, expectedIdentity);
+          assertExistingDatabaseIdentity(pathname, expectedIdentity, expectedBirthtime);
           const handle = transfers.start(
             [{ kind: "result", value: { operation: request.type, value } }].values(),
             { kinds: ["result"] },
@@ -430,6 +451,7 @@ function runSession(): void {
         if (stopping) {
           return;
         }
+        assertExistingDatabaseIdentity(pathname, expectedIdentity, expectedBirthtime);
         const rows = readAuthProfileRowsReadOnly(
           pathname,
           openReadOnlyDatabase,
@@ -440,7 +462,7 @@ function runSession(): void {
         if (read.artifactPreserving === true) {
           rows.cacheable = false;
         }
-        assertExistingDatabaseIdentity(pathname, expectedIdentity);
+        assertExistingDatabaseIdentity(pathname, expectedIdentity, expectedBirthtime);
         function* rowFields() {
           for (const batch of jsonFieldBatches(rows)) {
             yield { kind: "fields", value: batch };

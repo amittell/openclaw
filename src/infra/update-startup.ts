@@ -28,6 +28,7 @@ import {
   EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
   isGatewayExternallySupervised,
 } from "./gateway-supervision.js";
+import { isConstrainedProcessLowOnMemory } from "./host-memory.js";
 import { checkTelemetryUpdate } from "./telemetry.js";
 import { UpdateCampaignController } from "./update-campaign.js";
 import {
@@ -59,10 +60,10 @@ import { canRunDevGitCampaign, resolveDevGitUpdate } from "./update-startup-refr
 import {
   getUpdateSchedule,
   resetUpdateStatusState,
+  retireUpdateTarget,
   setUpdateAvailableCache,
   setUpdateScheduleCache,
   withoutUpdateCampaign,
-  withoutUpdateTarget,
 } from "./update-status-state.js";
 
 type UpdateCheckState = {
@@ -373,13 +374,11 @@ async function runGatewayUpdateCheckOwned(
   const autoEnabled = Boolean(cfg.update?.auto?.enabled);
   const autoDisabledByEnv = isTruthyEnvValue(process.env.OPENCLAW_NO_AUTO_UPDATE);
   if (cfg.update?.checkOnStart === false || autoDisabledByEnv) {
-    updateCampaign.clear();
-    setAvailable(null);
     const schedule = getUpdateSchedule();
     const channel = configChannel ?? schedule?.channel ?? DEFAULT_PACKAGE_CHANNEL;
     const currentSchedule =
       schedule?.channel === channel ? schedule : { channel, autoEnabled: false };
-    setSchedule(withoutUpdateTarget({ ...currentSchedule, autoEnabled: false }));
+    retireUpdateTarget({ ...currentSchedule, autoEnabled: false }, updateCampaign, params);
     return;
   }
   const autoDisabledByExternalSupervisor = isGatewayExternallySupervised();
@@ -410,9 +409,7 @@ async function runGatewayUpdateCheckOwned(
     return;
   }
   if (readOnlySchedule) {
-    updateCampaign.clear();
-    setAvailable(null);
-    setSchedule(readOnlySchedule);
+    retireUpdateTarget(readOnlySchedule, updateCampaign, params);
     return;
   }
   const autoDesired =
@@ -452,9 +449,7 @@ async function runGatewayUpdateCheckOwned(
 
   if (configuredChannel === "extended-stable") {
     if (installStatus.status.installKind !== "package") {
-      updateCampaign.clear();
-      setAvailable(null);
-      setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
+      retireUpdateTarget(getUpdateSchedule() ?? initialSchedule, updateCampaign, params);
       return;
     }
   }
@@ -520,9 +515,7 @@ async function runGatewayUpdateCheckOwned(
     }
     lifecycle.installStatus = installStatus;
     if (!update) {
-      updateCampaign.clear();
-      setAvailable(null);
-      setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
+      retireUpdateTarget(getUpdateSchedule() ?? initialSchedule, updateCampaign, params);
       await writeState(nextState);
       return;
     }
@@ -555,9 +548,7 @@ async function runGatewayUpdateCheckOwned(
   if (status.installKind !== "package") {
     clearAvailabilityState(nextState);
     clearAutoState(nextState);
-    setAvailable(null);
-    updateCampaign.clear();
-    setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
+    retireUpdateTarget(getUpdateSchedule() ?? initialSchedule, updateCampaign, params);
     await writeState(nextState);
     return;
   }
@@ -578,9 +569,7 @@ async function runGatewayUpdateCheckOwned(
   if (!resolved.version) {
     if (channel === "extended-stable") {
       clearAvailabilityState(nextState);
-      setAvailable(null);
-      updateCampaign.clear();
-      setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
+      retireUpdateTarget(getUpdateSchedule() ?? initialSchedule, updateCampaign, params);
     }
     await writeState(nextState);
     return;
@@ -648,9 +637,7 @@ async function runGatewayUpdateCheckOwned(
     if (channel !== "extended-stable") {
       clearAutoState(nextState);
     }
-    setAvailable(null);
-    updateCampaign.clear();
-    setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
+    retireUpdateTarget(getUpdateSchedule() ?? initialSchedule, updateCampaign, params);
   }
 
   await writeState(nextState);
@@ -682,6 +669,9 @@ export function createGatewayUpdateCheck(params: {
       }
       started = true;
       lifecycle.schedule("update.check", async () => {
+        if (isConstrainedProcessLowOnMemory()) {
+          return 60_000;
+        }
         try {
           await runGatewayUpdateCheck(params, lifecycle);
         } catch (error) {
@@ -695,6 +685,9 @@ export function createGatewayUpdateCheck(params: {
         return resolveCheckIntervalMs(params.getConfig(), getUpdateSchedule()?.install?.kind);
       });
       lifecycle.schedule("update.remote-model-catalog", async () => {
+        if (isConstrainedProcessLowOnMemory()) {
+          return 60_000;
+        }
         let nextCheckInMs = REMOTE_MODEL_CATALOG_TTL_MS;
         try {
           const result = await refreshRemoteModelCatalog({

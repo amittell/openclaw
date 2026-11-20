@@ -6,8 +6,10 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { inspectLocalAudioSelection } from "../media-understanding/local-audio.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { registerEmbeddingCapabilityCliTests } from "./capability-cli.embedding.test-support.js";
 import { registerCapabilityCli } from "./capability-cli.js";
+import { registerMediaPathCapabilityCliTests } from "./capability-cli.media-paths.test-support.js";
 import {
   invalidModelRunOptionCases,
   preparedModel,
@@ -521,6 +523,7 @@ describe("capability cli", () => {
   const firstPreparedModelParams = () =>
     callArg<Record<string, unknown>>(mocks.acquireSimpleCompletionModelForAgent);
   const firstJsonOutput = () => callArg<Record<string, unknown>>(mocks.runtime.writeJson);
+  registerMediaPathCapabilityCliTests({ mocks, tempDirs, firstJsonOutput });
   const imageDescribeCall = (index = 0) =>
     callArg<ImageDescribeParams>(mocks.describeImageFile, index);
   const firstImagePrepareCall = () =>
@@ -1781,6 +1784,49 @@ describe("capability cli", () => {
     expectRuntimeErrorContains("--output is not supported for remote gateway TTS yet");
     expect(mocks.callGateway).not.toHaveBeenCalled();
   });
+
+  it.each(["existing", "absent"])(
+    "preserves output after accepted TTS interruption (%s)",
+    async (state) => {
+      const fixture = await outputFixture(".wav", "existing-speech");
+      const sourcePath = path.join(tempDirs.make("tts-source-"), "source.wav");
+      const wav = Buffer.alloc(64);
+      wav.write("RIFF", 0, "ascii");
+      wav.writeUInt32LE(56, 4);
+      wav.write("WAVEfmt ", 8, "ascii");
+      await fs.writeFile(sourcePath, wav);
+      if (state === "absent") {
+        await fs.rm(fixture.outputPath);
+      }
+      mocks.callGateway.mockResolvedValueOnce({
+        audioPath: sourcePath,
+        provider: "google",
+        outputFormat: "wav",
+        voiceCompatible: false,
+      });
+      const scope = new AsyncWorkScope();
+      const readFile = fs.readFile.bind(fs);
+      const readFileSpy = vi.spyOn(fs, "readFile").mockImplementationOnce(async () => {
+        const buffer = await readFile(sourcePath);
+        scope.beginClose(new Error("command interrupted"));
+        return buffer;
+      });
+      try {
+        await scope.track(() => convertTts("--gateway", "--output", fixture.outputPath));
+        expect(firstGatewayCall()?.method).toBe("tts.convert");
+        expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+        if (state === "absent") {
+          expect(await fs.readdir(fixture.dir)).toEqual([]);
+        } else {
+          await expectOutputFile(fixture, "existing-speech");
+        }
+        expect(await fs.readFile(sourcePath)).toEqual(wav);
+      } finally {
+        readFileSpy.mockRestore();
+        await scope.drain();
+      }
+    },
+  );
 
   it("preserves Gateway TTS output when the final copy fails", async () => {
     const tempDir = tempDirs.make("openclaw-tts-copy-fail-");

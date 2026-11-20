@@ -12,12 +12,16 @@ import type {
 } from "../../agents/worktrees/types.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { retainPreparedSessionEntryPredicate } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
+import { patchSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
+import { localWorkspaceProjectionPath } from "./local-workspace-checkout.js";
+import { finishLocalWorkspaceHandoff } from "./local-workspace-handoff.js";
+import { assertLocalWorkspaceProjectionOwner } from "./local-workspace-owner-identity.js";
 import { projectionOperations } from "./local-workspace-state.js";
 import { withLocalWorkspaceStore, type LocalWorkspaceStore } from "./local-workspace-store.js";
 import type { LocalWorkspaceOwner } from "./local-workspace-types.js";
@@ -27,8 +31,10 @@ import { isLocalWorkspaceBaseRefreshRef } from "./workspace-result-inventory.js"
 type LocalWorkspaceCustody = {
   worktreeId: string;
   projectionPath?: string;
+  projectionRevision?: number;
   prepareArchive?: (snapshot: string) => Promise<void>;
   canonicalPaths?: () => Promise<Set<string>>;
+  synchronizeProjection?: () => Promise<void>;
   assertCurrent: () => void;
   workerAuthority: WorktreeWorkerAuthority;
 };
@@ -102,6 +108,10 @@ export async function withSettledLocalWorkspace<T>(
     retireRuntime?: boolean;
     restoreSnapshot?: boolean;
     finishRestore?: boolean;
+    sessionOwner?: Pick<
+      LocalWorkspaceOwner,
+      "agentId" | "sessionKey" | "sessionId" | "lifecycleRevision"
+    >;
   },
   operation: (custody?: LocalWorkspaceCustody) => Promise<T>,
 ): Promise<T> {
@@ -111,7 +121,6 @@ export async function withSettledLocalWorkspace<T>(
 async function settleLocalWorkspace<T>(
   params: Parameters<typeof withSettledLocalWorkspace>[0],
   operation: (custody?: LocalWorkspaceCustody) => Promise<T>,
-  beginCapture?: () => void,
 ): Promise<T> {
   const context = captureWorktreeRunEndContext(params.env ?? process.env);
   const env = { ...(params.env ?? process.env), ...context.environment };
@@ -130,6 +139,21 @@ async function settleLocalWorkspace<T>(
       throw new Error("Unexpected local workspace retirement lookup");
     }
     if (reply?.row) {
+      if (params.sessionOwner) {
+        const expectedOwner: LocalWorkspaceOwner = {
+          ...params.sessionOwner,
+          // The existing same-id reset repair below owns lifecycle-revision adoption.
+          lifecycleRevision: reply.row.lifecycle_revision,
+          worktree: params.worktree,
+          env,
+          assertCurrent: params.assertCurrent ?? (() => {}),
+        };
+        assertLocalWorkspaceProjectionOwner(
+          reply.row,
+          expectedOwner,
+          localWorkspaceProjectionPath(expectedOwner),
+        );
+      }
       const { readRegistry } = await import("../../agents/sandbox/registry.js");
       const { prepareSandboxPersistentExecRetirement } =
         await import("../../agents/sandbox/persistent-exec-retirement.js");
@@ -184,10 +208,12 @@ async function settleLocalWorkspace<T>(
       const owner: LocalWorkspaceOwner = {
         worktree,
         env,
-        agentId: row.agent_id,
-        sessionKey: row.session_key,
-        sessionId: row.session_id,
-        lifecycleRevision: row.lifecycle_revision,
+        agentId: params.sessionOwner?.agentId ?? row.agent_id,
+        sessionKey: params.sessionOwner?.sessionKey ?? row.session_key,
+        sessionId: params.sessionOwner?.sessionId ?? row.session_id,
+        lifecycleRevision: params.sessionOwner
+          ? params.sessionOwner.lifecycleRevision
+          : row.lifecycle_revision,
         workerAuthority,
         assertCurrent: () => {
           if (params.assertCurrent !== workerAuthority.assertCurrent) {
@@ -197,7 +223,6 @@ async function settleLocalWorkspace<T>(
         },
       };
       return await runLocalWorkspaceProjection(owner, store, async (state, quiescence) => {
-        beginCapture?.();
         if (params.finishRestore) {
           await state.finishRestore();
         } else if (params.restoreSnapshot) {
@@ -221,13 +246,16 @@ async function settleLocalWorkspace<T>(
             ? {
                 worktreeId: worktree.id,
                 projectionPath: current.projection_path,
+                projectionRevision: current.revision,
                 prepareArchive: state.prepareArchive,
                 canonicalPaths: state.canonicalPaths,
+                synchronizeProjection: () => state.synchronize("projection"),
                 assertCurrent: state.current,
                 workerAuthority: state.workerAuthority,
               }
             : {
                 worktreeId: worktree.id,
+                projectionRevision: current.revision,
                 assertCurrent: store.assertCurrent,
                 workerAuthority: store.workerAuthority,
               },
@@ -235,34 +263,6 @@ async function settleLocalWorkspace<T>(
       });
     },
   );
-}
-
-/** File readers need a fresh checkpoint, not a lease-bearing custody callback. */
-export async function checkpointLocalWorkspacePath(params: {
-  cwd: string;
-  assertCurrent?: () => void;
-}): Promise<void> {
-  const context = captureWorktreeRunEndContext(process.env);
-  const env = { ...process.env, ...context.environment };
-  const worktree = await readLiveRegistryWorktreeByPath(context, params.cwd);
-  params.assertCurrent?.();
-  if (worktree) {
-    const projection = await executeExistingOpenClawStateRead(
-      { path: context.admission.databasePath, env },
-      { type: "localWorkspace.exists", input: { id: worktree.id } },
-      { context, current: true, live: true },
-    );
-    context.admission.assertCurrent();
-    params.assertCurrent?.();
-    // An absent projection has no checkpoint; custody callbacks still own absent rows.
-    if (projection?.exists === false) {
-      return;
-    }
-    const checkpoint = { worktree, env, assertCurrent: params.assertCurrent };
-    await joinLocalWorkspaceCheckpoint(checkpoint, undefined, (beginCapture) =>
-      settleLocalWorkspace(checkpoint, async () => {}, beginCapture),
-    );
-  }
 }
 
 export async function withSettledLocalWorkspacePath<T>(
@@ -327,6 +327,9 @@ async function runLocalWorkspaceProjection<T>(
     );
   }
   const operations = projectionOperations(owner, store, previous);
+  if (previous) {
+    operations.current();
+  }
   const { quiesceLocalWorkspace, parseLocalWorkspacePausedRuntimes } =
     await import("../../agents/sandbox/local-workspace-quiescence.js");
   const quiescence =
@@ -427,6 +430,7 @@ export async function resolveLocalWorkspaceOwner(params: {
   agentId: string;
   sessionKey: string;
   workspaceDir?: string;
+  storePath?: string;
   env?: NodeJS.ProcessEnv;
   assertCurrent?: () => void;
 }): Promise<(LocalWorkspaceOwner & Disposable) | undefined> {
@@ -435,10 +439,12 @@ export async function resolveLocalWorkspaceOwner(params: {
   const scope = {
     agentId: params.agentId,
     sessionKey: params.sessionKey,
-    storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
-      agentId: params.agentId,
-      env,
-    }),
+    storePath:
+      params.storePath ??
+      resolveSessionStorePathCore(params.cfg.session?.store, {
+        agentId: params.agentId,
+        env,
+      }),
     env,
   };
   const lifetime = new DisposableStack();
@@ -534,7 +540,7 @@ export async function resolveLocalWorkspaceOwner(params: {
       assertWorktreeCurrent();
     };
     assertCurrent();
-    return {
+    const owner: LocalWorkspaceOwner & Disposable = {
       agentId: params.agentId,
       sessionKey: params.sessionKey,
       sessionId: entry.sessionId,
@@ -548,6 +554,22 @@ export async function resolveLocalWorkspaceOwner(params: {
       env,
       [Symbol.dispose]: release,
     };
+    if (entry.localWorkspaceHandoff) {
+      const handoff = entry.localWorkspaceHandoff;
+      await finishLocalWorkspaceHandoff(owner, handoff);
+      await patchSessionEntryCore(scope, (current) => {
+        assertCurrent();
+        if (
+          current?.sessionId !== owner.sessionId ||
+          current.lifecycleRevision !== entry.lifecycleRevision ||
+          JSON.stringify(current.localWorkspaceHandoff) !== JSON.stringify(handoff)
+        ) {
+          throw new Error("Local workspace handoff changed before completion");
+        }
+        return { localWorkspaceHandoff: undefined };
+      });
+    }
+    return owner;
   } catch (error) {
     release();
     throw error;

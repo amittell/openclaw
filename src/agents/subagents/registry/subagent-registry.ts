@@ -1,6 +1,5 @@
 import { getRuntimeConfig } from "../../../config/config.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
-import { registerSystemEventStoreOwner } from "../../../infra/system-event-ownership.js";
 import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
@@ -12,7 +11,7 @@ import {
 import { findSessionControllerOperationByRunId } from "../../../sessions/session-controller.queries.js";
 import { runInDetachedAsyncContext } from "../../../shared/detached-async-context.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
-import { isDeliverySuspended } from "./subagent-delivery-state.js";
+import { hasConsumedRequesterInput, isDeliverySuspended } from "./subagent-delivery-state.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { emitSubagentProgressEndedHook } from "./subagent-registry-completion.js";
 import { createSubagentRegistryContextCleanup } from "./subagent-registry-context-cleanup.js";
@@ -26,7 +25,6 @@ import {
   ANNOUNCE_EXPIRY_MS,
   GATEWAY_ADMISSION_RETRY_DELAY_MS,
 } from "./subagent-registry-helpers.js";
-import { suspendReplacedStoreNotifications } from "./subagent-registry-lifecycle-cleanup.js";
 import { subagentRegistryLog as log } from "./subagent-registry-lifecycle-log.js";
 import { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { createSubagentRegistryListener } from "./subagent-registry-listener.js";
@@ -154,17 +152,6 @@ const {
   settleRequesterTurnAfterSessionSpawns,
   startSubagentAnnounceCleanupFlow,
 } = subagentLifecycleController;
-function suspendReplacedNotificationsInBackground(): void {
-  void suspendReplacedStoreNotifications(subagentLifecycleController.options).catch(
-    (error: unknown) => {
-      log.warn("subagent notification retirement is deferred", { error });
-    },
-  );
-}
-registerSystemEventStoreOwner(
-  Symbol.for("openclaw.subagentNotifications"),
-  suspendReplacedNotificationsInBackground,
-);
 
 export function resumeSubagentRun(runId: string) {
   if (!runId) {
@@ -609,14 +596,26 @@ export async function terminateLiveSubagentsForShutdown(
   );
 }
 
-export function activateSubagentRegistry(
+export async function activateSubagentRegistry(
   resolveGatewayContext: GatewayContextResolver,
 ): Promise<void> {
   // Reuse the instance's own fenced closure so late-restored siblings share one
   // authority across repeated activation; the raw holder can outlive that instance.
-  activeGatewayContextResolver = resolveGatewayContext()?.resolveGatewayContext;
-  bindGatewayContextResolver(subagentRuns, activeGatewayContextResolver);
-  return subagentRestorer.activate();
+  const resolver = resolveGatewayContext()?.resolveGatewayContext;
+  activeGatewayContextResolver = resolver;
+  bindGatewayContextResolver(subagentRuns, resolver);
+  await subagentRestorer.activate();
+  if (activeGatewayContextResolver !== resolver || !resolver?.()) {
+    return;
+  }
+  // Hydration alone does not run lifecycle work. Consumed inputs need only receipt
+  // settlement; resume that existing owner without replaying interrupted execution.
+  for (const entry of subagentRuns.values()) {
+    if (entry.requesterSettleWake && hasConsumedRequesterInput(entry)) {
+      subagentLifecycleController.markRequesterSettleWakeRestored(entry);
+      resumeRequesterSettleWake(entry.runId, entry);
+    }
+  }
 }
 export const settleRequesterAfterSessionSpawns = publicApi.settleRequesterAfterSessionSpawns;
 export const markRequesterTurnYielded = publicApi.markRequesterTurnYielded;

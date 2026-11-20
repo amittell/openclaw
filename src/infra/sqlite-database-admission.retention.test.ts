@@ -46,6 +46,7 @@ import {
   readSqliteDatabaseWriteTokenForPath as pathToken,
   retireSqliteDatabaseAdmissionForPath as retireAdmission,
   retainSqliteDatabaseAdmissionLocation as retainLocation,
+  prepareSqliteDatabaseAdmissionAsync as prepareAdmissionAsync,
   revokeSqliteDatabaseAdmissions as revokeAdmissions,
   revokeSqliteDatabaseAdmissionsForPath as revokePath,
   trackSqliteDatabaseAdmissionWorker as trackWorker,
@@ -266,6 +267,60 @@ it("bounds cold session receipts by bytes without evicting hot receipts or reviv
   database.close();
   expect(recordsFor(location)).toEqual([]);
 });
+
+it.each(["host", "worker"])(
+  "preserves native admission during asynchronous acquisition until %s retirement",
+  async (owner) => {
+    const location = path.join(tempDirs.make("sqlite-admission-async-custody-"), "proof.sqlite");
+    fs.writeFileSync(location, "");
+    const entered = createDeferred();
+    const resume = createDeferred();
+    const fstat = fs.fstat;
+    // Pause after open but before custody publication; a native opener can win this interval.
+    using stat = vi.spyOn(fs, "fstat").mockImplementationOnce((descriptor, options, callback) => {
+      fstat(descriptor, options, (error, value) => {
+        entered.resolve();
+        void resume.promise.then(() => callback(error, value));
+      });
+    });
+    const pending = prepareAdmissionAsync({ location, assertCurrent() {} });
+    await entered.promise;
+    const extraDescriptor = stat.mock.calls[0]![0];
+    using database = createDatabase(location);
+    const original = recordsFor(location)[0]!;
+    const token = scopedToken(database, "active");
+    try {
+      resume.resolve();
+      await pending;
+      expect(recordsFor(location)[0]?.generationId).toBe(original.generationId);
+      expect(pathScopedTokens(location, ["active"])).toEqual([token]);
+      expect(fstatSync(extraDescriptor).isFile()).toBe(true);
+      database.exec("UPDATE proof SET value = 43");
+      expect(pathScopedTokens(location, ["active"])).not.toEqual([token]);
+    } finally {
+      database.close();
+      if (owner === "host") {
+        retireAdmission(location, { requireSoleDescriptor: process.platform === "linux" });
+      } else {
+        const relay = createSqliteDatabaseAdmissionRelay(() => {});
+        const worker = new Worker(
+          admissionWorker(
+            'exchange(() => retireSqliteDatabaseAdmissionForPath(workerData.location)); parentPort.postMessage("retired");',
+          ),
+          workerOptions(location, relay.port),
+        );
+        try {
+          expect((await once(worker, "message"))[0]).toBe("retired");
+        } finally {
+          await worker.terminate();
+          relay.finish();
+        }
+      }
+    }
+    expect(() => fstatSync(original.descriptor)).toThrow();
+    expect(() => fstatSync(extraDescriptor)).toThrow();
+  },
+);
 
 it("retires the final closed handle's facts while preserving open siblings and descriptor custody", () => {
   using fixture = databaseFixture("sqlite-admission-retention-");
@@ -884,6 +939,7 @@ function postgresConnection(anchor: DatabaseSync): PostgresSqlConnection {
       throw new Error("Admission facts must not query PostgreSQL");
     },
     close() {},
+    releaseIdleTransport() {},
     runTransaction(operation, options, ...modes) {
       return runPostgresTransactionSync(this, operation, options, ...modes);
     },
@@ -903,18 +959,16 @@ function withPostgres(
 
 it("PostgreSQL keeps publications local until commit and restores nested and outer rollback", () =>
   withPostgres((connection, peer, anchor) => {
-    const transact = (operation: () => void) => transaction(connection, operation);
-
     publishFact(connection, key, "initial");
     expect(getFact(peer, key)).toBe("initial");
-    transact(() => {
+    transaction(connection, () => {
       expect(connection.isTransaction).toBe(true);
       expect(anchor.isTransaction).toBe(false);
       publishFact(connection, key, "outer");
       expect(getFact(connection, key)).toBe("outer");
       expect(getFact(peer, key)).toBe("initial");
       expect(() =>
-        transact(() => {
+        transaction(connection, () => {
           publishFact(connection, key, "nested");
           expect(getFact(connection, key)).toBe("nested");
           throw new Error("nested rollback");
@@ -925,7 +979,7 @@ it("PostgreSQL keeps publications local until commit and restores nested and out
     });
     expect(getFact(peer, key)).toBe("outer");
     expect(() =>
-      transact(() => {
+      transaction(connection, () => {
         publishFact(connection, key, "rolled back");
         throw new Error("outer rollback");
       }),

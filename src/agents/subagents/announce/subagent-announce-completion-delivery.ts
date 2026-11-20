@@ -451,12 +451,11 @@ export async function deliverCompletionDirect(params: {
           // Bookkeeping failure cannot make a fully sent result retryable.
         });
       },
-      // Pin history to the requester generation that spawned the child.
+      // Keep confirmed history on the requester conversation across transcript edits.
       ...(params.requesterSessionId
         ? {
             transcriptExpectedGeneration: {
               sessionKey: params.requesterSessionKey,
-              lifecycleRevision: params.requesterLifecycleRevision,
             },
           }
         : {}),
@@ -493,6 +492,7 @@ export async function deliverCompletionDirect(params: {
         path: "direct",
         terminal: true,
         disposition: "permanent_failure",
+        reason: "delivery_failed",
         error: `text completion direct delivery was incomplete; automatic retry would duplicate sent chunks: ${summarizeDeliveryError(err)}`,
       };
     }
@@ -506,6 +506,7 @@ export async function deliverCompletionDirect(params: {
     return {
       delivered: false,
       path: "direct",
+      reason: "delivery_failed",
       error: `text completion direct delivery failed: ${summarizeDeliveryError(err)}`,
     };
   } finally {

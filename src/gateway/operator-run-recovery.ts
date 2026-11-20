@@ -23,6 +23,7 @@ import type { GatewayAuthPolicy } from "./auth-policy.types.js";
 import {
   captureGatewayDeviceRevocation,
   onGatewayDeviceSourceRevoked,
+  retainGatewayDeviceSourceRevocation,
 } from "./device-revocation.js";
 import {
   GatewayOperatorAccessDeniedError,
@@ -38,14 +39,15 @@ import {
   sourceRolePolicy,
 } from "./operator-role-source-policy.js";
 import {
-  bindGatewayOperatorContinuationAuthority,
   captureChannelOperatorRunAuthority,
+  captureGatewayOperatorRunAuthority,
   intersectOperatorRunModelPolicy,
 } from "./operator-run-authority.js";
 import {
   decodeQueuedOperatorRecoverySource,
   type OperatorRunRecoverySnapshot,
 } from "./operator-run-recovery-source.codec.js";
+import { captureQueuedOperatorRecoverySource } from "./operator-run-recovery-source.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import type { GatewayAuthenticatedUserProfile } from "./server/client-identity-types.js";
 
@@ -68,6 +70,7 @@ async function restoreGatewayOperatorSnapshot(params: {
   context: GatewayRequestContext;
   assertCurrent: () => void;
   subscribeToClaim?: (revoke: () => void) => () => void;
+  deviceSource?: object;
   prepareSource: () => Promise<PreparedOperatorRecoverySource | undefined>;
 }): Promise<RestoredGatewayOperatorAuthority | undefined> {
   const { context, assertCurrent } = params;
@@ -90,8 +93,17 @@ async function restoreGatewayOperatorSnapshot(params: {
     signal.signal.throwIfAborted();
   };
   const subscriptions: Array<() => void> = [];
+  // The claimed target's lifecycle ends this restored run, not work it already
+  // handed to another session; that continuation keeps the policy signal only.
+  const claim = new AbortController();
   if (params.subscribeToClaim) {
-    subscriptions.push(params.subscribeToClaim(revoke));
+    subscriptions.push(
+      params.subscribeToClaim(() =>
+        claim.abort(
+          new Error("Restart recovery operator authority changed; start a new user turn."),
+        ),
+      ),
+    );
   }
   let identity: Awaited<ReturnType<typeof prepareUserProfileIdentity>> | undefined;
   const releaseHold = () => {
@@ -109,6 +121,12 @@ async function restoreGatewayOperatorSnapshot(params: {
   };
   const release = releaseHold();
   try {
+    // Tokenless proxy snapshots intentionally have no credential identity. A live
+    // continuation still belongs to its original device revocation owner.
+    const deviceSource = retainGatewayDeviceSourceRevocation(params.deviceSource);
+    if (deviceSource) {
+      subscriptions.push(deviceSource.release, deviceSource.subscribe(revoke));
+    }
     const prepared = await params.prepareSource();
     assertLifetime();
     assertCurrent();
@@ -151,6 +169,7 @@ async function restoreGatewayOperatorSnapshot(params: {
       const publication = runtimeConfigPublication.current?.revision;
       if (
         !device.isCurrent() ||
+        deviceSource?.isCurrent() === false ||
         (snapshot.sharedGeneration !== undefined &&
           context.sharedGatewaySessionGenerationState !== generationOwner)
       ) {
@@ -189,6 +208,7 @@ async function restoreGatewayOperatorSnapshot(params: {
     };
     let assertPolicy = assertSourcePolicy;
     const assertRecoveryCurrent = () => {
+      claim.signal.throwIfAborted();
       assertCurrent();
       return assertPolicy();
     };
@@ -297,32 +317,22 @@ async function restoreGatewayOperatorSnapshot(params: {
     const originalModels = snapshot.modelPolicy
       ? restoreOperatorModelPolicySnapshot(snapshot.modelPolicy)
       : undefined;
-    const retainPolicy = () => {
-      assertPolicy();
-      references += 1;
-      return releaseHold();
-    };
-    const policyAuthority = createAdmittedRunOperatorAuthority({
+    const authority = createAdmittedRunOperatorAuthority({
       ...live,
-      signal: signal.signal,
       recoverySnapshot: snapshot,
-      retain: retainPolicy,
+      signal: AbortSignal.any([signal.signal, claim.signal]),
+      assertCurrent: assertRecoveryCurrent,
+      retain: () => {
+        claim.signal.throwIfAborted();
+        assertCurrent();
+        assertPolicy();
+        references += 1;
+        return releaseHold();
+      },
       get modelPolicy() {
         return intersectOperatorRunModelPolicy(originalModels, live.modelPolicy);
       },
     });
-    const authority = createAdmittedRunOperatorAuthority({
-      ...policyAuthority,
-      assertCurrent: assertRecoveryCurrent,
-      retain: () => {
-        assertCurrent();
-        return retainPolicy();
-      },
-      get modelPolicy() {
-        return policyAuthority.modelPolicy;
-      },
-    });
-    bindGatewayOperatorContinuationAuthority(authority, policyAuthority);
     authority.assertCurrent();
     const profile = readResidentUserProfileRevision(snapshot.profileId, profileCatalogPath({}));
     if (!profile) {
@@ -347,7 +357,7 @@ async function restoreGatewayOperatorSnapshot(params: {
 /** Restore owner-held continuation evidence through the shared authentication owner. */
 export async function restoreGatewayOperatorSource(params: {
   snapshot: OperatorRunRecoverySnapshot;
-  target: { agentId: string; sessionKey: string; sessionId: string };
+  target: { agentId: string; sessionKey: string };
   context: GatewayRequestContext;
   assertCurrent: () => void;
   prepareCurrent?: () => Promise<void>;
@@ -359,9 +369,9 @@ export async function restoreGatewayOperatorSource(params: {
     subscribeToClaim: (revoke) =>
       onSessionIdentityMutation((mutation) => {
         if (
+          mutation.kind === "delete" &&
           mutation.agentId === target.agentId &&
-          (mutation.previous.sessionId === target.sessionId ||
-            mutation.previous.sessionKeys.includes(target.sessionKey))
+          mutation.previous.sessionKeys.includes(target.sessionKey)
         ) {
           revoke();
         }
@@ -382,6 +392,7 @@ export async function restoreGatewayOperatorSource(params: {
 /** A queued native launch reuses its original authenticated source, never profile attribution. */
 export async function restoreGatewayQueuedOperatorRecovery(params: {
   source: unknown;
+  deviceSource?: object;
   context: GatewayRequestContext;
   assertCurrent: () => void;
 }): Promise<Pick<RestoredGatewayOperatorAuthority, "authority" | "controlUiAdmin" | "release">> {
@@ -392,6 +403,7 @@ export async function restoreGatewayQueuedOperatorRecovery(params: {
   }
   if (source.kind === "gateway") {
     const restored = await restoreGatewayOperatorSnapshot({
+      deviceSource: params.deviceSource,
       context: params.context,
       assertCurrent: params.assertCurrent,
       prepareSource: async () => ({
@@ -473,4 +485,44 @@ export async function restoreGatewayQueuedOperatorRecovery(params: {
     release();
     throw error;
   }
+}
+
+/** Accepted work runs on its origin's saved facts and current policy, not its accepting request. */
+export async function captureGatewayOperatorContinuation(
+  input: Parameters<typeof captureGatewayOperatorRunAuthority>[0],
+): ReturnType<typeof captureGatewayOperatorRunAuthority> {
+  const inherited = input.client?.internal?.operatorRunAuthority;
+  const context = input.context.resolveGatewayContext?.();
+  const facts = inherited && captureQueuedOperatorRecoverySource(inherited);
+  if (!inherited || !context || !facts || facts.kind === "unavailable") {
+    // A source without saved facts keeps its live authority.
+    return await captureGatewayOperatorRunAuthority(input);
+  }
+  // Other holders of the inherited object keep it until this work ends; its checks do not gate it.
+  const releaseInherited = inherited.retain?.();
+  const restored = await restoreGatewayQueuedOperatorRecovery({
+    source: facts,
+    deviceSource: inherited.source,
+    context,
+    assertCurrent: () => {},
+  }).catch((error: unknown) => {
+    releaseInherited?.();
+    throw error;
+  });
+  const authority = createAdmittedRunOperatorAuthority({
+    ...restored.authority,
+    // One origin keeps one comparable source identity, as completion batches require.
+    source: inherited.source,
+    scopes: intersectOperatorScopes(restored.authority.scopes, input.client?.connect.scopes ?? []),
+    get modelPolicy() {
+      return restored.authority.modelPolicy;
+    },
+  });
+  return {
+    authority,
+    release: () => {
+      restored.release();
+      releaseInherited?.();
+    },
+  };
 }

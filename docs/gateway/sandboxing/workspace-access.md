@@ -63,6 +63,18 @@ source preparation, not direct access to that host directory. Arbitrary external
 Visible child sessions keep their managed worktree as the sandbox workspace on
 later turns, including sessions created before an update.
 
+Sandbox tool calls and checkpoints for the same managed worktree take turns in
+arrival order within the Gateway. Waiting for workspace custody is limited to
+60 seconds; a timeout reports the workspace and asks you to retry after the
+current checkpoint or reconciliation finishes. An operation that already owns
+the workspace must release it before requesting another checkpoint.
+
+Rewind and branch switching keep that managed workspace and its accepted edits.
+OpenClaw settles pending sandbox edits and retires the old runtime before changing
+the conversation history. The next turn reuses the same private checkout under
+the new conversation incarnation. Conflicting edits remain saved and block the
+history change until the conflict is resolved.
+
 The private checkout contains the selected source commit, not the host's shared
 Git configuration, credential helpers, other branches, or ignored files selected
 by `.worktreeinclude`. Guest preparation does not run the repository's host setup
@@ -163,8 +175,9 @@ If you are a guest, you can ask the agent:
 > update the same PR. Do not merge it.
 
 Use `github_publish` with `action: "refresh_base"` to explicitly integrate the
-current selected repository base into this session's existing local managed
-workspace. This action is offered only in sessions with a writable managed sandbox;
+current target branch of a prepared or published PR, or the selected repository
+base when no PR is associated, into this session's existing local managed workspace.
+This action is offered only in sessions with a writable managed sandbox;
 sessions running directly on the host merge the base with git in their workspace,
 then publish. The Gateway fetches with its host identity and prepares any missing
 file contents from the selected repository before offline merge and snapshot
@@ -175,6 +188,10 @@ saved guest files, ignored guest data, and empty directories. The operation retu
 `baseCommit`, changed paths, and conflicting paths; it does not publish or change
 the GitHub pull request. It accepts no repository, URL, arbitrary ref, other
 session, or pull-request selector.
+
+For prepared PRs, commit distinct staged changes before refreshing a file that
+also has unstaged edits. The action preserves both versions and refuses until
+that staged work is saved. Finish any pending `prepare_pr` operation first.
 
 Resolve any reported conflicts in the same workspace, then repeat `refresh_base`
 with `conflictsResolved: true` and the returned `baseCommit`. This acknowledges
@@ -191,10 +208,11 @@ Reviewing against the old guest HEAD would
 also include upstream-only changes. The operation requires the prepared sandbox
 of the current agent; a direct RPC cannot supply another runtime. Publication
 refuses a pending integration and never silently merges new base changes into
-reviewed files. A retry or restart settles the existing retained source result
-through the workspace journal; host merge ancestry remains outside guest Git
-metadata. Worktree removal is deferred while the host integration is pending;
-finish refresh before retrying archive cleanup. Existing privileged PR actions
+reviewed files. A retry, restart, or later turn resumes the existing retained
+source result from the files it already applied instead of rolling them back, so
+a large refresh interrupted by a turn deadline still finishes; host merge
+ancestry remains outside guest Git metadata. Worktree removal is deferred while
+the host integration is pending; finish refresh before retrying archive cleanup. Existing privileged PR actions
 still require full operator write access.
 
 Finish refresh and conflict resolution before downgrading. An interrupted transfer
@@ -214,13 +232,20 @@ this checkout while capturing or applying changes, records pending results and
 rollback journals in SQLite, and resumes
 only after settlement. New shell calls and command preparation wait for an active
 checkpoint to release the workspace before proceeding; background commands do not
-hold that preparation lease for their entire lifetime. Concurrent Files requests
-and command checkpoints share equivalent captures while waiting for workspace
-custody. Requests arriving after capture starts trigger a fresh checkpoint so
-later guest writes remain visible. Each caller retains its own authority checks.
-Files requests skip checkpoint custody when a live read confirms that the managed
-worktree has no sandbox projection. A later request observes a newly created
-projection and checkpoints it normally; lifecycle custody still owns absent rows.
+hold that preparation lease for their entire lifetime. Concurrent command checkpoints
+share equivalent captures while waiting for workspace custody. Requests arriving
+after capture starts trigger a fresh checkpoint so later guest writes remain visible.
+Each caller retains its own authority checks.
+
+Files and assistant-media reads select the current backing without acquiring
+checkpoint custody or pausing runtimes. For local sandbox sessions, the retained
+private checkout is the live preview; host-only sessions read the canonical worktree.
+Reads retain session and workspace authority and verify sandbox runtime mounts.
+File saves checkpoint guest changes, compare the editor's hash, update the canonical
+file, and synchronize the saved change into the private checkout under the same
+custody before resuming the guest. Direct host edits enter the private checkout at
+the next workspace preparation.
+
 Captured workspace authority is checked again after
 filesystem and engine preparation, immediately before filesystem commands,
 container creation/start/setup, and late browser restarts. Closing the owner

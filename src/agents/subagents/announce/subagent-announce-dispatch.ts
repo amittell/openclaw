@@ -13,11 +13,14 @@ type SubagentAnnounceDeliveryDisposition = NonNullable<
 type SubagentAnnounceDeliveryFailureReason =
   | "completion_handoff_pending"
   | "completion_handoff_unavailable"
+  | "delivery_failed"
   | "delivery_suppressed"
   | "generated_media_missing"
   | "message_tool_delivery_missing"
   | "operator_authority_unavailable"
+  | "requester_state_conflict"
   | "requester_abandoned"
+  | "requester_aborted"
   | "requester_transcript_conflict"
   | "requester_turn_pending"
   | "source_owner_changed"
@@ -31,7 +34,6 @@ export type SubagentAnnounceDeliveryResult = {
   enqueuedAt?: number;
   /** Direct delivery that already committed the requester's visible final. */
   requesterVisibleFinalDelivered?: true;
-  storeReplaced?: true;
   /** Bounded visible final returned by the direct requester synthesis turn. */
   finalAssistantVisibleText?: string;
   reason?: SubagentAnnounceDeliveryFailureReason;

@@ -68,6 +68,7 @@ import {
 } from "./update-candidate-state.sizes.js";
 import {
   publishStateDatabaseVersions,
+  resolveAgentDirOverrideDatabasePaths,
   UpdateStateSchemaVersionsSchema,
   type UpdateStateSchemaVersion,
 } from "./update-candidate-state.versions.js";
@@ -89,6 +90,7 @@ export const UpdateCandidateSnapshotInventorySchema = z.object({
   databases: z
     .array(z.tuple([z.string(), StateDatabaseDiscoverySchema]))
     .transform((entries) => new Map(entries)),
+  // Released parents budget all projected files through this historical field.
   pluginBytes: z.number().nonnegative(),
   pluginPlan: z.literal(UPDATE_CANDIDATE_PLUGIN_PLAN_FILENAME),
   // The installed driver budgets the candidate worker's copy lifecycle.
@@ -162,10 +164,8 @@ export async function collectStateDatabasePaths(
       ? (await listDefaultAgentDatabasePaths(input.stateDir)).map((entry) => entry.agentId)
       : [];
   const configured = Object.entries(input.config.agents?.entries ?? {});
-  for (const directory of [input.env?.OPENCLAW_AGENT_DIR, input.env?.PI_CODING_AGENT_DIR]) {
-    if (directory?.trim()) {
-      queue(path.join(resolveUserPath(directory, input.env), "openclaw-agent.sqlite"));
-    }
+  for (const file of resolveAgentDirOverrideDatabasePaths(input.env)) {
+    queue(file);
   }
   const projected = (input.config.agents?.list ?? []).map((agent) => [agent.id, agent] as const);
   for (const [id, agent] of [...configured, ...projected]) {
@@ -229,12 +229,14 @@ export async function readUpdateCandidateStateInventoryInProcess(
       sharedStatePluginIndex,
       onProgress,
     });
+    const coldArchives = await import("./update-candidate-cold-archives.worker.js");
     await fs.writeFile(planPath, JSON.stringify(plugins));
+    const cold = await coldArchives.measureColdArchiveBytes(files, input.targetStateDir);
     return {
       databases: files,
-      pluginBytes: plugins.bytes,
+      pluginBytes: plugins.bytes + cold.bytes,
       pluginPlan: UPDATE_CANDIDATE_PLUGIN_PLAN_FILENAME,
-      warnings: plugins.warnings,
+      warnings: [...plugins.warnings, ...cold.warnings],
     };
   };
   if (await updateStateDatabaseExists(shared)) {
@@ -319,16 +321,21 @@ export async function readUpdateStateSchemaVersionsInProcess(
   },
 ): Promise<UpdateStateSchemaVersion[]> {
   const shared = path.resolve(input.stateDir, "state", "openclaw.sqlite");
-  const files = input.inspectionPlan
-    ? new Map(input.inspectionPlan.files)
+  // Released drivers such as 2026.9.37 strip ownership fields while parsing discovery.
+  // Rebuild their inventory through the existing source reader; treating those stripped
+  // rows as supplemental would hide both shared state and registered agent schemas.
+  const inspectionPlan =
+    input.includeLocalStoreVersions === false ? undefined : input.inspectionPlan;
+  const files = inspectionPlan
+    ? new Map(inspectionPlan.files)
     : await collectSupplementalStateDatabasePaths(input, await collectStateDatabasePaths(input));
   const sharedIdentity = resolveUpdateCandidateStateIdentity(input.stateDir, shared);
   // Inspect each identity once, then publish every spelling for released rollback baselines.
   const inspected = new Map<string, Omit<UpdateStateSchemaVersion, "path">>();
   for (const [identity, discovery] of files) {
     const file = discovery.spellings[0];
-    if (identity === sharedIdentity && input.inspectionPlan) {
-      const { path: _path, ...version } = input.inspectionPlan.sharedVersion;
+    if (identity === sharedIdentity && inspectionPlan) {
+      const { path: _path, ...version } = inspectionPlan.sharedVersion;
       inspected.set(identity, version);
       continue;
     }
@@ -536,6 +543,7 @@ export async function snapshotUpdateCandidateState(
   },
 ): Promise<z.infer<typeof UpdateCandidateStateSnapshotSchema>> {
   const { createVerifiedSqliteSnapshot } = await import("./sqlite-snapshot.js");
+  const coldArchives = await import("./update-candidate-cold-archives.worker.js");
   const { AGENT_FTS_SCHEMAS } = await import("../state/openclaw-agent-fts-schema.js");
   const { copyUpdateCandidatePlugins, UpdateCandidatePluginPlanSchema } =
     await import("./update-candidate-plugins.js");
@@ -641,69 +649,66 @@ export async function snapshotUpdateCandidateState(
       // full image and alter implicit row IDs before candidate migrations run.
       preserveRowIds: true,
       onProgress: progress.onProgress,
-      ...(file === shared
-        ? {
-            transform: (db: DatabaseSync) => {
-              contentVersion = readStateSchemaContentVersion(db);
-              // Preserve the known source selector before rehearsal changes the state root.
-              // The migration still refuses an unmatched historical partition.
-              if (sourceStoreKey && tableExists(db, "config_machine_state")) {
-                migrateCronDefaultStoreIdentity(db, {
-                  previousVersion: contentVersion ?? userVersion,
-                  legacyDefaultStoreKey: sourceStoreKey,
-                });
-              }
-              const queries = getNodeSqliteKysely<CandidateStateDatabase>(db);
-              execApprovals.rebaseReceipt(db);
-              // Source process leases cannot own the independently opened rehearsal copy.
-              for (const table of leaseTables) {
-                if (tableExists(db, table)) {
-                  executeSqliteQuerySync(db, queries.deleteFrom(table));
-                }
-              }
-              for (const { stored, source } of collectRegisteredPaths(db, shared, files)) {
-                const rebound = targetPath(source);
-                const reboundStored = path.relative(input.targetStateDir, rebound);
-                const resolvedRebound = resolveOpenClawRegisteredAgentDatabasePath(
-                  shared,
-                  reboundStored,
-                );
-                // Extended-length \\?\ and plain spellings of one registered database
-                // are the same duplicate pair as a legacy absolute/relative pair.
-                const sameRegisteredDatabase =
-                  source === resolvedRebound ||
-                  (process.platform === "win32" &&
-                    normalizeWindowsPathPreservingCase(source) ===
-                      normalizeWindowsPathPreservingCase(resolvedRebound));
-                if (stored !== reboundStored && sameRegisteredDatabase) {
-                  // A legacy absolute/relative pair names exactly the same source.
-                  // Collapse only that duplicate in the copy before its unique-key update.
-                  executeSqliteQuerySync(
-                    db,
-                    queries
-                      .deleteFrom("agent_databases")
-                      .where("path", "=", stored)
-                      .where(
-                        "agent_id",
-                        "in",
-                        queries
-                          .selectFrom("agent_databases")
-                          .select("agent_id")
-                          .where("path", "=", reboundStored),
-                      ),
-                  );
-                }
-                executeSqliteQuerySync(
-                  db,
-                  queries
-                    .updateTable("agent_databases")
-                    .set({ path: reboundStored })
-                    .where("path", "=", stored),
-                );
-              }
-            },
+      transform: async (db: DatabaseSync) => {
+        if (file !== shared) {
+          await coldArchives.copyColdArchives(db, file, target);
+          return;
+        }
+        contentVersion = readStateSchemaContentVersion(db);
+        // Preserve the known source selector before rehearsal changes the state root.
+        // The migration still refuses an unmatched historical partition.
+        if (sourceStoreKey && tableExists(db, "config_machine_state")) {
+          migrateCronDefaultStoreIdentity(db, {
+            previousVersion: contentVersion ?? userVersion,
+            legacyDefaultStoreKey: sourceStoreKey,
+          });
+        }
+        const queries = getNodeSqliteKysely<CandidateStateDatabase>(db);
+        execApprovals.rebaseReceipt(db);
+        // Source process leases cannot own the independently opened rehearsal copy.
+        for (const table of leaseTables) {
+          if (tableExists(db, table)) {
+            executeSqliteQuerySync(db, queries.deleteFrom(table));
           }
-        : {}),
+        }
+        for (const { stored, source } of collectRegisteredPaths(db, shared, files)) {
+          const rebound = targetPath(source);
+          const reboundStored = path.relative(input.targetStateDir, rebound);
+          const resolvedRebound = resolveOpenClawRegisteredAgentDatabasePath(shared, reboundStored);
+          // Extended-length \\?\ and plain spellings of one registered database
+          // are the same duplicate pair as a legacy absolute/relative pair.
+          const sameRegisteredDatabase =
+            source === resolvedRebound ||
+            (process.platform === "win32" &&
+              normalizeWindowsPathPreservingCase(source) ===
+                normalizeWindowsPathPreservingCase(resolvedRebound));
+          if (stored !== reboundStored && sameRegisteredDatabase) {
+            // A legacy absolute/relative pair names exactly the same source.
+            // Collapse only that duplicate in the copy before its unique-key update.
+            executeSqliteQuerySync(
+              db,
+              queries
+                .deleteFrom("agent_databases")
+                .where("path", "=", stored)
+                .where(
+                  "agent_id",
+                  "in",
+                  queries
+                    .selectFrom("agent_databases")
+                    .select("agent_id")
+                    .where("path", "=", reboundStored),
+                ),
+            );
+          }
+          executeSqliteQuerySync(
+            db,
+            queries
+              .updateTable("agent_databases")
+              .set({ path: reboundStored })
+              .where("path", "=", stored),
+          );
+        }
+      },
     });
     progress.complete((await fs.stat(target)).size);
     inspected.set(identity, {

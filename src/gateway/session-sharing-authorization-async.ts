@@ -1,7 +1,9 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { AgentSelectionRequiredError } from "../agents/agent-scope-config.js";
+import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
 import {
   retainPreparedSessionSharingFacts,
   projectSessionSharingEntry,
@@ -15,11 +17,13 @@ import { sameSessionTranscriptStorePath } from "../config/sessions/transcript-st
 import type { SessionEntry } from "../config/sessions/types.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { resolveMissingOperatorScope } from "../shared/operator-scope-compat.js";
+import { waitForAgentDatabaseWriteAdmission } from "../state/agent-database-preparation-context.js";
 import { resolveDatabasePath } from "../state/openclaw-state-db.paths.js";
 import {
   prepareUserProfileIdentity,
   readResidentGatewayOwnerProfile,
 } from "../state/user-profile-list.js";
+import { sanitizeChatSendMessageInput } from "./chat-input-sanitize.js";
 import { errorShapeFromError } from "./error-shape.js";
 import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
@@ -27,6 +31,7 @@ import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js"
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/shared-types.js";
 import { sessionMethodDatabaseAdmission, isSessionTargetMethod } from "./session-method-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
+import { restoreSessionOperatorSource } from "./session-operator-sources.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
@@ -105,8 +110,10 @@ async function prepareSessionPrincipalRunAccess(params: {
   const identity = await prepareUserProfileIdentity(params.profileId);
   const ownerProfilePath = resolveDatabasePath();
   let sharing: ReturnType<typeof resolveSessionMutationAuthorization>["authorization"];
+  let recorded: Awaited<ReturnType<typeof restoreSessionOperatorSource>>;
   const release = () => {
     sharing?.release?.();
+    recorded?.release();
     identity.release();
   };
   const readRole = () => {
@@ -127,13 +134,25 @@ async function prepareSessionPrincipalRunAccess(params: {
       }
       return ["operator.admin"];
     }
-    const scopes = readRole()?.scopes;
+    let scopes: readonly string[] | undefined;
+    if (!getConfig().gateway?.roles && recorded) {
+      recorded.authority.assertCurrent();
+      scopes = recorded.authority.scopes;
+    } else {
+      scopes = readRole()?.scopes;
+    }
     if (!scopes || resolveMissingOperatorScope(["operator.sessions.write"], scopes) !== null) {
       throw new Error("Session principal has no current run authority.");
     }
     return scopes;
   };
   try {
+    if (params.profileId !== GATEWAY_OWNER_PROFILE_ID && !getConfig().gateway?.roles) {
+      recorded = await restoreSessionOperatorSource({
+        ...params,
+        assertCurrent: () => params.assertCurrent?.(),
+      });
+    }
     const scopes = readScopes();
     const access = resolveGatewayOperatorAccessAuthority(params.profileId, getConfig(), {
       requireLivePolicySet: true,
@@ -197,10 +216,13 @@ async function prepareSessionPrincipalRunAccess(params: {
       },
     );
     assertCurrent();
+    const signals = [access?.signal, recorded?.authority.signal].filter(
+      (signal): signal is AbortSignal => signal !== undefined,
+    );
     return {
       client,
       assertCurrent,
-      signal: access?.signal,
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
       gatewayAccessGrant: access ? access.gatewayAccessGrant : null,
       release,
     };
@@ -264,6 +286,18 @@ export async function resolveSessionMutationAuthorizationAsync(
     return resolveSessionMutationAuthorization(params);
   }
   const cfg = params.context.getRuntimeConfig();
+  const chatParams =
+    params.method === "chat.send" ? asOptionalRecord(params.requestParams) : undefined;
+  const chatMessage =
+    typeof chatParams?.message === "string"
+      ? sanitizeChatSendMessageInput(chatParams.message)
+      : undefined;
+  // Match the chat handler's command interpretation: cancellation must not join startup.
+  const stopCommand =
+    chatParams?.suppressCommandInterpretation !== true &&
+    chatParams?.intent === undefined &&
+    chatMessage?.ok === true &&
+    isAbortRequestText(chatMessage.message);
   const preparedProfiles = await prepareSessionSharingProfiles(params.client);
   const reads: Array<{ release: () => void }> = [];
   const creationReleases: Array<() => void> = [];
@@ -320,6 +354,13 @@ export async function resolveSessionMutationAuthorizationAsync(
       if (!input.ok) {
         release();
         return { error: input.error };
+      }
+      if (params.method === "chat.send" && !stopCommand) {
+        // Capture session facts after the same startup work that agent input preparation joins.
+        await waitForAgentDatabaseWriteAdmission(input.agentId, {
+          owner: params.context.agentDatabaseStartup,
+        });
+        request.assertInvocationCurrent?.();
       }
       const retained = await prepareSessionMutationFacts({
         cfg,

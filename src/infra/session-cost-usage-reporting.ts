@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -32,19 +32,18 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
-import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
+import { canAccess } from "./path-existence.js";
+import {
+  loadCapturedSessionCostSummariesFromCache,
+  runUsageReportAfterRefresh,
+} from "./session-cost-usage-cache-runtime.js";
 import { dropInheritedTranscriptEvents } from "./session-cost-usage-inherited.js";
 import {
   createUsageCostResolver,
   parseUsageCostTranscriptEntryAsync,
-  resolveUsageCostPricingFingerprint,
 } from "./session-cost-usage-pricing-context.js";
 import { computeUsageTokenTotals } from "./session-cost-usage-pricing.js";
-import {
-  prepareUsageCostWorker,
-  resolveUsageCostWorkerDayBucket,
-  runUsageCostWorker,
-} from "./session-cost-usage-worker-runtime.js";
+import { prepareUsageCostWorker, runUsageCostWorker } from "./session-cost-usage-worker-runtime.js";
 import type {
   DiscoveredSession,
   SessionCostSummary,
@@ -70,7 +69,7 @@ async function withSessionUsageDiagnosticSource<
 ): Promise<Result | null> {
   const source = await resolveUsageSessionSource(params);
   const marker = source && parseSqliteSessionFileMarker(source.sessionFile);
-  if (!source || (!marker && !fs.existsSync(source.sessionFile))) {
+  if (!source || (!marker && !(await canAccess(source.sessionFile)))) {
     return null;
   }
   const signal = getAsyncWorkSignal();
@@ -168,33 +167,17 @@ export async function loadSessionCostSummary(params: {
   if (inventory.files.length === 0) {
     return null;
   }
-  await refreshCostUsageCacheForAgent({
-    config: params.config,
-    agentId: params.agentId,
-    agentDir: prepared.agentDir,
-    databasePath: prepared.location.databasePath,
-    storePath: prepared.location.storePath,
-    env: prepared.location.env,
-    sessionFiles: [sessionFile],
-    sessionActor: prepared.sessionActor,
-    waitForRefresh: true,
-  });
-  const pricingFingerprint = await resolveUsageCostPricingFingerprint(
-    prepared.config,
-    prepared.agentDir,
+  const result = await runUsageReportAfterRefresh(prepared, params, () =>
+    loadCapturedSessionCostSummariesFromCache(
+      {
+        ...params,
+        sessions: [{ sessionId: params.sessionId, sessionFile }],
+        requestRefresh: false,
+        maxPublicationWaitMs: 0,
+      },
+      prepared,
+    ),
   );
-  const result = await runUsageCostWorker(prepared, {
-    kind: "sessions",
-    pricingFingerprint,
-    sessions: [{ sessionId: params.sessionId, sessionFile }],
-    startMs: params.startMs,
-    endMs: params.endMs,
-    includeUntimestamped: params.includeUntimestamped,
-    dayBucket: resolveUsageCostWorkerDayBucket(params.dayBucket),
-  });
-  if (result.kind !== "sessions") {
-    throw new Error("Usage worker returned an invalid session summary");
-  }
   return result.summaries[0] ?? null;
 }
 
@@ -582,7 +565,7 @@ export async function resolveUsageSessionSource(input: {
         })
       : undefined);
 
-  if (candidate && fs.existsSync(candidate)) {
+  if (candidate && (await canAccess(candidate))) {
     return { sessionFile: candidate };
   }
   if (!sessionId) {
@@ -594,7 +577,7 @@ export async function resolveUsageSessionSource(input: {
       ? path.dirname(candidate)
       : resolveSessionTranscriptsDirForAgent(params.agentId);
     const baseFileName = `${sessionId}.jsonl`;
-    const entries = fs.readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => {
+    const entries = (await fs.readdir(sessionsDir, { withFileTypes: true })).filter((entry) => {
       return (
         entry.isFile() &&
         (entry.name === baseFileName ||

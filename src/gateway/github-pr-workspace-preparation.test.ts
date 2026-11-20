@@ -4,6 +4,7 @@ import { interruptCanonicalWorkspaceAcceptance, bindFixtureRuntime, fixture, moc
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { isNodeError } from "@openclaw/fs-safe/path";
 import { describe, expect, it, vi } from "vitest";
 import * as sandboxBackend from "../agents/sandbox/backend.js";
@@ -24,15 +25,88 @@ describe("existing PR preparation through the registered agent action", () => {
     realWorktree: true,
   });
 
-  it.each([false, true])(
-    "installs the exact PR head from a clean newer project base and preserves later work (fork=%s)",
-    async (fork) => {
-      const f = await fixture({ fork });
+  it.each(["private PR", "revoked transfer", "revoked recovery"] as const)(
+    "preserves the bound workspace when base refresh is unauthorized (%s)",
+    async (condition) => {
+      const privatePr = condition === "private PR";
+      const f = await fixture({ fork: true, conflict: true });
+      expect(await f.invoke()).toMatchObject({ status: "prepared" });
+      // The accepted public PR becomes private before this unlinked guest refreshes it.
+      f.pr.base.repo.private = f.pr.head.repo.private = privatePr;
+      const upstreamGit = (...args: string[]) => f.local!.git("-C", f.upstream, ...args);
+      await upstreamGit("checkout", "main");
+      await fs.writeFile(path.join(f.upstream, "artifact.txt"), "new target change\n");
+      await upstreamGit("add", "artifact.txt");
+      await upstreamGit("commit", "-m", "Advance the target after preparation");
+      const baseCommit = (f.pr.base.sha = await upstreamGit("rev-parse", "HEAD"));
+      const refresh = (resolved = false) =>
+        f.invoke({
+          action: "refresh_base",
+          pullRequestUrl: undefined,
+          ...(resolved ? { conflictsResolved: true, baseCommit } : {}),
+        });
+      if (condition === "revoked recovery") {
+        expect(await refresh()).toMatchObject({ status: "conflicts", baseCommit });
+        await fs.writeFile(path.join(f.projection, "artifact.txt"), "resolved guest work\n");
+      }
+      const snapshot = async () => ({
+        binding: f.readSession().worktree,
+        hostHead: await f.git("rev-parse", "HEAD"),
+        hostIndex: await f.git("write-tree"),
+        guestHead: await f.guestGit("rev-parse", "HEAD"),
+        guestIndex: await f.guestGit("write-tree"),
+        hostFiles: await fs.readFile(path.join(f.cwd, "artifact.txt"), "utf8"),
+        guestFiles: await fs.readFile(path.join(f.projection, "artifact.txt"), "utf8"),
+      });
+      const before = await snapshot();
+      let revoked = false;
+      if (condition === "revoked transfer") {
+        const transport = mocks.runCommand.getMockImplementation()!;
+        mocks.runCommand.mockImplementation(async (...args) => {
+          const result = await transport(...args);
+          if (!revoked && args[0].includes("fetch") && args[0].includes(baseCommit)) {
+            await f.revoke();
+            revoked = true;
+          }
+          return result;
+        });
+      } else if (condition === "revoked recovery") {
+        const backend = f.sandbox.backend!;
+        const runShell = backend.runShellCommand.bind(backend);
+        backend.runShellCommand = async (params) => {
+          const result = await runShell(params);
+          if (!revoked) {
+            await f.revoke();
+            revoked = true;
+          }
+          return result;
+        };
+      }
+      await expect(refresh(condition === "revoked recovery")).rejects.toThrow(
+        /verified|permission|revoked|access|changed|unavailable/i,
+      );
+      expect(revoked).toBe(!privatePr);
+      expect(await snapshot()).toEqual(before);
+      expect(f.writes).toEqual([]);
+      expect(f.externalWrites).toEqual([]);
+    },
+  );
+
+  it.each([
+    { fork: false, baseBranch: "main", projectFork: false },
+    { fork: true, baseBranch: "main", projectFork: false },
+    { fork: true, baseBranch: "release", projectFork: false },
+    { fork: true, baseBranch: "release", projectFork: true },
+  ])(
+    "installs the exact PR head from a clean newer project base and preserves later work (fork=$fork, base=$baseBranch, projectFork=$projectFork)",
+    async ({ fork, baseBranch, projectFork }) => {
+      const f = await fixture({ fork, baseBranch, projectFork, newerProjectBase: true });
       const before = f.readSession();
       const originalHead = await f.git("rev-parse", "HEAD");
       const originalGuestHead = await f.guestGit("rev-parse", "HEAD");
       const guestBranch = await f.guestGit("symbolic-ref", "HEAD");
-      expect(originalHead).toBe(f.pr.base.sha);
+      expect(await f.git("rev-list", "--count", `${f.pr.base.sha}..HEAD`)).toBe("5");
+      expect(await f.git("merge-base", originalHead, f.pr.base.sha)).toBe(f.pr.base.sha);
       expect(await f.git("status", "--porcelain")).toBe("");
       expect(await fs.readFile(path.join(f.projection, "newer-base.txt"), "utf8")).toBe(
         "base advanced after PR\n",
@@ -60,7 +134,7 @@ describe("existing PR preparation through the registered agent action", () => {
             base: {
               repository: "openclaw/openclaw",
               repositoryId: 10,
-              branch: "main",
+              branch: baseBranch,
               commit: f.pr.base.sha,
             },
             head: {
@@ -175,9 +249,19 @@ describe("existing PR preparation through the registered agent action", () => {
         code: "push_rejected",
         nextAction: expect.stringContaining("call prepare_pr with this PR's URL"),
       });
-      await expect(f.invoke({ action: "refresh_base", pullRequestUrl: undefined })).rejects.toThrow(
-        "prepare_pr",
-      );
+      await expect(
+        f.invoke({ action: "refresh_base", pullRequestUrl: undefined }),
+      ).resolves.toMatchObject({
+        status: "refreshed",
+        baseCommit: f.pr.base.sha,
+      });
+      // Updating the base does not accept a different writer's remote PR head.
+      await expect(
+        f.invoke({ action: "publish", pullRequestUrl: undefined }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        code: "push_rejected",
+      });
       await expect(
         f.invoke({
           action: "request_review",
@@ -313,6 +397,65 @@ describe("existing PR preparation through the registered agent action", () => {
         sandbox?.[Symbol.dispose]?.();
         create.mockRestore();
       }
+    },
+  );
+
+  it.each([false, true])(
+    "prepares cold PR history and current files without historical blobs (empty=%s)",
+    async (empty) => {
+      const f = await fixture({ empty, fork: true });
+      const upstream = (...args: string[]) => f.local!.git("-C", f.upstream, ...args);
+      await upstream("config", "uploadpack.allowFilter", "true");
+      await f.advanceHead({ "pr.txt": "obsolete PR contents\n" });
+      const historicalBlob = await upstream("rev-parse", "HEAD:pr.txt");
+      const head = await f.advanceHead({ "pr.txt": "current PR contents\n" });
+      // Advance the base after the selected project's local snapshot.
+      await upstream("checkout", "main");
+      for (const contents of ["obsolete base contents\n", "current base contents\n"]) {
+        await fs.writeFile(path.join(f.upstream, "base-only.txt"), contents);
+        await upstream("add", "base-only.txt");
+        await upstream("commit", "-m", "Advance base");
+      }
+      const historicalBaseBlob = await upstream("rev-parse", "HEAD^:base-only.txt");
+      f.pr.base.sha = await upstream("rev-parse", "HEAD");
+      // Git stores filter defaults per URL; a fork must not share its base's URL.
+      const baseUrl = `${pathToFileURL(f.upstream).href}/.`;
+      const transport = mocks.runCommand.getMockImplementation()!;
+      mocks.runCommand.mockImplementation(
+        (argv: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string }) =>
+          transport(
+            argv.map((arg) => (arg === "https://github.com/openclaw/openclaw.git" ? baseUrl : arg)),
+            options,
+          ),
+      );
+      vi.stubEnv("GIT_NO_LAZY_FETCH", "1");
+      await expect(f.git("cat-file", "-e", head)).rejects.toThrow();
+      await expect(f.git("cat-file", "-e", f.pr.base.sha)).rejects.toThrow();
+
+      expect(await f.invoke()).toMatchObject({
+        status: "prepared",
+        headCommit: head,
+        review: { mode: "local", base: f.commonAncestor },
+      });
+      expect(await f.git("rev-parse", "--is-shallow-repository")).toBe("false");
+      expect(await f.git("rev-list", "--count", head)).toBe("4");
+      expect(await f.git("write-tree")).toBe(await upstream("rev-parse", `${head}^{tree}`));
+      expect(
+        await f.git("rev-list", "--objects", "--missing=print", "--max-count=1", head),
+      ).not.toContain("?");
+      for (const blob of [historicalBlob, historicalBaseBlob]) {
+        await expect(f.git("cat-file", "-e", blob)).rejects.toThrow();
+      }
+      expect(await f.git("show", `${f.pr.base.sha}:base-only.txt`)).toBe("current base contents");
+      expect(await fs.readFile(path.join(f.projection, "pr.txt"), "utf8")).toBe(
+        "current PR contents\n",
+      );
+
+      const fetches = () => mocks.runCommand.mock.calls.filter(([argv]) => argv.includes("fetch"));
+      const beforeRepeat = fetches().length;
+      expect(await f.invoke()).toMatchObject({ status: "prepared", headCommit: head });
+      expect(fetches()).toHaveLength(beforeRepeat);
+      expect(f.writes).toEqual([]);
     },
   );
 
@@ -457,6 +600,39 @@ describe("existing PR preparation through the registered agent action", () => {
     expect(await f.git("write-tree")).toBe(tree);
     expect(await fs.readFile(path.join(f.projection, "artifact.txt"), "utf8")).toBe("accepted\n");
     expect(f.publishedTitles).toEqual(["earlier-pr"]);
+    expect(f.writes).toEqual([]);
+    expect(f.externalWrites).toEqual([]);
+  });
+
+  it("preserves a clean initial projection containing unpublished project history", async () => {
+    const f = await fixture({
+      fork: true,
+      projectFork: true,
+      baseBranch: "release",
+      newerProjectBase: true,
+      unpublishedProjectWork: true,
+    });
+    const before = f.readSession().worktree;
+    const head = await f.git("rev-parse", "HEAD");
+    const tree = await f.git("write-tree");
+    expect(await f.guestGit("rev-parse", "HEAD")).toBe(head);
+    expect(await f.git("status", "--porcelain")).toBe("");
+    expect(await f.guestGit("status", "--porcelain")).toBe("");
+    await expect(f.invoke()).rejects.toThrow("existing dirty, untracked, or unpublished work");
+    expect(f.readSession().worktree).toEqual(before);
+    for (const git of [f.git, f.guestGit]) {
+      expect(await git("rev-parse", "HEAD")).toBe(head);
+      expect(await git("write-tree")).toBe(tree);
+      expect(await git("status", "--porcelain")).toBe("");
+    }
+    for (const directory of [f.cwd, f.projection]) {
+      expect(await fs.readFile(path.join(directory, "notes.txt"), "utf8")).toBe(
+        "unpublished project work\n",
+      );
+      await expect(fs.stat(path.join(directory, "pr.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
     expect(f.writes).toEqual([]);
     expect(f.externalWrites).toEqual([]);
   });

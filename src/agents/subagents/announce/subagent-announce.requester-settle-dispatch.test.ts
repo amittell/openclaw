@@ -83,6 +83,244 @@ describe("requester settle dispatch deadline", () => {
 
   beforeEach(() => setRuntimeConfigSnapshot({}));
 
+  it.each([false, true])(
+    "does not redispatch a restored consumed requester input (yielded=%s)",
+    async (yielded) => {
+      const context = createContext();
+      const { child, completeBatch, params } = dispatchFixture();
+      child.requesterSettleWake!.requesterYieldBatch = yielded ? true : undefined;
+      child.delivery = {
+        status: "pending",
+        requesterDelivery: { state: "consumed", runId: "committed-requester-turn", at: 3_001 },
+      };
+      useDirectDelivery();
+      startTurn.mockImplementation(async (turn) => {
+        acceptTurn(turn);
+        throw new Error("provider unavailable after requester commit");
+      });
+      const delivered = await withGateway(context, () =>
+        maybeWakeRequesterAfterAllChildrenSettled(params),
+      );
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(delivered).toBe(true);
+      expect(completeBatch).toHaveBeenCalledWith(
+        [child],
+        1,
+        expect.objectContaining({ delivered: true }),
+        expect.any(Function),
+      );
+    },
+  );
+
+  it.each(["failed", "partial_failed"] as const)(
+    "keeps consumed requester delivery %s after the real response classifier",
+    async (status) => {
+      const context = createContext();
+      const { child, completeBatch, params } = dispatchFixture();
+      child.delivery = { status: "pending" };
+      params.requesterOrigin = { channel: "slack", to: "channel:C123" };
+      params.recordRequesterDelivery = async (_batch, fact, published) => {
+        child.delivery = { status: "pending", requesterDelivery: fact };
+        published([child]);
+      };
+      useDirectDelivery();
+      startTurn.mockImplementation(async (turn) => {
+        acceptTurn(turn);
+        await turn.controllerInput?.onTranscriptCommitted?.("requester-turn");
+        turn.io.emitFinal([
+          true,
+          {
+            status: "ok",
+            result: {
+              payloads: [{ text: "Requester answer" }],
+              deliveryStatus: {
+                status,
+                resultCount: status === "partial_failed" ? 1 : 0,
+                errorMessage: "platform send failed",
+              },
+            },
+          },
+          undefined,
+        ]);
+      });
+      expect(
+        await withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params)),
+      ).toBe(false);
+      expect(child.delivery?.requesterDelivery?.state).toBe("consumed");
+      expect(completeBatch).toHaveBeenCalledWith(
+        [child],
+        1,
+        expect.objectContaining({
+          delivered: false,
+          error: "platform send failed",
+          ...(status === "partial_failed" ? { disposition: "ambiguous" } : {}),
+        }),
+        expect.any(Function),
+      );
+      await expect(
+        withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params)),
+      ).resolves.toBe(false);
+      expect(startTurn).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("joins consumption publication before settling a failed requester turn", async () => {
+    const context = createContext();
+    const { child, completeBatch, params } = dispatchFixture();
+    const recorded = createDeferredCore();
+    const publishing = createDeferredCore();
+    params.recordRequesterDelivery = async (_batch, fact, published) => {
+      publishing.resolve();
+      await recorded.promise;
+      child.delivery = { status: "pending", requesterDelivery: fact };
+      published([child]);
+    };
+    useDirectDelivery();
+    startTurn.mockImplementation(async (turn) => {
+      acceptTurn(turn);
+      void turn.controllerInput?.onTranscriptCommitted?.("requester-turn");
+      throw new Error("provider failed after submitting input");
+    });
+    const delivery = withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params));
+    await publishing.promise;
+    expect(completeBatch).not.toHaveBeenCalled();
+    recorded.resolve();
+    expect(await delivery).toBe(true);
+    expect(child.delivery?.requesterDelivery?.state).toBe("consumed");
+  });
+
+  it.each(["missed send", "revoked authority"] as const)(
+    "does not replay restored consumption after %s",
+    async (scenario) => {
+      const context = createContext();
+      const { child, completeBatch, params } = dispatchFixture();
+      child.delivery = {
+        status: "pending",
+        requesterDelivery: { state: "consumed", runId: "committed-requester-turn" },
+        ...(scenario === "missed send"
+          ? {
+              disposition: "permanent_failure" as const,
+              lastDropReason: "message_tool_delivery_missing" as const,
+              lastError: "answer was not sent",
+            }
+          : {}),
+      };
+      useDirectDelivery();
+      if (scenario === "revoked authority") {
+        params.isSourceCurrent = () => false;
+      }
+      expect(
+        await withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params)),
+      ).toBe(false);
+      expect(startTurn).not.toHaveBeenCalled();
+      if (scenario === "missed send") {
+        expect(completeBatch).toHaveBeenCalledWith(
+          [child],
+          1,
+          expect.objectContaining({ delivered: false, disposition: "permanent_failure" }),
+          expect.any(Function),
+        );
+      } else {
+        expect(completeBatch).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    { persistent: false, returned: false },
+    { persistent: true, returned: false },
+    { persistent: false, returned: true },
+    { persistent: true, returned: true },
+  ])(
+    "retries saved-state rejection after admission with a bounded budget ($persistent, returned=$returned)",
+    async ({ persistent, returned }) => {
+      const context = createContext();
+      const { child, completeBatch, params } = dispatchFixture();
+      useDirectDelivery();
+      const runIds: string[] = [];
+      startTurn.mockImplementation(async (turn) => {
+        acceptTurn(turn);
+        runIds.push(turn.preflight.request.idempotencyKey);
+        if (persistent || runIds.length === 1) {
+          const error = {
+            kind: "incomplete_turn",
+            code: "item_conflict",
+            message: "Saved conversation state rejected",
+          };
+          if (returned) {
+            turn.io.emitFinal([
+              true,
+              { status: "ok", result: { payloads: [], meta: { error } } },
+              undefined,
+            ]);
+            return;
+          }
+          throw Object.assign(new Error(error.message), error);
+        }
+        finishTurn(turn.io, "Recovered child result.");
+      });
+      const run = () =>
+        withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params));
+      await expect(run()).resolves.toBe(false);
+      expect(completeBatch).not.toHaveBeenCalled();
+      expect(child.requesterSettleWake?.nextAttemptAt).toBeTypeOf("number");
+      using clock = vi.spyOn(Date, "now");
+      for (let attempt = 1; child.requesterSettleWake; attempt++) {
+        expect(attempt).toBeLessThan(3);
+        clock.mockReturnValue(child.requesterSettleWake.nextAttemptAt!);
+        await expect(run()).resolves.toBe(!persistent);
+      }
+      expect(runIds).toHaveLength(persistent ? 3 : 2);
+      expect(new Set(runIds).size).toBe(runIds.length);
+      expect(completeBatch).toHaveBeenCalledOnce();
+      await expect(run()).resolves.toBe(false);
+      expect(startTurn).toHaveBeenCalledTimes(persistent ? 3 : 2);
+    },
+  );
+
+  it.each([false, true])(
+    "retries proven-safe aborts with a bounded budget (persistent=%s)",
+    async (persistent) => {
+      const context = createContext();
+      const { child, completeBatch, params } = dispatchFixture();
+      useDirectDelivery();
+      const runIds: string[] = [];
+      startTurn.mockImplementation(async (turn) => {
+        acceptTurn(turn);
+        runIds.push(turn.preflight.request.idempotencyKey);
+        if (persistent || runIds.length === 1) {
+          turn.io.emitFinal([
+            true,
+            { status: "timeout", stopReason: "rpc", replaySafe: true },
+            undefined,
+          ]);
+        } else {
+          finishTurn(turn.io, "Recovered child result.");
+        }
+      });
+      const run = () =>
+        withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params));
+      using clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      await expect(run()).resolves.toBe(false);
+      expect(await deliver.mock.results[0]?.value).toMatchObject({
+        delivered: false,
+        reason: "requester_aborted",
+        disposition: "retryable",
+      });
+      expect(completeBatch).not.toHaveBeenCalled();
+      for (const delay of persistent ? [30_000, 120_000] : [30_000]) {
+        expect(child.requesterSettleWake?.nextAttemptAt).toBe(Date.now() + delay);
+        clock.mockReturnValue(child.requesterSettleWake!.nextAttemptAt!);
+        await expect(run()).resolves.toBe(!persistent);
+      }
+      expect(runIds).toHaveLength(persistent ? 3 : 2);
+      expect(new Set(runIds).size).toBe(runIds.length);
+      expect(completeBatch).toHaveBeenCalledOnce();
+      await expect(run()).resolves.toBe(false);
+      expect(startTurn).toHaveBeenCalledTimes(persistent ? 3 : 2);
+    },
+  );
+
   it("does not reserve a foreground-blocking source for a wholly superseded yielded cohort", async () => {
     const context = createContext();
     const { child, completeBatch, params } = dispatchFixture();

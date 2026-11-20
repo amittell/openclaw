@@ -5,7 +5,7 @@ import * as restartTrace from "../../gateway/restart-trace.js";
 import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import type { startGatewayServer } from "../../gateway/server.js";
 import type { GatewayInstallationReplacement } from "../../gateway/stale-install.js";
-import { readChildRuntimeViability } from "../../infra/child-runtime-viability.js";
+import { prepareChildRuntimeViability } from "../../infra/child-runtime-viability.js";
 import { startDiagnosticsTimeline } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayBootLifecycleCompletion } from "../../infra/gateway-boot-lifecycle.js";
@@ -17,7 +17,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { GatewayDrainReason } from "../../process/gateway-work-admission.js";
 import { runWithProcessCleanupBudget } from "../../process/supervisor/cleanup-budget.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
-import { registerSignalExitOwner } from "../signal-exit-barrier.js";
+import { handOffGatewayStartupSignals, registerSignalExitOwner } from "../signal-exit-barrier.js";
 import { measureGatewayBootstrapStep } from "../startup-trace.js";
 import { createGatewayHostLifecycle } from "./host-lifecycle.js";
 import { installGatewayHostLifeline } from "./host-lifeline.js";
@@ -258,30 +258,42 @@ export async function runGatewayLoop(params: {
     alreadyCancelledOwner?: GatewayRestartIntent["successorOwner"],
   ): Promise<void> => {
     await cleanup.settleResource("restart.close.signals", () => signals.drain());
-    if (runtimeResourcesRetained) {
-      gatewayLog.warn("shutdown resources remain; refusing in-process restart and exiting");
-      return finishLoopAfterCleanup(0);
-    }
-    if (activeRestartRequest?.restartIntent?.requireFreshProcess) {
-      gatewayLog.error(
-        "Fresh-process restart failed; the unsettled native worker cannot recover in-process. Exiting through the verified service owner.",
-      );
-      return finishLoopAfterCleanup(1);
-    }
-    if (!readChildRuntimeViability().available) {
-      gatewayLog.error(
-        "Fresh-process restart failed; the unavailable child runtime cannot recover in-process. Restart through the service owner after repairing its runtime.",
-      );
-      return finishLoopAfterCleanup(1);
-    }
-    if (foregroundUpdateClosed) {
-      return finishLoopAfterCleanup(1);
-    }
     for (;;) {
+      if (runtimeResourcesRetained) {
+        gatewayLog.warn("shutdown resources remain; refusing in-process restart and exiting");
+        return finishLoopAfterCleanup(0);
+      }
+      if (activeRestartRequest?.restartIntent?.requireFreshProcess) {
+        gatewayLog.error(
+          "Fresh-process restart failed; the unsettled native worker cannot recover in-process. Exiting through the verified service owner.",
+        );
+        return finishLoopAfterCleanup(1);
+      }
+      if (foregroundUpdateClosed) {
+        return finishLoopAfterCleanup(1);
+      }
       if (forcedExitStarted) {
         return;
       }
       const restartRequest = activeRestartRequest;
+      const runtimeViability = await prepareChildRuntimeViability();
+      if (forcedExitStarted || terminalExitCode !== undefined) {
+        return;
+      }
+      if (
+        activeRestartRequest !== restartRequest ||
+        runtimeResourcesRetained ||
+        foregroundUpdateClosed ||
+        restartRequest?.restartIntent?.requireFreshProcess
+      ) {
+        continue;
+      }
+      if (!runtimeViability.publish().available) {
+        gatewayLog.error(
+          "Fresh-process restart failed; the unavailable child runtime cannot recover in-process. Restart through the service owner after repairing its runtime.",
+        );
+        return finishLoopAfterCleanup(1);
+      }
       const restartOwner = restartRequest?.restartIntent?.successorOwner;
       const restoration = sameManagedUpdateOwner(restartOwner, alreadyCancelledOwner)
         ? "restored-in-process"
@@ -621,6 +633,7 @@ export async function runGatewayLoop(params: {
       }
       shutdownDeadline = performance.now() + deadlineMs;
       forceExitTimer = setTimeout(() => {
+        hardExitWatchdog?.reportPending();
         const exitOk = budget.nativeStopBudget && !restartWithoutSupervisor && !shutdownFailure;
         gatewayLog.warn(
           `shutdown deadline reached before ${action}; pending close steps: ${restartTrace.formatGatewayPendingCloseSteps()}; cleanup incomplete; exitCode=${exitOk ? 0 : 1}`,
@@ -639,6 +652,7 @@ export async function runGatewayLoop(params: {
         forceExitTimer.unref();
         hardExitWatchdog = armShutdownHardExitWatchdog({
           delayMs: deadlineMs + HARD_EXIT_WATCHDOG_GRACE_MS,
+          describePending: restartTrace.formatGatewayPendingCloseSteps,
           onError: (error) => {
             gatewayLog.warn(
               `hard-exit watchdog failed; retaining main-thread shutdown timer: ${formatErrorMessage(error)}`,
@@ -867,10 +881,7 @@ export async function runGatewayLoop(params: {
     }
   };
   const flushPendingStartupRequest = (opts: { allowMissingServer?: boolean } = {}) => {
-    if (!pendingStartupRequest || !restartResolver) {
-      return;
-    }
-    if (!server && opts.allowMissingServer !== true) {
+    if (!pendingStartupRequest || !restartResolver || (!server && !opts.allowMissingServer)) {
       return;
     }
     const request = pendingStartupRequest;
@@ -1033,6 +1044,7 @@ export async function runGatewayLoop(params: {
     isTerminal: () => terminalExitCode !== undefined,
     isForcedExitStarted: () => forcedExitStarted,
     isForegroundUpdateClosed: () => foregroundUpdateClosed,
+    getRequest: () => pendingStartupRequest ?? activeRestartRequest,
     isRuntimeResetPending: () => runtimeResetPending,
     isShuttingDown: () => shuttingDown,
     getExternalRestartOwner: () => hostLifecycle?.capability.externalRestart,
@@ -1041,6 +1053,8 @@ export async function runGatewayLoop(params: {
     updateSuccessor,
     request,
   });
+  // These handlers own SIGINT/SIGTERM now; retire the startup owner in the same turn.
+  handOffGatewayStartupSignals();
   const releaseRuntimeRecovery = eagerLifecycleRuntime.registerGatewayRuntimeRecovery({
     decision: restartDecision,
     ownsProcessLifecycle: params.ownsProcessLifecycle === true,

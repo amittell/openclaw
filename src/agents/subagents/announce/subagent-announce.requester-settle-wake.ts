@@ -1,6 +1,6 @@
 import { withGoalContinuationSettlement } from "../../../auto-reply/reply/goal-continuation-return.js";
 import { getRuntimeConfig } from "../../../config/config.js";
-import { isSystemEventStoreCurrent } from "../../../infra/system-event-ownership.js";
+import { isGatewayOperatorAccessUnavailable } from "../../../gateway/operator-access-errors.js";
 import { getSharedGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   retireSessionControllerInput,
@@ -13,6 +13,11 @@ import {
   getFollowupForCohort,
   withFollowupSuccessor,
 } from "../completion/session-followup-completion.js";
+import {
+  hasConsumedRequesterInput,
+  resolveRequesterDeliveryOutcome,
+  resolveConsumedRequesterDeliveryOutcome,
+} from "../registry/subagent-delivery-state.js";
 import { withSubagentProgressDraft } from "../registry/subagent-progress-draft.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
@@ -24,6 +29,7 @@ import {
   listSubagentRunsForRequester,
 } from "../registry/subagent-registry-read.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
+import { observeSubagentRequesterDelivery } from "../registry/subagent-requester-delivery.js";
 import {
   buildRequesterSettleWakeIdentity,
   hasRequesterCompletionCohort,
@@ -52,11 +58,14 @@ import {
 } from "./subagent-announce-output.js";
 import { createRequesterDescendantReader } from "./subagent-announce.requester-settle-descendants.js";
 import { buildRequesterSettleWakeMessage } from "./subagent-announce.requester-settle-message.js";
-import { createRequesterSettleReceiptAdmission } from "./subagent-announce.requester-settle-receipt.js";
+import {
+  createRequesterSettleReceiptAdmission,
+  recordRequesterReplacementNotice,
+} from "./subagent-announce.requester-settle-receipt.js";
 import {
   readSharedBatchState,
   createRequesterSettleBatchCompletion,
-  REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS,
+  hasExhaustedRequesterSettleAttempts,
   needsRequesterSettleFindings,
   isRequesterSettleMemberReady,
   resolveRequesterSettleRetryState,
@@ -229,13 +238,11 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     return true;
   };
   const selectedState = readSharedBatchState(settledBatch);
-  if ((selectedState.nextAttemptAt ?? 0) > Date.now()) {
+  const hasConsumedBatch = settledBatch.some(hasConsumedRequesterInput);
+  if (!hasConsumedBatch && (selectedState.nextAttemptAt ?? 0) > Date.now()) {
     return false;
   }
-  if (
-    selectedState.status === "pending" &&
-    selectedState.attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS
-  ) {
+  if (!hasConsumedBatch && hasExhaustedRequesterSettleAttempts(selectedState)) {
     await completeBatch(settledBatch, selectedState, {
       delivered: false,
       path: "none",
@@ -262,26 +269,6 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
   }
   const waitForDescendants = (facts: NonNullable<typeof initialDescendants>) =>
     !pauseNotice && waitForRequesterDescendants(facts, frozen, params.onDescendantsPending);
-  const isStoreCurrent = () =>
-    settledBatch.every((entry) =>
-      isSystemEventStoreCurrent(requesterSessionKey, entry.requesterStorePath, requesterAgentId),
-    );
-  const retireReplacedStore = async (): Promise<boolean> => {
-    if (isStoreCurrent()) {
-      return false;
-    }
-    await completeBatch(settledBatch, selectedState, {
-      delivered: false,
-      path: "none",
-      error: "store replaced",
-      storeReplaced: true,
-      disposition: "intentional_non_delivery",
-    });
-    return true;
-  };
-  if (await retireReplacedStore()) {
-    return false;
-  }
   const followup = pauseNotice ? undefined : getFollowupForCohort(settledBatch);
   const getRequesterRun = () =>
     followup
@@ -377,6 +364,23 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     // `/new` keeps the session id but rotates the lifecycle revision, so compare the
     // whole incarnation; a deliverable continuation must not post old findings into a reset session.
     if (privateRows.some((entry) => !matchesSubagentRequesterSession(entry, requesterIdentity))) {
+      // Only a host-authored diagnostic crosses the reset; child findings stay private.
+      // Persist it before retiring the batch so a failed notice keeps the obligation retryable.
+      const notified = await recordRequesterReplacementNotice({
+        requester,
+        identity: requesterIdentity,
+        batchRunIds,
+        rearmGeneration: selectedState.rearmGeneration,
+        assertCommitAllowed: () => {
+          params.signal?.throwIfAborted();
+          if (!params.isSourceCurrent() || !isBatchCurrent()) {
+            throw new Error("Subagent completion notice lost its source");
+          }
+        },
+      });
+      if (!notified) {
+        return false;
+      }
       await completeBatch(settledBatch, selectedState, {
         delivered: false,
         path: "none",
@@ -390,9 +394,6 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     const preparedFindings = pauseNotice
       ? { text: pauseNotice.acknowledgment, isCurrent: () => true }
       : await readChildCompletionFindings(completionRows.filter(needsRequesterSettleFindings));
-    if (await retireReplacedStore()) {
-      return false;
-    }
     // Recheck owned descendants after loading findings and before dispatch.
     const currentDescendants = await readRequesterDescendants();
     if (
@@ -419,13 +420,9 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     const sourceReceiptAdmission = createRequesterSettleReceiptAdmission({
       requester,
       identity: requesterIdentity,
-      storeSessionKey: requesterSessionKey,
-      storeAgentId: requesterAgentId,
-      storePaths: () => settledBatch.map((entry) => entry.requesterStorePath),
       isSourceCurrent: () =>
         matchingRows.every((entry) => matchesSubagentRequesterSession(entry, requesterIdentity)),
       readCurrent: requesterCurrent.readCurrent,
-      isStoreCurrent,
     });
     const isRequesterCurrent = () => {
       if (!sourceReceiptAdmission.isRequesterCurrent()) {
@@ -450,12 +447,20 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     const isSourceSessionEffectsAllowed = () =>
       !params.signal?.aborted &&
       params.isSourceCurrent() &&
-      sourceReceiptAdmission.isStoreCurrent() &&
       preparedFindings.isCurrent() &&
       !isGatewayClosed() &&
       areCompletionRowsCurrent() &&
       isRequesterCurrent() &&
       !isBatchDeliveryClosed();
+    if (!pauseNotice && settledBatch.every(hasConsumedRequesterInput)) {
+      if (!isSourceSessionEffectsAllowed()) {
+        return false;
+      }
+      // A restored transcript receipt is an observation, never a new turn admission.
+      const outcome = resolveConsumedRequesterDeliveryOutcome(settledBatch);
+      await completeBatch(settledBatch, selectedState, outcome);
+      return outcome.delivered;
+    }
     const continuationCaller = captureRequesterContinuationCaller({
       requesterSessionKey,
       requesterSessionId: requesterIdentity.sessionId,
@@ -525,12 +530,7 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
         await params.transitionBatch(settledBatch, state, refreshBatch);
         return true;
       }
-      if (
-        params.signal?.aborted ||
-        isGatewayClosed() ||
-        !isBatchCurrent() ||
-        (await retireReplacedStore())
-      ) {
+      if (params.signal?.aborted || isGatewayClosed() || !isBatchCurrent()) {
         return true;
       }
       if (!isBatchDeliveryClosed() && isRequesterCurrent()) {
@@ -558,6 +558,13 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
         requesterTurnRunId: directIdempotencyKey,
       });
     }
+    const recordConsumption = params.recordRequesterDelivery;
+    const joinConsumption =
+      !pauseNotice && recordConsumption
+        ? observeSubagentRequesterDelivery(controllerInput, (fact) =>
+            recordConsumption(settledBatch, fact, refreshBatch),
+          )
+        : undefined;
     let dispatchPrepared = false;
     let dispatchAccepted = false;
     const attemptCount =
@@ -607,6 +614,9 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
                   lastError: undefined,
                 },
                 refreshBatch,
+                !pauseNotice
+                  ? { state: "waiting", runId: directIdempotencyKey, at: Date.now() }
+                  : undefined,
               );
               dispatchPrepared = true;
             },
@@ -636,22 +646,26 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
           : dispatch(),
       );
     } catch (error) {
+      await joinConsumption?.();
       retireUnadoptedInput();
-      if (!dispatchPrepared) {
+      if (isGatewayOperatorAccessUnavailable(error) || !dispatchPrepared) {
         throw error;
       }
       if (await settleRevokedBatch()) {
         return false;
       }
       // A transport exception can follow admission; it is recorded once and never replayed.
-      await completeBatch(settledBatch, state, {
+      const outcome = resolveRequesterDeliveryOutcome(readCurrentBatch() ?? settledBatch, {
         delivered: false,
         path: "none",
         disposition: hasAnnounceSendEvidence(error) ? "ambiguous" : "permanent_failure",
         error: error instanceof Error ? error.message : String(error),
-      });
-      return false;
+      })!;
+      await completeBatch(settledBatch, state, outcome);
+      return outcome.delivered;
     }
+    await joinConsumption?.();
+    delivery = resolveRequesterDeliveryOutcome(readCurrentBatch() ?? settledBatch, delivery)!;
     if (delivery.disposition !== "session_queued") {
       retireUnadoptedInput();
     }
@@ -671,6 +685,10 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     ) {
       // No turn accepted this attempt. Keep the live obligation for its next attempt.
       await params.transitionBatch(settledBatch, state, refreshBatch);
+      return false;
+    }
+    if (settledBatch.every(hasConsumedRequesterInput)) {
+      await completeBatch(settledBatch, state, delivery, requesterEntry.sessionId);
       return false;
     }
     const retryState = resolveRequesterSettleRetryState({

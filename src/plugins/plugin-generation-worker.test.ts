@@ -15,6 +15,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { observeMainThreadFs } from "../test-utils/main-thread-fs-spies.test-support.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -223,7 +224,17 @@ it.each(["content", "source-path"] as const)(
 it("keeps a native-only recovery fork after its worker and admission cache retire", async () => {
   await withWorkerFixture("worker-native-fork", async ({ fixture, cache }) => {
     preparePluginNativeAdmissions(fixture.index, cache);
-    const prepared = await prepare(fixture);
+    const { prepared, rootCalls } = await (async () => {
+      using observedFs = observeMainThreadFs();
+      const preparedArtifact = await prepare(fixture);
+      return {
+        prepared: preparedArtifact,
+        rootCalls: observedFs
+          .stacks()
+          .filter(({ stack }) => stack.includes("plugin-source-capture-directory")),
+      };
+    })();
+    expect(rootCalls).toEqual([]);
     const captured = fs.realpathSync(prepared.artifact.resolve(fixture.filename));
     const recovery = prepared.artifact.captureRecoverySource();
     const native = recovery.native!.fork();
@@ -252,6 +263,8 @@ it("releases host preparation custody after unexpected worker exit with an outst
       preparePluginNativeAdmissions(fixture.index, cache);
       const prepared = await prepare(fixture);
       const captured = fs.realpathSync(prepared.artifact.resolve(fixture.filename));
+      const recovery = await prepared.artifact.captureRecoverySourceAsync!();
+      const recoveryDirectory = recovery.sourceCapture.directory;
       const capture = posts.mock.calls.findIndex(
         ([value]) =>
           isRecord(value) && isRecord(value.input) && value.input.operation === "capture",
@@ -261,7 +274,10 @@ it("releases host preparation custody after unexpected worker exit with an outst
       await worker.terminate();
       expectBytes(captured, fixture);
       await retirePluginCache(cache);
-      // Pool retirement releases preparation custody asynchronously after confirmed exit.
+      // Worker exit releases derived source roots, but exported native custody is independent.
+      await vi.waitFor(() => expect(fs.existsSync(recoveryDirectory)).toBe(false));
+      expectBytes(captured, fixture);
+      await recovery.native?.disposeAsync();
       await vi.waitFor(() => expect(fs.existsSync(captured)).toBe(false));
     } finally {
       await closeDefaultRetainedNativeWorkerSource();
@@ -356,6 +372,18 @@ it("finishes a capture after more than two minutes without retiring its worker",
   const cache = createPluginCache();
   const { promise: gate, resolve: releasePublication } = createDeferredCore();
   const { promise: started, resolve: publicationStarted } = createDeferredCore();
+  // Socket readiness uses real timers, independently of the task deadline under test.
+  const transport = await captureRetainedNativeWorkerSource({
+    runtimeGeneration: undefined,
+  }).captureIndependentResource(
+    new URL(
+      "data:text/javascript," +
+        encodeURIComponent(
+          "export default function createNativeWorkerResource() { return { async close() {} }; }",
+        ),
+    ),
+  );
+  await transport.close();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   try {
     await withInstalledCapture(root, cache, async () => {

@@ -783,7 +783,15 @@ limit (`worker_heap_threshold`), including process-wide heap flag overrides. RSS
 includes every worker and native allocation, so `rss_threshold` uses the smaller of
 physical RAM and the process/cgroup memory constraint, independently of V8 heap
 limits. Unknown limits are omitted; Bun's compatibility heap metadata is not treated
-as a V8 limit. RSS growth alone does not indicate pressure.
+as a V8 limit. RSS growth alone does not indicate pressure. On constrained Linux
+Node processes, `process_memory_threshold` also measures consumed process allowance
+from available memory, including cgroup charges absent from RSS. Unknown or
+unbounded process limits do not activate this signal.
+
+On Linux hosts with at most 1 GiB of physical or process-constrained memory,
+Gateway startup skips the optional spawn broker and keeps child spawning in-process.
+This preserves the normal child lifecycle while avoiding the broker's resident
+memory, at the cost of direct-spawn latency.
 
 Warning and critical journal lines and diagnostic events retain the measured
 `usedBytes`, `limitBytes`, and `thresholdBytes`; worker pressure also identifies
@@ -857,12 +865,20 @@ Linux samples add anonymous-page counters asynchronously. Worker sample ages
 include that delay; coverage and heap counters describe acquisition. These fields
 are not an atomic process snapshot.
 
-Critical memory pressure retires idle workers through their existing cleanup owners,
-including when diagnostic event collection is disabled. Warnings do not retire
-workers. Retirement requests are asynchronous, skip active work, and keep native
+Memory pressure is sampled every second from startup, including when diagnostic
+event collection is disabled. Critical pressure retires idle workers through their
+existing cleanup owners immediately; constrained process allowance at warning
+level also reclaims pooled task, shared-state, transcript-lane, and read-only workers
+after a one-second idle grace. Those workers remain reusable during that grace.
+Retirement requests are asynchronous, skip active work, and keep native
 close/checkpoint operations off the main thread. Active operations keep their
 custody and the usual 30-minute database retention window resumes after use.
 No stored data, database schema, or update procedure changes.
+
+Optional GitHub publication recovery pauses while available process memory is at
+or below 20% of a measured process limit. The next recovery pass resumes pending
+work when memory recovers; accepted publication bookkeeping and the startup
+personal-publication confirmation fence still settle normally.
 
 Transcript history and search lanes retain one warm reader for up to five idle
 minutes. Other transcript lanes retire after 90 idle seconds to span minute-spaced

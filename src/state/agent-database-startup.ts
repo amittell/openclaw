@@ -9,6 +9,7 @@ import { retryAsync } from "../infra/retry.js";
 import {
   getOrLoadSqliteDatabaseAdmissionForPath,
   prepareSqliteDatabaseAdmission,
+  readSqliteDatabaseCleanClose,
 } from "../infra/sqlite-database-admission.js";
 import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
 import { readSqliteIntegrityFileIdentity } from "../infra/sqlite-file-generation.js";
@@ -20,7 +21,10 @@ import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createPermitPool } from "../shared/permit-pool.js";
-import { AgentDatabaseSchemaAdmissionChangedError } from "./agent-database-admission-error.js";
+import {
+  AgentDatabaseSchemaAdmissionChangedError,
+  AgentDatabaseStartupPublicationError,
+} from "./agent-database-admission-error.js";
 import {
   AgentDatabaseAdmissionError,
   assertAgentDatabaseAdmitted,
@@ -294,6 +298,14 @@ class AgentDatabaseStartupAdmission {
         target.agentId !== undefined &&
         runtimeAgentIds.has(target.agentId) &&
         matchesInspectionPath(runtimePaths, target.path, samePath),
+      cleanClose: (target: PendingInspection["target"]) => {
+        // Ordering only: an unreadable store is inspected (and reported) on the normal path.
+        try {
+          return readSqliteDatabaseCleanClose(target.path);
+        } catch {
+          return false;
+        }
+      },
       track: (work: Promise<unknown>) => this.track(work),
       defer: (inspections: PendingInspection[], reason: string) =>
         this.defer({ env, inspections, reason }),
@@ -514,12 +526,17 @@ class AgentDatabaseStartupAdmission {
                           (!superseded && !capacityRetry.shouldRetry(error)) ||
                           attempt >= capacityRetry.attempts
                         ) {
-                          throw error;
+                          // Only runtime churn outlasts the retries; Doctor cannot repair that.
+                          throw superseded
+                            ? new AgentDatabaseStartupPublicationError(error)
+                            : error;
                         }
                         log.warn("agent database startup publication interrupted; retrying", {
                           agentId,
                           attempt,
                         });
+                        // A reload may still be replacing the plugins this publication borrows.
+                        await sleepWithAbort(500 * 2 ** (attempt - 1), this.signal);
                         await assertNotDeleted();
                       }
                     }

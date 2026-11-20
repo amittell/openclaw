@@ -97,7 +97,10 @@ it.each([
     const source =
       "tty" in testCase
         ? ttySource
-        : ['globalThis.fetch = async () => { throw new Error("offline fixture"); };'];
+        : [
+            'globalThis.fetch = async () => { throw new Error("offline fixture"); };',
+            "globalThis.fetch.mock = {};",
+          ];
     const result = runBuiltCli(
       tempHome,
       testCase.args,
@@ -155,6 +158,8 @@ it.each([
         source: "tty" in testCase ? ttySource : undefined,
         inheritEnvironment: false,
         env: {
+          // Exclude state-local file logs from the no-state validation contract.
+          OPENCLAW_LOG_LEVEL: "silent",
           GIT_SSH_COMMAND: `${JSON.stringify(process.execPath)} -e "process.exit(1)"`,
           GIT_TERMINAL_PROMPT: "0",
           OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",

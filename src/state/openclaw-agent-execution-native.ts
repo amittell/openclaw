@@ -1,12 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { addAbortListener } from "node:events";
 import { isDeepStrictEqual } from "node:util";
 import { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { racePromiseWithAbortSignal } from "../../packages/retry/src/index.js";
-import { captureGatewayStateOwner } from "../infra/gateway-state-owner.js";
+import type { captureGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import { resolveSqliteInspectionSignal } from "../infra/sqlite-readonly-worker.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import {
   assertExistingDatabaseIdentity,
@@ -70,6 +72,7 @@ export function createAgentDatabaseNativeGeneration(
   agentId: string,
   pathname: string,
   context: OpenClawStateWorkerContext,
+  processOwner: ReturnType<typeof captureGatewayStateOwner>,
   logicalLifetime: Int32Array<SharedArrayBuffer>,
   assertLogicalCurrent: () => void,
   assertCleanupOwned: () => void,
@@ -79,9 +82,20 @@ export function createAgentDatabaseNativeGeneration(
   creatingIdentity?: DatabasePathIdentity,
   creationClaim?: AgentDatabaseFileExecutionOpen["creationClaim"],
   startupPreparation = false,
+  initialIdentity?: DatabasePathIdentity,
 ): AgentDatabaseNativeGeneration {
   const inPreparation = AsyncLocalStorage.snapshot();
-  const processOwner = captureGatewayStateOwner(context.admission.databasePath);
+  const startupSignal = startupPreparation ? resolveSqliteInspectionSignal() : undefined;
+  const startupCancellation = startupSignal
+    ? new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+    : undefined;
+  const cancelStartup = () => {
+    if (startupCancellation) {
+      Atomics.store(startupCancellation, 0, 1);
+      Atomics.notify(startupCancellation, 0);
+    }
+  };
+  const startupAbort = startupSignal && addAbortListener(startupSignal, cancelStartup);
   const input: AgentDatabaseFileExecutionOpen = {
     leaseId: randomUUID(),
     agentId,
@@ -346,6 +360,7 @@ export function createAgentDatabaseNativeGeneration(
         attachment: {
           kind: "agent-execution",
           startupJournal: assertPreparationJournal !== undefined,
+          ...(startupCancellation ? { startupCancellation } : {}),
           ...(cleanup ? { deletion: cleanup.guard } : {}),
         },
         nativeLocations,
@@ -413,6 +428,23 @@ export function createAgentDatabaseNativeGeneration(
       openingAdmission = { admission: captured.admission, settled: operation.settled };
       return captured;
     };
+  const captureRegistration = (source: AgentDatabaseRequestExecutionSource) => {
+    const file = nativeIdentity ?? expectedIdentity;
+    return captureOpenClawAgentDatabaseRegistration({
+      agentId,
+      agentPath: pathname,
+      capturedIdentity: file
+        ? {
+            key: `file:${file.physicalIdentity}`,
+            canonicalPath: file.nativeLocation,
+            birthtime: file.birthtime,
+          }
+        : (creatingIdentity ?? initialIdentity),
+      admission: context.admission,
+      assertPublicationCurrent: context.assertPublicationCurrent,
+      onRegistryChange: source.onRegistryChange,
+    });
+  };
   const open = (
     source: AgentDatabaseRequestExecutionSource,
     assertCallerCurrent?: (identity?: AgentDatabaseExecutionFileIdentity) => void,
@@ -426,19 +458,12 @@ export function createAgentDatabaseNativeGeneration(
       const finishPreparation = sharedPreparation.retain();
       const finishNativeOpen = sharedPreparation.beginNativeOpen();
       opening = (async () => {
-        retireReplacedAgentValidation(agentId, pathname, expectedIdentity);
         // Existing physical files share preparation. First-use creation retains its caller's claim.
         const preparingShared = expectedIdentity !== undefined;
+        retireReplacedAgentValidation(agentId, pathname, expectedIdentity);
         const registration =
           createIfMissing || preparingShared
-            ? captureOpenClawAgentDatabaseRegistration({
-                agentId,
-                agentPath: pathname,
-                admission: context.admission,
-                assertPublicationCurrent: context.assertPublicationCurrent,
-                onRegistryChange: (preparingShared ? sharedPreparation.source : source)
-                  .onRegistryChange,
-              })
+            ? captureRegistration(preparingShared ? sharedPreparation.source : source)
             : undefined;
         const openStore = async () => {
           const assertOpening = () => {
@@ -601,13 +626,7 @@ export function createAgentDatabaseNativeGeneration(
           preparationPublished &&
           (!schema || Atomics.load(new Int32Array(schema.valid), 0) !== 1))
       ) {
-        const registration = captureOpenClawAgentDatabaseRegistration({
-          agentId,
-          agentPath: pathname,
-          admission: context.admission,
-          assertPublicationCurrent: context.assertPublicationCurrent,
-          onRegistryChange: source.onRegistryChange,
-        });
+        const registration = captureRegistration(source);
         await settleAgentRegistration(registration, async () => {
           await runSqliteWorkerStoreOperation(
             store,
@@ -667,6 +686,8 @@ export function createAgentDatabaseNativeGeneration(
     run,
     close() {
       lifetime.retire();
+      cancelStartup();
+      startupAbort?.[Symbol.dispose]();
       closing ??= closeAgentDatabaseNativeGeneration({
         pathname,
         context,

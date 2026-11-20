@@ -21,7 +21,6 @@ import {
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
 import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
-import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
   resolveSqliteScope,
   runExclusiveSqliteSessionWrite,
@@ -39,7 +38,9 @@ import type {
 import { withSessionActorStorage } from "./session-actor-storage-acquisition.js";
 import { captureSessionActorStorageOwner } from "./session-actor-storage-binding.js";
 import { readSessionActorStorageResult } from "./session-actor-storage-result.js";
+import { prepareMessageCutLocalWorkspace } from "./session-message-cut-local-workspace.js";
 import { planSessionMessageCut } from "./session-message-cut-plan.js";
+import { readSessionMessageCut } from "./session-message-cut-read.js";
 import type {
   SessionMessageCutIntent,
   SessionMessageCutPreconditions,
@@ -214,6 +215,21 @@ export async function mutateSqliteSessionAtMessage(
             storePath: memory.path,
             env: params.env,
           });
+          const prepared = await prepareMessageCutLocalWorkspace(
+            {
+              agentId: memory.agentId,
+              sessionKey: sourceKey,
+              storePath: memory.path,
+              env: target.env,
+            },
+            entry,
+            () => memory.authority.assertCurrent(),
+            { intent, sourceRepositoryWorkspaceId: preconditions?.sourceRepositoryWorkspaceId },
+          );
+          if (prepared.status !== "settled") {
+            return prepared;
+          }
+          intent.settledLocalWorkspace = prepared.workspace;
           return withSqliteSessionContextReset(
             {
               agentId: memory.agentId,
@@ -300,6 +316,24 @@ export async function mutateSqliteSessionAtMessage(
       assertPreparedCurrent,
       preconditions,
     );
+  if (mode !== "fork" && preparedEntry) {
+    intent.expectedState = preparedExpectedState;
+    const prepared = await prepareMessageCutLocalWorkspace(
+      {
+        agentId: resolved.agentId,
+        sessionKey: sourceKey,
+        storePath: resolved.path,
+        env: resolved.env,
+      },
+      preparedEntry,
+      assertCurrent,
+      { intent, sourceRepositoryWorkspaceId: preconditions?.sourceRepositoryWorkspaceId },
+    );
+    if (prepared.status !== "settled") {
+      return prepared;
+    }
+    intent.settledLocalWorkspace = prepared.workspace;
+  }
   return mode !== "fork" && preparedEntry
     ? await withSqliteSessionContextReset(
         resolved,
@@ -383,11 +417,12 @@ export function mutateSqliteSessionAtMessageInTransaction(
   },
 ): SessionMessageCutResult {
   const currentEntry = readSessionEntryRow(database, params.sourceKey)?.entry;
+  const source = currentEntry?.sessionId
+    ? readSessionMessageCut(database, currentEntry.sessionId, params.entryId)
+    : undefined;
   const plan = planSessionMessageCut(
     currentEntry,
-    currentEntry?.sessionId
-      ? loadTranscriptEventsFromDatabase(database, currentEntry.sessionId)
-      : [],
+    source?.events ?? [],
     params,
     projection?.sourceRepositoryWorkspaceId,
   );
@@ -399,19 +434,20 @@ export function mutateSqliteSessionAtMessageInTransaction(
   }
   const nextSessionId = plan.result.entry.sessionId;
   const targetScope = { ...resolved, sessionId: nextSessionId, sessionKey: params.targetKey };
-  let copiedBytes = 0;
   const rebuildSynchronously =
     params.mode !== "fork" &&
     plan.events.length <= SYNC_REBUILD_MAX_ROWS &&
-    plan.events.every((event) => {
-      copiedBytes += JSON.stringify(event).length;
-      return copiedBytes <= SYNC_REBUILD_MAX_BYTES;
-    });
+    source!.payloadBytes <= SYNC_REBUILD_MAX_BYTES;
   if (params.mode !== "fork" && !rebuildSynchronously) {
     ensureTranscriptSessionRoot(database, targetScope, Date.parse(plan.header.timestamp));
     markSessionTranscriptIndexDirtyInTransaction(database.db, nextSessionId);
   }
-  appendTranscriptEventsInTransaction(database, targetScope, plan.events, projection);
+  appendTranscriptEventsInTransaction(
+    database,
+    targetScope,
+    source!.hydrate(plan.events),
+    projection,
+  );
   if (rebuildSynchronously) {
     reconcileSessionTranscriptIndexInTransaction(database.db, nextSessionId);
   } else if (params.mode !== "fork") {

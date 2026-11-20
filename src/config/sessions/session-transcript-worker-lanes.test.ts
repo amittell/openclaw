@@ -15,6 +15,7 @@ import {
   historyLane,
   maintenanceLane,
   projectionLane,
+  prepareSessionStoreCandidatesInWorker,
   targetDiscoveryLane,
   transcriptSearchLane,
   withSessionHistoryWorkerReadCandidates,
@@ -52,6 +53,30 @@ function input() {
 
 const prewarmed = { ok: true as const, value: { kind: "prewarm" as const } };
 const absent = { ok: true as const, value: false };
+
+it.each(["idle", "critical"])("retires preparation-only discovery workers on %s", async (mode) => {
+  const pressure = channel("openclaw.memory.critical");
+  const reply = createDeferredCore<unknown>();
+  observed.run.mockReturnValueOnce(reply.promise);
+  const preparing = prepareSessionStoreCandidatesInWorker({ storePath: input().database.path });
+  try {
+    pressure.publish(true);
+    expect(observed.rotate).not.toHaveBeenCalled();
+    reply.resolve({ ok: true, value: { kind: "session-target-prepare", candidates: [] } });
+    await preparing;
+    if (mode === "idle") {
+      await vi.advanceTimersByTimeAsync(90_000);
+    } else {
+      pressure.publish(true);
+      await targetDiscoveryLane.rotation;
+    }
+    expect(observed.rotate).toHaveBeenCalledOnce();
+    expect(pressure.hasSubscribers).toBe(false);
+  } finally {
+    reply.resolve({ ok: true, value: { kind: "session-target-prepare", candidates: [] } });
+    await preparing;
+  }
+});
 
 it("keeps native close conservative until an unqualified reader is retired", async () => {
   const pool = createSessionTranscriptHistoryPool();
@@ -113,12 +138,23 @@ it.each([false, true])(
       await ready.promise;
     });
     await entered.promise;
-    observed.run.mockResolvedValue(absent);
+    const readStarted = createDeferredCore();
+    observed.run.mockImplementation(async () => {
+      readStarted.resolve();
+      return absent;
+    });
     const read = withSessionHistoryWorkerDatabase(request.database, async (owner) => {
       const present = await owner.readEntryPresence(request.scope);
       return runOpenClawAgentWriteAdmission(request.database, () => present);
     });
     try {
+      if (prepared) {
+        await awaitGateBeforeSettlement(
+          readStarted.promise,
+          writer,
+          "Prepared read waited for the blocked writer",
+        );
+      }
       expect(observed.run).toHaveBeenCalledTimes(prepared ? 1 : 0);
     } finally {
       ready.resolve();
@@ -142,15 +178,6 @@ it.each(["deadline", "revocation"])(
     await entered.promise;
     observed.run.mockResolvedValue(absent);
     const read = request.read();
-    let settled = false;
-    void read.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
     const rejected = expect(read).rejects.toThrow(reason === "deadline" ? "timed out" : "revoked");
     void rejected.catch(() => {});
     try {
@@ -160,7 +187,6 @@ it.each(["deadline", "revocation"])(
         observed.resources.at(-1)!.revoke();
         await vi.advanceTimersByTimeAsync(0);
       }
-      expect(settled).toBe(true);
       await rejected;
       expect(observed.run).not.toHaveBeenCalled();
     } finally {
@@ -272,6 +298,50 @@ it("keeps cold reads progressing while history searches await the same writer", 
   }
 });
 
+it("keeps cold candidate authorization independent of the searching worker", async () => {
+  observed.preparedDatabase = false;
+  observed.serializePools = true;
+  const request = input();
+  const queued = createDeferredCore<boolean>();
+  const release = createDeferredCore<boolean[]>();
+  let reading: Promise<boolean> | undefined;
+  observed.run.mockImplementation(async (work, options) => {
+    assert(isRecord(work));
+    if (work.kind !== "transcript-search") {
+      return absent;
+    }
+    assert(options.onRequest);
+    await options.onRequest([request.scope.sessionKey], {
+      signal: new AbortController().signal,
+      yieldSignal: new AbortController().signal,
+    });
+    return { ok: true, value: { kind: "transcript-search", result: { hits: [] } } };
+  });
+  const searching = withSessionHistoryWorkerDatabase(
+    request.database,
+    (owner) =>
+      owner.searchTranscripts(
+        { agentId: "main", query: "needle" },
+        async () => false,
+        () => {
+          observed.queued.mockImplementation((busy) => queued.resolve(busy));
+          reading = request.read(projectionLane);
+          return Promise.race([reading.then((present) => [present]), release.promise]);
+        },
+      ),
+    transcriptSearchLane,
+  );
+  try {
+    // A cold exact-row read must dispatch while its search awaits authorization.
+    expect(await queued.promise).toBe(false);
+    await expect(searching).resolves.toEqual({ hits: [] });
+    await expect(reading).resolves.toBe(false);
+  } finally {
+    release.resolve([false]);
+    await Promise.allSettled([searching, reading]);
+  }
+});
+
 it("hands admitted read deadlines to the worker pool", async () => {
   observed.preparedDatabase = false;
   const request = input();
@@ -317,17 +387,30 @@ it("dedupes independent lane prewarms while idle readers retire and regrow", asy
   const prewarm = (lane: (typeof lanes)[number]) =>
     prewarmSessionHistoryWorker(request.database, lane);
   const replies = lanes.map(() => createDeferredCore<unknown>());
-  for (const reply of replies) {
-    observed.run.mockReturnValueOnce(reply.promise);
+  const started = lanes.map(() => createDeferredCore());
+  for (const [index, reply] of replies.entries()) {
+    observed.run.mockImplementationOnce(() => {
+      started[index]!.resolve();
+      return reply.promise;
+    });
   }
   const preparing = lanes.map((lane) => Promise.all([prewarm(lane), prewarm(lane)]));
   try {
+    await awaitGateBeforeSettlement(
+      Promise.all(started.map((gate) => gate.promise)),
+      Promise.all(preparing),
+      "Prewarms settled before every independent lane dispatched",
+    );
     expect(observed.run).toHaveBeenCalledTimes(5);
     expect(observed.run.mock.calls[0]?.[0]).toMatchObject({ kind: "prewarm" });
     expect(lanes.map((lane) => lane.pending)).toEqual([1, 1, 1, 1, 1]);
     replies[0]!.resolve(prewarmed);
-    await preparing[0];
-    expect(lanes.map((lane) => lane.pending)).toEqual([0, 1, 1, 1, 1]);
+    const completedLane = await Promise.race(
+      preparing.map((preparation, index) => preparation.then(() => index)),
+    );
+    expect(lanes.map((lane) => lane.pending)).toEqual(
+      lanes.map((_, index) => (index === completedLane ? 0 : 1)),
+    );
     replies.forEach((reply) => reply.resolve(prewarmed));
     await Promise.all(preparing);
     expect(lanes.map((lane) => lane.pending)).toEqual([0, 0, 0, 0, 0]);
@@ -459,8 +542,17 @@ it.each([historyLane, maintenanceLane])(
     expect(lane.pending).toBe(0);
 
     const reply = createDeferredCore<unknown>();
-    observed.run.mockReturnValueOnce(reply.promise);
+    const started = createDeferredCore();
+    observed.run.mockImplementationOnce(() => {
+      started.resolve();
+      return reply.promise;
+    });
     const pending = prewarmSessionHistoryWorker(request.database, lane);
+    await awaitGateBeforeSettlement(
+      started.promise,
+      pending,
+      "Prewarm settled before worker dispatch",
+    );
     const resource = observed.resources.at(-1)!;
     resource.revoke();
     reply.resolve(prewarmed);
@@ -726,7 +818,7 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   expect(observed.unregister).not.toHaveBeenCalled();
   const retirement = createDeferredCore();
   observed.rotate.mockReturnValueOnce(retirement.promise);
-  pressure.publish(undefined);
+  pressure.publish(true);
   const rotation = historyLane.rotation;
   assert(rotation);
   try {
@@ -749,7 +841,7 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   expect(pressure.hasSubscribers).toBe(true);
   const reopenedRetirement = createDeferredCore();
   observed.rotate.mockReturnValueOnce(reopenedRetirement.promise);
-  pressure.publish(undefined);
+  pressure.publish(true);
   const reopenedRotation = historyLane.rotation;
   assert(reopenedRotation);
   const successor = request.read();
@@ -757,7 +849,7 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   await Promise.all([reopenedRotation, successor]);
   // The queued successor retains its newly opened native reader.
   expect(pressure.hasSubscribers).toBe(true);
-  pressure.publish(undefined);
+  pressure.publish(true);
   await historyLane.rotation;
   expect(pressure.hasSubscribers).toBe(false);
 

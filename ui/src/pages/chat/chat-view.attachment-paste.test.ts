@@ -110,6 +110,65 @@ function attachFile(container: Element, file: File, entry: "clipboard" | "file p
 }
 
 describe("chat attachment paste", () => {
+  it.each(["dropped", "inserted", "inserted-then-cleared", "unfocused"] as const)(
+    "recovers a %s native text paste once from the event snapshot",
+    async (mode) => {
+      let draft = "Draft: ";
+      const onDraftChange = vi.fn((next: string) => {
+        draft = next;
+      });
+      const textarea = getComposerTextarea(
+        renderChatView({ draft, getDraft: () => draft, onDraftChange }),
+      );
+      textarea.focus();
+      textarea.setSelectionRange(7, 7);
+      const paste = createPasteEvent("dictated text");
+      textarea.dispatchEvent(paste);
+      if (mode === "inserted" || mode === "inserted-then-cleared") {
+        textarea.setRangeText("dictated text", 7, 7, "end");
+        textarea.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }),
+        );
+        if (mode === "inserted-then-cleared") {
+          textarea.setRangeText("", 7, textarea.value.length, "end");
+          textarea.dispatchEvent(
+            new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }),
+          );
+        }
+      } else if (mode === "unfocused") {
+        textarea.blur();
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(paste.defaultPrevented).toBe(false);
+      expect(textarea.value).toBe(
+        mode === "unfocused" || mode === "inserted-then-cleared"
+          ? "Draft: "
+          : "Draft: dictated text",
+      );
+      expect(onDraftChange.mock.calls.map(([next]) => next)).toEqual(
+        mode === "unfocused"
+          ? []
+          : mode === "inserted-then-cleared"
+            ? ["Draft: dictated text", "Draft: "]
+            : ["Draft: dictated text"],
+      );
+    },
+  );
+
+  it("keeps a recovered text paste within maxlength", async () => {
+    const textarea = getComposerTextarea(renderChatView({ draft: "Draft: " }));
+    textarea.maxLength = 10;
+    textarea.focus();
+    textarea.setSelectionRange(7, 7);
+    textarea.dispatchEvent(createPasteEvent("dictated text"));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(textarea.value).toBe("Draft: dic");
+  });
+
   it("removes upload controls and rejects file paste/drop while preserving plain text paste", async () => {
     const uploadConfig = createApplicationConfigCapability({ resourceBasePath: "" });
     const onAttachmentsChange = vi.fn();

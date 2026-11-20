@@ -1,10 +1,23 @@
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { MessageChannel } from "node:worker_threads";
 import { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { withEnv } from "../../test-utils/env.js";
 import { createSpawnBrokerHost } from "./host.js";
+import * as resourceAuthority from "./resource-authority.js";
 import { attachBrokerNativeResource } from "./resource-client.js";
 import type { BrokerResourceResponse } from "./resource-protocol.js";
+
+const temp = useAutoCleanupTempDirTracker(afterEach);
+afterEach(() => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
+});
 
 function resourceFixture() {
   const host = createSpawnBrokerHost({ nativeResources: true });
@@ -70,6 +83,45 @@ function resourceFixture() {
   };
 }
 
+const untouched = { entries: ["existing-owner"], existingOwner: "synthetic existing owner" };
+
+/** A pre-existing owner at a path the real authority sized for a socket on this host. */
+async function existingOwnerDirectory() {
+  const authority = resourceAuthority.createNativeResourceAuthority();
+  const directory = path.dirname(authority.endpoint);
+  let selection: { mockRestore(): void } | undefined;
+  const owned = {
+    authority,
+    directory,
+    /** The host under test receives this decision; the broker child stays real. */
+    selectAuthority(selected: resourceAuthority.NativeResourceAuthority) {
+      selection = vi
+        .spyOn(resourceAuthority, "createNativeResourceAuthority")
+        .mockReturnValue(selected);
+    },
+    /** Sorted names plus the pre-existing owner's content, which the broker must never touch. */
+    async contents() {
+      return {
+        entries: (await fs.promises.readdir(directory)).toSorted(),
+        existingOwner: await fs.promises.readFile(path.join(directory, "existing-owner"), "utf8"),
+      };
+    },
+    async [Symbol.asyncDispose]() {
+      selection?.mockRestore();
+      await fs.promises.rm(directory, { recursive: true, force: true });
+    },
+  };
+  try {
+    await fs.promises.mkdir(directory);
+    await fs.promises.chmod(directory, 0o755);
+    await fs.promises.writeFile(path.join(directory, "existing-owner"), "synthetic existing owner");
+  } catch (error) {
+    await owned[Symbol.asyncDispose]();
+    throw error;
+  }
+  return owned;
+}
+
 it.skipIf(process.platform === "win32")(
   "loads a source SQLite resource in the compiled broker and joins its cleanup",
   async () => {
@@ -108,7 +160,7 @@ it.skipIf(process.platform === "win32").each([
   ["import", 'throw new Error("synthetic resource import failure");'],
   [
     "factory",
-    'export function createNativeWorkerResource() { throw new Error("synthetic resource factory failure"); }',
+    'export default function createNativeWorkerResource() { throw new Error("synthetic resource factory failure"); }',
   ],
 ])(
   "closes failed resource %s initialization without losing its original error",
@@ -130,9 +182,10 @@ it.skipIf(process.platform === "win32")(
   async () => {
     await using fixture = resourceFixture();
     const created = createDeferred();
+    const ownerRequests: unknown[] = [];
     const { client, lease } = await fixture.attach(
       `
-      export function createNativeWorkerResource(target, _input, owner) {
+      export default function createNativeWorkerResource(target, _input, owner) {
         let permit;
         const permitted = new Promise(resolve => { permit = resolve; });
         owner.on("message", () => permit());
@@ -145,7 +198,7 @@ it.skipIf(process.platform === "win32")(
         if (response.type === "resource-created") {
           created.resolve();
         } else if (response.type === "resource-owner") {
-          expect(response.value).toBe("close-requested");
+          ownerRequests.push(response.value);
           client.ownerMessage("permit-close", 1);
         }
       },
@@ -156,6 +209,8 @@ it.skipIf(process.platform === "win32")(
     await client.close();
     await lease.close();
     lease.release();
+    // Asserted here so a wrong request fails the test instead of stalling the socket callback.
+    expect(ownerRequests).toEqual(["close-requested"]);
   },
   20_000,
 );
@@ -165,7 +220,7 @@ it.skipIf(process.platform === "win32")(
   async () => {
     await using fixture = resourceFixture();
     const { client, lease } = await fixture.attach(`
-      export function createNativeWorkerResource() {
+      export default function createNativeWorkerResource() {
         let attempts = 0;
         return { async close() {
           if (++attempts > 1) return;
@@ -192,4 +247,96 @@ it.skipIf(process.platform === "win32")(
     expect(diagnostic).toContain("resource cleanup failed | resource operation failed");
   },
   20_000,
+);
+
+it.skipIf(process.platform === "win32")(
+  "creates and retires a cold native resource without main-thread synchronous metadata",
+  async () => {
+    const preload = path.join(temp.make("broker-private-mode-"), "umask.mjs");
+    fs.writeFileSync(preload, "process.umask(0o400);");
+    const observed = [
+      vi.spyOn(fs, "mkdtempSync"),
+      vi.spyOn(fs, "chmodSync"),
+      vi.spyOn(fs, "rmSync"),
+    ];
+    syncBuiltinESMExports();
+    {
+      await using fixture = withEnv(
+        {
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`,
+        },
+        resourceFixture,
+      );
+      const { client, lease } = await fixture.attach(`
+        export default function createNativeWorkerResource() { return { close() {} }; }
+      `);
+      const directory = path.dirname(lease.attachment.endpoint);
+      expect((await fs.promises.stat(directory)).mode & 0o777).toBe(0o700);
+      await client.close();
+      await lease.close();
+      lease.release();
+      await fixture.host.close();
+      await expect(fs.promises.stat(directory)).rejects.toHaveProperty("code", "ENOENT");
+    }
+    for (const spy of observed) {
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
+    syncBuiltinESMExports();
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "refuses an existing resource directory without removing its contents",
+  async () => {
+    await using owned = await existingOwnerDirectory();
+    owned.selectAuthority(owned.authority);
+    const host = createSpawnBrokerHost({ nativeResources: true });
+    try {
+      await expect(host.ready()).rejects.toThrow(/EEXIST/u);
+      await host.close();
+      expect(await owned.contents()).toEqual(untouched);
+    } finally {
+      await host.close();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "serves an endpoint the authority gave no directory without creating or removing one",
+  async () => {
+    await using owned = await existingOwnerDirectory();
+    owned.selectAuthority({ ...owned.authority, directory: undefined });
+    {
+      await using fixture = resourceFixture();
+      const { client, lease } = await fixture.attach(`
+        export default function createNativeWorkerResource() { return { close() {} }; }
+      `);
+      expect((await owned.contents()).entries).toEqual(["existing-owner", "resource.sock"]);
+      await client.close();
+      await lease.close();
+      lease.release();
+    }
+    expect(await owned.contents()).toEqual(untouched);
+    expect((await fs.promises.stat(owned.directory)).mode & 0o777).toBe(0o755);
+  },
+  20_000,
+);
+
+it.skipIf(process.platform === "win32")(
+  "removes only the authority's directory when its endpoint cannot listen",
+  async () => {
+    await using owned = await existingOwnerDirectory();
+    // Only the broker's own creation can occupy this path and make listening on it fail.
+    const endpoint = path.join(owned.directory, "private");
+    owned.selectAuthority({ ...owned.authority, directory: endpoint, endpoint });
+    const host = createSpawnBrokerHost({ nativeResources: true });
+    try {
+      await expect(host.ready()).rejects.toThrow(endpoint);
+      await host.close();
+      expect(await owned.contents()).toEqual(untouched);
+    } finally {
+      await host.close();
+    }
+  },
 );

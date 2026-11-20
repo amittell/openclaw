@@ -49,6 +49,7 @@ import {
   type InteractionTargetOptions,
 } from "./pw-tools-core.interactions.navigation.js";
 import { runPageEmulationTransition, setViewportSizeOnPage } from "./pw-tools-core.state.js";
+import { redactSensitiveAXNodeValues } from "./sensitive-field-values.js";
 export { snapshotRoleViaPlaywright } from "./pw-role-snapshot-capture.js";
 
 type StoredSnapshotRef = RoleRefs[string] & { backendDOMNodeId?: number };
@@ -183,16 +184,18 @@ export async function snapshotAriaViaPlaywright(opts: {
     signal: opts.signal,
     deadlineMs: performance.now() + ariaTimeoutMs,
     run: async (assertCurrent) => {
-      const res = await withPageScopedCdpClient({
+      const nodes = await withPageScopedCdpClient({
         page,
         timeoutMs: ariaTimeoutMs,
         fn: async (send) => {
           await send("Accessibility.enable").catch(() => {});
-          return (await send("Accessibility.getFullAXTree")) as { nodes?: RawAXNode[] };
+          const res = (await send("Accessibility.getFullAXTree")) as { nodes?: RawAXNode[] };
+          const axNodes = Array.isArray(res?.nodes) ? res.nodes : [];
+          await redactSensitiveAXNodeValues(send, axNodes);
+          return axNodes;
         },
       });
       assertCurrent();
-      const nodes = Array.isArray(res?.nodes) ? res.nodes : [];
       const formatted = formatAriaSnapshot(nodes, limit);
       await storeSnapshotRefsViaPlaywright({
         cdpUrl: opts.cdpUrl,
@@ -240,6 +243,7 @@ export async function navigateViaPlaywright(
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
     browserProxyMode: opts.browserProxyMode,
     assertNavigationCurrent: opts.assertNavigationCurrent,
+    standingSsrfPolicy: opts.standingSsrfPolicy,
   });
   await assertBrowserNavigationAllowed({
     url,
@@ -259,6 +263,7 @@ export async function navigateViaPlaywright(
       ssrfPolicy: opts.ssrfPolicy,
       browserProxyMode: opts.browserProxyMode,
       assertNavigationCurrent: opts.assertNavigationCurrent,
+      standingSsrfPolicy: opts.standingSsrfPolicy,
       targetId: currentTargetId,
       ...(opts.signal ? { signal: opts.signal } : {}),
       ...(opts.resolveOperationTarget
@@ -367,6 +372,7 @@ export async function navigateViaPlaywright(
         ssrfPolicy: opts.ssrfPolicy,
         browserProxyMode: opts.browserProxyMode,
         assertNavigationCurrent: opts.assertNavigationCurrent,
+        standingSsrfPolicy: opts.standingSsrfPolicy,
         targetId: currentTargetId,
         ...(opts.signal ? { signal: opts.signal } : {}),
       });

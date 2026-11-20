@@ -56,6 +56,23 @@ export function createSqliteWorkerLifecycle({
   ) => Promise<unknown>;
   fail: (slot: Slot, error: unknown) => void;
 }) {
+  function sealClients(
+    waiters: Iterable<Iterable<(error?: unknown) => void>>,
+    retainSharedState = false,
+  ): void {
+    // Seal clients and pending dispatch before the first await; accepted scopes still settle.
+    for (const waiting of waiters) {
+      for (const resume of waiting) {
+        resume(new SqliteWorkerError("SQLite worker host is closing", "overloaded"));
+      }
+    }
+    for (const client of stores.values()) {
+      if (!retainSharedState || !client.actor.stateContext) {
+        client.sealed = true;
+      }
+    }
+  }
+
   async function closeHost({
     inputAdmission,
     operations,
@@ -65,15 +82,7 @@ export function createSqliteWorkerLifecycle({
     operations: Iterable<Promise<void>>;
     waiters: Iterable<Iterable<(error?: unknown) => void>>;
   }): Promise<void> {
-    // Seal clients and pending dispatch before the first await; accepted scopes still settle.
-    for (const waiting of waiters) {
-      for (const resume of waiting) {
-        resume(new SqliteWorkerError("SQLite worker host is closing", "overloaded"));
-      }
-    }
-    for (const client of stores.values()) {
-      client.sealed = true;
-    }
+    sealClients(waiters);
     const errors: unknown[] = [];
     try {
       await inputAdmission.joinOpens();
@@ -90,6 +99,7 @@ export function createSqliteWorkerLifecycle({
     if (errors.length) {
       throw new AggregateError(errors, "SQLite worker host cleanup failed");
     }
+    stores.clear();
   }
 
   async function acquireSlot(
@@ -457,6 +467,7 @@ export function createSqliteWorkerLifecycle({
   }
 
   return {
+    sealClients,
     closeHost,
     acquireSlot,
     createSlot,

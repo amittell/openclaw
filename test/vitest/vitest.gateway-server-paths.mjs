@@ -456,6 +456,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/provider-allocation-cleanup.test.ts",
   "src/gateway/worker-environments/provider-bootstrap.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
+  "src/gateway/worker-environments/provider-destroy-authority.test.ts",
   "src/gateway/worker-environments/provider-destroy-timeout.test.ts",
   "src/gateway/worker-environments/provider-intent.test.ts",
   "src/gateway/worker-environments/provider-node-teardown.test.ts",
@@ -626,6 +627,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-worker-environment-startup.state.test.ts",
   // A failed native close permanently fences this process's metadata owner.
   "src/gateway/server-close.agent-databases.test.ts",
+  "src/gateway/server-close.supervisor-failure.test.ts",
   "src/gateway/server-close.placement.test.ts",
   "src/gateway/server-close.progress-card.test.ts",
   "src/gateway/server-close.question-publication.test.ts",

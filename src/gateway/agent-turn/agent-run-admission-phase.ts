@@ -486,6 +486,7 @@ export async function prepareAgentRunDispatch(
         activeRunAbort.controller.signal.throwIfAborted();
       },
       assertCompletionCurrent: () => assertInputOwnerCurrent(true),
+      onTranscriptCommitted: activeRunAbort.entry?.input.onTranscriptCommitted,
       abortSignal: activeRunAbort.controller.signal,
       getAbortStopReason: () => activeRunAbort.entry?.adapter.abortStopReason ?? "rpc",
       admittedSessionId: params.getAdmittedSessionId(),
@@ -566,11 +567,10 @@ export async function prepareAgentRunDispatch(
             },
           }
         : undefined;
-    // Accepted work retains this caller; the shared owner derives continuation from child lineage.
+    // Accepted work retains this caller's continuation for the turn's whole lifetime.
     capturedOperator = await retainGatewayOperatorRun({
       ...params,
       systemTurn,
-      spawnedBy: params.sessionEntry?.spawnedBy,
       entry: activeRunAbort.entry,
       abortSession: params.resolvedSessionKey
         ? {

@@ -121,7 +121,7 @@ export async function assertGatewayOwnerLeaseStopped(
       owner.assertDatabaseAccess(pathname);
     },
     acquire<T>(operation: () => T): T {
-      // Offline custody already owns admission; recheck it without ordinary-read retries.
+      // Offline custody rechecks its own lease without ordinary-read retries.
       authority.assertCurrent();
       return operation();
     },
@@ -447,6 +447,8 @@ export function acquireGatewayOwnerLease(params: {
       }
       await heartbeat?.stop();
       try {
+        const assertCurrent = await custody?.prepareAccess();
+        assertCurrent?.();
         // Lost custody may join its worker, but cannot mutate the recorded lease.
         if (!custody?.signal.aborted) {
           mutateLease("release", (db) => {
