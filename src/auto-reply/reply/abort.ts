@@ -17,7 +17,6 @@ export type FastAbortRequestParams = {
   ctx: FinalizedRuntimeMsgContext;
   cfg: OpenClawConfig;
   isCommandTargetCurrent?: SessionSourceCheck | AsyncSessionSourceCheck;
-  /** Runs once for a stop request, before Stop selects any input to cancel. */
   onAbortRequest?: () => void;
 };
 
