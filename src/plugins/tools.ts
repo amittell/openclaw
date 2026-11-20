@@ -1,6 +1,5 @@
 /** Builds agent tools registered by plugins, preserving plugin scope around callbacks and descriptors. */
 import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
-import { compileGlobPatterns, matchesAnyGlobPattern } from "../agents/glob-pattern.js";
 import { gateOwnerOnlyPluginTool } from "../agents/owner-only-tool-stubs.js";
 import { normalizeToolPolicyName } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
@@ -38,6 +37,7 @@ import {
   type PluginRuntimeLoadContext,
 } from "./runtime/load-context.js";
 import { resolvePluginRuntimeLoadContext } from "./runtime/load-context.resolve.js";
+import { denylistBlocksName, denylistBlocksPlugin, normalizeDenylist } from "./tool-denylist.js";
 import {
   createPluginToolFactoryContext,
   type PluginToolOwnerContinuation,
@@ -54,28 +54,6 @@ import {
 } from "./tool-inspection-state.js";
 import { setPluginToolMeta } from "./tool-metadata.js";
 import type { OpenClawPluginToolContext } from "./types.js";
-
-function normalizeDenylist(list?: string[]) {
-  return compileGlobPatterns({
-    raw: list,
-    normalize: normalizeToolPolicyName,
-  });
-}
-
-function denylistBlocksName(name: string, denylist: ReturnType<typeof normalizeDenylist>): boolean {
-  const normalized = normalizeToolPolicyName(name);
-  return normalized ? matchesAnyGlobPattern(normalized, denylist) : false;
-}
-
-function denylistBlocksPlugin(params: {
-  pluginId: string;
-  denylist: ReturnType<typeof normalizeDenylist>;
-}): boolean {
-  return (
-    denylistBlocksName(params.pluginId, params.denylist) ||
-    matchesAnyGlobPattern("group:plugins", params.denylist)
-  );
-}
 
 type PreparedPluginToolRuntime = {
   loadContext?: ReturnType<typeof resolvePluginRuntimeLoadContext>;
