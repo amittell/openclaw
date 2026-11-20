@@ -4946,3 +4946,321 @@ first. Both bots' files reproduce byte-exact as 2-space JSON and have a `memory-
 - Step 6b's writer was run on eight synthetic configs. It applies true, and is a no-op when the value is already set.
   It skips under the old manifest and when no entry exists. It applies false over true. It refuses a missing config
   object and a file whose formatting does not reproduce. It keeps mode 600 when it writes.
+
+## 11.5: the carry moves to the v2026.11.5 tag (2026-11-17)
+
+Upstream v2026.11.5 went to npm `latest` and `beta` on 2026-11-17 at 4:59 AM EST (tag object `0581065e2e2`, commit
+`e13cf15ece9`). It is beta.4 (`2c173a37a48`) plus 66 commits, 31 of them runtime. None of the 31 was in rh-bot's
+`bc3935e26ee`, checked by PR number and by subject (control: 19 "carry upstream" hits). Alex, room #636: move the carry
+to 11.5, backport #192743/#193548, fix the `memory_refresh` ids, qualify on the M4, deploy rh-bot, soak briefly, then
+mac-mini.
+
+**The merge** (`d3948eb27f2`, parents `08bc269302b` and `e13cf15ece9`). 19 files changed on both sides; 14 merged
+cleanly, and an added-line audit of those 14 found none lost (control: run against the carry itself, it reports 14).
+
+- 11.5 restores array-based compaction (#199561, from main `a4cc2adb5d1`) and deletes beta.4's bounded-source modules
+  (19 files, among them `compaction-safeguard-source.ts`, `bounded-compaction-session.ts`, `prepared-compaction.ts`
+  and `session-compaction-source*.ts`). The merge takes 11.5's side there.
+- `compaction-safeguard-budget.ts` is the carry's (post-#195028: `contextChars`, the heading kept on a cut). 11.5's
+  copy predates #195028 and still has `reservedChars`; 11.3, main and the carry all have the later version.
+- `compaction-safeguard.ts` takes 11.5's imports from `compaction-safeguard-context.ts`; its body keeps the carry's
+  #195028 suffix assembly and `formatQualityFeedbackReasons` (#721).
+- `request-budget.ts` drops `projectCompactionReplacement`, which no caller is left to use.
+- `32b0d922e9d` regenerates the assertion-safety baseline (2378 -> 2377 files, 5392 -> 5390 assertions) and the
+  config docs baseline.
+
+**A regression of the merge, fixed in `72fb8088c35`.** Dropping `projectCompactionReplacement` also dropped the
+`shadowedEntryCount` it set on the projected boundary (`8c77e2f40f4`). The committed boundary renders that count, so
+the budget estimate priced a shorter request than the one it committed. On the merge, `agent-session-compaction.test.ts`
+failed 1 of 19 (`tokensAfter`) and `agent-session-compaction-headroom.test.ts` 2 of 11; both pass on the carry and
+on bare 11.5. 11.5's inline `projectReplacement` now sets the count with `countCompactionShadowedEntries`; 19/19 and
+11/11.
+
+**`0da626afded`**: 11.5's `server-plugin-subagent-runtime.fork-transport.test.ts` (#197203) expects the bare summary,
+and the carry renders the checkpoint line inside it. The test failed on the beta.4 carry too. It now expects
+`[compaction checkpoint <id>: shadows 1 earlier entries]`.
+
+**Fixes from rh-bot's 2026-11-17 log review**:
+
+- `b60e6113f01` fix(memory-lancedb): `memory_refresh` showed 8-character ids and replace needs the full UUID
+  (`lancedb-store.ts` rejects anything else with "Invalid memory ID format"). The preview and the replace
+  confirmation now show full ids. The replace test takes its id from the preview text.
+- `a39d444826b` backports #192743 (`352e51e78c6`, `-x`): archives are read as streams with a 4 GiB disk ceiling, in
+  place of the `stored.length + 1 MiB` bound that refused most real archives. Only the reader, its callers and their
+  tests are taken. The Usage half builds on six main-only Usage PRs (#188621, #190295, #190938, #191852, #192270,
+  #192732), so Usage keeps its materialize path, which now streams. #193548 is not ported: it deletes
+  `materializeSessionArchiveForRead`, which the carry's usage worker still calls.
+
+**Qualification** (M4, Node 26.12.1, 2026-11-17, `a39d444826b`):
+
+- build rc 0; tsgo all lanes rc 0; the assertion-safety, line-cap, mock-export and test-lines ratchets, the SDK
+  surface, wrapper invariants, conflict markers, prompt snapshots and config docs: all rc 0.
+- oxlint: only `max-lines` on `ingress-drain.ts` (753) and `ingress-monitor.ts` (701), as in the beta.4 quals. 11.5's
+  own copies are longer (885 and 800).
+- oxfmt: clean on 740 files.
+- Tests: 319 files (every test file 11.5 changed that exists here, plus each fix's tests and sibling tests). 3 files
+  failed, 116 tests, all inherited: `test/scripts/ci-workflow-planning.test.ts`, `ci-workflow-guards.test.ts`
+  and `install-sh.test.ts` fail 100, 14 and 2 tests on the beta.4 carry, on bare 11.5 and on the merge alike (each file
+  run on its own on all three trees).
+- The fixes' own runs before the cherry-pick: `memory-refresh-replace` 7/7, `archive-compression` 5/5,
+  `session-transcript-readers` 15/15, the usage owner-attribution integration 14/14, all failing before on product
+  code at `08bc269302b`; 91 files, 90 passing, the 91st (`session-cost-usage-worker-io.test.ts`) fixed in its
+  preload and then 9/9 twice.
+- Not run: the full `pnpm test` suite and live channel proof.
+
+**Deploy.** The bundle (`dist-bundle-a39d444826bf.tar`, sha256 `bb56b797b393…`) comes from a plain `pnpm build` after
+the gate, since the fast gate's E2E prep rebuilds dist in place.
+
+- rh-bot: deployed 2026-11-17 at 1:53 PM EST in an idle window. Doctor rc 0 in 102 s; backup in
+  `/Volumes/SSD512/oc115b4-dbbackup-20261117T184504Z`. Verify: HEAD and build id `a39d444826b`, healthz/readyz
+  200/200, state DB 36 and agent DBs 38, local-only PASS, 41 of 41 fork markers in the dist.
+- rh-bot soak, gateway pid 31870, 1:48 to 3:59 PM EST: no restart, RSS 132 to 1067 MB with no memory-pressure
+  lines, 10 Telegram ingress events all completed on the first attempt (both DMs answered, unmentioned group
+  messages skipped), 0 errored turns, 0 failed automation runs.
+- The kit's real-turn gate counted `[telegram] Inbound message` lines. That line is in neither the beta.4 carry's
+  source nor 11.5's (rh-bot's last one: 2026-11-16 10:38 AM EST, before the beta.4 deploy), so the gate read
+  PENDING through real turns. It now counts completed `channel_ingress_events` rows, and counts sends as message-tool
+  deliveries plus `final delivery outcome=sent` lines; on rh-bot it reads 10 inbound, 4 sends. One of its failure
+  patterns, `decision=surface_error`, is in neither tree either.
+- mac-mini, attempt 1 (5:28 PM EST, from 11.3 `bcbaaea09d7`): step 0d's GitHub fetch ran 62 minutes and ended
+  `fatal: early EOF` / `fetch-pack: invalid index-pack output` with a 562 MiB partial pack (about 150 KB/s). The
+  script stopped there, before the gateway (`FATAL (nothing stopped yet)`). The objects 11.3 lacks are 2.1 GB: a git
+  bundle of `a39d444826b` minus `bcbaaea09d7`, built on the M4 in 23 s and copied over the LAN in 309 s, was fetched
+  into the private ref `refs/oc115b4/seed`. The deploy's own GitHub fetch then took 1 s and still set the target ref
+  from GitHub.
+- mac-mini, attempt 2 (6:42 PM EST): the 11.3 gateway stopped at 6:45 PM EST in 28 s, logging two
+  `shutdown step failed (gateway close)` lines (plugin runtime cleanup past its hard deadline). Backup 14 minutes
+  (`/Volumes/Storage/oc115b4-dbbackup-20261117T234528Z`). Doctor rc 0 in 585 s migrated the state DB 22 -> 36 and
+  five agent DBs to 38, and wrote six `*.pre-startup-migration-*.bak` files (6.6 GB, 7:04 to 7:05 PM EST) under
+  `~/.openclaw`; verify counts these as "written by the gateway itself", but the gateway started at 7:09 PM EST.
+  Deployed at 7:14 PM EST, gateway pid 9871.
+- mac-mini verify: HEAD and build id `a39d444826b`, healthz/readyz 200/200, every DB at its target, local-only
+  PASS, 41 of 41 fork markers. The real-turn gate reads PENDING: the six group messages since the restart were each
+  `skipping group message` with `reason: no-mention`, and no DM had arrived. The fleet-loop cron resumed (its run
+  in flight at the stop ended `Gateway stopping.`; the next ran 7:11 to 7:32 PM EST, ok).
+- Verify's `model-start`/`model-resp` counts (`[model-fetch] start`) read 0 on both hosts, and also on mac-mini's
+  11.3 stdout log earlier that day, so the log half of the local-only check has a zero denominator. The JSON file
+  log names one provider all day, `gpufarm`.
+
+**`voice` refused at mac-mini's first 11.5 start; #194480 ported in `25e4e96d3f6`.** At 7:09:37 PM EST the `voice`
+agent's startup preparation failed with `SQLite worker queue capacity reached` (`open-wait` 5754 ms, `open`
+10043 ms; the five agent DBs open together, and `main`'s is 4.8 GB, with 7 to 17 s validations). 11.5 retries only
+SQLite locks around open and migration (`retryLockedPreparation`, `shouldRetry: isSqliteLockError`) and only pool
+overload around the deletion-journal read, so `failPendingAgentDatabase` recorded a lasting
+`agent-database-inspection-failed` refusal with Doctor advice. The refusal is in-process (`refusalsByState`), and
+while it stands `runSessionRegistryMaintenance` skips every minute with `session child inventory incomplete`
+(rh-bot's skips stopped 10 s after its start; mac-mini's kept going), so session-registry pruning is paused for all
+agents. `voice` itself had been idle since 2026-09-18, and its only cron (`heartbeat-voice`) is disabled. Upstream
+fixed this on main in #194480 (`953b2dd17e6`, 2026-11-06), after the 11.5 branch point. Alex, room #640: backport,
+no restart. The port keeps 11.5's publication error handling (11.5 has no `AgentDatabaseStartupPublicationError`)
+and leaves out `scripts/perf/agent-startup-inspection.ts`, which 11.5 does not have.
+
+**Qualification of the port** (M4, Node 26.12.1, 2026-11-17). The commit is `20fda90a320`: `25e4e96d3f6` with
+`oxfmt` applied to `agent-database-admission.ts`, which changed indentation only.
+
+- tsgo core and core:test rc 0. A positive control fired in `agent-database-startup.ts`,
+  `agent-database-admission.ts` and `agent-database-startup.journal-bound.test.ts` (one hit each). oxlint was clean on
+  5 files and oxfmt on 6. The test-lines, line-cap, max-lines and assertion-safety ratchets against `a39d444826b` were
+  all rc 0, and so was `docs:check-mdx`.
+- `docs:check-links:anchors` reports 5 broken anchors, the same 5 as on the beta.4 carry `08bc269302b`. None is in, or
+  points at, the one doc the port changes.
+- Tests: 56 files. They are the changed tests; every `src/state/agent-database-*`,
+  `src/gateway/server-agent-database-startup*` and `src/cron/session-registry-maintenance*` test; and every test that
+  names the admission functions. 53 passed on the first run. The other 3 failed with `listen EINVAL` on unix sockets
+  under the runner's long `TMPDIR`, which is past macOS's 104-byte socket path limit:
+  - `server-agent-database-startup.test.ts`: the 2 `recover` cases of 13 timed out at 120 s;
+  - `server.spawn-broker.test.ts`: 5 of 9;
+  - `worker.transcript-failure.test.ts`: 3 of 3.
+    With `TMPDIR=/tmp/c115s` all three files pass (13/13, 9/9 and 3/3), both at the port and with `a39d444826b`'s two
+    product files, with no `EINVAL`.
+- Before: the changed tests fail 15 cases against `a39d444826b`'s `agent-database-startup.ts` and
+  `agent-database-admission.ts`, all of them new retry or repair-hint cases. That is 6 of 24 in
+  `server-agent-database-startup.preparation.test.ts`, 2 of 20 in `agent-database-admission.test.ts` and 7 of 29 in
+  `agent-database-startup.journal-bound.test.ts`.
+
+**`voice` retired on mac-mini (Alex, room #641).** `voice` was the agent behind a Twilio phone bridge, a local
+`server.js` on :3456, published at `kebablebot.aism.app` by a Cloudflare tunnel. Its `/call` and `/sms/send` routes
+answered the public internet with no authentication. The agent's only sessions were two cron heartbeats (2026-09-11
+and 09-18). The bridge and tunnel LaunchAgents were stopped and disabled. The bridge, the agent's DB and its cron job
+are archived on mac-mini under `/Volumes/Storage/agent-work/voice-retire-20261118/`.
+
+`openclaw agents delete voice` removed it from the config and deleted its cron job. It then returned `UNAVAILABLE`,
+because the session purge hit the in-process 7:09 PM refusal: twice, at 8:05 PM EST after 27 s and at 8:07 PM EST
+after 204 ms. With `voice` out of the config, session-registry maintenance completed again (8:05:48 PM EST), after
+skipping every minute since 7:09 PM. `/readyz` then turned 503, with `failing: ["agent-database:voice"]`; verify had
+read it 200 at 7:14 PM EST with the same refusal standing. The cause is readiness's refusal filter,
+`listAgentDatabaseAdmissionRefusals().filter((refusal) => !canIsolateAgentDatabase(cfg, refusal.agentId))` in
+`server-runtime-state-prepare.ts`. `canIsolateAgentDatabase` (`agent-database-admission.ts`) is true only for an agent
+in the config that is not a reserved system agent (`openclaw`, `crestodian`) and is neither the ambient owner nor the
+legacy compatibility agent. Such an agent's refusal does not count. Once the agent leaves the config, the same refusal
+fails the whole gateway's readiness until a restart. Alex, room #642: deploy the backport now.
+
+**First 20fda90 deploy rolled back on a kit false positive (2026-11-17).** The idle gate opened at 11:12 PM EST after
+73 busy probes. The gateway (pid 9871) stopped at 11:15 PM EST, the backup took 19 minutes (6.9G, 11 DBs, to
+`/Volumes/Storage/oc115b4-dbbackup-20261118T041513Z`), and doctor `--fix` returned 0 after 802 s. Doctor's agent
+deletion journal step finished `voice`'s deletion. It first logged `Prepared agent database schema in
+.../agents/voice/agent/openclaw-agent.sqlite for pending deletion recovery`, then removed `agents/voice/agent/`
+(directory mtime 11:47 PM EST). The kit's post-doctor schema check loops over the agent DBs it globbed before
+doctor. It read the missing file as `NOT MIGRATED ... unable to open database file` and ran a full rollback:
+`a39d444826b`, its dist and extension dists, LanceDB, config and 10 DBs restored. `voice`'s restore failed because its
+directory was gone, which is what the deletion wanted. The gateway came back on `a39d444826b` at 11:53 PM EST (pid
+41645), down 38 minutes.
+
+That restart then hit the bug the backport fixes. At 11:54:10 PM EST `a39d444826b` refused the system agent's
+`openclaw` DB with `SQLite worker queue capacity reached`. `openclaw` is `SYSTEM_AGENT_ID`, so the refusal cannot be
+isolated, and `/readyz` reads 503 with `failing: ["agent-database:openclaw"]`. `main` finished preparing at 11:55:34
+PM EST and Kebablebot answers. The restored DB files are new inodes, so the gateway also logged `Deferred restart
+resume failed for agent ratbot` and `... for agent main`: `Session database target changed outside captured
+discovery custody`. The idle gate had found nothing running at the stop.
+
+A re-run cannot trip on `voice` again. Its file is gone, so the pre-doctor glob no longer lists it, the live set is
+10 against mac-mini's floor of 10, and the target's doctor drops a missing registered DB with `Skipped missing
+registered agent database` rather than failing (`state-migrations.media-persistence-targets.ts`). The kit lesson: a
+post-doctor check must not count a DB whose agent is out of the config and whose journaled deletion doctor completed.
+The deploy was relaunched on the same idle gate at 11:58 PM EST against pid 41645.
+
+**Doctor restarts the gateway, and the rollback reverted what it took in.** `doctor --fix` restarts a managed gateway
+it finds stopped (`restoreGateway` in `doctor-maintenance.ts`; `leaveStopped` is false without
+`OPENCLAW_UPDATE_IN_PROGRESS`). The a39d deploy's doctor did it too. At 11:46:58 PM EST it started 20fda90 (pid
+29301), which ran until the rollback's SIGTERM at 11:48:02 and was still shutting down at 11:48:57, past its
+deadline. The rollback had waited only for port 18789 to close. In that minute it took 11 Telegram updates from one
+bot's stream, 592482259 to 592482269 (10 queued during the outage, 1 new at 11:47:29), and confirmed the offset. The
+restored state DB predates them, and the restored gateway's first update was 592482270, so none were replayed. The
+detailed log records 8 as `no-mention` in one group chat, which needed no reply; the other 3 left no
+auto-reply line. The same gateway retried `openclaw`'s capacity refusal (`startup capacity reached; retrying
+preparation agentId=openclaw phase=open attempt=1`, 11:47:21) and recovered it at 11:47:28, the first live run of
+the backport's retry. Kit fix, `deploy-115b4.sh` 032d6a56 (was 71d1e37d): step 6a stops doctor's gateway and waits for
+its process before any check reads the DBs; `rollback_full` waits for the process, up to 360 s, and restores
+nothing while it lives; step 7 re-records the log offsets so verify counts only the real restart; the time window
+covers mac-mini's 05:00 Time Machine run (03:50-05:50).
+
+**Second relaunch refused on disk (12:30 AM EST, 2026-11-18), nothing stopped.** Free space on mac-mini's data volume
+fell from 21,937 MiB at 11:12 PM to 16,337 MiB, under the 2,648 MiB budget plus the 15 GiB floor. The rollback
+rewrote about 6.5 GB of DBs in place while a Time Machine local snapshot from 5:00 AM EST on 2026-11-17 exists
+(Time Machine auto backup is off; `com.openclaw.tm-daily-backup` runs `tmutil startbackup` at 05:00). The 05:00
+run on 2026-11-18 replaced that snapshot with `2026-11-18-050031`, and free space read 22,842 MiB at 11:48 AM EST,
+so the snapshot was holding it. Alex, room #643: waive the floor to 10 GiB and deploy tonight; the waiver file names
+that ruling and applies only if the 15 GiB floor does not fit. The idle-gated launch is scheduled on the M4 for 11:00
+PM EST against pid 41645.
+
+**The macOS update could not be installed unattended (11:00 PM EST, 2026-11-18).** From 11:48 AM EST macOS prepared
+an update on mac-mini (automatic install is on), and free space fell to 12,675 MiB by 1:24 PM, under the 12,888 MiB
+the deploy needs with the 10 GiB waiver. Alex, room #644: install macOS 26.7.3 at 11:00 PM, then deploy. `sudo -n
+softwareupdate --install 'macOS Tahoe 26.7.3-25G342' --agree-to-license --restart` downloaded the update and then
+exited 1 with `Failed to authenticate`: on Apple silicon the install needs the owner's password, which passwordless
+sudo does not supply. The job saw no install for 10 minutes and stopped without running anything else. Free space
+had recovered to 21,922 MiB by 11:00 PM, with `com.apple.os.update-MSUPrepareUpdate` still listed (the cause of the
+recovery was not measured), so the deploy was launched alone at 11:12 PM EST against pid 41645 under the #643 waiver.
+mac-mini stays on 26.6.2 until the update is installed with the owner's password.
+
+**Third relaunch refused on config (11:14 PM EST, 2026-11-18), nothing stopped.** The kit's local-only assertion
+(Alex, 2026-10-01: every provider points at gpufarm.lan) failed 3 ways on a `chatjimmy` provider that Alex's bot
+added at 6:15 PM EST: `models.providers.chatjimmy.baseUrl='http://127.0.0.1:8788/v1'`, plus
+`chatjimmy/llama3.1-8B` in `agents.defaults.models` and `modelPolicy.allow`. 8788 is a POC proxy to chatjimmy.ai
+that the gateway's process supervisor started at 7:53 PM; a v2 on 8789 started at 9:40 PM the same way, so a
+gateway restart ends both. Alex, room #645 (8:51 AM EST, 2026-11-19): keep it and deploy tonight. Kit
+`deploy-115b4.sh` 1028763e and `verify-115b4.sh` 204ac6b5 except exactly provider `chatjimmy` at
+`http://127.0.0.1:8788/v1` on mac-mini and the refs naming it; the primary and fallbacks must still be gpufarm
+models. Checked on the live file (PASS) and against three controls that still FAIL: the same file as rh-bot,
+chatjimmy moved to 8789, and chatjimmy added as a fallback. The deploy is scheduled for 11:00 PM EST on 2026-11-19,
+and starts the two proxies again afterwards if nothing listens on their ports.
+
+**Deployed (10:16 AM EST, 2026-11-19).** Alex said "proceed" at 9:39 AM EST, so the deploy ran then instead of at
+11 PM. The idle gate passed at 9:40 AM; the gateway (pid 41645) stopped at 9:44:15 AM and exited in 8 s. The backup
+of 10 DBs (6.9 GB, quick_check clean) took 25 minutes. Doctor ran 336 s, and step 6a stopped the gateway it started
+(pid 96089), which exited and released 18789 after 58 s. 20fda90 started at 10:16:13 AM as pid 1394: `/readyz` 200
+with `failing: []`, build id `2026.11.5-20fda90a3207`, three Telegram providers, state DB v36 and all four agent DBs
+v38 (including `openclaw`), no `capacity reached` or `retrying preparation` lines, local-only PASS with the #645
+exception, and all 41 fork markers present. The outage ran from 9:44 to 10:16 AM, 32 minutes. One `Deferred restart
+resume failed for agent main: Session database target changed outside captured discovery custody` at 10:17:20 AM,
+the same as after the 2026-11-17 restores. Doctor's report still lists the retired voice agent DB and the voice-calls
+state DB, whose files are gone. The chatjimmy proxies were started again at 10:23 AM (8788 pid 11867, 8789 pid
+11870; `/v1/models` 200).
+
+**After the deploy.** The four-hour RSS watch (pid 1394, every 5 minutes, to 2:24 PM EST) read `ps` RSS between 331
+and 2,207 MB with no upward trend, and the gateway logged no `[diagnostics/memory]` line. `/readyz` was still 200
+with `failing: []` at 2:25 PM EST.
+
+A verify re-run at 2:25 PM EST failed its real-turn gate: 67 `isError=true` agent ends since the restart and no
+`telegram final delivery` lines. Neither count means what it looks like. This gateway logs `embedded run agent end`
+only for errors (0 `isError=false` lines in the whole log, 642 `isError=true`), and mac-mini's bots logged 0 final
+delivery lines on 2026-11-17 and 2026-11-18 as well. The gpufarm gateway answered mac-mini's chat completions 200
+about 1,400 times from 15:00Z to 19:30Z, 124 to 351 an hour, inside the 82 to 634 an hour of the two days before. The
+real change is 66 `503`s for `qwen38-27b-rtx5090-prod` from 11:04 AM EST, each after about 120 s: 49 in AILYbot
+subagent sessions, 10 in AILYbot cron runs, 5 in Alex's RatBot DM, 1 in his Kebablebot DM and 1 in a Kebablebot
+group. The 5090's router on mini-beast (`mini-beast.lan:8080`) produced them itself: its
+`router_requests_total{status_code="503"}` read 67 against 3,924 `200`, with `router_backend_up` 1 and 6 requests
+in flight. Before 2026-11-19 mac-mini had seen one 5090 `503`, at 21:00Z on 2026-11-18. These look like capacity
+refusals on the single 5090 rather than a 20fda90 regression, but the cause on the router was not established.
+
+**A scheduled CLI send wedged rh-bot's DM; upstream #199365 carried in `ec06c3a5efa` (2026-11-19/20).** From 10:25 AM
+EST on 2026-11-19 every Telegram message in Alex's DM with requesty (`@requestymcrequestfacebot`) failed with
+`ReplySessionInitConflictError: reply session initialization conflicted ...; please retry your message.` The gateway
+log has 1,956 failed dispatches across 4 messages, each kept for retry (up to 195 attempts), and no reply for 11
+hours; k8s Loki (`{job="openclaw-gateway",host="rh-bot.lan"}`, `service_name="requesty"`) has 8,368 conflict lines.
+The last reply before it was at 11:40 PM on 2026-11-18.
+
+The trigger is the scheduler's Daily Workspace Audit, which runs at 6:00 AM and sends to that chat with
+`openclaw message send`. The CLI client connected at 6:00:31 AM, and at 6:00:48 the CLI process committed the delivery
+row into the DM's session itself (`transcript_events` seq 41404, model `automation-result`, idempotency key
+`outbound-delivery:...`). The gateway's resident session actor kept its older copy of the session, so every
+reply-session initialization after that lost its compare-and-swap. This is upstream #199155 (reported on stable
+2026.11.5, Telegram and Slack, the same wedge until a restart). A gateway restart cleared it at 9:25 PM EST. The audit
+primed the DM again at 6:00:36 AM on 2026-11-20 (seq 41486), and a second restart at 10:39 AM cleared that before a
+message hit it. mac-mini logged 174 CLI sends from 2026-11-17 to 2026-11-19 and no conflict, so it is exposed but
+was not hit.
+
+Upstream fixed it in #199365 (`f06e5cda8f7`, merged 2026-11-19 13:52Z, in no stable tag yet): every Gateway `send`
+goes through the Gateway's own message runner, which commits the route and the transcript row, and the caller-side
+`recordGatewayActionSend` and `callerRecordsDestinationHistory` are removed. `ec06c3a5efa` is that commit
+cherry-picked with `-x` onto `20fda90a320`, with no conflicts. The carry already had the `gatewayClientScopes` fields
+the fix threads through (`deliver-contracts.ts`, `deliver-core.ts`).
+
+**Qualification** (M4, Node 26.12.1, 2026-11-20, `ec06c3a5efa`, clean tree):
+
+- `tsgo:core` rc 0 (incremental; the cache was rewritten by the run).
+- The fix's focused tests: 6 files, 139 tests, 0 failures (`send.test.ts`,
+  `send.destination-transcript.integration.test.ts`, `message-action-send.test.ts`,
+  `message-action-send.mirror-order.test.ts`, `outbound-send-service.test.ts`, `zalo-message-tool-delivery.test.ts`).
+- `test/cli-send-destination-transcript.runtime.e2e.test.ts` (a real CLI process sends through a resident Gateway,
+  then the resident agent appends a tool turn) passes against the build of `ec06c3a5efa`. The e2e harness rebuilds
+  `dist` from the working tree before it runs, so a run against an older `dist` is not a control.
+- Negative control: the same e2e with the six production files of the fix put back at `20fda90a320` (the test
+  kept) fails, `expected undefined to be truthy`, 1 of 1. The tree was then reset and `dist` rebuilt at `ec06c3a5efa`.
+- Plain `pnpm build` rc 0 in 117 s, build-info `ec06c3a5efa`; bundle `dist-bundle-ec06c3a5efab.tar`, sha256
+  `8e2848c86dd5...`. `callerRecordsDestinationHistory` is in 0 files of the new `dist` and in 5 of `a39d444826b`'s.
+
+**rh-bot's checkout moved to SSD512 (Alex, room #653).** The first deploy attempt (10:44 AM EST, 2026-11-20) stopped
+nothing: step 0f refused on the 15 GiB floor. Its own step 0d had used 2.0 GB of the internal disk: git negotiated from
+all ~9,100 local refs, gave up, and fetched 274,370 objects for a target 2 commits ahead of HEAD (mac-mini's 62-minute
+fetch on 2026-11-17 was the same thing). Free space on rh-bot had fallen from 34,616 MiB at the 2026-11-17 deploy to
+14,176 MiB. The main users of the internal disk were a staged macOS update (`/System/Volumes/Update`, 15,149 MiB),
+colima's VM disk (14,870 MiB) and the openclaw checkout (20,066 MiB, of which `.git` is 12.5 GiB in 26 packs). The pnpm
+store has been on the SSD since 2026-10-30 (`~/Library/pnpm` -> `/Volumes/SSD512/pnpm`), so the checkout's
+`node_modules` were full copies, not clones.
+
+The checkout now lives at `/Volumes/SSD512/openclaw-live.noindex/openclaw` (`.noindex` keeps Spotlight off its 359,143
+entries), with a symlink at `~/.openclaw/openclaw`; the plist, `/opt/homebrew/lib/node_modules/openclaw` and the
+worktrees resolve through it unchanged. Before anything stopped, a temporary LaunchAgent running the gateway's own
+wrapper and node read and imported from the copy (launchd itself refuses a plist stored on SSD512, `bootstrap` error 5,
+so the probe's plist sat in `/tmp`). The swap stopped the gateway, scheduler and inbox-watcher at 12:24:12 PM EST, ran
+a final rsync (itemized delta 0 lines, same HEAD), renamed the internal copy to
+`~/.openclaw/openclaw.pre-ssd-20261120T1724Z`, linked the SSD copy and started everything: pid 13470, ready,
+healthz 200, one Telegram provider, 0 `Cannot find module`, 0 `EPERM`, no open file on the old copy. The outage was
+93 s. The checkout is no longer in Time Machine (SSD512 is excluded; the internal path was included).
+
+Kit changes (`deploy-115b4.sh`): step 0c compares the worktree top with the resolved checkout path; step 0d fetches
+with `--negotiation-tip=<HEAD>`; step 0f budgets the bundle and install on the checkout's own volume when it differs
+from `$HOME`'s and keeps the 15 GiB floor on `$HOME`'s. The preflight then passed with 0 failures: budget 0 MiB on the
+internal disk, 17,369 MiB free.
+
+**Deployed to rh-bot (12:28 PM EST, 2026-11-20).** The idle gate opened at 12:26:52 PM. Step 0d took 1 s, but the
+target was already on the host from the first attempt, so the negotiation change was not exercised. The gateway
+stopped at 12:28:28 PM, doctor ran about 5 minutes (no DB migrated; every agent DB was already v38), and `ec06c3a5efa`
+started at 12:33:36 PM as pid 18185: build-info `ec06c3a5efa`, healthz/readyz 200/200 with `failing: []`, requesty's
+Telegram provider started, 0 `Cannot find module`, local-only PASS, `openclaw.json` and the plist unchanged, all 41 fork
+markers present. The outage was about 5 minutes. `callerRecordsDestinationHistory` is in 0 files of the live `dist` and
+in 5 of the internal copy's (`a39d444826b`), which was then deleted: free space on the internal disk went from 17,960
+to 39,561 MiB. Not yet seen live: a CLI send to the DM followed by an inbound turn. The next 6:00 AM workspace audit is
+the natural one. mac-mini runs `20fda90a320`, which has the same CLI-send path and logged 174 CLI sends with no conflict
+from 2026-11-17 to 2026-11-19; it is not deployed there.
