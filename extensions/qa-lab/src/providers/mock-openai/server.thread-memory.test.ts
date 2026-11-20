@@ -25,6 +25,7 @@ describe("qa mock openai server thread memory", () => {
         ),
         {
           type: "function_call",
+          call_id: "call_memory_search_1",
           name: "memory_search",
           arguments: JSON.stringify({
             query: "hidden thread codename ORBIT-22",
@@ -33,6 +34,7 @@ describe("qa mock openai server thread memory", () => {
         },
         {
           type: "function_call_output",
+          call_id: "call_memory_search_1",
           output: JSON.stringify({
             results: [],
             unavailable: true,
