@@ -456,7 +456,14 @@ describe("readRecentUserAssistantTextForSession grounding", () => {
           path.resolve(String(candidate)).startsWith(path.join(stateDir, "media")),
         ),
       ).toHaveLength(1);
-      expect(stat).toHaveBeenCalledTimes(2);
+      // The media root's case probe stats `media` and `Media`. Async SQLite work elsewhere in
+      // the worker can stat this state dir's databases meanwhile, so count only the media root.
+      const mediaRoot = path.join(stateDir, "media").toLowerCase();
+      expect(
+        stat.mock.calls.filter(([candidate]) =>
+          path.resolve(String(candidate)).toLowerCase().startsWith(mediaRoot),
+        ),
+      ).toHaveLength(2);
     } finally {
       realpath.mockClear();
       stat.mockClear();
