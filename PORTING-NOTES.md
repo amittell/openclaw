@@ -5396,3 +5396,31 @@ Schema and toolchain are unchanged from the deployed 11.5 carry: agent 38, state
   of 152 report: 2,246 tests, 2,239 passed, 0 failed, 7 skipped.
 - e2e: `test/telegram-final-restart.e2e.test.ts` 1 of 1 (83 s) and #199365's
   `test/cli-send-destination-transcript.runtime.e2e.test.ts` 1 of 1 (23 s).
+
+**Deployed to rh-bot (6:51 PM EST, 2026-11-20).** The bundle `dist-bundle-65eb3e94cb18.tar` (558 MB, sha256
+`835790100f1e…`) is a plain `pnpm build` of `65eb3e94cb1` on the M4 (73 s). `callerRecordsDestinationHistory`, which
+#199365 removes, is in 0 of its runtime files; its three `qa-*` entries are plugin SDK `.d.ts` files, as in the
+`ec06c3a5efa` bundle. The idle gate opened at once. Gateway pid 76007 started at 6:56:49 PM: the build id names the
+head, healthz and readyz 200, state 36 and agent 38 unchanged (no migration ran), 42 of 42 fork markers in the dist
+(new: `selectExecCompletionContent`), config and plist unchanged, local-only PASS. `respond-check.sh` answered `pong`
+in 9 s through the gateway and the Telegram account probed ok. `ps` RSS read 177 to 841 MB in the first 36 minutes,
+then 212 to 407 MB by 9:12 PM; 11.5's soak read 132 to 1,067 MB.
+
+**mac-mini: the swap and the deploy without the idle gate (Alex, room #662).** ailybot's `preprod-pipeline-collect`
+(every 30 minutes) keeps up to four coding and reviewer subagents writing every few seconds. The swap gate's 240
+probes (1:48 to 7:21 PM EST) never saw its 120 s window; the longest gap was 106 s. Alex chose to go ahead and cut
+the subagents.
+
+- Swap (`relocate-checkout-ssd.sh`, 7:23 PM): final delta 0 for the checkout and the store, symlinks in place, the
+  gateway back from `/Volumes/Storage` after 204 s with 3 providers. The four subagents ended `killed` at the stop
+  and restart recovery did not resume them; the pipeline's run after the deploy dispatched new ones.
+- The deploy's floor check then failed: 14,380 MiB free on the internal disk against 15,360. Deleting the verified
+  internal copies (checkout 18,233 MiB, store 4,865 MiB) brought it to 35,187 MiB; 20.8 of the 23.1 GB came back.
+- Deploy (7:36 PM): rc 0. The gateway was down from 7:40:46 to 8:19:29 PM, 39 minutes. The DB backup to the USB
+  volume took 21 of them (step 3, a 6.6 GB live set) and doctor 12.5.
+- Verify (9:07 PM): the build id names the head, healthz and readyz 200, 3 providers, state 36 and the four agent
+  DBs at 38 (no migration), 42 of 42 markers, config and plist unchanged, local-only PASS. Since the restart: 32
+  inbound, 3 final delivery lines, 0 provider errors or errored turns. `ps` RSS 1,608 MB at 53 minutes up (11.5:
+  331 to 2,207 MB).
+- `preprod-pipeline-collect` failed at 01:50Z with `Wait for Agents failed`. Not new: 9 of its runs on 2026-11-20
+  under the 11.5 carry failed the same way.
