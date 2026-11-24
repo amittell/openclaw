@@ -1,6 +1,9 @@
 import type { SessionTreeEntry } from "@openclaw/agent-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { iterateSessionContextMessages } from "../../../packages/agent-core/src/harness/session/session.js";
+import {
+  iterateSessionContextMessages,
+  withCompactionCheckpointHandle,
+} from "../../../packages/agent-core/src/harness/session/session.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { SessionActorMemoryHistoryScope } from "./session-actor-memory-history-projection.js";
 import type { SessionActorMemoryWindow } from "./session-actor-memory-state.js";
@@ -143,7 +146,11 @@ export function readSessionActorMemoryContextMessages(
   return {
     ...(seed
       ? readSessionContextSeed(entries, seed)
-      : { messages: Array.from(iterateSessionContextMessages(entries)) }),
+      : {
+          messages: Array.from(
+            iterateSessionContextMessages(entries, withCompactionCheckpointHandle(entries)),
+          ),
+        }),
     header: window.events.find((row) => isRecord(row.event) && row.event.type === "session")?.event,
     version: window.hot.transcript.version,
   };

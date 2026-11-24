@@ -3,6 +3,7 @@ import { estimateTokens } from "../../../packages/agent-core/src/harness/compact
 import {
   iterateSessionContextEntries,
   projectSessionContextMessage,
+  withCompactionCheckpointHandle,
 } from "../../../packages/agent-core/src/harness/session/session.js";
 import { estimateCompactionHistoryTokens } from "../../agents/sessions/context-token-pressure.js";
 import { selectBoundedContextStart } from "./session-bounded-context-selection.js";
@@ -21,11 +22,14 @@ export function readSessionContextSeed<T extends SessionTreeEntry>(
     const message = projectSessionContextMessage(selection);
     return message ? [{ selection, message }] : [];
   });
+  // Seeded context carries the same checkpoint line as buildSessionContext and the detached
+  // full-fidelity reader, so the seed prices and sends the bytes those readers show the model.
+  const readModelEntry = withCompactionCheckpointHandle(entries, readEntry);
   const hydrated = new Map<(typeof selected)[number], AgentMessage>();
   const read = (item: (typeof selected)[number]): AgentMessage => {
     let message = hydrated.get(item);
     if (!message) {
-      message = projectSessionContextMessage(item.selection, readEntry);
+      message = projectSessionContextMessage(item.selection, readModelEntry);
       if (!message) {
         throw new Error("Session seed navigation disagrees with its message payload");
       }
