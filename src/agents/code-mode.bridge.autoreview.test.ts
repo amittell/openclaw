@@ -109,9 +109,10 @@ describe("Auto Review parent execution allowance", () => {
           new Set(["autoreview", "exec"]),
         );
         vi.setSystemTime(bound + SESSION_WATCHDOG_QUIET_TOOL_MS - 1);
+        // The carry has #199587: a quiet run stays observed until its semantic deadline.
         expect(await operation.watchdog.tick(Date.now())).toEqual({
-          action: "warn",
-          reason: "no_semantic_progress",
+          action: "observe",
+          reason: "progress",
           deadlineAtMs: bound + SESSION_WATCHDOG_QUIET_TOOL_MS,
         });
         expect(operation.abortSignal.reason).toBeUndefined();
