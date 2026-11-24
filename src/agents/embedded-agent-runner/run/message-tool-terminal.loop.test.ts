@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -8,6 +8,7 @@ import {
 import { createStubSessionHarness } from "../../embedded-agent-subscribe.e2e-harness.js";
 import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import { createMessageTool } from "../../tools/message-tool-execution.js";
+import { resetMessageToolSendSuppressionForTest } from "../../tools/message-tool-execution.send-suppression.js";
 import { resolveSourceReplyDelivery } from "../delivery-evidence.js";
 import { recordEmbeddedToolReceipt } from "../tool-send-receipts.js";
 import {
@@ -20,6 +21,12 @@ import { buildPayloads } from "./payloads.test-helpers.js";
 const answer = "Answer for input A.";
 
 describe("confirmed message-tool turn completion", () => {
+  // FORK: the duplicate-send guard keeps each run's sends process-wide, and unit-fast's
+  // test/setup.env.ts (also the Bun preload) does not reset it as test/setup.ts does. Every case
+  // here reuses one runId and answer, so the second would be suppressed as a duplicate.
+  beforeEach(() => {
+    resetMessageToolSendSuppressionForTest();
+  });
   it.each([false, true])(
     "surfaces a steered input failure after the preceding source reply (final=%s)",
     async (final) => {
