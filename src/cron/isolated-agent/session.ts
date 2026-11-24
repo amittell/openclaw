@@ -153,7 +153,9 @@ type CronSessionParams = {
   inferenceCaptured?: boolean;
 };
 
-export async function prepareCronSession(params: CronSessionParams) {
+export async function prepareCronSession(
+  params: CronSessionParams,
+): Promise<import("./run-session-state.js").MutableCronSession> {
   const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
     agentId: params.agentId,
   });
