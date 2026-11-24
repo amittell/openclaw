@@ -62,10 +62,15 @@ An outcome the yield already recorded stays: a collector an earlier version left
 `ok` settles as done with the reply its yielded turn ended on, the same result a
 collector that yields now gets. Only a run with no recorded outcome settles as an
 `error` that says why, and its collector completion carries
-`reason: "yielded_without_result"`. Every other paused run stays continuable however long it has been
-paused: a declared message wait, a leaf that an earlier version left paused, and an
-orchestrator waiting on descendants are not bounded by this settlement. A kill
+`reason: "yielded_without_result"`. Other paused runs with a surviving continuation stay continuable however long they
+have been paused: a declared message wait with a live requester or an orchestrator
+waiting on reachable descendants is not bounded by this settlement. A kill
 claim on a paused run is never settled over; cancellation stays with the kill path.
+A retired child with no reachable descendant completion is settled through that
+same completion owner, rather than parked forever. Yield batches retain their
+original requester run ID after releasing execution. Permanent delivery failure
+ends only that exact parked lifecycle; legacy batches without the ID record a
+scoped failure notice without assigning the current writer to the old batch.
 
 Session rows show a continuable paused run as `subagentRunState: "paused"`
 while its recorded `status` stays unchanged, so the parent's lists can tell it
@@ -306,6 +311,17 @@ otherwise be silent, the shared reply pipeline can send a waiting acknowledgment
 The native subagent registry retains the completion obligation and wakes the
 requester through its accepted completion path; progress text is not proof that
 a child finished or that its result was delivered.
+
+A later turn can supply an explicit waiting acknowledgment while an earlier
+turn's active child completion is already armed. The acknowledgment ends only
+the current turn; it does not claim the child again or rearm its completion.
+Without an acknowledgment, or when the earlier children are paused or have no
+armed wake, `sessions_yield` reports the pending work and leaves the turn active.
+If that turn already delivered its reply through the message tool and at least
+one earlier child is active with an armed wake, the runtime ends the turn at the
+`already_pending` result instead, because that wake resumes the session. Paused
+or unarmed children resume nothing, so their result always leaves the turn
+active for the model to act on.
 
 When settlement resumes a top-level parent with automatic channel delivery,
 OpenClaw keeps the channel's typing indicator active while that continuation

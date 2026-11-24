@@ -23,9 +23,10 @@ import {
   deleteSessionDeliveryArtifacts,
   deleteSessionNodeArtifacts,
 } from "./session-accessor.sqlite-node-artifacts.js";
-import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
+import { readSessionReferenceOwners } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson as parseSessionEntryRow } from "./session-accessor.sqlite-status.js";
+import type { SessionDeletionSurvivors } from "./session-entry-storage.types.js";
 import type { SessionEntryWritePostimages } from "./session-entry-write-postimage.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -52,6 +53,31 @@ export {
   resolveLifecyclePrimaryEntry,
 } from "./session-accessor.sqlite-entry-snapshot.js";
 
+/** Prepare indexed survivors before writer admission; hydrate only selected owners. */
+export function readSessionDeletionSurvivors(
+  database: OpenClawAgentDatabase,
+  sessionKey: string,
+  sessionIds: readonly string[],
+): SessionDeletionSurvivors {
+  const db = getSessionKysely(database.db);
+  const survivingOwners = readSessionReferenceOwners(database, new Set([sessionKey]), sessionIds);
+  const survivingNodes = new Map(
+    [...new Set(survivingOwners.values())].map((key) => [
+      key,
+      executeSqliteQueryTakeFirstSync(
+        database.db,
+        db
+          .selectFrom("session_nodes")
+          .select(["current_session_id", "entry_json", "session_key", "entry_valid", "updated_at"])
+          .where("session_key", "=", key),
+      ),
+    ]),
+  );
+  return new Map(
+    [...survivingOwners].map(([sessionId, key]) => [sessionId, survivingNodes.get(key)]),
+  );
+}
+
 export function deleteSessionEntryRows(
   database: OpenClawAgentDatabase,
   sessionKey: string,
@@ -60,6 +86,7 @@ export function deleteSessionEntryRows(
     deliveryCleanupKeys?: readonly string[];
     validatedEntry?: SessionEntry;
     postimages?: SessionEntryWritePostimages;
+    preparedSurvivors?: () => SessionDeletionSurvivors | undefined;
   } = {},
 ): boolean {
   // Lifecycle deletion reuses its transaction snapshot; Doctor also supplies validated legacy rows.
@@ -73,43 +100,17 @@ export function deleteSessionEntryRows(
     database.db,
     db.selectFrom("session_windows").select("session_id").where("session_key", "=", sessionKey),
   ).rows;
-  // Skip the survivor scan when maintenance reclaimed every window. Otherwise, project
-  // reference metadata before acquiring rows to avoid loading unrelated saved prompts.
   const survivingNodes =
-    windows.length > 0
-      ? executeSqliteQuerySync(
-          database.db,
-          db
-            .selectFrom("session_nodes")
-            .select([
-              "current_session_id",
-              "entry_json",
-              "session_key",
-              "entry_valid",
-              "updated_at",
-            ])
-            .where("session_key", "!=", sessionKey)
-            .orderBy("session_key", "asc"),
-        ).rows
-      : [];
-  // All retained windows use the same unchanged survivor snapshot in this transaction.
-  const survivorReferences =
-    windows.length > 1 ? new Map<(typeof survivingNodes)[number], readonly string[]>() : undefined;
+    options.preparedSurvivors?.() ??
+    readSessionDeletionSurvivors(
+      database,
+      sessionKey,
+      windows.map((window) => window.session_id),
+    );
   const ownedSessionIds: string[] = [];
   let transcriptInventoryUnchanged = options.deleteOwnedWindows !== true;
   for (const window of windows) {
-    const survivingNode = survivingNodes.find((node) => {
-      if (node.current_session_id === window.session_id) {
-        return true;
-      }
-      let references = survivorReferences?.get(node);
-      if (!references) {
-        const entry = parseSessionEntryRow(node);
-        references = entry ? collectSessionStateIdsForEntry(entry) : [];
-        survivorReferences?.set(node, references);
-      }
-      return references.includes(window.session_id);
-    });
+    const survivingNode = survivingNodes.get(window.session_id);
     if (survivingNode) {
       transcriptInventoryUnchanged &&=
         resolveAgentIdFromSessionKey(sessionKey, database.agentId) ===
@@ -201,12 +202,14 @@ export function deleteLifecycleTargetRows(
   database: OpenClawAgentDatabase,
   target: { canonicalKey: string; storeKeys: string[] },
   snapshot: SqliteLifecycleTargetSnapshot,
+  preparedSurvivors?: (sessionKey: string) => SessionDeletionSurvivors | undefined,
 ): boolean {
   let transcriptInventoryUnchanged = true;
   for (const sessionKey of uniqueStrings([target.canonicalKey, ...target.storeKeys])) {
     const trimmed = sessionKey.trim();
     if (trimmed) {
       const unchanged = deleteSessionEntryRows(database, trimmed, {
+        preparedSurvivors: () => preparedSurvivors?.(trimmed),
         validatedEntry: snapshot.find((row) => row.sessionKey === trimmed)?.entry,
       });
       transcriptInventoryUnchanged &&= unchanged;

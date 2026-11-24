@@ -136,6 +136,7 @@ export type PreparedReplyDispatchRuntime = Readonly<{
   agentDir: string;
   workspaceDir: string;
   config: OpenClawConfig;
+  readPolicyConfig?: () => OpenClawConfig;
   modelCatalog: ModelCatalogSnapshot;
   readFullModelCatalog?: () => ModelCatalogSnapshot | undefined;
   inboundPluginRegistry: PluginRegistry;
@@ -162,6 +163,8 @@ export type PreparedModelRuntimeInput = {
   env?: NodeJS.ProcessEnv;
   allowGatewaySubagentBinding?: boolean;
   runtimePluginSelections?: readonly AgentHarnessPluginSelection[];
+  /** Internal admission binding; never replaces the discovery/public config identities. */
+  readPolicyConfig?: () => OpenClawConfig;
   config: OpenClawConfig;
 };
 
@@ -251,6 +254,8 @@ export type PreparedModelCatalogProviderFacts = {
 
 export type PreparedModelCatalogInventory = {
   catalog: ModelCatalogSnapshot;
+  /** Acquired scopes stay live-owned even when replacement auth discards their rows. */
+  acquiredProviderIds?: ReadonlySet<string>;
   /** An unscoped provider acquisition completed; retained across provider-local refreshes. */
   fullProviderDiscovery?: true;
   runtimeModels: ReadonlyMap<string, readonly Model[]>;

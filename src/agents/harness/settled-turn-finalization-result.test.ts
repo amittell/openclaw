@@ -101,12 +101,15 @@ it.each<[Partial<EmbeddedRunAttemptResult>, string]>([
 });
 
 describe("after tool calls the tools-disabled pass rejected", () => {
-  const rejectedCall = safeResult({
+  const rejectedCall: AssistantMessage = {
+    ...createFinalAssistant(),
     content: [{ type: "toolCall", id: "call-write", name: "write", arguments: {} }],
     stopReason: "toolUse",
-  }).assistant;
-  const cleanFinal = () =>
-    safeResult({ content: [{ type: "text", text: "The clean final answer." }] }).assistant;
+  };
+  const cleanFinal = (): AssistantMessage => ({
+    ...createFinalAssistant(),
+    content: [{ type: "text", text: "The clean final answer." }],
+  });
   function afterRejectedCall(
     final: AssistantMessage,
     overrides: Partial<EmbeddedRunAttemptResult> = {},

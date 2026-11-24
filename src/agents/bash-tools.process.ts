@@ -275,7 +275,7 @@ export function createProcessTool(
     const idleMs = Math.max(0, Date.now() - lastOutputAt);
     const stdinWritable = isWritableStdin(session.stdin);
     return {
-      ...(hasExitWake(session) ? {} : { followUp: EXEC_MANUAL_COLLECTION_FOLLOW_UP }),
+      ...(!hasExitWake(session) ? { followUp: EXEC_MANUAL_COLLECTION_FOLLOW_UP } : {}),
       stdinWritable,
       waitingForInput: stdinWritable && idleMs >= inputWaitIdleMs,
       idleMs,

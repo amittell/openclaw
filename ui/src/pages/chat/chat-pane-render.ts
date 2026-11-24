@@ -29,7 +29,7 @@ import {
   createChatPaneQueuedEditProps,
   createChatPaneSessionActionCallbacks,
   canDismissChatPendingInputs,
-  readChatPaneMutationAccess,
+  readChatPaneRouteMutationAccess,
   renderChatPaneComposerControls,
 } from "./chat-pane-session-controls.ts";
 import {
@@ -48,10 +48,13 @@ import { createChatQuestionActions } from "./chat-question-actions.ts";
 import { dismissRealtimeTalkError } from "./chat-realtime.ts";
 import { activeChatRunStartupStatus } from "./chat-run-startup.ts";
 import { chatSendPendingReason } from "./chat-send-support.ts";
-import { refreshChatCommands } from "./chat-state-refresh.ts";
+import { readChatModelCatalogState, refreshChatCommands } from "./chat-state-refresh.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.tsx";
-import { openSessionWorkspaceFile } from "./components/chat-session-workspace.ts";
+import {
+  openSessionWorkspaceFile,
+  openSessionWorkspaceManagedArtifact,
+} from "./components/chat-session-workspace.ts";
 import { chatFailureRunId, hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-snapshot.ts";
@@ -80,9 +83,9 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
     const progressPresentation = this.progressCardPresentation;
     const cachedSession = this.cachedSessionStatePending() ? this.cachedSessionState() : undefined;
     const selectedSessionArchived = cachedSession?.archived ?? this.isCurrentSessionArchived(state);
-    const mutationAccess = readChatPaneMutationAccess(
+    const mutationAccess = readChatPaneRouteMutationAccess(
       this.context.gateway.snapshot,
-      state.sessionKey,
+      state,
       selectedSession,
     );
     const observerDigest = pickFreshestObserverDigest(
@@ -135,9 +138,8 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       agentsLoaded: this.context.agents.state.agentsList !== null,
       selectedAgentFound: selectedAgent !== undefined,
       agentModel: agentDefaultModel,
-      modelSelectionPolicy: state.chatModelSelectionPolicy,
-      catalogRetired: state.chatModelCatalogRetired,
-      catalogInitialized: state.chatModelCatalogInitialized,
+      modelCatalogState: readChatModelCatalogState(state),
+      modelAuthStatusResult: state.modelAuthStatusResult,
       catalogError: state.chatModelCatalogError,
       onSetup: () => this.context.navigate("model-setup"),
     });
@@ -552,6 +554,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,
       githubPublication: this.publication.binding?.view(),
       onOpenWorkspaceFile: (target) => void openSessionWorkspaceFile(state, target),
+      onOpenManagedArtifact: (href) => openSessionWorkspaceManagedArtifact(state, href),
       onOpenSessionLink: (target) => navigateMarkdownSession(this.context, target),
       onNavigate: (routeId, options) => this.context.navigate(routeId, options),
       onRefresh: this.refreshHistory,

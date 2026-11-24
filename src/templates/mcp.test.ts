@@ -13,7 +13,7 @@ import {
 
 const SERVER = { command: "uvx", args: ["fixture-mcp"] };
 
-function fixturePlan(ids: string[]) {
+function fixturePlan(ids: string[], details: Record<string, unknown> = SERVER) {
   return {
     agent: { finalId: "main" },
     actions: ids.map((id) => ({
@@ -21,7 +21,7 @@ function fixturePlan(ids: string[]) {
       id,
       action: "configure" as const,
       target: `mcp.servers.${id}`,
-      details: SERVER,
+      details,
       blocked: false,
     })),
   };
@@ -99,6 +99,27 @@ it("drops the ref of an MCP server whose write never committed", async () => {
   expect(await configured("fixture")).toBeUndefined();
 });
 
+it("matches a ${VAR} server by its declaration once the variable is set", async () => {
+  vi.stubEnv("FIXTURE_MCP_TOKEN", "synthetic-token");
+  vi.stubEnv("OTHER_FIXTURE_MCP_TOKEN", "synthetic-token");
+  const plan = fixturePlan(["fixture"], { ...SERVER, env: { TOKEN: "${FIXTURE_MCP_TOKEN}" } });
+  const refs: PersistedTemplateMcpServerRef[] = [];
+  await installTemplateMcpServersStateless(plan, { refs });
+
+  const reused: PersistedTemplateMcpServerRef[] = [];
+  await installTemplateMcpServersStateless(plan, { refs: reused });
+  expect(reused).toEqual([expect.objectContaining({ origin: "pre-existing" })]);
+  await expect(
+    installTemplateMcpServersStateless(
+      fixturePlan(["fixture"], { ...SERVER, env: { TOKEN: "${OTHER_FIXTURE_MCP_TOKEN}" } }),
+      { refs: [] },
+    ),
+  ).rejects.toThrow("already exists with different configuration");
+
+  await expect(rollbackStatelessTemplateMcpServers(refs)).resolves.toEqual([]);
+  expect(await configured("fixture")).toBeUndefined();
+});
+
 it("keeps an earlier server in refs when a later action cannot start", async () => {
   const withLease = mcpLease.withMcpLifecycleLease;
   vi.spyOn(mcpLease, "withMcpLifecycleLease").mockImplementation((name, options, run) =>
@@ -110,3 +131,25 @@ it("keeps an earlier server in refs when a later action cannot start", async () 
   await expect(rollbackStatelessTemplateMcpServers(refs)).resolves.toEqual([]);
   expect(await configured("fixture")).toBeUndefined();
 });
+
+const SERVER_WITH_TIMEOUTS = { ...SERVER, requestTimeoutMs: 30_000, connectionTimeoutMs: 5_000 };
+
+it.each([false, true])(
+  "normalizes manifest timeouts before install and reuse (%s)",
+  async (existing) => {
+    if (existing) {
+      await mcpConfigInternal.set({ name: "fixture", server: SERVER_WITH_TIMEOUTS });
+    }
+    const refs: PersistedTemplateMcpServerRef[] = [];
+    await installTemplateMcpServersStateless(
+      fixturePlan(["fixture"], { ...SERVER, timeout: 30, connectTimeout: 5 }),
+      { refs },
+    );
+    expect(refs).toEqual([
+      expect.objectContaining({ relationship: existing ? "referenced" : "managed" }),
+    ]);
+    expect(await configured("fixture")).toEqual(SERVER_WITH_TIMEOUTS);
+    await expect(rollbackStatelessTemplateMcpServers(refs)).resolves.toEqual([]);
+    expect(await configured("fixture")).toEqual(existing ? SERVER_WITH_TIMEOUTS : undefined);
+  },
+);

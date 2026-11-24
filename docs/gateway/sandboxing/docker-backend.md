@@ -12,6 +12,25 @@ The Docker backend runs tools locally through the `docker` CLI. Its selection an
 
 Defaults: `network: "none"` (no egress), `readOnlyRoot: true`, `capDrop: ["ALL"]`, image `openclaw-sandbox:trixie-slim`.
 
+Tmpfs mounts without an explicit `size=` option are capped at 1 GiB for `/tmp`,
+4 GiB for `/tmp/openclaw-deps`, and 256 MiB for other paths. Explicit sizes are
+preserved. These are capacity limits, not reserved memory. Keep durable output
+in the disk-backed workspace; writes beyond a tmpfs limit fail with no space left.
+Podman also caps its automatic writable `/tmp`, `/var/tmp`, and `/run` mounts.
+
+Docker and Podman tool containers stop after 15 minutes without a new admission,
+on the Gateway’s five-minute housekeeping sweep. Active turns, retained background
+commands, and persistent executions prevent stopping. Each sweep attempts at most
+32 idle stops and resumes after its last attempted container, so failed engines
+cannot starve later containers. Stopping frees tmpfs contents and ends untracked
+background processes; host workspace files and the container writable layer persist.
+The next turn can restart the same container without rerunning one-time setup.
+Age-based removal remains separate; disabling removal does not disable idle stops.
+
+Dependency installation that exhausts storage fails preparation instead of
+publishing a partial template. Free bytes and inodes in the workspace and builder
+temporary package store before retrying.
+
 This explicit configuration keeps the agent workspace read-only and preserves
 the default restricted runtime posture:
 
@@ -93,6 +112,12 @@ On Ubuntu/AppArmor hosts with Docker sandbox mode enabled, Codex app-server `wor
 
 These Codex bwrap checks run in standalone `openclaw doctor` and are omitted during `openclaw update`; run `openclaw doctor` after the update. Doctor checks the user namespace with `unshare`. When Docker sandbox egress is disabled and a local Codex runtime is configured, it also runs the configured Codex binary's own `workspace-write` sandbox with network access disabled, exercising Bubblewrap's loopback setup. Unrecognized check failures are reported as unverified rather than as a namespace diagnosis. If doctor reports a Codex bwrap namespace check failure, prefer an AppArmor profile that grants the required namespaces to the OpenClaw service process. `kernel.apparmor_restrict_unprivileged_userns=0` is a host-wide fallback with security tradeoffs; use it only when that host posture is acceptable. Do not grant broader Docker container privileges just to satisfy nested `bwrap`.
 </Warning>
+
+The Docker and Podman host CLIs inherit the Gateway environment except for
+`MALLOC_CONF` and jemalloc entries in `LD_PRELOAD`. OpenClaw removes those
+Gateway allocator settings from the child environment while preserving other
+preloaded libraries. This does not change the configured environment inside
+sandbox containers.
 
 ### Sandboxed browser
 

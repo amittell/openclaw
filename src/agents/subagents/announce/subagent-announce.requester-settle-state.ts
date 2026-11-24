@@ -4,7 +4,10 @@ import type {
   RequesterSettleWakeState,
   SubagentRunRecord,
 } from "../registry/subagent-registry.types.js";
-import { isSubagentObligationRetired } from "../registry/subagent-requester-settle-identity.js";
+import {
+  isRequesterYieldCohortMember,
+  isSubagentObligationRetired,
+} from "../registry/subagent-requester-settle-identity.js";
 import { isSameSubagentRun, isSameSubagentRunOwner } from "../registry/subagent-run-generation.js";
 import { hasSubagentRunEnded } from "../registry/subagent-run-liveness.js";
 import { finalizeRequesterFinalAttachment } from "../requester-final-attachment.js";
@@ -14,6 +17,16 @@ export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "reti
 
 const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
 const REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS = [30_000, 120_000] as const;
+
+export function captureRequesterWakeGeneration(state: RequesterSettleWakeState) {
+  const generation = state.rearmGeneration;
+  const batchRunIds = state.requesterYieldBatch ? state.batchRunIds : undefined;
+  const hasCurrentWake = (entry: SubagentRunRecord | undefined): entry is SubagentRunRecord =>
+    entry?.requesterSettleWake !== undefined &&
+    entry.requesterSettleWake.rearmGeneration === generation &&
+    (!batchRunIds?.length || isRequesterYieldCohortMember(entry, batchRunIds, generation));
+  return { generation, hasCurrentWake };
+}
 
 export function isRequesterSettleMemberReady(entry: SubagentRunRecord): boolean {
   return (
@@ -27,27 +40,17 @@ export function needsRequesterSettleFindings(entry: SubagentRunRecord): boolean 
   return entry.delivery?.status !== "delivered";
 }
 
-/**
- * Only a known missing result, or an effect-free run whose transcript write was
- * rejected or aborted, or saved-state repair may mint another public continuation; private retries reconcile.
- */
+/** Delivery classification owns replay safety; every retryable result retains a bounded wake. */
 export function resolveRequesterSettleRetryState(params: {
   state: RequesterSettleWakeBatchState;
   delivery: SubagentAnnounceDeliveryResult;
   attemptCount: number;
-  parentOnly: boolean;
   now: number;
 }): RequesterSettleWakeBatchState | undefined {
-  const { state, delivery, attemptCount, parentOnly } = params;
+  const { state, delivery, attemptCount } = params;
   const retryDelay = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[attemptCount - 1];
   if (
     delivery.disposition !== "retryable" ||
-    (!parentOnly &&
-      delivery.reason !== "visible_reply_missing" &&
-      delivery.reason !== "requester_state_conflict" &&
-      delivery.reason !== "requester_aborted" &&
-      delivery.reason !== "requester_transcript_conflict") ||
-    delivery.reason === "requester_abandoned" ||
     attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS ||
     retryDelay === undefined
   ) {
@@ -153,6 +156,7 @@ export function readSharedBatchState(
     ...(source?.progressOperationId ? { progressOperationId: source.progressOperationId } : {}),
     ...(source?.pauseNotice ? { pauseNotice: source.pauseNotice } : {}),
     ...(source?.batchRunIds ? { batchRunIds: [...source.batchRunIds] } : {}),
+    ...(source?.requesterRunId ? { requesterRunId: source.requesterRunId } : {}),
     ...(states.some((state) => state.requesterYieldBatch === true)
       ? { requesterYieldBatch: true }
       : {}),

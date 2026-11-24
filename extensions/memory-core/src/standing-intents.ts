@@ -27,6 +27,38 @@ import {
 type DatabaseOptions = ReturnType<typeof captureMemoryAgentDatabaseOptions>;
 let scheduleMaintenance: ((path: string, nextDueAt: number | null) => void) | undefined;
 const lifecycleFacts = new Map<string, { empty: boolean }>();
+const knownDueAt = new Map<string, number>();
+const sweeps: { active: number; waiting: Array<() => void> } = { active: 0, waiting: [] };
+
+function recordDueAt(path: string, nextDueAt: number | null): void {
+  if (nextDueAt === null) {
+    knownDueAt.delete(path);
+  } else {
+    knownDueAt.set(path, nextDueAt);
+  }
+  scheduleMaintenance?.(path, nextDueAt);
+}
+
+async function withSweepSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (sweeps.active >= 2) {
+    await new Promise<void>((resolve) => {
+      sweeps.waiting.push(resolve);
+    });
+  } else {
+    sweeps.active += 1;
+  }
+  try {
+    return await run();
+  } finally {
+    const next = sweeps.waiting.shift();
+    if (next) {
+      next();
+    } else {
+      sweeps.active -= 1;
+    }
+  }
+}
+
 const operationQueues = new Map<string, StoreWriterQueue>();
 
 export {
@@ -75,7 +107,7 @@ async function executeStandingIntent(
         if (facts) {
           facts.empty = true;
         }
-        scheduleMaintenance?.(options.path, Infinity);
+        recordDueAt(options.path, Infinity);
         return undefined;
       }
       // Keep committed absence in owner order with creates and lifecycle transitions.
@@ -96,8 +128,14 @@ async function executeStandingIntent(
         if (facts) {
           facts.empty = result.nextDueAt === Infinity;
         }
-        scheduleMaintenance?.(options.path, result.nextDueAt);
+        recordDueAt(options.path, result.nextDueAt);
         return result.value;
+      } catch (error) {
+        // An uncertain write may have committed; only the first failure resets the retry deadline.
+        if (knownDueAt.has(options.path)) {
+          recordDueAt(options.path, null);
+        }
+        throw error;
       } finally {
         await worker.close();
       }
@@ -135,10 +173,12 @@ export function startStandingIntentMaintenance(params: {
         atMs: nextDueAt ?? scheduler.now(),
         async run() {
           try {
-            await executeStandingIntent(
-              { agentId: target.agentId, assertCurrent: () => scheduler.signal.throwIfAborted() },
-              { type: "sweep", input: { nowMs: scheduler.now() } },
-              target.options,
+            await withSweepSlot(() =>
+              executeStandingIntent(
+                { agentId: target.agentId, assertCurrent: () => scheduler.signal.throwIfAborted() },
+                { type: "sweep", input: { nowMs: scheduler.now() } },
+                target.options,
+              ),
             );
           } catch (error) {
             if (!scheduler.signal.aborted) {
@@ -151,13 +191,15 @@ export function startStandingIntentMaintenance(params: {
     );
   };
   scheduleMaintenance = schedule;
-  // Restart must process overdue expiry/cooldown before trusting a retained deadline.
+  // Past deadlines run immediately; unknown stores require a recovery sweep.
   for (const path of targets.keys()) {
     lifecycleFacts.set(path, { empty: false });
-    schedule(path, null);
+    schedule(path, knownDueAt.get(path) ?? null);
   }
   return () => {
-    scheduleMaintenance = undefined;
+    if (scheduleMaintenance === schedule) {
+      scheduleMaintenance = undefined;
+    }
     for (const job of jobs.values()) {
       job.cancel();
     }

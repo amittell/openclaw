@@ -84,11 +84,15 @@ and reply even if a later turn advances the child session. Retained routing
 metadata does not keep the child running.
 
 A graceful Gateway shutdown records the top-level requesters of running children,
-then cancels the children through the ordinary abort path. They settle terminally
-and quietly, without completion announcements or failure notices to their parents
-during shutdown. Only the root requester receives the standard resume input at
-startup. Children are not independently resumed, and the Gateway does not adopt
-old child tasks or reconstruct requester completion turns.
+then cancels the children through the ordinary abort path. Children that owe a
+completion retain their error outcome for delivery after startup, including when
+their requester already finished its turn. Shutdown is not intentional requester
+cancellation. Root requesters with interrupted work receive the standard resume
+input; children are not independently resumed.
+
+Completion turns retain processing receipts so a transient failure before the
+requester consumes the outcome can retry. Intentional Stop and completed receipts
+still prevent replay.
 
 The parent uses its transcript and the existing sub-agent tools to inspect prior
 work, then can send a fresh instruction to a retained child or spawn a replacement.
@@ -101,16 +105,22 @@ access-policy unavailability leaves delivery owed for retry. Explicit cancellati
 requester incarnation checks, and consumed-result receipts remain authoritative.
 
 If a requester wake is refused because the child's completion owner changed,
-that attempt ends instead of retrying indefinitely. The same requester and wake
-generation can still record a result already delivered after child cleanup. Otherwise, OpenClaw records failed delivery and attempts to append a
-short notice to the requester session. If that session is unavailable, the failure
-is logged without retrying the wake. Retained wakes converge on their next
-attempt; no manual database edits are needed.
+that attempt yields to the current owner. The completion stays owed and the registry
+re-evaluates its retained wake. The same requester and wake generation can still
+record a result already delivered after child cleanup. The registry owns recovery
+of unconsumed requester-settle results instead of starting a competing requester
+turn under the old run's operator authority. Once the result is committed to the
+requester transcript, the Gateway owns restarting that interrupted turn from its
+saved conversation; the registry does not submit the completion input again.
+A requester that deliberately yielded remains parked for its children.
 
-A crash or `SIGKILL` does not write a shutdown marker, so it resumes neither the
-parent nor its children. Their stored transcripts and task records remain available
-for inspection. Send a new message to continue. Reversible suspension does not
-mark or cancel children. See [Restart recovery](/gateway/restart-recovery).
+A crash or `SIGKILL` cannot write a shutdown marker. Children do not resume
+independently. A child that was still running in the previous Gateway is recorded
+as failed with an interruption error, and its requester receives that failure
+through the normal completion path rather than waiting indefinitely. Inspect its
+saved work before retrying; if the root cannot resume, send a new message to
+continue. Reversible suspension does not mark or cancel children. See
+[Restart recovery](/gateway/restart-recovery).
 
 Registry hydration, resource cleanup, and normal retention remain separate from
 execution resumption. Persisted records alone do not prove a live executor, grant

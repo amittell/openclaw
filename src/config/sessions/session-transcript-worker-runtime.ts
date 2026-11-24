@@ -7,7 +7,16 @@ import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import type { WorkerTaskOptions, WorkerTaskResponse } from "../../infra/worker-task-pool.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { runWithAgentDatabaseReadAdmissionTurn } from "../../state/agent-database-admission.js";
+import {
+  assertAgentCreationClaimAliases,
+  captureAgentCreationClaim,
+  reserveAgentCreationClaimAdmission,
+} from "../../state/agent-creation-claim.js";
+import {
+  captureAgentDatabaseAdmission,
+  runWithAgentDatabaseReadAdmissionTurn,
+} from "../../state/agent-database-admission.js";
+import { getAgentDeletionDatabaseCleanup } from "../../state/agent-deletion-cleanup.js";
 import { isArtifactPreservingStateRead } from "../../state/artifact-preserving-state-reads.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import { captureOpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
@@ -57,6 +66,7 @@ function projectionTarget(input: SessionHistoryWorkerPreparedInput) {
   switch (input.kind) {
     case "history-page":
       return input.request.kind === "active-accounting" ? input.target.transcript : undefined;
+    case "compaction-preparation":
     case "transcript-hydration":
     case "current-turn-entry":
     case "recent-active-events":
@@ -136,6 +146,10 @@ export function retainSessionHistoryWorkerDatabase(
 ) {
   const owned = acquireHistoryDatabaseResource(options);
   const { database } = owned;
+  const assertAgentAdmitted = captureAgentDatabaseAdmission(database.agentId, {
+    env: options.env,
+    access: "read",
+  });
   let knownSource = false;
   const assertCurrent = () => {
     if (owned.revoked) {
@@ -186,6 +200,11 @@ export function retainSessionHistoryWorkerDatabase(
         aborters: owned.aborters,
       };
       const { lane: requestedLane, ...readOptions } = readAdmissionOptions;
+      assertAgentCreationClaimAliases(readOptions);
+      const creationClaim = captureAgentCreationClaim(readOptions);
+      if (creationClaim) {
+        reserveAgentCreationClaimAdmission(database, readOptions, () => owned.retire());
+      }
       const deadline = performance.now() + readRequest.timeoutMs;
       const remainingTime = () => {
         const remaining = deadline - performance.now();
@@ -264,6 +283,14 @@ export function retainSessionHistoryWorkerDatabase(
                 return requestLane.pool.run(
                   () => {
                     assertCurrent();
+                    assertAgentCreationClaimAliases(readOptions);
+                    creationClaim?.assertCurrent();
+                    const cleanup = getAgentDeletionDatabaseCleanup(readOptions);
+                    if (cleanup) {
+                      cleanup.assertCurrentHost();
+                    } else if (!preserveSourceArtifacts) {
+                      assertAgentAdmitted();
+                    }
                     options.prepareRead?.();
                     const input = prepare();
                     if (preserveSourceArtifacts && input.kind === "session-exact-entries") {
@@ -303,6 +330,7 @@ export function retainSessionHistoryWorkerDatabase(
                     return {
                       ...input,
                       database,
+                      creationClaim: creationClaim?.witness,
                       validation: validation?.validation,
                       projectionReceipt:
                         projectionReceipt &&
@@ -353,6 +381,7 @@ export function retainSessionHistoryWorkerDatabase(
             );
           });
           await retirement;
+          creationClaim?.assertCurrent();
           const received =
             unwrapSessionTranscriptWorkerReply<SessionHistoryWorkerInput["kind"]>(reply);
           if (

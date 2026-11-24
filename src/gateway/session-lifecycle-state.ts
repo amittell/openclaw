@@ -39,14 +39,19 @@ type GatewaySessionLifecycleEventParams = {
   };
 };
 
+// Retention transfers ownership to deletion; it does not certify a committed receipt.
+type LifecyclePersistenceOutcome = void | "failure-notice-recorded" | "terminal-retained";
+
 export async function persistGatewaySessionLifecycleEvent(
   params: GatewaySessionLifecycleEventParams,
-): Promise<void> {
-  await runOutsideAsyncWorkScope(() => prepareGatewaySessionLifecycleEvent(params)());
+): Promise<LifecyclePersistenceOutcome> {
+  return runOutsideAsyncWorkScope(() => prepareGatewaySessionLifecycleEvent(params)());
 }
 
 /** Capture lookup custody before the lifecycle owner waits for an earlier event. */
-export function prepareGatewaySessionLifecycleEvent(params: GatewaySessionLifecycleEventParams) {
+export function prepareGatewaySessionLifecycleEvent(
+  params: GatewaySessionLifecycleEventParams,
+): () => Promise<LifecyclePersistenceOutcome> {
   const phase = resolveLifecyclePhase(params.event);
   if (!phase) {
     return async () => {};
@@ -62,7 +67,7 @@ export function prepareGatewaySessionLifecycleEvent(params: GatewaySessionLifecy
   return async () => {
     const sessionEntry = await prepared;
     try {
-      await persistPreparedGatewaySessionLifecycleEvent(params, phase, sessionEntry);
+      return await persistPreparedGatewaySessionLifecycleEvent(params, phase, sessionEntry);
     } catch (error) {
       // Drain settlement transfers the outcome to deletion, not to a successful write.
       if (
@@ -76,17 +81,19 @@ export function prepareGatewaySessionLifecycleEvent(params: GatewaySessionLifecy
               path: sessionEntry.storePath,
             },
             // The run has drained. Deletion now owns replay of this captured outcome.
-            persist: (assertCommitAllowed) =>
-              persistPreparedGatewaySessionLifecycleEvent(
+            persist: async (assertCommitAllowed) => {
+              await persistPreparedGatewaySessionLifecycleEvent(
                 { ...params, assertCommitAllowed },
                 phase,
                 sessionEntry,
-              ),
+              );
+            },
           },
         )
       ) {
         throw error;
       }
+      return "terminal-retained";
     }
   };
 }
@@ -95,7 +102,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
   params: GatewaySessionLifecycleEventParams,
   phase: LifecyclePhase,
   sessionEntry: Awaited<ReturnType<typeof loadGatewaySessionEntryReadOnlyInWorker>>,
-): Promise<void> {
+): Promise<LifecyclePersistenceOutcome> {
   if (!sessionEntry.entry) {
     return;
   }
@@ -107,7 +114,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
     sessionEntry.entry.endedAt === undefined &&
     sessionEntry.entry.abortedLastRun !== true
   ) {
-    // Admission already committed the running marker. Live events carry backend
+    // Fresh plain-input admission already committed the marker. Live events carry backend
     // timing until settlement persists it; yielded runs still need a resume write.
     return;
   }
@@ -199,7 +206,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
   );
   const { failedRun } = effects ?? {};
   if (persisted && failedRun) {
-    const { runId, error, errorKind, suppressErrorNotice } = failedRun;
+    const { runId, error, errorKind, suppressErrorNotice, notice } = failedRun;
     // Only accepted errors pay for branch navigation; assistant detection and
     // report deduplication share the appender's authoritative write snapshot.
     const receipt = {
@@ -215,6 +222,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
       error,
       errorKind,
       suppressErrorNotice,
+      notice,
       assertCommitAllowed: params.assertCommitAllowed,
     };
     // An accepted terminal owns its receipt, independently of an ambient requester turn.
@@ -226,5 +234,6 @@ async function persistPreparedGatewaySessionLifecycleEvent(
       },
       () => recordGatewaySessionRunFailure(receipt),
     );
+    return "failure-notice-recorded";
   }
 }

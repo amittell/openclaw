@@ -35,6 +35,7 @@ import {
   resolveSandboxRuntimeStatusAsync,
 } from "../sandbox/runtime-status.js";
 import { resolveSpawnAdmission } from "../spawn-plan.js";
+import { resolveRequesterDeliveryThreadId } from "../spawn-requester-origin.js";
 import { resolveSpawnedWorkspaceInheritance } from "../spawned-context.js";
 import { prepareSubagentSessionListReadCache } from "../subagents/registry/subagent-registry-state.js";
 import { registerSubagentRun } from "../subagents/registry/subagent-registry.js";
@@ -621,6 +622,7 @@ export async function maybeSpawnVisibleSession(params: {
         {
           runId,
           requesterTurnRunId: params.options?.requesterTurnRunId,
+          gatewayContextResolver: resolveGatewayContext,
           childSessionKey,
           childAgentId: targetAgentId,
           sessionEntry: { sessionId, lifecycleRevision },
@@ -635,7 +637,7 @@ export async function maybeSpawnVisibleSession(params: {
               params.options?.currentMessagingTarget ??
               params.options?.currentChannelId ??
               params.options?.agentTo,
-            threadId: params.options?.currentThreadTs ?? params.options?.agentThreadId,
+            threadId: params.options ? resolveRequesterDeliveryThreadId(params.options) : undefined,
           }),
           requesterDisplayKey: ownership.completionRequesterDisplayKey,
           task: params.task,

@@ -17,8 +17,40 @@ import { preparedModelInventoryKey } from "./prepared-model-runtime.facts.js";
 import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.fingerprint.js";
 import type {
   PreparedModelCatalogInventory,
+  PreparedModelRuntimeOwner,
   PreparedModelRuntimePluginGeneration,
 } from "./prepared-model-runtime.types.js";
+
+/** Configured and credential-bearing providers eligible for full discovery. */
+export function listEligibleCatalogProviders(
+  facts: Pick<PreparedModelRuntimeAgentFacts, "providerIds" | "credentials">,
+  normalize: (provider: string) => string,
+): string[] {
+  return [
+    ...new Set([...facts.providerIds, ...Object.keys(facts.credentials)].map(normalize)),
+  ].toSorted();
+}
+
+/** Keep acquired provider scopes after auth replacement removes their rows. */
+export function createCatalogInventoryPublisher(
+  owner: Pick<PreparedModelRuntimeOwner, "catalogInventory">,
+) {
+  const acquiredProviderIds = new Set([
+    ...(owner.catalogInventory?.acquiredProviderIds ?? []),
+    ...(owner.catalogInventory?.providers.keys() ?? []),
+  ]);
+  return (inventory: PreparedModelCatalogInventory | undefined) => {
+    // A native no-op does not replace the retained provider acquisition history.
+    if (!inventory) {
+      return;
+    }
+    for (const provider of inventory.providers.keys()) {
+      acquiredProviderIds.add(provider);
+    }
+    inventory.acquiredProviderIds = acquiredProviderIds;
+    owner.catalogInventory = inventory;
+  };
+}
 
 export function preparedProviderCatalogSource(
   facts: PreparedModelRuntimeAgentFacts,

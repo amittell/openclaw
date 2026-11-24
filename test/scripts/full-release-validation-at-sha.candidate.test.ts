@@ -29,7 +29,7 @@ function dispatches(fixture: ReturnType<typeof createDispatchFixture>) {
 }
 
 describe("candidate-owned full release dispatch entry point", () => {
-  it("admits explicit main-provenance Q without substituting the frozen candidate", () => {
+  it("admits explicit Q without substituting the frozen candidate", () => {
     const f = createDispatchFixture({ candidateOwned: true, advanceMainAfterAdmission: true });
     const result = f.run([
       "--workflow-sha",
@@ -75,15 +75,41 @@ describe("candidate-owned full release dispatch entry point", () => {
     expect(dispatches(f)).toEqual([P, Q]);
   });
 
-  it("rejects independent Q without main provenance before admission", () => {
-    const f = createDispatchFixture({ candidateOwned: true });
-    runGit(f.checkout, ["checkout", "--detach", f.targetSha]);
-    runGit(f.checkout, ["commit", "--allow-empty", "-m", "untrusted qualification"]);
-    const qualificationSha = runGit(f.checkout, ["rev-parse", "HEAD"]);
-    const result = f.run(["--workflow-sha", qualificationSha]);
-    expectDispatchFailure(result, "not reachable from current origin/main");
-    expect(dispatches(f)).toEqual([]);
-  });
+  it.each([true, false])(
+    "requires canonical off-main Q without changing C or P (pushed=%s)",
+    (pushed) => {
+      const f = createDispatchFixture({ candidateOwned: true });
+      runGit(f.checkout, ["checkout", "--detach", f.targetSha]);
+      runGit(f.checkout, ["commit", "--allow-empty", "-m", "qualification-only repair"]);
+      const qualificationSha = runGit(f.checkout, ["rev-parse", "HEAD"]);
+      if (pushed) {
+        runGit(f.checkout, [
+          "push",
+          "origin",
+          `${qualificationSha}:refs/heads/qualification-repair`,
+        ]);
+      }
+      const result = f.run(["--workflow-sha", qualificationSha]);
+      if (!pushed) {
+        expectDispatchFailure(result, "Qualification admission did not succeed");
+        expect(dispatches(f)).toEqual([P]);
+        return;
+      }
+      expect(result.status, result.stderr).toBe(0);
+      expect(dispatches(f)).toEqual([P, Q]);
+      const admitted = JSON.parse(readFileSync(f.admissionReceiptPath, "utf8"));
+      expect(admitted.request).toMatchObject({
+        candidateSha: f.targetSha,
+        qualificationSha,
+        transportRef: expect.stringMatching(
+          new RegExp(`^release-ci/${qualificationSha.slice(0, 12)}-`),
+        ),
+      });
+      expect(admitted.producer.workflowSha).toBe(f.workflowSha);
+      expect(f.readPayload().body.inputs.expected_sha).toBe(f.targetSha);
+      expect(runGit(f.origin, ["rev-parse", "refs/heads/main"])).toBe(f.workflowSha);
+    },
+  );
 
   it("rejects an incompatible publication selector before qualification or registry work", () => {
     const f = createDispatchFixture({ candidateOwned: true });
@@ -750,7 +776,7 @@ describe("candidate-owned full release dispatch entry point", () => {
   it("refuses publish qualification when the candidate changelog thanks an internal handle", () => {
     const fixture = createDispatchFixture({
       candidateOwned: true,
-      releaseNotes: "- Fixes: keep replies threaded. Thanks @steipete.",
+      releaseNotes: "- Fixes: keep replies threaded. Thanks @steipete-oai.",
     });
     try {
       const result = fixture.run([
@@ -763,7 +789,7 @@ describe("candidate-owned full release dispatch entry point", () => {
       ]);
       expectDispatchFailure(
         result,
-        "Forbidden changelog thanks attribution (pnpm check:changelog-attributions): CHANGELOG.md:3 uses Thanks @steipete. Use verified human GitHub credits",
+        "Forbidden changelog thanks attribution (pnpm check:changelog-attributions): CHANGELOG.md:3 uses Thanks @steipete-oai. Use verified human GitHub credits",
       );
       expect(
         fixture.readCalls(fixture.ghCallsPath).filter((args) => ghApiMethod(args) !== "GET"),

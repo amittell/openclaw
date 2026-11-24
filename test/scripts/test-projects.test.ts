@@ -283,6 +283,25 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
+  it("keeps direct script consumers alongside conventional owners", () => {
+    withTinyGitRepo(
+      {
+        "scripts/e2e/lib/resource.mts": "export const value = 1;",
+        "test/scripts/resource.test.ts": 'import "../../scripts/e2e/lib/resource.mts";',
+        "test/scripts/rpc-walk.test.ts": 'import "../../scripts/e2e/lib/resource.mts";',
+        "test/scripts/rpc-walk.live.test.ts": 'import "../../scripts/e2e/lib/resource.mts";',
+        "test/scripts/unrelated.test.ts": "export {};",
+      },
+      (cwd) => {
+        const changed = ["scripts/e2e/lib/resource.mts"];
+        const targets = ["test/scripts/resource.test.ts", "test/scripts/rpc-walk.test.ts"];
+        expectChangedTargets(changed, targets, { cwd });
+        const plans = planRuns(["--changed=HEAD"], cwd, () => changed);
+        expect(plans.flatMap((plan) => plan.includePatterns ?? [])).toEqual(targets);
+      },
+    );
+  });
+
   it("unions semantic workflow owners with bounded direct references", () => {
     withTinyGitRepo(
       {
@@ -2749,6 +2768,7 @@ describe("test selector native source facts", () => {
         };
         for (const file of [
           "node-runtime-env.mjs",
+          "node-version.mjs",
           "runtime-process-scripts.generated.mjs",
           "scripts/lib/test-selector-source-facts.mts",
           "scripts/lib/test-selector-source-facts.worker.mts",

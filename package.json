@@ -1,6 +1,6 @@
 {
   "name": "openclaw",
-  "version": "2026.11.6",
+  "version": "2026.11.7",
   "openclaw": {
     "updateAdmissionProtocol": 1,
     "updatePreflightProtocol": 1,
@@ -83,6 +83,7 @@
     ".openclaw-lifecycle-pending",
     "!dist/.buildstamp",
     "!dist/.runtime-postbuildstamp",
+    "!dist/**/.source-module-urls/**",
     "!dist/**/*.app",
     "!dist/control-ui.build-*",
     "!dist/**/*.map",
@@ -437,6 +438,8 @@
     "skills/",
     "custodian-skills/",
     "scripts/check-install-dependency-ownership.mjs",
+    "scripts/sandbox-image-build.sh",
+    "scripts/docker/sandbox/Dockerfile",
     "scripts/freebsd-service-inspect.mjs",
     "scripts/generate-kysely-types.mts",
     "scripts/lib/direct-run.mjs",
@@ -490,7 +493,6 @@
     "!dist/plugin-sdk/compiled-subprocess-testing.d.ts",
     "!dist/plugin-sdk/compiled-subprocess-testing.js",
     "!dist/plugin-sdk/memory-host-search.d.ts",
-    "!dist/plugin-sdk/codex-client-version-runtime.d.ts",
     "!dist/plugin-sdk/realtime-transcription-provider.d.ts",
     "!dist/plugin-sdk/meeting-config.d.ts",
     "!dist/plugin-sdk/collection-input-runtime.d.ts",
@@ -498,7 +500,8 @@
     "!dist/plugin-sdk/node-crypto-runtime.d.ts",
     "!dist/plugin-sdk/path-existence-runtime.d.ts",
     "!dist/plugin-sdk/provider-auth-markers.d.ts",
-    "!dist/plugin-sdk/terminal-safe-text.d.ts"
+    "!dist/plugin-sdk/terminal-safe-text.d.ts",
+    "!dist/plugin-sdk/memory-core-host-transcript-stats.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -964,9 +967,6 @@
     },
     "./plugin-sdk/claude-model-runtime": {
       "default": "./dist/plugin-sdk/claude-model-runtime.js"
-    },
-    "./plugin-sdk/codex-client-version-runtime": {
-      "default": "./dist/plugin-sdk/codex-client-version-runtime.js"
     },
     "./plugin-sdk/codex-mcp-projection": {
       "default": "./dist/plugin-sdk/codex-mcp-projection.js"
@@ -1477,6 +1477,9 @@
     "./plugin-sdk/memory-core-host-status": {
       "default": "./dist/plugin-sdk/memory-core-host-status.js"
     },
+    "./plugin-sdk/memory-core-host-transcript-stats": {
+      "default": "./dist/plugin-sdk/memory-core-host-transcript-stats.js"
+    },
     "./plugin-sdk/memory-core-host-runtime-cli": {
       "default": "./dist/plugin-sdk/memory-core-host-runtime-cli.js"
     },
@@ -1800,7 +1803,8 @@
     "changed:lanes": "node scripts/changed-lanes.mjs",
     "check": "node --import ./scripts/tsx.mjs scripts/check.mts",
     "check:agents-md-size": "node --import ./scripts/tsx.mjs scripts/check-agents-md-size.mts",
-    "check:architecture": "pnpm check:import-cycles && pnpm check:madge-import-cycles && pnpm check:deprecated-api-usage && pnpm check:wrapper-shadowing && pnpm check:deprecated-jsdoc && pnpm db:kysely:check && pnpm db:postgres:check && pnpm lint:kysely && pnpm check:database-first-legacy-stores",
+    "check:architecture": "pnpm check:architecture:after-preflight && pnpm check:database-first-legacy-stores",
+    "check:architecture:after-preflight": "pnpm check:import-cycles && pnpm check:madge-import-cycles && pnpm check:deprecated-api-usage && pnpm check:wrapper-shadowing && pnpm check:deprecated-jsdoc && pnpm db:kysely:check && pnpm db:postgres:check && pnpm lint:kysely",
     "check:assertion-safety": "node --import ./scripts/tsx.mjs scripts/check-assertion-safety-ratchet.mts",
     "check:baseline-ratchets": "node --import ./scripts/tsx.mjs scripts/ci-baseline-ratchets.mts",
     "check:base-config-schema": "node --import ./scripts/tsx.mjs scripts/generate-base-config-schema.ts --check",
@@ -2401,7 +2405,7 @@
     "@modelcontextprotocol/server": "2.3.1",
     "@mozilla/readability": "0.6.0",
     "@openclaw/ai": "workspace:*",
-    "@openclaw/fs-safe": "0.26.13",
+    "@openclaw/fs-safe": "0.27.1",
     "@openclaw/proc-safe": "0.4.2",
     "@openclaw/proxyline": "0.4.0",
     "@opentelemetry/semantic-conventions": "1.43.0",

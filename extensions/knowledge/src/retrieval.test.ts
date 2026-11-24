@@ -510,17 +510,94 @@ it("editing a legacy page removes approval metadata through journaled publicatio
   }
 });
 
-it("an index built before row tracking is repopulated, never left empty and ready", async () => {
+it.each(["keyword_rows_v1_%", "keyword_fts_v1_%"])(
+  "repopulates a missing tracked index table %s",
+  async (tablePattern) => {
+    const f = await fixture();
+    await f.put("upgrade_note_1", "Upgrade sentinel", "lanternword body");
+    expect(await f.total({ query: "lanternword" })).toBe(1);
+    // Simulate the previous version: FTS rows and a matching state row, no tracking table.
+    f.store.withDatabase((db) => {
+      for (const { name } of db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name LIKE ? AND (sql LIKE 'CREATE VIRTUAL%' OR name LIKE 'keyword_rows_v1_%')",
+        )
+        .all(tablePattern)) {
+        db.exec(`DROP TABLE ${String(name)}`);
+      }
+    });
+    expect(await f.total({ query: "lanternword" })).toBe(1);
+  },
+);
+
+it("matches canonical keyword spellings without changing record bytes", async () => {
   const f = await fixture();
-  await f.put("upgrade_note_1", "Upgrade sentinel", "lanternword body");
-  expect(await f.total({ query: "lanternword" })).toBe(1);
-  // Simulate the previous version: FTS rows and a matching state row, no tracking table.
-  f.store.withDatabase((db) => {
-    for (const { name } of db
-      .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'keyword_rows_v1_%'")
-      .all()) {
-      db.exec(`DROP TABLE ${String(name)}`);
+  const nfc = "άλφα";
+  const nfd = nfc.normalize("NFD");
+  const first = await f.put("canonical_nfc", "Greek", nfc);
+  const second = await f.put("canonical_nfd", "Greek", nfd);
+  const before = await Promise.all([readFile(first, "utf8"), readFile(second, "utf8")]);
+  for (const mode of ["all", "any", "phrase"] as const) {
+    for (const query of [nfc, nfd]) {
+      expect(ids(await f.service.grep({ query, mode }, f.owner)).toSorted()).toEqual([
+        "canonical_nfc",
+        "canonical_nfd",
+      ]);
     }
-  });
-  expect(await f.total({ query: "lanternword" })).toBe(1);
+  }
+  const hits = await f.service.grep({ query: nfc, detail: "full" }, f.owner);
+  for (const hit of hits.hits.filter(isFullHit)) {
+    const body = hit.record.id === "canonical_nfc" ? nfc : nfd;
+    expect(hit.snippet.text).toBe(body.slice(hit.snippet.start, hit.snippet.end));
+  }
+  expect(await Promise.all([readFile(first, "utf8"), readFile(second, "utf8")])).toEqual(before);
+  const beta = "βήτα";
+  await f.put("canonical_mixed", "Greek", nfc + " " + beta.normalize("NFD"));
+  for (const mode of ["all", "any"] as const) {
+    expect(ids(await f.service.grep({ query: nfd + " " + beta, mode }, f.owner))).toContain(
+      "canonical_mixed",
+    );
+  }
+  expect(ids(await f.service.grep({ query: "αλφα" }, f.owner))).not.toContain("canonical_nfc");
+});
+
+it("canonical keyword forms preserve authored records and snippet offsets", async () => {
+  const f = await fixture();
+  const nfc = "άλφα",
+    nfd = nfc.normalize("NFD"),
+    beta = "βήτα";
+  const bodies = new Map([
+    ["nfc_note", nfc],
+    ["nfd_note", nfd],
+    ["mixed_note", nfc + " " + beta.normalize("NFD")],
+    ["hangul_note", "가나"],
+    ["hangul_nfc_note", "가나"],
+  ]);
+  for (const [id, body] of bodies) {
+    await f.put(id, "Canonical", body);
+  }
+  const read = async (id: string) =>
+    (await f.service.record({ id, includeMetadata: true }, f.owner)).record!;
+  const before = await Promise.all([...bodies.keys()].map(read));
+  for (const query of [nfc, nfd]) {
+    const result = await f.service.grep({ query, detail: "full" }, f.owner);
+    expect(ids(result).toSorted()).toStrictEqual(["mixed_note", "nfc_note", "nfd_note"]);
+    for (const hit of result.hits.filter(isFullHit)) {
+      const body = bodies.get(hit.record.id)!;
+      expect(hit.snippet.text).toBe(body.slice(hit.snippet.start, hit.snippet.end));
+    }
+  }
+  expect(await f.total({ query: "αλφα" })).toBe(1);
+  for (const mode of ["all", "any"] as const) {
+    expect(ids(await f.service.grep({ query: nfc + " " + beta, mode }, f.owner))).toContain(
+      "mixed_note",
+    );
+  }
+  expect(await f.total({ query: nfc + " " + beta, mode: "phrase" })).toBe(0);
+  expect(await f.total({ query: nfc + " " + beta.normalize("NFD"), mode: "phrase" })).toBe(1);
+  expect(ids(await f.service.grep({ query: "가나" }, f.owner)).toSorted()).toStrictEqual([
+    "hangul_nfc_note",
+    "hangul_note",
+  ]);
+  expect(await Promise.all([...bodies.keys()].map(read))).toStrictEqual(before);
 });

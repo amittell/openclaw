@@ -419,9 +419,8 @@ async function closeGatewayResources(
   try {
     if (params.drainActiveSessionsForShutdown) {
       await shutdownStep("session-end-drain", async () => {
-        const drainReason: "shutdown" | "restart" = restart ? "restart" : "shutdown";
         const result = await params.drainActiveSessionsForShutdown!({
-          reason: drainReason,
+          reason: restart ? "restart" : "shutdown",
           totalTimeoutMs: ACTIVE_SESSIONS_SHUTDOWN_DRAIN_TIMEOUT_MS,
         });
         if (result.timedOut) {
@@ -588,9 +587,11 @@ async function closeGatewayResources(
     closeFailure = { error };
   }
   try {
-    // Keep shared databases alive when a model, tool, or cleanup owner outlives
-    // its grace. Only a fresh process may restart that retained generation.
-    await measureCloseStep("cleanup-work", () => cleanupWork.runWhenIdle(() => {}));
+    // Grace warnings must not strand retirement after accepted finalizers settle.
+    // The process deadline bounds this join; databases stay live until it completes.
+    await measureGatewayCloseStep("restart.close.cleanup-work", () =>
+      cleanupWork.runWhenIdle(() => {}),
+    );
     if (resourceCleanupErrors.length) {
       throw resourceCleanupErrors[0];
     }

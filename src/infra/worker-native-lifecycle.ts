@@ -49,6 +49,8 @@ type NativeRuntime = NativeWorkerRuntime & {
 
 export type RetainedNativeWorkerSource = {
   readonly hasActiveWorkers: boolean;
+  /** File paths of live workers; `undefined` when a worker's code has no path. */
+  activeWorkerPaths(): (string | undefined)[];
   create(
     filename: string | URL,
     options?: WorkerOptions,
@@ -67,6 +69,8 @@ export type RetainedNativeWorkerSource = {
     input?: unknown,
   ): Promise<{
     port: MessagePort;
+    ref(this: void): void;
+    unref(this: void): void;
     retainBrokerUntilProcessExit(this: void): void;
     close(): Promise<void>;
   }>;
@@ -258,9 +262,6 @@ function nativeRuntime(source: NativeSource): NativeRuntime {
         }
       },
       close() {
-        if (handles.size) {
-          return Promise.reject(new Error("Native worker execution owners have not joined"));
-        }
         runtime.failure ??= new Error("Native worker lifetime owner is closing");
         materializeErrorStack(runtime.failure);
         terminateOwner();
@@ -342,6 +343,9 @@ export function captureRetainedNativeWorkerSource(options?: {
     get hasActiveWorkers() {
       return Boolean(source.runtime?.handles.size);
     },
+    activeWorkerPaths() {
+      return [...(source.runtime?.handles.values() ?? [])].map((worker) => worker.sourcePath);
+    },
     retireIdleBroker() {
       return retireNativeResourceBroker(source);
     },
@@ -353,6 +357,9 @@ export function captureRetainedNativeWorkerSource(options?: {
           if (errors.length) {
             throw new AggregateError(errors, "Native worker execution owner cleanup failed");
           }
+          if (source.hasActiveWorkers) {
+            throw new Error("Native worker execution owners have not joined");
+          }
           source.closing = true;
           await source.runtime?.close();
           // Host cache/recovery leases retain physical resources independently of execution.
@@ -360,6 +367,10 @@ export function captureRetainedNativeWorkerSource(options?: {
           forgetNativeSource(source);
           owners.clear();
         } catch (error) {
+          // Refused settlement is retryable; actual native teardown remains terminal.
+          if (!source.closing) {
+            closingOwners = undefined;
+          }
           materializeErrorStack(error);
           throw error;
         }
@@ -416,8 +427,21 @@ export function captureRetainedNativeWorkerSource(options?: {
         fail,
       );
       let closed = false;
+      let closing = false;
       const resource = {
         port: port2,
+        ref() {
+          lease.setReferenced(true);
+          port2.ref();
+        },
+        unref() {
+          // A late operation acknowledgment cannot release an in-progress close.
+          if (closing) {
+            return;
+          }
+          lease.setReferenced(false);
+          port2.unref();
+        },
         retainBrokerUntilProcessExit() {
           // Loaded native images retain physical tokens after domain ports close.
           // The broker already unrefs idle handles and joins on the host's real exit.
@@ -427,13 +451,20 @@ export function captureRetainedNativeWorkerSource(options?: {
           if (closed) {
             return;
           }
-          await attachment.close();
-          await lease.close();
-          lease.release();
+          closing = true;
+          resource.ref();
+          if (!attachment.dispatched) {
+            lease.abandonUnattached();
+          } else {
+            await attachment.close();
+            await lease.close();
+            lease.release();
+          }
           attachment.dispose();
           port1.close();
           port2.close();
           closed = true;
+          owners.delete(resource);
           if (source.closing) {
             await retireNativeResourceBroker(source);
           }
@@ -446,6 +477,8 @@ export function captureRetainedNativeWorkerSource(options?: {
         try {
           await resource.close();
         } catch (cleanupError) {
+          // A failed constructor cannot return its close obligation to the caller.
+          source.retain(resource, () => resource.close());
           throw new AggregateError(
             [error, cleanupError],
             "Native resource creation cleanup failed",

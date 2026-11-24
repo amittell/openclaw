@@ -239,7 +239,7 @@ it("refuses a worker sharing result whose captured birthtime differs from its re
   expect(forged).toBe(true);
 });
 
-it.for(["unknown", "rollback"] as const)(
+it.for(["unknown", "rollback", "other", "ops", "main"] as const)(
   "applies %s topology publications to retained sharing facts",
   async (change, { state }) => {
     const storePath = state.statePath("shared.sqlite");
@@ -251,7 +251,7 @@ it.for(["unknown", "rollback"] as const)(
     using prepared = releasing(await harness.prepare());
     if (change === "unknown") {
       sessionChanges.emit({ all: true, scope: "stores" });
-    } else {
+    } else if (change === "rollback") {
       expect(() =>
         runOpenClawStateWriteTransaction(
           () => {
@@ -261,14 +261,28 @@ it.for(["unknown", "rollback"] as const)(
           { env: state.env },
         ),
       ).toThrow("Synthetic registry rollback");
+    } else {
+      sessionChanges.emit({ all: true, scope: { agentId: change, topology: true } });
     }
-    if (change === "rollback") {
+    if (change === "rollback" || change === "other") {
       expect(prepared.readCurrent(cfg).target.entry.sessionId).toBe("registry-sharing");
     } else {
       expect(() => prepared.readCurrent(cfg)).toThrow(unavailableMessage);
     }
   },
 );
+
+it("invalidates absent shared-store facts when another physical owner becomes available", async ({
+  state,
+}) => {
+  const storePath = state.statePath("missing-shared.sqlite");
+  const cfg = { agents: { entries: { ops: {} } }, session: { store: storePath } };
+  const harness = sharingHarness(cfg, "agent:ops:missing", storePath, "ops");
+  using prepared = releasing(await harness.prepareMissing());
+  expect(prepared.readCurrent(cfg).target).toBeNull();
+  sessionChanges.emit({ all: true, scope: { agentId: "main", topology: true } });
+  expect(() => prepared.readCurrent(cfg)).toThrow(unavailableMessage);
+});
 
 it("does not discover registry-only retired stores outside captured roots", async ({ state }) => {
   const storePath = state.statePath("external-retired.sqlite");
@@ -511,6 +525,25 @@ it("requires an existing session before preparing sharing facts", async ({ harne
   const facts = prepared.readCurrent(cfg);
   expect(facts.target.entry.sessionId).toBe("new-restricted-session");
   expect(harness.authorize(facts)?.message).toContain("session is draft");
+});
+
+it("retains missing-session facts through empty database creation, but not a new session", async ({
+  state,
+}) => {
+  const cfg = { agents: { entries: { main: {} } } };
+  await state.writeConfig(cfg);
+  setRuntimeConfigSnapshot(cfg);
+  const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
+  const harness = sharingHarness(cfg, "agent:main:first-chat", storePath);
+  using prepared = releasing(await harness.prepareMissing());
+  expect(prepared.readCurrent(cfg).target).toBeNull();
+  await prepareOpenClawAgentDatabaseExecution(
+    { agentId: "main", path: storePath, env: state.env },
+    () => {},
+  );
+  expect(prepared.readCurrent(cfg).target).toBeNull();
+  harness.write(restrictedEntry("new-session", "new-generation"));
+  expect(() => prepared.readCurrent(cfg)).toThrow(unavailableMessage);
 });
 
 // Alias retargets apply to the next preparation; captured requests retain their physical store.

@@ -436,3 +436,9 @@ type and `omitNullRequestHeaders`. Runtime headers can contain `null` deletion
 markers; preserve them through header merges and OpenAI SDK calls. Use the helper
 after the final merge when a direct HTTP client needs a string-only header map.
 This entrypoint loads no provider policy, transport host, or credential runtime.
+
+## Child process environment
+
+Agent Git maintenance defaults and Gateway allocator environment filtering are
+host-owned implementation details used by bundled native adapters. Their
+internal process helpers are not typed public Plugin SDK entry points.

@@ -9,7 +9,7 @@ import type { AnyAgentTool } from "../tools/common.js";
 export type AgentHarnessContextMedia = { text?: string; images: ImageContent[] };
 export type AgentHarnessContextMediaRequest = { message: AgentMessage; maxChars: number };
 
-type AgentHarnessHostApprovalResult = Readonly<{
+export type AgentHarnessHostApprovalResult = Readonly<{
   decision: ApprovalDecision | null | undefined;
   terminalReason: ApprovalTerminalReason | null | undefined;
 }>;
@@ -236,3 +236,14 @@ export type AgentHarnessHostCapabilities = Readonly<{
     signal?: AbortSignal;
   }) => Promise<AgentHarnessHostApprovalResult | undefined>;
 }>;
+
+export type HostToolSurfaceOptions = Parameters<
+  NonNullable<AgentHarnessHostCapabilities["createToolSurfaceAsync"]>
+>[0];
+
+export type AgentHarnessHost = {
+  capabilities: AgentHarnessHostCapabilities;
+  close: () => void;
+  setInputAttachmentReadAllowed: (allowed: boolean) => void;
+  runWithScope: <T>(run: () => Promise<T>) => Promise<T>;
+};

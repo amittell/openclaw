@@ -10,6 +10,15 @@ title: "Managed worktrees"
 
 Managed worktrees give an agent task its own git branch and checkout without placing temporary directories inside the source repository. OpenClaw records them in the shared state database and snapshots their tracked and non-ignored untracked contents before ordinary removal. [Capacity eviction](#capacity-and-eviction) also preserves the checkout if its recovery snapshot cannot be completed.
 
+Projects cloned by OpenClaw always start new sessions in managed worktrees,
+including requests that omit `worktree` or set it to `false`. The shared clone is
+the maintenance-owned source for refreshes, Git objects, and templates. The
+project picker offers **New worktree** for these clones; explicitly registered
+folders and agent workspaces can still use **Current checkout**. Opening a
+repository URL also allocates a managed worktree. Existing sessions retain their
+accepted working directories; start a new project session to leave a previously
+selected shared checkout.
+
 When a new chat starts a managed worktree, OpenClaw can begin the first model
 turn while the checkout finishes. It first prepares the project instructions,
 workspace skills, and other prompt files from the selected Git commit in the
@@ -33,6 +42,12 @@ preparation before starting their model turn. An explicitly
 requested worktree name or existing session title can name the checkout.
 Otherwise, allocation chooses a short generated name while display-title
 generation runs in the background.
+
+Worktree registration waits at most 30 seconds for a shared repository Git
+operation, including object repair. After one second it logs the wait; if the
+operation remains busy, creation reports a retryable error naming the repository
+wait. A timed-out registration cannot create a checkout later. Git operations
+that have already started retain their normal execution and cleanup budgets.
 
 Pull-request statistics may refresh Git's cached file timestamps in a managed
 checkout; they do not stage content or change commits. Statistics for user-managed
@@ -62,7 +77,12 @@ with sandbox mode `all` or `non-main` in the background. Agents with sandbox mod
 still prepare dependencies on first use. A session arriving during preparation
 waits for the same build; later checkouts arrive with `node_modules`. Other selected commits
 still prepare their dependencies on first use. Shutdown cancels preparation and
-waits for the disposable installer to be removed.
+drains accepted installer cleanup. Before publishing a template, OpenClaw fences
+the disposable installer against restart and verifies that it has stopped. Container
+removal runs serially in the background, so a slow Docker or Podman removal does
+not delay the prepared workspace. Failed removals remain registered, log a warning,
+and retry during housekeeping, including after a Gateway restart. This cleanup
+also runs when ordinary sandbox idle and age pruning are disabled.
 The private checkout storage must support filesystem acceleration, and
 `worktreeAcceleration: false` disables this preparation too.
 
@@ -79,8 +99,8 @@ cache falls back promptly instead of waiting through network retries.
 
 The reusable generation binds the source commit, frozen lockfile, immutable image
 (including its Node and pnpm versions), guest path, and sandbox policy. A changed
-generation prepares a new template; the existing seven-day template cleanup also
-retires interrupted builders. Installation failure or changed tracked source
+generation prepares a new template with a distinct builder identity; background
+housekeeping recovers interrupted builders independently of template expiration. Installation failure or changed tracked source
 records a warning and keeps a source-only template for that generation. Missing
 lockfiles, unsupported filesystems, and unavailable images use source-only
 checkout. The agent can install normally in that private checkout. Dependency
@@ -503,6 +523,7 @@ OpenClaw applies these cleanup rules:
 
 - At run end, it removes a worktree without Git force only when `git status --porcelain` is empty and `git log HEAD --not --remotes --oneline` finds no unpushed commits. It also checks the captured contents for edits hidden by index flags. Otherwise it retains the checkout and records why.
 - Background cleanup snapshots and removes unlocked Workboard- and session-owned worktrees idle for more than 7 days, even when dirty. Session worktrees whose owner is archived or absent are eligible without waiting 7 days. Failed owner lookups defer idle cleanup. Run `openclaw worktrees gc` to request cleanup and see its progress.
+- Run workspace preparation and run-lease acquisition/release record worktree activity. Writes are coalesced over five minutes using the persisted timestamp, so idle expiry and capacity ordering reflect recent use rather than only creation time.
 - The same background owner enforces `worktreeMaxCount`, default `4096`, using the [capacity eviction policy](#capacity-and-eviction). Manual worktrees and unsaved data are eligible when enforcing the cap.
 - Snapshot records remain restorable for 30 days. Cleanup then deletes the snapshot ref and registry row.
 - Live owner leases protect active runs from eviction. Ordinary idle cleanup also preserves foreign or unrecognized Git worktree locks.
@@ -820,7 +841,7 @@ Without a running local Gateway, `openclaw worktrees gc` runs cleanup to complet
 | `worktrees.recoverRemoval` | Complete an interrupted removal from the exact pending snapshot.        |
 | `worktrees.retireSnapshot` | Retire one redundant snapshot with exact retained-source guards.        |
 
-`worktrees.list` requires `operator.read`. `worktrees.create` and `worktrees.branches` require `operator.write` for configured agent workspaces and registered projects; arbitrary host paths still require `operator.admin`. All creation disables repository Git hooks; write-scoped creation also skips `.openclaw/worktree-setup.sh`. Removing, restoring, and garbage-collecting worktrees remain admin-only. Branch listing reads existing refs only and never fetches. Unchanged inventories are reused after checking checkout, ref, configuration, and object-storage metadata, including repositories with large pack directories; changed metadata refreshes the inventory. Remote-only branches come back remote-qualified (`origin/feature-a`) so every returned name resolves as a base ref. New Session can also request a typed repository status from this method; a plain directory or unavailable checkout returns no branches instead of forcing the UI to infer Git capability from an error string.
+`worktrees.list` requires `operator.write`. `worktrees.create` and `worktrees.branches` require `operator.write` for configured agent workspaces and registered projects; arbitrary host paths still require `operator.admin`. All creation disables repository Git hooks; write-scoped creation also skips `.openclaw/worktree-setup.sh`. Removing, restoring, and garbage-collecting worktrees remain admin-only. Branch listing reads existing refs only and never fetches. Unchanged inventories are reused after checking checkout, ref, configuration, and object-storage metadata, including repositories with large pack directories; changed metadata refreshes the inventory. Remote-only branches come back remote-qualified (`origin/feature-a`) so every returned name resolves as a base ref. New Session can also request a typed repository status from this method; a plain directory or unavailable checkout returns no branches instead of forcing the UI to infer Git capability from an error string.
 
 Owner-routed requests require `operator.admin` and the corresponding
 [capability](/gateway/protocol/versioning#local-state-owner-routing). Their wire

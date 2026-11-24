@@ -46,6 +46,16 @@ surface and session root. Channels may use this capability to enable helper
 tools for restricted senders. Core remains responsible for authorization and
 containment. The same ID is advertised in Gateway `hello-ok.features.capabilities`.
 
+## Reply session initialization conflicts
+
+Use `isReplySessionInitConflictError(error)` from
+`openclaw/plugin-sdk/reply-runtime` to recognize an exhausted reply-session
+initialization conflict. Core owns classification, including errors serialized
+across runtime boundaries; plugins should not match the error text themselves.
+Channels can send a terminal busy notice or record intentional delivery-policy
+suppression before completing the inbound event. If notice delivery fails, keep
+the event retryable through the channel's durable ingress owner.
+
 ## Module loading and host identity
 
 Declare plugin entries in `package.json` under `openclaw.extensions`, import
@@ -572,6 +582,12 @@ its private `location`, and always await `preparation.startClose().result` in
 `finally`, including when preparation fails. Keep readers closed before disposal;
 cleanup failure rejects instead of reporting a successful import.
 
+Use `openSqliteWorkerStore({ ..., isolation: "external" })` for externally managed
+databases such as Messages `chat.db`. These opens share a separate admission queue
+and worker pool, so a blocked external open or read cannot pin ordinary storage
+workers. Physical database ownership and input budgets stay with the same broker;
+the backend still determines read-only or writable access.
+
 SQLite worker backends set connection lock-wait policy with
 `setSqliteBusyTimeout` from `openclaw/plugin-sdk/sqlite-worker-runtime`, including
 temporary changes. The connection owner retains the current timeout, skips
@@ -689,8 +705,11 @@ surfaces through normal database admission checks; Gateway shutdown cancels the 
 Memory runtimes may implement `prepareReload({ retireRuntime, retiringEmbeddingProviders })`
 and return `drain()` and `resume()`. Preparation synchronously fences affected
 manager acquisition, including lazy and fallback work. Match the exact acquired
-adapter objects rather than provider IDs. Drain removes affected managers from
-reuse before attempting to close them. It may return `{ errors }` to report
+adapter objects rather than provider IDs. Memory Core also drains lazy managers
+that have not attempted an adapter when any adapter retires: their dependencies
+are still unknown. This can restart an uninitialized manager for an unrelated
+provider, while managers with known unaffected adapters remain live. Drain removes
+affected managers from reuse before attempting to close them. It may return `{ errors }` to report
 cleanup failures. Resume reopens admission after cancellation, or after publication
 when the runtime is retained, even if old cleanup remains unfinished. Retiring
 managers must not publish late results into a replacement manager's caches.

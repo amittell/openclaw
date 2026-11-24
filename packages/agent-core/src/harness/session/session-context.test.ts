@@ -18,6 +18,7 @@ import {
   formatCompactionCheckpointHandle,
   projectSessionEntryMessage,
 } from "./session.js";
+import { classifyToolUseResultPairing } from "./tool-result-pairing.js";
 
 const timestamp = "2026-07-17T00:00:00.000Z";
 const historyPrelude = Symbol.for("openclaw.sessionHistoryPrelude");
@@ -457,4 +458,25 @@ describe("compaction checkpoint handle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(JSON.stringify(messages)).not.toContain("compaction checkpoint");
   });
+});
+
+it("preserves shared result aliases in reset tails and marks inferred legacy results as errors", () => {
+  const call = toolCall("call", "root", "legacy-id");
+  const legacy = resultMessage("legacy result", { toolName: "read", toolCallId: "" });
+  const frames = classifyToolUseResultPairing([call.message, legacy]);
+  expect(frames[0]?.occurrences[0]?.sourceResult).toBe(legacy);
+  expect(frames[0]?.occurrences[0]?.result).toMatchObject({
+    toolCallId: "legacy-id",
+    isError: true,
+  });
+  expect(legacy.toolCallId).not.toBe("legacy-id");
+
+  const result = resultMessage("result", { toolCallId: "legacy-id" });
+  const entries: [Entry, ...Entry[]] = [
+    call,
+    messageEntry("result-a", "call", result),
+    messageEntry("result-b", "result-a", result),
+  ];
+  const messages = resetContext(entries, "call").messages;
+  expect(messages.filter((message) => message === result)).toHaveLength(2);
 });

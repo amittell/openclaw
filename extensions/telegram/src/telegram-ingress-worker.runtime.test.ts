@@ -232,6 +232,24 @@ it("advances getUpdates offset only after the whole response is acknowledged", a
   expect(pollBodies.map((body) => body.timeout)).toEqual([0, 1]);
 });
 
+it("confirms a response whose update ids restarted below the previous offset", async () => {
+  // Telegram restarts update ids at a random number after a week without updates, and
+  // the Bot API serves an offset past its queue tail from the queue head.
+  const { pollBodies, done } = createRuntime(
+    [jsonResponse(200, { ok: true, result: [{ update_id: 30_739_880 }] }), emptyPoll()],
+    {
+      stopAfterPollSuccesses: 2,
+      initialUpdateId: 879_582_717,
+      acknowledge: async () => 30_739_880,
+    },
+  );
+  await flushRuntime();
+  await vi.advanceTimersByTimeAsync(0);
+  await done;
+
+  expect(pollBodies.map((body) => body.offset)).toEqual([879_582_718, 30_739_881]);
+});
+
 it("honors Telegram retry_after for getUpdates 429 responses", async () => {
   const runtime = createRuntime([
     errorPoll(429, "Too Many Requests: retry after 0.05", { retry_after: 0.05 }),

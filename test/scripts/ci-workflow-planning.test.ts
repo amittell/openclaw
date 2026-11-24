@@ -5407,6 +5407,44 @@ describe("ci workflow guards", () => {
     expect(readJsonOutput(dispatchManifest.outputs, "qa_smoke_ci_matrix").include).toHaveLength(6);
   });
 
+  it("ignores unrelated shared backends only for ordinary hosted dispatches", () => {
+    const hosted = runRunnerProfileFixture({
+      configuredProfile: "unrelated",
+      eventName: "workflow_dispatch",
+      targetSupportsContract: true,
+    });
+    expect(hosted.status, hosted.output).toBe(0);
+    expect(hosted.outputs.runner_profile).toBe("github");
+    expect(hosted.outputs.node_runner_backend).toBe("github");
+
+    for (const options of [
+      { eventName: "push" as const, targetSupportsContract: true },
+      { eventName: "workflow_dispatch" as const, targetSupportsContract: false },
+      {
+        eventName: "workflow_dispatch" as const,
+        targetSupportsContract: true,
+        qualificationDispatch: true,
+      },
+    ]) {
+      const result = runRunnerProfileFixture({ configuredProfile: "unrelated", ...options });
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(
+        "OPENCLAW_CI_RUNNER_BACKEND must be github, hybrid, blacksmith, or runson",
+      );
+    }
+
+    const unadmitted = runRunnerProfileFixture({
+      configuredProfile: "unrelated",
+      eventName: "workflow_dispatch",
+      targetSupportsContract: true,
+      requestedProfile: "runson",
+    });
+    expect(unadmitted.status).toBe(1);
+    expect(unadmitted.output).toContain(
+      "Runner and shape overrides require an admitted CI qualification",
+    );
+  });
+
   it("admits CI qualification only for a maintainer's open exact-head canonical main PR", () => {
     const step = requiredWorkflowStep(
       readCiWorkflow().jobs.preflight.steps,
@@ -5623,20 +5661,29 @@ describe("ci workflow guards", () => {
             ).toEqual(
               evaluateWorkflowExpression(expression, { ...qualified, runnerBackend: "hybrid" }),
             );
-            // Failed-job-only retries retain the successful preflight's first-attempt outputs.
-            expect(evaluateWorkflowExpression(expression, { ...qualified, runAttempt: 2 })).toEqual(
-              evaluateWorkflowExpression(expression, {
-                ...qualified,
-                runAttempt: 2,
-                runnerBackend: "github",
-                preflightOutputs: {
-                  ...qualified.preflightOutputs,
-                  ci_qualification: "false",
-                  qualification_runner_backend: "",
-                  effective_runner_backend: "github",
-                },
-              }),
-            );
+            // Failed-job-only retries retain qualification; ordinary routing remains equivalent,
+            // but the approved Node timeout is deliberately longer for qualification.
+            const qualifiedRetry = evaluateWorkflowExpression(expression, {
+              ...qualified,
+              runAttempt: 2,
+            });
+            const ordinaryRetry = evaluateWorkflowExpression(expression, {
+              ...qualified,
+              runAttempt: 2,
+              runnerBackend: "github",
+              preflightOutputs: {
+                ...qualified.preflightOutputs,
+                ci_qualification: "false",
+                qualification_runner_backend: "",
+                effective_runner_backend: "github",
+              },
+            });
+            if (name === "checks-node-core-test-nondist-shard" && key === "timeout-minutes") {
+              expect(qualifiedRetry).toBe(120);
+              expect(ordinaryRetry).toBe(60);
+            } else {
+              expect(qualifiedRetry).toEqual(ordinaryRetry);
+            }
           }
         }
         for (const task of ["dependencies", "lint", "test-types"]) {
@@ -9402,6 +9449,58 @@ describe("ci workflow guards", () => {
       240, 240, 30,
     ]);
   });
+
+  it("partitions grant-only target-context UI only with target native sharding", () => {
+    const run = (uiNativeSharding: boolean) =>
+      runCiManifestFixture({
+        bundledPlanner: false,
+        historicalCompatibility: false,
+        targetContextCompatibility: true,
+        uiNativeSharding,
+        scopeEnv: {
+          OPENCLAW_CI_CHECKOUT_REVISION: "6c6ae42ea8c3b17d092cd62027ba8962cb23c805",
+          OPENCLAW_CI_WORKFLOW_REVISION: "a4b20f00709b83d193946f6451d2f3569374549f",
+          OPENCLAW_CI_RUN_UI_TESTS: "true",
+        },
+      });
+    const supported = run(true);
+    const unknown = run(false);
+    for (const result of [supported, unknown]) {
+      expect(result.status, result.output).toBe(0);
+      expect(result.outputs.compatibility_target).toBe("true");
+      expect(result.outputs.ui_test_groups_gzip_base64).toBe("");
+    }
+    expect(supported.outputs.ui_test_shard_count).toBe("3");
+    expect(readJsonOutput(supported.outputs, "ui_test_matrix").include).toEqual([
+      { shard: 1 },
+      { shard: 2 },
+      { shard: 3 },
+    ]);
+    expect(unknown.outputs.ui_test_shard_count).toBe("1");
+    const nonUiOutputs = (outputs: Record<string, string>) =>
+      Object.fromEntries(Object.entries(outputs).filter(([key]) => !key.startsWith("ui_test_")));
+    expect(nonUiOutputs(supported.outputs)).toEqual(nonUiOutputs(unknown.outputs));
+  });
+
+  it.each(["node", "bun-all", "dual-all"])(
+    "retains singleton compatibility for an explicit %s runtime override",
+    (policy) => {
+      const result = runCiManifestFixture({
+        bundledPlanner: true,
+        historicalCompatibility: false,
+        targetContextCompatibility: true,
+        uiNativeSharding: true,
+        bunTestRuntime: true,
+        bunUiTestRuntime: true,
+        runtimeJobs: true,
+        scopeEnv: { OPENCLAW_CI_TEST_RUNTIME_POLICY: policy, OPENCLAW_CI_RUN_UI_TESTS: "true" },
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(result.outputs.compatibility_target).toBe("true");
+      expect(result.outputs.ui_test_shard_count).toBe("1");
+      expect(result.outputs.ui_test_runtime_policy).toBe(policy);
+    },
+  );
 
   it("uses target-owned CI plans and capabilities for older release checkouts", () => {
     const androidRun = requiredWorkflowStep(

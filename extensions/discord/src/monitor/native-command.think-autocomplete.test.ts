@@ -18,9 +18,19 @@ vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", async (importOrigina
   resolveConfiguredBindingRoute: vi.fn<typeof bindings.resolveConfiguredBindingRoute>(),
 }));
 
-vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/native-command-registry", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("openclaw/plugin-sdk/native-command-registry")>();
+  return {
+    ...actual,
+    resolveCommandArgMenuAsync: (params: Parameters<typeof actual.resolveCommandArgMenuAsync>[0]) =>
+      actual.resolveCommandArgMenuAsync({ ...params, catalog: [] }),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/agent-runtime")>()),
   getPreparedModelCatalogSnapshot: vi.fn(() => ({ entries: [], routeVariants: [] })),
-  loadPreparedModelCatalog: vi.fn(async () => []),
   normalizeProviderId: (value: string) => value.trim().toLowerCase(),
   resolveAgentDir: (_cfg: OpenClawConfig, agentId: string) => `/tmp/agents/${agentId}/agent`,
   resolveAgentWorkspaceDir: (_cfg: OpenClawConfig, agentId: string) => `/tmp/workspaces/${agentId}`,

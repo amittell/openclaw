@@ -4,9 +4,10 @@ import {
   requestPreparedOpenAIResponsesCompaction,
   usesNativeOpenAICodexResponsesBackend,
 } from "@openclaw/ai/transports";
-import type { AssistantMessage, Context, Model } from "@openclaw/llm-core";
+import type { AssistantHistoryMessage, AssistantMessage, Context, Model } from "@openclaw/llm-core";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
+import { decideContextPressure } from "../../context-pressure.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { getRawSessionAppendMessageAsync } from "../../session-raw-append-message.js";
 import { agentSessionRunProviderCompaction } from "../../sessions/agent-session-types.js";
@@ -57,6 +58,9 @@ export function createChatGPTV2CompactionBoundary(params: {
   config?: OpenClawConfig;
   contextTokenBudget: number;
   reserveTokens: number;
+  runId?: string;
+  /** Soft V2 fallbacks may stop only where the tool batch can continue. */
+  isToolBoundarySafe?: () => boolean;
   timeoutMs: number;
   authProfileId?: string;
   assertActive: () => void;
@@ -79,7 +83,7 @@ export function createChatGPTV2CompactionBoundary(params: {
   context: Context,
   options: Parameters<StreamFn>[2],
   requestAnchor?: MeasuredRequestContext,
-) => Promise<AssistantMessage | undefined> {
+) => Promise<AssistantHistoryMessage | undefined> {
   let failed = false;
   return async (streamFn, model, context, options, requestAnchor) => {
     if (!usesNativeOpenAICodexResponsesBackend(model) || params.session.isCompacting) {
@@ -127,14 +131,23 @@ export function createChatGPTV2CompactionBoundary(params: {
     if (outgoing.estimatedPromptTokens < softTriggerTokens) {
       return undefined;
     }
-    const fallback = (reason: string, hardLimit = false) => {
-      // The early V2 trigger must not move the client's compaction threshold.
-      if (!hardLimit && outgoing.route === "fits") {
+    const fallback = (reason: string) => {
+      // The early V2 trigger must not move the client's compaction threshold, and a
+      // soft fallback waits for a boundary where the tool batch can continue.
+      const pressure = decideContextPressure({
+        estimatedPromptTokens: outgoing.estimatedPromptTokens,
+        windowTokens: model.contextWindow ?? params.contextTokenBudget,
+        maintenanceDue: outgoing.route !== "fits",
+        boundarySafe: outgoing.route !== "fits" && (params.isToolBoundarySafe?.() ?? false),
+        runId: params.runId,
+      });
+      if (!pressure) {
         return undefined;
       }
       log.warn(`ChatGPT V2 compaction unavailable; falling back to client compaction: ${reason}`);
       const request: MidTurnPrecheckRequest = {
         ...outgoing,
+        pressure,
         // V2 exhausted this boundary. Route to the existing durable client compactor.
         route: "compact_only",
       };
@@ -142,7 +155,7 @@ export function createChatGPTV2CompactionBoundary(params: {
       throw new MidTurnPrecheckSignal(request);
     };
     if (outgoing.estimatedPromptTokens > (model.contextWindow ?? params.contextTokenBudget)) {
-      return fallback("the outgoing request exceeds the model context window", true);
+      return fallback("the outgoing request exceeds the model context window");
     }
     if (failed) {
       return fallback("an earlier V2 attempt in this run failed");

@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import * as sourceTurn from "../../../auto-reply/reply/source-turn-id.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { captureSessionTranscriptTargetBinding } from "../../../config/sessions/transcript-target-binding.js";
@@ -11,6 +10,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { prepareDelegationCapability } from "../../delegation-capability.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/tool-surface.js";
 import { applyAuthHeaderOverride, applyLocalNoAuthHeaderOverride } from "../../model-auth.js";
+import { resolveCyberAccessProgramForProvider } from "../../model-catalog-access-programs.js";
 import { recordAdmittedModelRoutingDecision } from "../../model-routing-decision.js";
 import { captureAgentPluginRuntimeRefresh } from "../../plugin-runtime-refresh.js";
 import { resolveReplyExpectation } from "../../reply-completion.js";
@@ -94,7 +94,6 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
 
   params.assertModelInput?.(effectiveModel);
 
-  await fs.mkdir(workspaceDir, { recursive: true });
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);
   }
@@ -118,7 +117,6 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     resolvedSessionTarget,
     params.abortSignal,
   );
-  const trajectorySessionFile = resolvedSessionTarget?.sessionKey ?? sessionPromptState.sessionFile;
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
   }
@@ -156,7 +154,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     runtimePlan,
     sessionId: sessionPromptState.sessionId,
     sessionKey: resolvedSessionKey,
-    sessionFile: trajectorySessionFile,
+    sessionFile: resolvedSessionTarget?.sessionKey ?? sessionPromptState.sessionFile,
     sessionTarget: resolvedSessionTarget,
     workspaceDir,
   });
@@ -190,9 +188,6 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
   const { sessionManager } = params;
   const { nativeSessionRuntime } = preparedRuntime;
   const authProfileStore = resolveRunAttemptAuthProfileStore();
-  const toolAuthProfileStore = agentHarnessBuildsOpenClawTools(runtime.agentHarness.id)
-    ? attemptAuthProfileStore
-    : undefined;
   const captureRuntimeArtifact = Boolean(params.onSuccessfulAuthBinding || expectedHarnessArtifact);
   const fallbackActive =
     modelId !== requestedModelId ||
@@ -326,9 +321,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     });
   const attemptControls = createAttemptControls({
     admittedRunContext,
-    onAbort: () => {
-      params.replyOperation?.abortByUser();
-    },
+    onAbort: () => params.replyOperation?.abortByUser(),
   });
   const pluginRefresh = captureAgentPluginRuntimeRefresh();
   const assertTargetCurrent = () => {
@@ -544,12 +537,16 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     initialReplayState: input.replayState,
     authStorage,
     authProfileStore,
-    toolAuthProfileStore,
+    toolAuthProfileStore: agentHarnessBuildsOpenClawTools(runtime.agentHarness.id)
+      ? attemptAuthProfileStore
+      : undefined,
     modelRegistry,
     agentId: workspaceResolution.agentId,
     thinkLevel: runtime.thinkLevel,
     thinkingExplicit: params.thinkingExplicit,
-    cyberAccessProgram: params.cyberAccessProgram,
+    // Each candidate, including fallbacks and live switches, applies Access to its own provider.
+    cyberAccessProgram: resolveCyberAccessProgramForProvider(params.cyberAccessProgram, provider)
+      .program,
     onToolOutcome: input.observeToolOutcome,
     isTurnTainted: input.isTurnTainted,
     allocateToolOutcomeOrdinal: input.allocateToolOutcomeOrdinal,

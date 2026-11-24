@@ -22,11 +22,7 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveTelegramAccountConfig } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import type { NormalizedAllowFrom } from "./bot-access.js";
-import {
-  hasInboundMedia,
-  isDurablyRetryableInboundMediaError,
-  isRecoverableMediaGroupError,
-} from "./bot-handlers.media.js";
+import { hasInboundMedia } from "./bot-handlers.media.js";
 import {
   latestPromptContextAmbientWatermark,
   latestPromptContextMinTimestampMs,
@@ -419,14 +415,11 @@ export function createTelegramInboundMedia({
             scope: buildTelegramMediaScope(entry.chatId, entry.threadSpec.id),
           });
         } catch (error) {
-          if (
-            mediaRuntime.abortSignal?.aborted ||
-            isDurablyRetryableInboundMediaError(error) ||
-            !isRecoverableMediaGroupError(error)
-          ) {
+          // Only the album's owner leaving replays it. A failed attachment must not
+          // hide the rest of the album or hold the chat behind it.
+          if (mediaRuntime.abortSignal?.aborted) {
             throw error;
           }
-          // A failed attachment must not hide the rest of the album.
           runtime.log?.(
             warn(`media group: skipping ${nativeKind} that failed to fetch: ${String(error)}`),
           );

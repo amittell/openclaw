@@ -20,8 +20,14 @@ const listMcp = vi.hoisted(() => vi.fn());
 const readPolicySync = vi.hoisted(() => vi.fn());
 const readPolicy = vi.hoisted(() => vi.fn());
 const validateDelivery = vi.hoisted(() => vi.fn());
+const captureCreator = vi.hoisted(() => vi.fn());
 const reloadPlugin = vi.hoisted(() => vi.fn());
 const deleteAgent = vi.hoisted(() => vi.fn());
+// Native account selection is covered by cron inference-binding tests.
+vi.mock("./cron-input-validation.js", async (original) => ({
+  ...(await original<typeof import("./cron-input-validation.js")>()),
+  captureCronCreatorSession: captureCreator,
+}));
 vi.mock("../../templates/gateway-add-plan.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../templates/gateway-add-plan.js")>()),
   planTemplateAddForGateway: planAdd,
@@ -60,6 +66,7 @@ const ready = { ...complete, readiness: { ready: true, requirements: [] } };
 const onDisk = { ...enabled, agents: { list: [{ id: agentId }] } };
 
 beforeEach(() => {
+  captureCreator.mockResolvedValue({});
   listMcp.mockResolvedValue({ ok: true, mcpServers: {} });
   readPolicy.mockResolvedValue(enabled);
 });
@@ -70,7 +77,12 @@ const params = { source, planIntegrity: "sha256:reviewed", acknowledgeCapabiliti
 const plan = { operation: "add", planIntegrity: "sha256:reviewed", target: { agentId } };
 
 function makeCron<T extends object>(overrides: T) {
-  return { add: vi.fn(), list: vi.fn().mockResolvedValue([]), ...overrides };
+  return {
+    add: vi.fn(),
+    list: vi.fn().mockResolvedValue([]),
+    getDefaultAgentId: () => "main",
+    ...overrides,
+  };
 }
 
 async function callAdd(
@@ -431,3 +443,52 @@ it("rechecks reviewed access at the plugin reload's persistent apply", async () 
   expect(applied).not.toHaveBeenCalled();
   expect(request[0]?.[2]).toMatchObject({ code: "UNAVAILABLE" });
 });
+
+it.each([false, true])(
+  "captures native creator ownership and disposes inference authority (revoked: %s)",
+  async (revoked) => {
+    const dispose = vi.fn();
+    const check = vi.fn(() => {
+      if (revoked) {
+        throw new Error("Account replaced");
+      }
+    });
+    const createdActor = { type: "human", source: "profile", id: "template-owner" };
+    const inferenceBinding = {
+      provider: "openai",
+      profileId: "openai:platform",
+      authRequirement: "api-key",
+      source: "auto",
+    };
+    captureCreator.mockResolvedValue({
+      createdActor,
+      inferenceBinding,
+      assertInferenceSelectionCurrent: check,
+      disposeInferenceAuthorization: dispose,
+    });
+    const captureOwnerProfileId = vi.fn();
+    const cron = makeCron({
+      add: vi.fn(async (_job, options) => {
+        options.commitGuard();
+        return { id: "captured-job" };
+      }),
+    });
+    const request = await applyThrough(
+      (input) => input.cronGateway!.add(schedule, { captureOwnerProfileId }),
+      { cron },
+    );
+    expect(captureCreator).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    if (revoked) {
+      expect(cron.add).not.toHaveBeenCalled();
+      expect(request[0]?.[0]).toBe(false);
+    } else {
+      expect(cron.add).toHaveBeenCalledWith(
+        expect.not.objectContaining({ inferenceBinding }),
+        expect.objectContaining({ createdActor, inferenceBinding }),
+      );
+      expect(captureOwnerProfileId).toHaveBeenCalledWith("template-owner");
+      expect(request[0]?.[0]).toBe(true);
+    }
+  },
+);

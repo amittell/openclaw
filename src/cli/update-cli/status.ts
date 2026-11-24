@@ -47,7 +47,7 @@ import { readUpdateRunStatus } from "../../infra/update-run-status.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import { defaultRuntime } from "../../runtime.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
-import { withArtifactPreservingStateReads } from "../../state/openclaw-state-db-readonly.js";
+import { withArtifactPreservingStateSnapshot } from "../../state/openclaw-state-inspection-snapshot.js";
 import { VERSION } from "../../version.js";
 import { formatCliCommand } from "../command-format.js";
 import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateStatusOptions } from "./shared.js";
@@ -61,13 +61,8 @@ async function readUpdateRecoverySetStatus(readRun?: typeof getUpdateRunAsync) {
     const sets = await inspectUpdateRecoveryBackups(readRun);
     return {
       recoverySets: sets.map((set) =>
-        set.status === "incomplete"
-          ? {
-              directory: set.directory,
-              status: set.status,
-              message: set.message,
-              nextAction: set.nextAction,
-            }
+        set.status === "incomplete" || set.status === "unreadable"
+          ? set
           : {
               runId: set.runId,
               manifestPath: set.ref.manifestPath,
@@ -126,7 +121,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
       { deadlineAtMs: Date.now() + timeoutMs, assertActive: () => scope.signal.throwIfAborted() },
       () =>
         scope.run(() =>
-          withArtifactPreservingStateReads(() =>
+          withArtifactPreservingStateSnapshot(scope.signal, () =>
             inspectUpdateStatus(opts, scope.signal, timeoutMs, checkTimeoutMs),
           ),
         ),
@@ -656,8 +651,8 @@ async function inspectUpdateStatus(
     defaultRuntime.log("");
   } else {
     for (const set of recoveryStatus.recoverySets) {
-      if (set.status === "incomplete") {
-        defaultRuntime.log("Update capture: incomplete");
+      if (set.status === "incomplete" || set.status === "unreadable") {
+        defaultRuntime.log(`Update capture: ${set.status}`);
         defaultRuntime.log(safeMessage(set.directory));
       } else {
         const label = set.status === "manual" ? "Doctor capture" : "Update recovery set";

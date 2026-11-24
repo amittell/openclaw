@@ -109,6 +109,19 @@ describe("plugin install mutation-free preflight", () => {
       });
     },
   );
+  it.each([false, true])("resolves a local archive file URL (localhost=%s)", async (localhost) => {
+    const archive = path.join(tempDirs.make("plugin-file-url-"), "demo ü #%.tgz");
+    fs.writeFileSync(archive, "fixture");
+    const url = pathToFileURL(archive);
+    if (localhost) {
+      url.hostname = "localhost";
+    }
+    await expect(install(url.href)).rejects.toThrow("__exit__:1");
+    expect(fixture.installPluginFromPathMock).toHaveBeenCalledWith(
+      expect.objectContaining({ path: archive }),
+    );
+    expect(fixture.runtimeErrors.at(-1)).toContain("path install disabled in test");
+  });
 
   it("resolves registered marketplace shorthand before ordinary source classification", async () => {
     fixture.resolveMarketplaceInstallShortcutMock.mockResolvedValue({

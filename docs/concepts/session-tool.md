@@ -375,11 +375,21 @@ Retained tasks created without store provenance keep ordinary default messaging
 and their existing explicit resume and cancellation controls. Newly registered
 tasks record their store and can use automatic continuation.
 
-`timeoutSeconds` limits the sending tool's wait, not the receiver's execution
-budget. For nonblocking coordination, use `sessions_send` with `timeoutSeconds: 0`.
+`timeoutSeconds` limits only the reply wait after acceptance, not the receiver's
+execution budget. The default reply wait is 30 seconds; `timeoutSeconds: 0` skips it.
+A separate fixed 30-second admission ceiling covers target lookup, preparation,
+admission, and transcript acknowledgment for every send. The sending tool declares
+an upper deadline of its start time plus the admission ceiling plus the reply wait
+to the turn watchdog. An admission timeout can follow accepted input; inspect the
+target before retrying.
 When that wait expires, eligible pending reply delivery continues observing the accepted
 run until it finishes; a wait interval does not discard a late reply. Nested
 inter-session replies use the same completion observation.
+On a Gateway, an eligible same-session follow-up retains its own accepted result;
+the guest does not need global `operator.write` permission to observe completion.
+An actual failed or cancelled run remains a failure, and any returned failure notice
+uses the same retained completion path. Current requester and session authority
+still govern the result.
 The low-level Gateway `sessions.send` RPC has a different contract: its JSON
 `timeoutMs` limits **receiver execution**, just like `chat.send`. Omit that field
 to keep the receiver's configured budget; bound the CLI wait separately with
@@ -392,9 +402,9 @@ An inline reply has `delivery.status: "skipped"` and starts no additional reques
 Neither field is a target-completion receipt.
 Separately admitted turns wait for the active reply and delivery to finish. They keep their order behind other agent commands; cancellation or the
 receiver's execution deadline can withdraw a waiting turn before it runs.
-Sends accepted by an active turn wait for transcript persistence before acknowledging. The existing two-minute steering
-deadline is independent of `timeoutSeconds`, which controls reply waiting. A
-deadline without confirmed persistence returns an error; it never acknowledges
+Sends accepted by an active turn wait for transcript persistence within the fixed
+30-second admission ceiling before acknowledging. A timeout without confirmed
+persistence returns a visible timeout; it never acknowledges
 volatile input or replays input that might already have been consumed.
 A persisted steer is part of the target's history; acknowledgment does not mean
 that the model has finished processing it. A backend without durable steering

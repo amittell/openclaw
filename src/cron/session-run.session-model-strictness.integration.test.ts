@@ -1,4 +1,5 @@
 import { getAiTransportHost } from "@openclaw/ai";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installPrivateUpdateHandoffStore } from "../../test/helpers/private-update-handoff-store.js";
 import { disposeAllSessionMcpRuntimes } from "../agents/agent-bundle-mcp-manager-api.js";
@@ -6,10 +7,13 @@ import { bindSessionMcpRuntimeTestScheduler } from "../agents/agent-bundle-mcp-m
 import { providerResponse } from "../agents/embedded-agent-runner.wire.test-support.js";
 import { modelDefinition } from "../agents/model-auth.fixtures.test-support.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "../agents/prepared-model-runtime.test-support.js";
+import { SessionManager } from "../agents/sessions/session-manager.js";
+import { makeAssistantMessageFixture } from "../agents/test-helpers/assistant-message-fixtures.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import { SESSION_TOTAL_TOKENS_VERSION, type SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { refreshSessionPatchQueuedSelection } from "../gateway/server-methods/sessions-patch-model-selection.js";
 import "../llm/ai-transport-host.js";
@@ -17,6 +21,7 @@ import { resetSessionControllerStateForTest } from "../sessions/session-lifecycl
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { makeCronJob } from "./delivery.test-helpers.js";
 import { TEST_SCHEDULED_OCCURRENCE } from "./scheduled-occurrence.test-support.js";
+import { createCronAgentWatchdog } from "./service/agent-watchdog.js";
 import { runCronSessionTurn } from "./session-run.js";
 import type { CronStoredJob } from "./types.js";
 
@@ -118,6 +123,7 @@ describe("stored session model selections in scheduled session turns", () => {
     expect(result?.error).toContain("Couldn't sign in to the AI service");
   }
   async function runWithFailingPinnedModel(params: {
+    preflightCompactionWatchdog?: true;
     storedSelection?: Pick<SessionEntry, "modelOverrideSource">;
     target?: "main" | "session";
     payload?: { model?: string; fallbacks?: string[] };
@@ -131,6 +137,19 @@ describe("stored session model selections in scheduled session turns", () => {
     return await withOpenClawTestState({ label: "cron-session-turn-model" }, async (state) => {
       installPrivateUpdateHandoffStore(state.root);
       const requests: string[] = [];
+      const controller = new AbortController();
+      const timeouts: string[] = [];
+      let summaryRequests = 0;
+      const watchdog = params.preflightCompactionWatchdog
+        ? createCronAgentWatchdog({
+            deferUntilRunner: true,
+            jobTimeoutMs: 180_000,
+            triggerTimeout: (reason) => {
+              timeouts.push(reason);
+              controller.abort(new Error(reason));
+            },
+          })
+        : undefined;
       const activeTurn = params.retargetWhileAdmitting && {
         pin: params.retargetWhileAdmitting.pin,
         started: Promise.withResolvers<void>(),
@@ -141,7 +160,12 @@ describe("stored session model selections in scheduled session turns", () => {
         if (request.method !== "POST" || !request.url.endsWith("/responses")) {
           throw new Error(`Unexpected external I/O in scheduled session fixture: ${request.url}`);
         }
-        const body = (await request.json()) as { model?: string };
+        const raw = await request.text();
+        const body = JSON.parse(raw) as { model?: string };
+        if (params.preflightCompactionWatchdog && raw.includes("context summarization assistant")) {
+          summaryRequests++;
+          await vi.advanceTimersByTimeAsync(60_001);
+        }
         const route = Object.entries(providerUrls).find(([, url]) =>
           request.url.startsWith(url),
         )?.[0];
@@ -183,6 +207,9 @@ describe("stored session model selections in scheduled session turns", () => {
               "fallback/model-b": routeParams,
               "jobfallback/model-c": routeParams,
             },
+            ...(params.preflightCompactionWatchdog
+              ? { compaction: { keepRecentTokens: 2_000, memoryFlush: { enabled: false } } }
+              : {}),
           },
         },
         models: {
@@ -224,6 +251,13 @@ describe("stored session model selections in scheduled session turns", () => {
         sessionId: "pinned-conversation",
         updatedAt: Date.now(),
         sessionStartedAt: Date.now(),
+        ...(params.preflightCompactionWatchdog
+          ? {
+              totalTokens: 125_000,
+              totalTokensFresh: true,
+              totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+            }
+          : {}),
       };
       await replaceSessionEntry(
         { agentId: "main", sessionKey },
@@ -236,6 +270,34 @@ describe("stored session model selections in scheduled session turns", () => {
               ...(params.storedSelection ?? userSelection),
             },
       );
+      if (params.preflightCompactionWatchdog) {
+        const seed = await SessionManager.openAsync(
+          {
+            agentId: "main",
+            sessionKey,
+            sessionId: conversation.sessionId,
+            storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: "main" }),
+          },
+          state.workspaceDir,
+        );
+        for (let turn = 0; turn < 12; turn++) {
+          await seed.appendMessageAsync({
+            role: "user",
+            content: `Earlier question ${turn}. ${"Background detail. ".repeat(250)}`,
+            timestamp: turn + 1,
+          });
+          await seed.appendMessageAsync(
+            makeAssistantMessageFixture({
+              provider: "primary",
+              api: "openai-responses",
+              model: "model-a",
+              content: [{ type: "text", text: `Earlier answer ${turn}.` }],
+            }),
+          );
+        }
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        expectDefined(watchdog, "scheduled setup watchdog").start();
+      }
       const activeJob: CronStoredJob = { ...stored, id: "active-turn", name: "Active turn" };
       const runTurn = (scheduled: CronStoredJob) =>
         runCronSessionTurn({
@@ -247,10 +309,25 @@ describe("stored session model selections in scheduled session turns", () => {
           text: "Reply.",
           admissionSource: "operator-schedule",
           deliveryAttemptFence: null,
+          abortSignal: controller.signal,
+          onExecutionStarted: watchdog?.noteRunnerStarted,
+          onExecutionPhase: watchdog?.notePhase,
+          onLaneWait: (info) =>
+            info?.waiting === false ? watchdog?.noteLaneAdmitted() : watchdog?.noteLaneWait(),
           assertCurrent() {},
         });
       if (!activeTurn) {
-        return { result: await runTurn(stored), requests };
+        return {
+          result: await runTurn(stored).finally(() => {
+            watchdog?.dispose();
+            if (params.preflightCompactionWatchdog) {
+              vi.useRealTimers();
+            }
+          }),
+          timeouts,
+          summaryRequests,
+          requests,
+        };
       }
       let retargeted = false;
       admission.whileQueuedAdmissionWaits = async (admittedSessionKey) => {
@@ -299,9 +376,20 @@ describe("stored session model selections in scheduled session turns", () => {
       expect((await activeResult).status).toBe("ok");
       const result = await pending;
       expect(retargeted).toBe(true);
-      return { result, requests };
+      return { result, requests, summaryRequests, timeouts };
     });
   }
+
+  it("lets scheduled preflight compaction finish beyond the setup watchdog", async () => {
+    const { result, summaryRequests, timeouts, requests } = await runWithFailingPinnedModel({
+      storedPin: null,
+      preflightCompactionWatchdog: true,
+    });
+    expect(summaryRequests).toBe(1);
+    expect(requests).toEqual(["primary/model-a", "primary/model-a"]);
+    expect(timeouts).toEqual([]);
+    expect(result).toMatchObject({ status: "ok", executionStarted: true });
+  });
 
   it.each([
     ["user", "session", undefined, userSelection],

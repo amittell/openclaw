@@ -36,6 +36,7 @@ import {
   readSessionEventTargetOperatorAuthority,
   readSessionEventTargetOwnerContinuation,
   readSessionEventTargetRequester,
+  readSessionEventTargetRequesterOwner,
   resolveSessionEventKey,
 } from "./session-event-target.js";
 import { setChannelSourceTurnId } from "./source-turn-id.js";
@@ -266,9 +267,12 @@ export function buildSessionEventContext(params: {
     ? automation.operatorAuthority
     : options.source === "plugin" ||
         options.source === "tool_handoff" ||
-        options.source === "restart"
+        options.source === "restart" ||
+        // A scheduler turn about a job (not its run) acts for the job's restored operator source.
+        (!automation && (options.source === "cron" || options.source === "cron_failure_repair"))
       ? readSessionEventTargetOperatorAuthority(target)
       : undefined;
+  const requesterOwnerCheck = readSessionEventTargetRequesterOwner(target)?.assertCurrent;
   if (
     operatorAuthority &&
     (automation?.controlUiAdmin ||
@@ -290,6 +294,22 @@ export function buildSessionEventContext(params: {
         operatorAuthority,
         isCurrent: () => {
           operatorAuthority.assertCurrent();
+          return true;
+        },
+      },
+    });
+  } else if (requesterOwnerCheck) {
+    // Work the scheduler started for a job keeps its requester's owner tools only while
+    // the requester is still an owner, rechecked before each owner-only effect.
+    bindCommandOwnerAuthority(ctx, {
+      isCurrent: () => {
+        params.assertCurrent();
+        requesterOwnerCheck();
+        return true;
+      },
+      successor: {
+        isCurrent: () => {
+          requesterOwnerCheck();
           return true;
         },
       },

@@ -20,6 +20,7 @@ import { resolveUserPath } from "../utils.js";
 import { addTemplateAgentToConfig } from "./add-agent-config.js";
 import { TemplateAddMutationError } from "./add-mutation-error.js";
 import { planWithPackageActions, sameCommittedAgent } from "./add-plan-helpers.js";
+import { rollbackWorkspaceBootstrapSeedForAdd } from "./add-state-write.js";
 import { TEMPLATE_ADD_RESULT_SCHEMA_VERSION } from "./add.js";
 import { seedTemplatePackageBootstrap } from "./bootstrap.js";
 import {
@@ -151,6 +152,7 @@ async function workspaceIdentity(workspace: string): Promise<string> {
 async function commitConfig(
   transform: Parameters<ConfigCommit>[0],
   options: StatelessTemplateAddOptions,
+  allowedAgentRosterRemovals?: readonly string[],
 ): Promise<void> {
   if (options.commitConfig) {
     await options.prepareEffect?.();
@@ -162,6 +164,7 @@ async function commitConfig(
     afterWrite: { mode: "auto" },
     writeOptions: copyRuntimeConfigWriteApplication(options.configWriteOptions, {
       assertCurrent: options.assertCurrent,
+      ...(allowedAgentRosterRemovals ? { allowedAgentRosterRemovals } : {}),
       beforeCommit: async () => {
         await options.configWriteOptions?.beforeCommit?.();
         await options.prepareEffect?.();
@@ -203,6 +206,7 @@ export async function stageTemplateAddHostRequirementsStateless(
   let configCommitted = false;
   let configCommitAttempted = false;
   let workspaceFiles: PersistedTemplateWorkspaceFile[] = [];
+  let bootstrapSeededAt: string | undefined;
   let packages: PersistedTemplatePackageRef[] = [];
   const mcpServers: PersistedTemplateMcpServerRef[] = [];
   let cronJobs: PersistedTemplateCronRef[] = [];
@@ -282,15 +286,19 @@ export async function stageTemplateAddHostRequirementsStateless(
               expectedConfigRevision: revision,
             });
           }
-          await commitConfig((config) => {
-            const existing = listAgentEntries(config).find(
-              (entry) => normalizeAgentId(entry.id) === normalizeAgentId(plan.agent.finalId),
-            );
-            if (!existing || !sameCommittedAgent(existing, plan)) {
-              throw new Error("The new agent changed after Add; automatic rollback stopped.");
-            }
-            return pruneAgentConfig(config, plan.agent.finalId).config;
-          }, options);
+          await commitConfig(
+            (config) => {
+              const existing = listAgentEntries(config).find(
+                (entry) => normalizeAgentId(entry.id) === normalizeAgentId(plan.agent.finalId),
+              );
+              if (!existing || !sameCommittedAgent(existing, plan)) {
+                throw new Error("The new agent changed after Add; automatic rollback stopped.");
+              }
+              return pruneAgentConfig(config, plan.agent.finalId).config;
+            },
+            options,
+            [plan.agent.finalId],
+          );
         }
         configCommitted = false;
       } catch (error) {
@@ -312,6 +320,10 @@ export async function stageTemplateAddHostRequirementsStateless(
         options.assertCurrent?.();
         await rm(workspace, { recursive: true, force: false });
         workspaceCreated = false;
+        if (bootstrapSeededAt) {
+          // A retry must not mistake this rolled-back seed for a consumed bootstrap.
+          await rollbackWorkspaceBootstrapSeedForAdd(workspace, bootstrapSeededAt, options);
+        }
       } catch (error) {
         errors.push(`workspace cleanup failed: ${coerceErrorMessage(error)}`);
       }
@@ -385,7 +397,14 @@ export async function stageTemplateAddHostRequirementsStateless(
       assertWorkspacePathUnchanged(workspace);
       await mkdir(workspace);
       workspaceCreated = true;
-      await seedTemplatePackageBootstrap(plan, stageOptions());
+      const bootstrapNow = Date.now();
+      const bootstrap = await seedTemplatePackageBootstrap(plan, {
+        ...stageOptions(),
+        nowMs: bootstrapNow,
+      });
+      if (bootstrap === "seeded") {
+        bootstrapSeededAt = new Date(bootstrapNow).toISOString();
+      }
       workspaceFiles = await createTemplateWorkspaceFiles(plan, stageOptions());
       const workspacePlan = planWithPackageActions(
         plan,

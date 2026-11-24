@@ -248,7 +248,17 @@ describe("createGatewayCloseHandler", () => {
         await entered.promise;
         // Advance the owner's grace and both retained-work joins.
         await vi.advanceTimersByTimeAsync(15_000);
-        expect(isGatewayCleanupRetainedError(await closing)).toBe(true);
+        let settled = false;
+        void closing.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        // SDK draining remains bounded; earlier finalizers join the retirement barrier.
+        if (owner === "sdk") {
+          expect(isGatewayCleanupRetainedError(await closing)).toBe(true);
+        } else {
+          expect(settled).toBe(false);
+        }
         expect(database.db.isOpen).toBe(true);
         expect(sdkDatabase.isOpen).toBe(true);
         expect(preparedDatabase.isOpen).toBe(true);
@@ -256,6 +266,12 @@ describe("createGatewayCloseHandler", () => {
         expect(sharedStateLifecycle.has("open")).toBe(true);
         release.resolve();
         await finished.promise;
+        if (owner !== "sdk") {
+          expect(await closing).toEqual({
+            durationMs: expect.any(Number),
+            warnings: [owner === "harness" ? "agent-harnesses" : eventKey],
+          });
+        }
         expect(failures).toEqual([]);
         expect(reads).toEqual([{ value: 1 }]);
       } finally {

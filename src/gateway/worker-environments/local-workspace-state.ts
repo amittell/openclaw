@@ -19,6 +19,7 @@ import {
   parseLocalWorkspaceSourcePaths,
   prepareLocalWorkspaceBuildInputs,
   selectLocalWorkspaceCanonicalPaths,
+  readLocalWorkspaceGitExclusions,
 } from "./local-workspace-inventory.js";
 import type {
   LocalWorkspaceManifestAction,
@@ -93,8 +94,9 @@ export function projectionOperations(
   const update = async (
     patch: Parameters<typeof store.update>[1],
     manifest?: Parameters<typeof store.update>[3],
+    publicationPack?: Uint8Array<ArrayBuffer>,
   ) => {
-    row = await store.update(current(), patch, owner.workerAuthority, manifest);
+    row = await store.update(current(), patch, owner.workerAuthority, manifest, publicationPack);
   };
   const repairBaseline = async () => {
     const repair = await store.manifest(current(), {
@@ -176,17 +178,19 @@ export function projectionOperations(
     });
   };
   const capture = async (target: Direction, preserveDirectories?: ReadonlySet<string>) => {
-    const selected = current();
     const root = sourcePath(target);
     await assertLocalWorkspaceDirectory(root);
-    current();
-    // Never inspect guest Git metadata on the host. Canonical inventory uses only
-    // the trusted managed worktree; ignored host files cannot enter the projection.
-    const includePaths = target === "projection" ? await canonicalPaths() : undefined;
+    // The trusted host index owns source admission; never inspect guest Git metadata.
+    const paths = await canonicalPaths();
     const snapshot = await captureWorkspaceManifestDocument({
       root,
-      baseCommit: selected.base_commit,
-      includePaths,
+      baseCommit: current().base_commit,
+      includePaths: target === "projection" ? paths : undefined,
+      // Archived projections are checked against their retained receipt without a live index.
+      gitIgnore:
+        target === "canonical" && owner.worktree.removedAt === undefined
+          ? await readLocalWorkspaceGitExclusions(owner.worktree.path, root, paths)
+          : undefined,
       buildCacheInputs: new Set(await buildCacheInputs()),
       preserveDirectories,
       signal,
@@ -388,10 +392,15 @@ export function projectionOperations(
           journal: {
             load: async () => undefined,
             begin: async (journal) => {
-              await update({
-                journal_json: serializeWorkerWorkspaceReconciliationPlan(journal),
-                journal_pack: journal.basePack,
-              });
+              // Publication consumes only this copy; rollback and receipt checks retain basePack.
+              await update(
+                {
+                  journal_json: serializeWorkerWorkspaceReconciliationPlan(journal),
+                  journal_pack: journal.basePack,
+                },
+                undefined,
+                new Uint8Array(journal.basePack),
+              );
             },
             abort: async () => {
               await update({ journal_json: null, journal_pack: null });
@@ -533,6 +542,7 @@ export function projectionOperations(
     current,
     workerAuthority,
     canonicalPaths,
+    capture,
     buildCacheInputs,
     baselineDocument,
     prepare,

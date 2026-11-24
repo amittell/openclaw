@@ -164,6 +164,38 @@ describe("registered completion source custody", () => {
 
   registerCompletionCompatibilityTests(registration);
 
+  it("partitions a shared requester wave by retained admitting source", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      useConfig({});
+      const context = createContext();
+      const resolveGatewayContext = () => context;
+      const first = await retainedOperatorFixture("first", context, resolveGatewayContext);
+      const second = await retainedOperatorFixture("second", context, resolveGatewayContext);
+      try {
+        for (const [runId, source] of [
+          ["a", first],
+          ["b", second],
+          ["c", first],
+        ] as const) {
+          await inGateway(source, () => registerSubagentRun(registration(runId)));
+        }
+        const batch = ["a", "b", "c"].map((id) =>
+          expectDefined(subagentRuns.get(id), "partition member"),
+        );
+        const firstRun = expectDefined(batch[0], "first partition owner");
+        const secondRun = expectDefined(batch[1], "second partition owner");
+        expect(subagentRuns.selectCompletionAuthorityBatch(batch, firstRun)).toEqual([
+          batch[0],
+          batch[2],
+        ]);
+        expect(subagentRuns.selectCompletionAuthorityBatch(batch, secondRun)).toEqual([batch[1]]);
+      } finally {
+        first.source.release();
+        second.source.release();
+      }
+    });
+  });
+
   it.each([
     "current",
     "before commit",

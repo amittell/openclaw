@@ -53,6 +53,24 @@ backup.
 
 ## Update implementation contract
 
+Candidate Doctor removes empty snapshot directories left by cancellation between
+private directory creation and native-token acquisition, after its inspection
+workers have settled. Unconfirmed worker cleanup and unowned snapshot payloads
+remain retained. The candidate must contain this repair; installed updaters need
+no schema or protocol change.
+
+Candidate Doctor compares pending plugin migration obligations independently of
+plugin order and repair guidance. A changed owner, protected path, or migration
+requirement still refuses input publication; diagnostics name added or removed
+owners even when the displayed ID summary is truncated. The candidate must contain
+this repair; the installed updater needs no schema or protocol change.
+
+A newer Doctor recognizes retained update captures whose state directory used
+an older alias or Windows short-path spelling. Scope comparison resolves the
+recorded state directory and configuration parent without changing sealed capture
+bytes or following the final configuration entry. A different selected state
+directory or configuration entry remains rejected.
+
 The candidate CLI and Matrix plugin keep explicit `matrix doctor inspect` and
 `matrix doctor recover --account <id> --accept-snapshot-rollback` available through
 the separate Doctor contract when an unfinished migration withholds normal Matrix
@@ -295,6 +313,16 @@ compatible process helper, wait for the recorded driver to exit, then run
 `openclaw update repair`. Doctor reports the native load failure and runtime
 glibc version when available.
 
+SQLite update backup admission measures database and journal families, reserves the
+retained backup and writable rollback images, and sizes history scratch from shared
+state rather than a large agent database. Actual rollback output space is checked
+again before current databases move. A disk-space refusal retains the required and
+available capacity and the backup or rollback volume role in the package-swap failure
+fact without exposing private paths. The candidate worker and installed updater
+must contain the diagnostic repair; an older updater cannot gain it from a newer
+candidate alone. If capture refuses before the package changes, final recovery
+restarts and verifies the previous owned Gateway unless recorded data is at risk.
+
 When artifact-preserving SQLite inspection exhausts its stabilization attempts,
 update failures retain the final consistency reason code and attempt count in
 `openclaw update status` and the prepared failure report. The candidate worker
@@ -430,6 +458,14 @@ the stale backup. Existing integrity, schema, and maintenance-ownership checks
 still apply, as do checks for writes after maintenance admission. The candidate must contain
 this repair; the installed updater's capture and backup checks are unchanged.
 Empty WAL-index transitions without write evidence remain rollback-eligible.
+An outside read-only SQLite open, such as a monitoring script using `mode=ro`, can
+rebuild the WAL index over retained frames after Doctor admits a database. The
+rebuild resets only the index change counter, so Doctor still accepts that
+database at migration publication when its file identity, committed content and
+last commit checksum are unchanged, and automatic restoration stays available.
+Any commit after admission, including one that restores identical content, still
+refuses. The Doctor of the version being installed owns this check, so updates
+from older releases benefit once the target contains it.
 
 The post-plugin Doctor runs for plugin changes, deferred model retirement, and
 pending deferred plugin migrations. Before each Doctor, the updater observes its
@@ -576,6 +612,13 @@ activated build.
 This retention covers Node and Bun late imports, including CommonJS dependencies
 and JSON. Module state already loaded by the updater stays shared through cleanup;
 imports outside that retained generation continue using the active installation.
+The retained inventory preserves the running updater's Windows short-path
+spelling so its late imports keep their original module identity after package
+replacement. This requires the installed updater to contain the repair; a newer
+candidate cannot change an older updater that is already running. Targets also
+ship recorded compatibility entrypoints for published updaters, including
+`2026.11.6`, so their late imports can resolve after activation when an older
+retained-import map misses a Windows short-path identity.
 
 Source updates qualify the installed pnpm launcher outside the checkout so even
 its version probe cannot rewrite the checkout's lockfile. If another version is
@@ -761,6 +804,16 @@ Windows removes only the junction or symlink before recreating and verifying it.
 A failed link leaves that plugin unprepared with a named error. Doctor retains
 its pending migration obligation while other plugins' migrations continue.
 This repair applies when the candidate loads plugin contracts during Doctor.
+
+Before judging an npm destination whose package path is empty, the updater
+restores a package link that a killed update left under
+`.openclaw.package-backup-<pid>-<time>`, but only when that link resolves to the
+checkout running the update. The destination is then inspected as usual and the
+update continues as an ordinary switch from a dev checkout to a package. Links to
+other checkouts and retained package directories are not moved. The installed
+updater must contain this fix; without it the retry is refused as an
+uninspectable destination until the link is moved back by hand. No journal,
+schema, or protocol change is involved.
 
 ### Migration integrity checks
 
@@ -1484,6 +1537,26 @@ the retention phase already running in an older updater.
 Post-activation schema inspection preserves captured SQLite database, WAL, and shared-memory
 artifacts so the final Doctor can verify the same migration source.
 
+The inspection reports data at risk only on evidence: a schema that moved, or a store it
+cannot read after a new-version Doctor or boot check may have written it. If package
+activation failed before the candidate Doctor opened state, an unreadable store is a
+recorded warning (`state-schema-verification`), not new evidence of data at risk;
+the update retains its original failure. In-place Git updates rewrite the serving
+checkout, so their schema inspection remains conservative.
+
+When the new release's Gateway starts, its state upgrade can replace
+`state/openclaw.sqlite` and keep the previous file as `openclaw.sqlite.pre-<buildId>`.
+The updater closes its own shared-state handles before it restarts the Gateway and
+reopens the database by path once the new Gateway is verified serving, so plugin
+convergence, the post-plugin Doctor, owed steps and the final run record use the
+current file. Run history written before the restart is carried into the new file.
+Installed updaters that have the inspection fix above but not this change report
+`post-update-failed` ("SQLite database pathname changed while its worker owner is
+active") after such an upgrade even though the new release is serving and nothing needs
+restoring. When the update output says the Gateway is serving the target version, the
+next plain `openclaw update` reports `already-current` and converges plugins. Updaters
+without the inspection fix fail before the new release starts, as described above.
+
 Database rehearsal also avoids a second full backup of each private snapshot.
 Candidate inventory reads database registrations and the installed plugin index
 in one read-only transaction instead of copying the whole shared database just
@@ -1617,6 +1690,27 @@ evidence, reports a warning, and does not restart the Gateway or install a packa
 journal, lease database, or recovery evidence. Other pending operations still
 require `openclaw update repair` or the recorded package recovery command. The lease database stays at its existing location.
 
+If a reboot or temporary-directory cleanup removes the lease database before
+publication starts, recovery can retire a `prepared` journal with no publication
+intent or published launchers. It first checks that the live package, launcher
+directory, and every launcher still have their recorded previous identities.
+Update admission, repair, and a separately staged recovery helper share this
+settlement. They warn and rename the journal, control directory, candidate, and
+the operation's remaining npm update stage into retained evidence; they do not
+delete them. Other stages are left with their owners. Changed identities,
+publication intent, or another phase do not qualify for this recovery path.
+Recovery `status` is read-only and can report an unfinished operation even when
+the lease database is missing or replaced.
+
+The managed-update lease store still uses the shared per-user temporary location.
+Moving it to a state directory requires a coordinated migration: older updaters
+continue acquiring leases in the temporary location, and separate profiles can
+update the same installation. Copying the database would create competing lease
+owners; file symlinks and hard links do not satisfy the existing store contract.
+Durable placement remains follow-up work. These recovery changes must be present
+in the updater or separately staged helper that executes them; an older sealed
+helper does not gain the new behavior.
+
 After the transaction verifies its selected installation, cleanup failures are
 warnings. Changed old package trees, old helpers, and unexpected backup contents
 are preserved, not restored or deleted. The updater durably closes their recovery
@@ -1642,7 +1736,12 @@ filesystem device numbers change after a reboot or remount. With a version conta
 this fix installed, run `openclaw update repair` from an independent terminal. Repair
 can settle `prepared`, `publishing`, `publication-complete`, and superseded operations
 when the journal's inodes still match under a consistent device-number mapping.
-Ordinary update admission stays strict.
+Ordinary update admission stays strict, but an updater containing
+[#201057](https://github.com/openclaw/openclaw/issues/201057)'s fix first applies
+the same verified settlement automatically, so the next `openclaw update` (or
+Control UI update) proceeds without a separate repair. Earlier updaters decline
+it and refuse with `device number changed only`; run `openclaw update repair`,
+then update again.
 
 This settlement first shipped in 2026.10.5. Earlier releases, including the
 2026.9 extended-stable line, refuse with `Package publication journal does not

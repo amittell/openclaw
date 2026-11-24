@@ -5473,6 +5473,20 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       policy: "dual-all",
       shards: [1, 2, 3],
     },
+    {
+      label: "native-shard capable compatibility",
+      frozenTarget: true,
+      compatibilityTarget: true,
+      policy: "node",
+      shards: [1, 2, 3],
+    },
+    {
+      label: "unknown compatibility",
+      frozenTarget: true,
+      compatibilityTarget: true,
+      policy: "node",
+      shards: [1],
+    },
   ])("executes the $label standalone UI envelope", (scenario) => {
     const workflow = readCiWorkflow();
     expect(workflow.env?.BUN_JSC_useFTLJIT).toBeUndefined();
@@ -5582,7 +5596,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           String(evaluateWorkflowExpression(expression, rowContext)),
         );
       expect(resolveValue(ui.name)).toBe(
-        scenario.compatibilityTarget
+        scenario.shards.length === 1
           ? "checks-ui"
           : `checks-ui (${shard}/${scenario.shards.length})`,
       );
@@ -5633,7 +5647,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(calls.filter((call) => call === "pnpm lint:ui:no-raw-window-open")).toHaveLength(1);
     expect(calls.filter((call) => call !== "pnpm lint:ui:no-raw-window-open")).toEqual(
       scenario.compatibilityTarget
-        ? ["pnpm --dir ui test --testTimeout=30000 --isolate"]
+        ? scenario.shards.map(
+            (shard) =>
+              `pnpm --dir ui test --testTimeout=30000 --isolate${scenario.shards.length > 1 ? ` --shard=${shard}/${scenario.shards.length}` : ""}`,
+          )
         : scenario.shards.map(() => "node --import tsx scripts/ci-run-node-test-shard.mts"),
     );
   });
@@ -6240,6 +6257,34 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(steps.indexOf(build)).toBeLessThan(steps.indexOf(run));
   });
 
+  it.each([
+    { qualification: "true", event: "workflow_dispatch", dispatch: "", timeout: 30, expected: 120 },
+    {
+      qualification: "false",
+      event: "workflow_dispatch",
+      dispatch: "full-release-validation-123-1-ci",
+      timeout: 30,
+      expected: 120,
+    },
+    { qualification: "true", timeout: undefined, expected: 120 },
+    { qualification: "false", timeout: 90, expected: 90 },
+    { qualification: "false", timeout: undefined, expected: 60 },
+  ])(
+    "preserves timeout scope for $qualification/$timeout",
+    ({ qualification, event, dispatch, timeout, expected }) => {
+      const expression =
+        readCiWorkflow().jobs["checks-node-core-test-nondist-shard"]["timeout-minutes"];
+      expect(
+        evaluateWorkflowExpression(expression, {
+          eventName: event === "workflow_dispatch" ? "workflow_dispatch" : "push",
+          inputs: { dispatch_id: dispatch ?? "" },
+          preflightOutputs: { ci_qualification: qualification },
+          matrix: { timeout_minutes: timeout },
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it("fails and retries quiet Node test shard stalls quickly", () => {
     const workflow = readCiWorkflow();
     const nodeTestJob = workflow.jobs["checks-node-core-test-nondist-shard"];
@@ -6256,7 +6301,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(manifestSource).toContain("pretest_build_mode: shard.pretestBuildMode");
     expect(manifestSource).toContain("requires_ripgrep:");
     expect(manifestSource).toContain("src/agents/sessions/tools/index.test.ts");
-    expect(nodeTestJob["timeout-minutes"]).toBe("${{ matrix.timeout_minutes || 60 }}");
+    expect(nodeTestJob["timeout-minutes"]).toBe(
+      "${{ (needs.preflight.outputs.ci_qualification == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-'))) && 120 || matrix.timeout_minutes || 60 }}",
+    );
     expect(runStep.env.OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS).toBe(
       "${{ needs.preflight.outputs.compatibility_target == 'true' && '660000' || '300000' }}",
     );

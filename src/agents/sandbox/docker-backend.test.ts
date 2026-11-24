@@ -459,6 +459,8 @@ it.skipIf(process.platform === "win32").each([
 ] as const)(
   "$engine binds the current $host identity at launch without staging its token",
   async ({ engine, host }) => {
+    vi.stubEnv("MALLOC_CONF", "background_thread:true");
+    vi.stubEnv("LD_PRELOAD", "/synthetic/libjemalloc.so.2");
     const requestedPath = "$(touch /tmp/openclaw-path-injection)";
     const root = tempDirs.make("github-sandbox-launch-");
     const profile = path.join(root, "profile");
@@ -525,6 +527,9 @@ process.stdout.write(JSON.stringify({
       expect(result).toMatchObject({ code: 0, stderr: "" });
       const delivered = JSON.parse(result.stdout);
       expect(delivered).toMatchObject({ selected: true, cleared: true });
+      expect(spec.env.MALLOC_CONF).toBeUndefined();
+      expect(spec.env.LD_PRELOAD).toBeUndefined();
+      expect(process.env.MALLOC_CONF).toBe("background_thread:true");
       expect(spec.stdinMode).toBe("pipe-open");
       for (const value of ["configured-value", requestedPath]) {
         expect(spec.argv.join(" ")).not.toContain(value);
@@ -623,22 +628,39 @@ it.each([
   }
 });
 
-it.each(["describeRuntime", "removeRuntime"] as const)(
+it.each([false, true])("stops an idle Podman runtime (paused=%s)", async (paused) => {
+  mocks.containerState.mockResolvedValue({
+    exists: true,
+    running: !paused,
+    id: containerId,
+    paused,
+  });
+  await podmanSandboxBackendManager.stopRuntime(runtimeEntry("podman"), () => {});
+  expect(mocks.execContainer.mock.calls.map(([, args]) => args)).toEqual([
+    ...(paused ? [["unpause", containerId]] : []),
+    ["stop", "--time", "0", containerId],
+  ]);
+});
+
+it.each(["describeRuntime", "removeRuntime", "stopRuntime"] as const)(
   "rejects a stale Podman registry target before %s",
   async (operation) => {
     const targetError = new Error("active Podman connection changed");
     mocks.validateSandboxContainerEngineTarget.mockRejectedValueOnce(targetError);
+    const entry = {
+      ...runtimeEntry("podman"),
+      backendTarget: {
+        key: `machine:${"a".repeat(32)}`,
+        globalArgs: ["--url", "ssh://core@127.0.0.1:60001/run/podman/podman.sock"],
+      },
+    };
     await expect(
-      podmanSandboxBackendManager[operation]({
-        entry: {
-          ...runtimeEntry("podman"),
-          backendTarget: {
-            key: `machine:${"a".repeat(32)}`,
-            globalArgs: ["--url", "ssh://core@127.0.0.1:60001/run/podman/podman.sock"],
-          },
-        },
-        config: createConfig(),
-      }),
+      operation === "stopRuntime"
+        ? podmanSandboxBackendManager.stopRuntime(entry, () => {})
+        : podmanSandboxBackendManager[operation]({
+            entry,
+            config: createConfig(),
+          }),
     ).rejects.toBe(targetError);
     expect(mocks.containerState).not.toHaveBeenCalled();
     expect(mocks.execContainer).not.toHaveBeenCalled();

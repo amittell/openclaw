@@ -352,16 +352,21 @@ const COMPACT_GITHUB_MAX_PREDICTED_SECONDS = 150;
 // its 196-file sibling took 2867s. Bound admission independently of stale costs.
 const COMPACT_HOSTED_STORAGE_STATE_MAX_FILES = 64;
 // Hourly hosted run 35983526919 spent ~25 minutes in each of these owners.
-// Bound the main-tier work independently of stale whole-owner timing estimates.
+// Bound main and full-inventory work independently of stale whole-owner timing estimates.
 const COMPACT_HOSTED_MAIN_MAX_FILES = new Map([
   ["agentic-control-plane-agent-chat", 30],
   ["agentic-gateway-methods", 96],
+  // Retain the selected full-dispatch fix’s incident-backed owner bounds.
+  ["agentic-agents-support", 64],
+  ["core-runtime-config", 64],
+  ["agentic-commands-status-tools", 64],
+  ["agentic-commands-doctor", 64],
 ]);
 const HOSTED_MAIN_UPDATE_TEST = "src/cli/update-cli.test.ts";
-// Trusted forks can use the GitHub profile on Blacksmith. Every compact
-// profile must fit the same runner-registration allowance.
+// Trusted forks can use the GitHub profile on Blacksmith. The release branch
+// permits 128 hosted rows; workflow concurrency still bounds active registrations.
 const COMPACT_NODE_TEST_JOB_CAP = 90;
-const COMPACT_GITHUB_NODE_TEST_JOB_CAP = 96;
+const COMPACT_GITHUB_NODE_TEST_JOB_CAP = 128;
 const COMPACT_NODE_TEST_JOB_GROUPS = 10;
 const COMPACT_TOOLING_NODE_TEST_GROUPS = 16;
 const COMPACT_WHOLE_NODE_TEST_TIMEOUT_MINUTES = 120;
@@ -3594,16 +3599,18 @@ function splitOversizedCompactGroup(
   onHostedToolingTailDonation?: (donation: HostedToolingTailDonation) => void,
   selectedToolingFiles?: ReadonlySet<string>,
   hostedMain = false,
+  fullInventory = false,
 ): Array<{ group: NodeTestShardGroup; seconds: number }> {
   // Hybrid groups must fit both the first-attempt runner and hosted retries;
   // a faster retry estimate must not leave a slow first attempt unsplit.
   const isCliProcess = group.shard_name === "agentic-cli-process";
   const isTooling = isParallelToolingGroup(group);
   const hostedFileLimit =
-    // Full dual-runtime dispatches use the compact PR layout too. Gateway methods
-    // exceeded an hour in that layout (FRV 44290065577); retain its existing
-    // 96-file hosted bound independently of the event selecting the layout.
-    (hostedMain || (runnerBackend === "github" && group.shard_name === "agentic-gateway-methods")
+    // Full dispatch inherits the hosted owner bounds; ordinary compact PRs
+    // retain the 11.6 gateway-methods bound.
+    (hostedMain ||
+    (runnerBackend === "github" &&
+      (fullInventory || group.shard_name === "agentic-gateway-methods"))
       ? COMPACT_HOSTED_MAIN_MAX_FILES.get(group.shard_name)
       : undefined) ??
     (runnerBackend === "github" && group.shard_name === "core-runtime-infra-storage-state"
@@ -4815,6 +4822,7 @@ function createCompactNodeTestShardBundles(
             collectTailDonation,
             selectedToolingFiles,
             compactMode === "push" && options.runnerBackend === "github",
+            options.includeReleaseOnlyRuntimeTests === true,
           )
         : [{ group, seconds: estimateCompactGroupSeconds(group, options.runnerBackend) }];
     const reducedToolingTier =
@@ -4882,8 +4890,15 @@ function createCompactNodeTestShardBundles(
         options.runnerBackend === "github" &&
         // Hourly main validation keeps its separately bounded 77-row packing.
         (((compactMode === "push" || !options.mainValidation) &&
-          /^agentic-gateway-methods(?:-hosted-\d+)?$/u.test(planned.group.shard_name) &&
-          (planned.group.includePatterns?.length ?? 0) > 32) ||
+          ((/^agentic-gateway-methods(?:-hosted-\d+)?$/u.test(planned.group.shard_name) &&
+            (planned.group.includePatterns?.length ?? 0) > 32) ||
+            // Hosted run 44868973741 spent twenty minutes in a server child.
+            // Keep large children off already populated serial hosts.
+            (compactMode !== "push" &&
+              /^agentic-control-plane-runtime-server(?:-hosted-\d+)?$/u.test(
+                planned.group.shard_name,
+              ) &&
+              (planned.group.includePatterns?.length ?? 0) > 64))) ||
           (compactMode === "push" &&
             (/^agentic-control-plane-agent-chat(?:-hosted-\d+)?$/u.test(planned.group.shard_name) ||
               planned.group.includePatterns?.includes(HOSTED_MAIN_UPDATE_TEST))));

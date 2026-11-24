@@ -12,6 +12,7 @@ import { findSessionControllerOperationByRunId } from "../../../sessions/session
 import { runInDetachedAsyncContext } from "../../../shared/detached-async-context.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
 import { hasConsumedRequesterInput, isDeliverySuspended } from "./subagent-delivery-state.js";
+import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { emitSubagentProgressEndedHook } from "./subagent-registry-completion.js";
 import { createSubagentRegistryContextCleanup } from "./subagent-registry-context-cleanup.js";
@@ -25,6 +26,7 @@ import {
   ANNOUNCE_EXPIRY_MS,
   GATEWAY_ADMISSION_RETRY_DELAY_MS,
 } from "./subagent-registry-helpers.js";
+import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import { subagentRegistryLog as log } from "./subagent-registry-lifecycle-log.js";
 import { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { createSubagentRegistryListener } from "./subagent-registry-listener.js";
@@ -44,7 +46,9 @@ import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
 import type { RegisterSubagentRunParams } from "./subagent-registry-run-launch-record.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import { clearSubagentRunsReadCacheForTest } from "./subagent-registry-state.js";
+import { createSubagentSweepReadScope } from "./subagent-registry-sweep-cleanup.js";
 import { reconcileProvisionalSubagentKill } from "./subagent-registry-sweep-kill.js";
+import { settleRestartInterruptedSubagentRun } from "./subagent-registry-sweep-settle.js";
 import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
@@ -158,11 +162,14 @@ export function resumeSubagentRun(runId: string) {
     return;
   }
   const entry = subagentRuns.get(runId);
-  if (
-    !entry ||
-    resumedRuns.has(getSubagentRunRuntimeKey(entry)) ||
-    subagentRuns.isCompletionAuthorityRetired(entry)
-  ) {
+  if (!entry || resumedRuns.has(getSubagentRunRuntimeKey(entry))) {
+    return;
+  }
+  if (subagentRuns.isCompletionAuthorityRetired(entry)) {
+    // A retired owner cannot deliver, but its yielded batch still owes a visible failure.
+    if (entry.requesterSettleWake) {
+      resumeRequesterSettleWake(runId, entry);
+    }
     return;
   }
   if (entry.killReconciliation) {
@@ -573,7 +580,7 @@ export {
   resolveRootSubagentRequester,
 } from "./subagent-registry-read.js";
 
-/** The root resume input owns reconciliation; shutdown children settle without parent notices. */
+/** Shutdown interrupts execution; the completion owner still owes the requester its outcome. */
 export async function terminateLiveSubagentsForShutdown(
   resolveGatewayContext: GatewayContextResolver,
 ): Promise<void> {
@@ -586,10 +593,13 @@ export async function terminateLiveSubagentsForShutdown(
   );
   await Promise.all(
     entries.map((entry) =>
-      markSubagentRunTerminated({
+      // Join the terminal write after root admission closes, without starting delivery.
+      completeSubagentRunAttempt(subagentLifecycleController, {
         runId: entry.runId,
-        reason: "Gateway stopped",
-        suppressTaskDelivery: true,
+        expectedEntry: entry,
+        reason: SUBAGENT_ENDED_REASON_ERROR,
+        outcome: { status: "error", error: "Gateway stopped" },
+        triggerCleanup: false,
         suppressSessionEffects: true,
       }),
     ),
@@ -608,9 +618,24 @@ export async function activateSubagentRegistry(
   if (activeGatewayContextResolver !== resolver || !resolver?.()) {
     return;
   }
-  // Hydration alone does not run lifecycle work. Consumed inputs need only receipt
-  // settlement; resume that existing owner without replaying interrupted execution.
+  // Settle interrupted execution before restart admission rebinds requester custody.
+  // Do not sweep other retired delivery: its exact requester can still recover it.
+  const readScope = createSubagentSweepReadScope(subagentRuns);
   for (const entry of subagentRuns.values()) {
+    readScope.assertCurrent();
+    if (
+      await settleRestartInterruptedSubagentRun({
+        runId: entry.runId,
+        entry,
+        readScope,
+        complete: completionRuntime.completeSubagentRunWithRecovery,
+        now: Date.now(),
+      })
+    ) {
+      continue;
+    }
+    readScope.assertCurrent();
+    // Consumed inputs need only receipt settlement, never execution replay.
     if (entry.requesterSettleWake && hasConsumedRequesterInput(entry)) {
       subagentLifecycleController.markRequesterSettleWakeRestored(entry);
       resumeRequesterSettleWake(entry.runId, entry);

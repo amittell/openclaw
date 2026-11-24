@@ -62,6 +62,7 @@ type DelegateToolOptions = Pick<
   | "currentThreadTs"
   | "agentThreadId"
   | "config"
+  | "readDelegationConfig"
   | "execSession"
   | "execOverrides"
   | "fsPolicy"
@@ -121,10 +122,11 @@ export function createOpenClawDelegateToolsForRun(
   const sessionKey = options.runSessionKey ?? options.agentSessionKey;
   const defaultSessionId = stableDelegationSessionId(sessionKey, options.sessionAgentId);
   const execPolicy = preparedExecDefaults ?? resolveExecDefaultsLegacy(execDefaultsParams(options));
-  const readConfig = options.config
-    ? createRuntimeConfigReader(options.config)
-    : () => selectLiveRuntimeConfig();
-  const capturedConfig = readConfig();
+  const readConfig =
+    options.readDelegationConfig ??
+    (options.config ? createRuntimeConfigReader(options.config) : () => selectLiveRuntimeConfig());
+  // Containment is compared to the admitted tool projection, not a newer live policy snapshot.
+  const capturedConfig = options.config ?? readConfig();
   const assertAutoApproveChangesCurrent = () => {
     options.abortSignal?.throwIfAborted();
     options.assertInvocationCurrent?.();
@@ -246,18 +248,24 @@ export function createOpenClawDelegateToolsForRun(
       const result = await withGatewayToolCallerIdentity(caller, () =>
         runOutsidePreparedModelRuntimePluginGenerationScope(() =>
           runOutsidePluginRuntimeGenerationScope(() =>
-            callInProcessGatewayTool<OpenClawDelegateResult>("openclaw.chat", {
-              sessionId,
-              message,
-              delegation: {
-                agentId: options.sessionAgentId,
-                ...(sessionKey ? { sessionKey } : {}),
-                ...(options.agentChannel ? { turnSourceChannel: options.agentChannel } : {}),
-                ...(turnSourceTo ? { turnSourceTo } : {}),
-                ...(options.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),
-                ...(turnSourceThreadId !== undefined ? { turnSourceThreadId } : {}),
+            callInProcessGatewayTool<OpenClawDelegateResult>(
+              "openclaw.chat",
+              {
+                sessionId,
+                message,
+                delegation: {
+                  agentId: options.sessionAgentId,
+                  ...(sessionKey ? { sessionKey } : {}),
+                  ...(options.agentChannel ? { turnSourceChannel: options.agentChannel } : {}),
+                  ...(turnSourceTo ? { turnSourceTo } : {}),
+                  ...(options.agentAccountId
+                    ? { turnSourceAccountId: options.agentAccountId }
+                    : {}),
+                  ...(turnSourceThreadId !== undefined ? { turnSourceThreadId } : {}),
+                },
               },
-            }),
+              { signal },
+            ),
           ),
         ),
       );

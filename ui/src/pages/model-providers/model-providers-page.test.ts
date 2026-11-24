@@ -106,6 +106,22 @@ describe("ModelProvidersPage agent scope", () => {
     expect(context.navigate).toHaveBeenCalledExactlyOnceWith("usage");
   });
 
+  it("opens a requested connection after an empty preload stops pending", async () => {
+    const { context } = createHarness("main");
+    const page = createPage(context);
+    page.routeData = { ...createEmptyModelProvidersRouteData(context), connect: true };
+    page.loaderPending = true;
+    mountPage(page);
+    await page.updateComplete;
+    expect(page.querySelector("[data-models-login-discover]")).toBeNull();
+
+    page.loaderPending = false;
+
+    await waitForSolid(() =>
+      expect(page.querySelector("[data-models-login-discover]")).not.toBeNull(),
+    );
+  });
+
   it("does not readopt an old route snapshot when only loader pending changes", async () => {
     const { context, request } = createHarness("main");
     const page = appendPage(context);
@@ -864,6 +880,29 @@ describe("ModelProvidersPage agent scope", () => {
         agentId: "writer",
       }),
     );
+  });
+
+  it("replaces a successful check when the next check request fails", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForProviders(page);
+    request.mockImplementationOnce(async () => ({ provider: "openai", status: "ok", results: [] }));
+    page.view.props.onProbe("openai", ["openai"]);
+    await waitForSolid(() => expect(page.view.props.probeResults.openai?.status).toBe("ok"));
+    const originalRequest = request.getMockImplementation()!;
+    request.mockImplementation(async (method) => {
+      if (method === "models.probe") {
+        throw new Error("Connection interrupted");
+      }
+      return originalRequest(method);
+    });
+    page.view.props.onProbe("openai", ["openai"]);
+    await waitForSolid(() => expect(page.view.props.busy["probe:openai"]).toBeUndefined());
+    expect(page.view.props.probeResults.openai).toMatchObject({
+      status: "unknown",
+      error: expect.stringContaining("Connection interrupted"),
+      results: [],
+    });
   });
 
   it("stops queued provider probes after switching away from and back to the selected agent", async () => {

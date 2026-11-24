@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { join } from "node:path";
-import type * as AgentRuntime from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
 import { PLUGIN_COMMAND_DISPATCH } from "openclaw/plugin-sdk/plugin-command-runtime";
 import type {
@@ -48,13 +47,28 @@ import {
   useTelegramHttpFixture,
 } from "./send.telegram-http.test-support.js";
 
-const { loadPreparedModelCatalog } = vi.hoisted(() => ({
-  loadPreparedModelCatalog: vi.fn<typeof AgentRuntime.loadPreparedModelCatalog>(),
-}));
-vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => ({
-  ...(await importOriginal<typeof AgentRuntime>()),
-  loadPreparedModelCatalog,
-}));
+vi.mock("openclaw/plugin-sdk/command-auth-native", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/command-auth-native")>();
+  return {
+    ...actual,
+    resolveCommandArgMenuAsync: async (
+      params: Parameters<typeof actual.resolveCommandArgMenuAsync>[0],
+    ) => {
+      const modelCatalog = [
+        {
+          provider: "native-test",
+          id: "reasoner",
+          name: "Prepared reasoner",
+          reasoning: true,
+          compat: { supportedReasoningEfforts: ["max"] },
+        },
+        { provider: "native-test", id: "plain", name: "Plain", reasoning: false },
+      ];
+      const menu = await actual.resolveCommandArgMenuAsync({ ...params, catalog: modelCatalog });
+      return menu ? { ...menu, modelCatalog } : null;
+    },
+  };
+});
 
 function commandConfig(overrides: Partial<OpenClawConfig> = {}): OpenClawConfig {
   return {
@@ -111,24 +125,6 @@ async function dispatchCommand(
   const bot = await createBot(true, true, cfg, dmTopics);
   await bot.handleUpdate({ update_id: updateId, message: { ...commandMessage(text), ...message } });
 }
-
-beforeEach(() => {
-  loadPreparedModelCatalog.mockReset().mockImplementation(async (params) => {
-    if (!params?.readOnly) {
-      throw new Error("native menus must not start full model discovery");
-    }
-    return [
-      {
-        provider: "native-test",
-        id: "reasoner",
-        name: "Prepared reasoner",
-        reasoning: true,
-        compat: { supportedReasoningEfforts: ["max"] },
-      },
-      { provider: "native-test", id: "plain", name: "Plain", reasoning: false },
-    ];
-  });
-});
 
 describe("Telegram typed command delivery", () => {
   it("replies to the selected photo quote for a native command", async () => {
@@ -317,6 +313,17 @@ describe("Telegram native argument menus", () => {
       expectSend({ message_thread_id: 77 });
     },
   );
+  it("uses the menu catalog for the default thinking title", async () => {
+    const cfg = commandConfig({
+      agents: { defaults: { model: "native-test/reasoner" } },
+    });
+    await dispatchCommand(cfg, "/think", 3102, {}, true);
+    expect(sentMenu().text).toContain("Current thinking level: medium.\n");
+    expect(sentMenu().reply_markup.inline_keyboard.flat()).toContainEqual({
+      text: "max",
+      callback_data: "tgcmd:/think max",
+    });
+  });
 });
 
 describe("Telegram registered plugin delivery", () => {

@@ -11,6 +11,7 @@ import {
   type MessageReceipt,
   type LivePreviewDeliveryResult,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { resolveOutboundMediaAccessForConfig } from "openclaw/plugin-sdk/outbound-media";
 import {
   buildTtsSupplementMediaPayload,
   getReplyPayloadTtsSupplement,
@@ -131,6 +132,7 @@ export function createMatrixReplyDispatcher(config: {
     logVerboseMessage,
   } = config;
   const quietDraftStreaming = streaming === "quiet" || streaming === "progress";
+  const progressDraftStreaming = streaming === "progress";
   // Tool, block, and final payloads are delivered separately but share one first-reply slot.
   let hasReplied = false;
   const deliverPayload = async (reply: ReplyPayload): Promise<MatrixReplyDeliveryResult> => {
@@ -182,7 +184,12 @@ export function createMatrixReplyDispatcher(config: {
           client,
           cfg,
           ...(mediaUrl !== undefined
-            ? { mediaUrl, mediaLocalRoots, audioAsVoice: reply.audioAsVoice }
+            ? {
+                mediaUrl,
+                mediaLocalRoots,
+                mediaAccess: resolveOutboundMediaAccessForConfig(cfg),
+                audioAsVoice: reply.audioAsVoice,
+              }
             : {}),
           replyToId: replyToIdForReply,
           fallbackReplyToId,
@@ -275,7 +282,8 @@ export function createMatrixReplyDispatcher(config: {
                   payloadText?.trim() &&
                   !payload.isError &&
                   !payloadReplyMismatch &&
-                  !draftStream.mustDeliverFinalNormally()
+                  !draftStream.mustDeliverFinalNormally() &&
+                  !(hasMedia && !ttsSupplement && progressDraftStreaming)
                     ? { text: payloadText }
                     : undefined,
                 editFinal: async (draftEventId, edit) => {

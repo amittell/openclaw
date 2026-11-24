@@ -177,6 +177,8 @@ cronJobs:
 ```
 
 Environment values remain unresolved references; never package credentials.
+MCP server `timeout` and `connectTimeout` declarations are in seconds. Add stores
+and compares them as `requestTimeoutMs` and `connectionTimeoutMs` in milliseconds.
 Shared plugins and MCP servers must match existing declarations exactly or Add
 reports the conflict without replacing them. Plugin and skill trust warnings
 require explicit consent. Automations are assigned to the new agent.
@@ -186,6 +188,9 @@ Older packages may declare `agent.heartbeat` in the OpenClaw profile or include
 and private job scratch instead of installing heartbeat configuration. Legacy
 `tasks:` entries become separate automations, and the remaining checklist stays
 in the monitor's scratch. An `every: 0m` declaration stays disabled.
+Because it becomes job scratch, `HEARTBEAT.md` must be valid UTF-8 and at most
+256 KiB; `validate`, `inspect`, `build` and Add report a larger or non-UTF-8
+file as a Template diagnostic.
 The Add review shows each converted job with its interval and owner delivery;
 existing cron schedules and `none` or last-channel delivery keep their meaning.
 Gateway review responses represent interval schedules as `{ everyMs }`, where

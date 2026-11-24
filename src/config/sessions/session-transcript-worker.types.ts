@@ -7,6 +7,7 @@ import type { SessionMemoryTranscript } from "../../hooks/bundled/session-memory
 import type { WorkerTaskResponse } from "../../infra/worker-task-pool.types.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
+import type { AgentCreationClaimWitness } from "../../state/agent-creation-claim.js";
 import type { OpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import type { VoiceSessionMatch } from "../../talk/client-voice-session-store.js";
 import type {
@@ -66,6 +67,7 @@ import type { listSessionPendingInputReceipts } from "./session-accessor.sqlite-
 import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import type { SessionPreparedCompactionInput } from "./session-compaction-prepared.types.js";
 import type {
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
@@ -125,8 +127,8 @@ import type {
   SessionStoreTargetReadResult,
 } from "./session-store-target-inventory.js";
 import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.types.js";
+import type { SessionTranscriptHydrationWorkerInput } from "./session-transcript-hydration-input.types.js";
 import type {
-  SessionTranscriptHydrationWorkerInput,
   SessionTranscriptCurrentTurnEntryWorkerInput,
   SessionTranscriptRecentActiveEventsWorkerInput,
   SessionTranscriptLatestActiveMessageWorkerInput,
@@ -274,6 +276,7 @@ type TrajectoryEventsWorkerInput = {
 };
 
 export type SessionHistoryWorkerInput =
+  | SessionPreparedCompactionInput
   | SessionRetirementReadWorkerInput
   | TrajectoryRetentionWorkerInput
   | TrajectoryEventsWorkerInput
@@ -353,6 +356,7 @@ export type SessionTranscriptWorkerInput =
 
 /** Only the dispatch owner attaches live physical proof; caller-prepared inputs cannot supply it. */
 export type SessionTranscriptWorkerRequest = SessionTranscriptWorkerInput & {
+  creationClaim?: AgentCreationClaimWitness;
   validation?: OpenClawAgentDatabaseReadValidation;
   projectionReceipt?: SessionTranscriptProjectionReceipt;
 };

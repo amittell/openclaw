@@ -9,9 +9,12 @@ import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
+  appendTranscriptMessage,
   loadSessionEntry,
+  readLatestSessionTranscriptReport,
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
+  rewindSessionToMessage,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import * as sessionReads from "../config/sessions/session-entry-read-runtime.js";
@@ -567,7 +570,7 @@ test("reports manual collection after destination capture fails, then recovers o
         recovered ? "Its exit wakes this conversation with the result" : "poll with a timeout",
       );
       if (!recovered) {
-        expect(followUp).not.toContain("wakes this conversation");
+        expect(followUp).not.toContain("Its exit wakes this conversation with the result");
       }
       expect(started.content).toContainEqual({
         type: "text",
@@ -735,41 +738,140 @@ test.for(["completed", "revoked", "missing"] as const)(
   },
 );
 
+function waitForAttachedRelease(release: string): string {
+  return (
+    'const fs = require("node:fs");' +
+    "const finish = () => { if (fs.existsSync(" +
+    JSON.stringify(release) +
+    ")) {" +
+    'watcher.close(); process.stdout.write("ATTACHED_RESULT"); } };' +
+    "const watcher = fs.watch(" +
+    JSON.stringify(path.dirname(release)) +
+    ", finish); finish();"
+  );
+}
+
 test.for(["edit", "rewind"] as const)(
   "attaches a background exec result after a conversation %s",
   async (change, { signal }) => {
     const sessionKey = "agent:main:dashboard:background-" + change;
     await seedOrigin(sessionKey);
+    const scope = { agentId: "main", sessionKey, sessionId: sessionKey.replaceAll(":", "-") };
+    if (change === "rewind") {
+      await appendTranscriptMessage(scope, {
+        eventId: "rewind-user",
+        parentId: null,
+        message: { role: "user", content: "Rewind here." },
+      });
+    }
     const release = path.join(state.workspaceDir, "release-background-" + change);
-    const script =
-      'const fs = require("node:fs");' +
-      "const finish = () => { if (fs.existsSync(" +
-      JSON.stringify(release) +
-      ")) {" +
-      'watcher.close(); process.stdout.write("ATTACHED_RESULT"); } };' +
-      "const watcher = fs.watch(" +
-      JSON.stringify(state.workspaceDir) +
-      ", finish); finish();";
+    const script = waitForAttachedRelease(release);
     try {
       runningSession(
         (await backgroundExec(sessionKey, { agentId: "main" })(change, script)).details,
       );
-      await upsertSessionEntryCore(
-        { agentId: "main", sessionKey },
-        {
-          sessionId: "edited-" + change,
-          ...(change === "rewind" ? { lifecycleRevision: "rewound-revision" } : {}),
-        },
-      );
+      let expectedSessionId = "edited-" + change;
+      if (change === "rewind") {
+        const rewound = await rewindSessionToMessage({ ...scope, entryId: "rewind-user" });
+        expect(rewound.status).toBe("created");
+        if (rewound.status !== "created") {
+          throw new Error("Expected committed rewind");
+        }
+        expect(rewound.entry.lifecycleRevision).toBe("original");
+        expectedSessionId = rewound.entry.sessionId;
+      } else {
+        await upsertSessionEntryCore(scope, { sessionId: expectedSessionId });
+      }
       await fs.writeFile(release, "release");
       await withinTest(waitForExecScope(sessionKey), signal);
       await completion(signal);
       expect(model).toHaveBeenCalledOnce();
       expect(model.mock.calls[0]?.[0].prompt).toContain("ATTACHED_RESULT");
-      expect(model.mock.calls[0]?.[0].sessionId).toBe("edited-" + change);
+      expect(model.mock.calls[0]?.[0].sessionId).toBe(expectedSessionId);
     } finally {
       await fs.writeFile(release, "release");
       await withinTest(waitForExecScope(sessionKey), signal);
     }
   },
 );
+
+test("wakes a dashboard conversation on silent success, with exit, duration and a bounded tail", async ({
+  signal,
+}) => {
+  const sessionKey = "agent:main:dashboard:silent-waiter";
+  await seedOrigin(sessionKey);
+  const exec = backgroundExec(sessionKey, { agentId: "main" });
+  const wakes = vi.mocked(sessionEvents.enqueueSessionEventForHost);
+  for (const [script, expected] of [
+    ["void 0", /^Exec completed \([^,]+, code 0, [^)]+\) with no output\.$/],
+    [
+      'process.stdout.write("x".repeat(3000) + "TAIL_END")',
+      /^Exec completed \([^,]+, code 0, [^)]+\), last 2000 of 3008 output chars \(process log has the rest\):\nx{1992}TAIL_END$/,
+    ],
+  ] as const) {
+    await exec("silent-waiter", script);
+    await withinTest(waitForExecScope(sessionKey), signal);
+    await completion(signal);
+    expect(wakes.mock.calls.at(-1)?.[0]).toMatch(expected);
+  }
+});
+
+test("wakes the same conversation after its session id rotates while the command runs", async ({
+  signal,
+}) => {
+  const sessionKey = "agent:main:dashboard:rotated-waiter";
+  await seedOrigin(sessionKey);
+  const release = path.join(state.workspaceDir, "release-rotated-waiter");
+  const started = runningSession(
+    (
+      await backgroundExec(sessionKey, { agentId: "main" })(
+        "rotated-waiter",
+        waitForAttachedRelease(release),
+      )
+    ).details,
+  );
+  // Compaction installs a new physical session id and keeps the lifecycle revision.
+  const rotated = await upsertSessionEntryCore(
+    { agentId: "main", sessionKey },
+    { sessionId: "rotated-session" },
+  );
+  expect(rotated).toMatchObject({ sessionId: "rotated-session", lifecycleRevision: "original" });
+  await fs.writeFile(release, "release");
+  await withinTest(waitForExecScope(sessionKey), signal);
+  await completion(signal);
+  const [prompt] = expectDefined(model.mock.calls.at(-1), "rotated wake turn");
+  expect(prompt.sessionId).toBe("rotated-session");
+  expect(prompt.prompt).toContain(`Exec completed (${started.sessionId.slice(0, 8)}`);
+});
+
+test("withholds a completion from a reset conversation with a visible note", async ({ signal }) => {
+  const sessionKey = "agent:main:dashboard:reset-waiter";
+  await seedOrigin(sessionKey);
+  const release = path.join(state.workspaceDir, "release-reset-waiter");
+  const started = runningSession(
+    (await backgroundExec(sessionKey, { agentId: "main" })("reset-waiter", waitForAttachedRelease(release)))
+      .details,
+  );
+  // A reset keeps the transcript id and starts a new lifecycle.
+  await upsertSessionEntryCore({ agentId: "main", sessionKey }, { lifecycleRevision: "reset" });
+  const wakes = vi.mocked(sessionEvents.enqueueSessionEventForHost);
+  const calls = wakes.mock.calls.length;
+  await fs.writeFile(release, "release");
+  await withinTest(waitForExecScope(sessionKey), signal);
+  await vi.waitFor(async () => {
+    const note = await readLatestSessionTranscriptReport(
+      { agentId: "main", sessionKey, sessionId: sessionKey.replaceAll(":", "-") },
+      ["run-failed-before-reply"],
+    );
+    expect(note).toMatchObject({
+      ok: true,
+      value: {
+        content: expect.stringContaining(
+          `Background command result withheld (${started.sessionId}, code 0): the conversation was reset`,
+        ),
+      },
+    });
+  });
+  expect(wakes.mock.calls.length).toBe(calls);
+  expect(model).not.toHaveBeenCalled();
+});

@@ -52,19 +52,7 @@ const mocks = await vi.hoisted(async () => ({
     throw new Error("no auth profile");
   }),
   resolveAgentDir: vi.fn((_cfg: unknown, agentId: string) => `/tmp/agent-${agentId}`),
-  updateAuthProfileStoreWithLock: vi.fn(
-    async ({ updater }: { updater: (store: any) => boolean }) => {
-      const store = {
-        version: 1,
-        profiles: {},
-        order: {},
-        lastGood: {},
-        usageStats: {},
-      };
-      updater(store);
-      return store;
-    },
-  ),
+
   resolveMemorySearchConfig: vi.fn<
     typeof import("../agents/memory-search.js").resolveMemorySearchConfig
   >(() => null),
@@ -100,17 +88,21 @@ const mocks = await vi.hoisted(async () => ({
     }
     return {};
   }),
-  describeImageFile: vi.fn(async () => ({
-    text: "friendly lobster",
-    provider: "openai",
-    model: "gpt-4.1-mini",
-  })),
+  describeImageFile: vi.fn<typeof import("../media-understanding/runtime.js").describeImageFile>(
+    async () => ({
+      text: "friendly lobster",
+      provider: "openai",
+      model: "gpt-4.1-mini",
+    }),
+  ),
   prepareImageDescriptionInput: vi.fn(async () => ({
     buffer: Buffer.from("image"),
     fileName: "photo.jpg",
     mime: "image/jpeg",
   })),
-  describePreparedImageWithModel: vi.fn(async () => ({
+  describePreparedImageWithModel: vi.fn<
+    typeof import("../media-understanding/runtime.js").describePreparedImageWithModel
+  >(async () => ({
     text: "friendly lobster",
     model: "gpt-4.1-mini",
   })),
@@ -322,7 +314,6 @@ vi.mock("../agents/model-auth.js", () => ({
 
 vi.mock("../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../agents/auth-profiles/store-runtime.js")>()),
-  updateAuthProfileStoreWithLock: mocks.updateAuthProfileStoreWithLock,
   ensureAuthProfileStoreWithoutExternalProfilesAsync: vi.fn(async () => ({
     version: 1,
     profiles: {},
@@ -524,12 +515,12 @@ describe("capability cli", () => {
     callArg<Record<string, unknown>>(mocks.acquireSimpleCompletionModelForAgent);
   const firstJsonOutput = () => callArg<Record<string, unknown>>(mocks.runtime.writeJson);
   registerMediaPathCapabilityCliTests({ mocks, tempDirs, firstJsonOutput });
-  const imageDescribeCall = (index = 0) =>
-    callArg<ImageDescribeParams>(mocks.describeImageFile, index);
+  const imageDescribeCall = (index = 0) => mocks.describeImageFile.mock.calls[index]?.[0];
+
   const firstImagePrepareCall = () =>
     callArg<ImageDescribeParams>(mocks.prepareImageDescriptionInput);
   const firstImageDescribeWithModelCall = () =>
-    callArg<ImageDescribeParams>(mocks.describePreparedImageWithModel);
+    mocks.describePreparedImageWithModel.mock.calls[0]?.[0];
   const firstImageGenerationCall = () => callArg<Record<string, unknown>>(mocks.generateImage);
   const firstVideoGenerationCall = () => callArg<Record<string, unknown>>(mocks.generateVideo);
 
@@ -1005,6 +996,43 @@ describe("capability cli", () => {
     },
   );
 
+  it.each(["image", "image-model"])("cancels pending %s execution", async (kind) => {
+    const scope = new AsyncWorkScope();
+    let cancelled = false;
+    const waitForAbort = (signal?: AbortSignal) => {
+      expect(signal).toBeDefined();
+      const { promise, reject } = Promise.withResolvers<never>();
+      signal?.addEventListener(
+        "abort",
+        () => {
+          cancelled = true;
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+      scope.beginClose(new Error("interrupted"));
+      return promise;
+    };
+    await scope.track(() => {
+      const describeImage =
+        kind === "image" ? mocks.describeImageFile : mocks.describePreparedImageWithModel;
+      describeImage.mockImplementationOnce((_params, execution) => waitForAbort(execution?.signal));
+      return runCapability(
+        "image",
+        "describe",
+        "--file",
+        "photo.jpg",
+        ...(kind === "image-model" ? ["--model", "ollama/vision"] : []),
+        "--json",
+      );
+    });
+    expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+    expect(mocks.runtime.log).not.toHaveBeenCalled();
+    expect(mocks.runtime.error).not.toHaveBeenCalled();
+    expect(cancelled).toBe(true);
+    await scope.drain();
+  });
+
   it("defaults tts status to gateway transport", async () => {
     await runCapability("tts", "status", "--json");
 
@@ -1115,10 +1143,8 @@ describe("capability cli", () => {
       }),
     );
     expect(mocks.prepareImageDescriptionInput).toHaveBeenCalledTimes(1);
-    const calls = mocks.describePreparedImageWithModel.mock.calls as unknown as Array<
-      [ImageDescribeParams]
-    >;
-    expect(calls.map(([call]) => `${String(call.provider)}/${String(call.model)}`)).toEqual([
+    const calls = mocks.describePreparedImageWithModel.mock.calls;
+    expect(calls.map(([call]) => `${call.provider}/${call.model}`)).toEqual([
       "openrouter/google/gemma-4-31b-it:free",
       "openrouter/google/gemma-4-31b-it",
     ]);
@@ -1136,6 +1162,30 @@ describe("capability cli", () => {
       ],
       outputs: [{ text: "fallback description", model: "google/gemma-4-31b-it" }],
     });
+  });
+
+  it("does not start an image fallback after interruption", async () => {
+    primeImageFallback();
+    const scope = new AsyncWorkScope();
+    mocks.describePreparedImageWithModel.mockImplementationOnce(async () => {
+      scope.beginClose(new DOMException("interrupted", "AbortError"));
+      throw new Error("upstream 429 rate limit");
+    });
+    await scope.track(() =>
+      runCapability(
+        "image",
+        "describe",
+        ...cliOptions({
+          file: "photo.jpg",
+          model: "openrouter/google/gemma-4-31b-it:free",
+          json: true,
+        }),
+      ),
+    );
+    await scope.drain();
+    expect(mocks.describePreparedImageWithModel).toHaveBeenCalledTimes(1);
+    expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+    expect(mocks.runtime.error).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1911,59 +1961,6 @@ describe("capability cli", () => {
     log: mocks.runtime.log,
     expectError: expectRuntimeErrorContains,
   });
-
-  it.each(["populated", "lock-failed"])(
-    "logs out provider profiles when the store is %s",
-    async (state) => {
-      const store = {
-        version: 1,
-        profiles: {
-          "openai:default": { id: "openai:default" },
-          "openai:secondary": { id: "openai:secondary" },
-          "anthropic:default": { id: "anthropic:default" },
-        },
-        order: { openai: ["openai:default", "openai:secondary"] },
-        lastGood: { openai: "openai:secondary" },
-        usageStats: {
-          "openai:default": { errorCount: 2 },
-          "openai:secondary": { errorCount: 1 },
-          "anthropic:default": { errorCount: 3 },
-        },
-      };
-      const profiles =
-        state === "populated" ? ["openai:default", "openai:secondary"] : ["openai:default"];
-      mocks.listProfilesForProvider.mockReturnValue(profiles);
-      if (state === "populated") {
-        mocks.loadAuthProfileStoreForRuntime.mockReturnValue(store as never);
-        mocks.updateAuthProfileStoreWithLock.mockImplementationOnce(async ({ updater }) => {
-          updater(store);
-          return store;
-        });
-      } else if (state === "lock-failed") {
-        mocks.updateAuthProfileStoreWithLock.mockResolvedValueOnce(null as never);
-      }
-      const run = runCapability("model", "auth", "logout", "--provider", "openai", "--json");
-      if (state === "lock-failed") {
-        await expect(run).rejects.toThrow("exit 1");
-        expectRuntimeErrorContains("Failed to remove saved auth profiles for provider openai.");
-        return;
-      }
-      await run;
-      expect(mocks.runtime.writeJson).toHaveBeenCalledWith({
-        provider: "openai",
-        removedProfiles: profiles,
-      });
-      if (state === "populated") {
-        expect(store.profiles).toEqual({ "anthropic:default": { id: "anthropic:default" } });
-        expect(store.order).toEqual({});
-        expect(store.lastGood).toEqual({});
-        expect(store.usageStats).toEqual({ "anthropic:default": { errorCount: 3 } });
-        expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledWith(
-          expect.objectContaining({ agentDir: "/tmp/agent-main" }),
-        );
-      }
-    },
-  );
 
   it.each([
     ["parent", "login", "beta", undefined],

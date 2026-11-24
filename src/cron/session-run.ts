@@ -5,6 +5,7 @@ import {
   captureSessionEventTargetForHost as captureSessionEventTarget,
   enqueueSessionEventForHost as enqueueSessionEvent,
 } from "../auto-reply/reply/session-event-handoff.js";
+import { getLoadedChannelPluginForRead } from "../channels/plugins/registry-loaded.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSystemEventQueueKey } from "../infra/system-event-ownership.js";
@@ -13,21 +14,46 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveHookExternalContentSource } from "../security/external-content-source.js";
 import { isCronWithinActiveHours } from "./active-hours.js";
 import { isCronExecutionIdle } from "./execution-idle.js";
+import { requiresExternalCronDelivery } from "./isolated-agent/delivery-target.js";
 import {
   buildCronDeliveryTrace,
   finalizeCronPromptForResolvedTools,
   resolveCronDeliveryContext,
 } from "./isolated-agent/run-delivery-trace.js";
+import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import { CronOperatorSourceError } from "./operator-source-error.js";
 import { resolveCronAgentErrorClassification } from "./run-error-reason.js";
 import { appendCronJobScratchPrompt, buildCronCommandBody } from "./run-prompt.js";
 import { isCronScratchEffectivelyEmpty } from "./scratch-contract.js";
 import { readCronScratchSnapshot } from "./scratch-read.js";
 import type { CronServiceDeps } from "./service/state.js";
+import { resolveCronDeliverySessionKey } from "./session-target.js";
 import { resolveCronJobsStorePathFromConfigAsync } from "./store.js";
 import type { CronResolvedDeliveryState } from "./types.js";
 
 type SessionRun = NonNullable<CronServiceDeps["runSessionEvent"]>;
+
+function sameDeliveryThread(
+  current: { channel: string; to: string; threadId?: string | number },
+  admittedThreadId: string | number | undefined,
+): boolean {
+  if (current.threadId === admittedThreadId) {
+    return true;
+  }
+  if (current.threadId !== undefined && admittedThreadId !== undefined) {
+    return false;
+  }
+  // A missing thread is not a wildcard. Only the transport can prove that
+  // the unchanged address already names this exact thread.
+  const threadId = current.threadId ?? admittedThreadId;
+  return (
+    threadId !== undefined &&
+    getLoadedChannelPluginForRead(current.channel)?.threading?.isThreadAddressedByTarget?.({
+      to: current.to,
+      threadId,
+    }) === true
+  );
+}
 
 export async function runCronSessionTurn(
   params: Parameters<SessionRun>[0] & {
@@ -73,6 +99,9 @@ export async function runCronSessionTurn(
     });
     assertCurrent();
     if (job.operatorSource) {
+      if (!expectedTarget.sessionId) {
+        throw new CronOperatorSourceError("Scheduled operator source conversation is unavailable");
+      }
       const { restoreCronOperatorSource } = await import("../gateway/cron-operator-source.js");
       const operator = await restoreCronOperatorSource({
         job,
@@ -89,12 +118,34 @@ export async function runCronSessionTurn(
       assertCurrent();
     }
     const requestedChat = delivery?.deliveryRequested && delivery.deliveryPlan.mode !== "webhook";
+    const deliverySessionKey = resolveCronDeliverySessionKey(job);
+    // Only a result committed to this same destination can satisfy an internal announcement.
+    const conversationDelivery = Boolean(
+      requestedChat &&
+      delivery &&
+      !delivery.resolvedDelivery.ok &&
+      !delivery.resolvedDelivery.sourceConversationUnavailable &&
+      !requiresExternalCronDelivery(delivery.deliveryPlan, delivery.resolvedDelivery) &&
+      deliverySessionKey &&
+      resolveSystemEventQueueKey(
+        resolveCronAgentSessionKey({
+          sessionKey: deliverySessionKey,
+          agentId: params.agentId,
+          mainKey: params.cfg.session?.mainKey,
+          cfg: params.cfg,
+        }),
+        params.agentId,
+      ) === queueKey,
+    );
     const deliverySuppressionReason =
       delivery && !delivery.resolvedDelivery.ok
         ? delivery.resolvedDelivery.deliverySuppressionReason
         : undefined;
     const deliveryError =
-      requestedChat && !delivery.resolvedDelivery.ok && !deliverySuppressionReason
+      requestedChat &&
+      !delivery.resolvedDelivery.ok &&
+      !conversationDelivery &&
+      !deliverySuppressionReason
         ? delivery.resolvedDelivery.error.message
         : undefined;
     // Failed owner resolution cannot inherit a remembered group route.
@@ -118,15 +169,17 @@ export async function runCronSessionTurn(
       if (delivery) {
         const current = await resolveCronDeliveryContext({ ...params, cfg });
         assertCurrent();
-        if (
-          !current.deliveryRequested ||
-          !current.resolvedDelivery.ok ||
-          !route ||
-          current.resolvedDelivery.channel !== route.channel ||
-          current.resolvedDelivery.to !== route.to ||
-          current.resolvedDelivery.accountId !== route.accountId ||
-          current.resolvedDelivery.threadId !== route.threadId
-        ) {
+        const sameRoute = conversationDelivery
+          ? !current.resolvedDelivery.ok &&
+            !current.resolvedDelivery.sourceConversationUnavailable &&
+            !requiresExternalCronDelivery(current.deliveryPlan, current.resolvedDelivery)
+          : current.resolvedDelivery.ok &&
+            route &&
+            current.resolvedDelivery.channel === route.channel &&
+            current.resolvedDelivery.to === route.to &&
+            current.resolvedDelivery.accountId === route.accountId &&
+            sameDeliveryThread(current.resolvedDelivery, route.threadId);
+        if (!current.deliveryRequested || !sameRoute) {
           throw new Error(
             "Automation delivery policy or route changed while queued; inspect the run and retry with the current destination",
           );
@@ -174,7 +227,7 @@ export async function runCronSessionTurn(
       source: "cron",
       contextKey: `cron:${job.id}`,
       expectedTarget,
-      createIfMissing: true,
+      createIfMissing: job.operatorSource ? undefined : true,
       deliveryContext: route,
       abortSignal: params.abortSignal,
       scheduledAutomation: {
@@ -213,11 +266,11 @@ export async function runCronSessionTurn(
         },
         executionIdentity: params.executionIdentity,
         deliveryAttemptFence:
-          requestedChat && route && params.deliveryAttemptFence
+          requestedChat && (route || conversationDelivery)
             ? {
                 beforeAttempt: beforeDeliver,
                 assertCurrent: () => {
-                  params.deliveryAttemptFence!.assertCurrent();
+                  params.deliveryAttemptFence?.assertCurrent();
                   assertDeliveryCurrent();
                 },
               }
@@ -283,6 +336,11 @@ export async function runCronSessionTurn(
     });
     // Source, notice, and Cron custody remain live until the controller settles.
     const result = await receipt.settled;
+    const conversationDelivered =
+      conversationDelivery && result.conversationResultCommitted === true;
+    const delivered = result.deliveryAmbiguous
+      ? undefined
+      : result.delivered || conversationDelivered;
     return {
       ...result.automationResult,
       status: result.admissionDeferred ? "skipped" : result.status === "completed" ? "ok" : "error",
@@ -299,7 +357,7 @@ export async function runCronSessionTurn(
       sessionId,
       sessionKey: expectedTarget.sessionKey,
       executionStarted: result.executionStarted,
-      delivered: result.deliveryAmbiguous ? undefined : result.delivered,
+      delivered,
       deliveryState: result.deliveryAmbiguous
         ? ({
             status: "unknown",
@@ -307,7 +365,7 @@ export async function runCronSessionTurn(
           } satisfies CronResolvedDeliveryState)
         : undefined,
       deliveryError: result.deliveryError ?? deliveryError,
-      deliveryAttempted: result.deliveryAttempted,
+      deliveryAttempted: result.deliveryAttempted || conversationDelivered,
       deliverySuppressionReason: result.deliverySuppressionReason ?? deliverySuppressionReason,
       ...(delivery
         ? {
@@ -317,11 +375,11 @@ export async function runCronSessionTurn(
               sourceDeliveryOutcome: result.sourceDeliveryOutcome ?? {
                 visibleDeliveries: [],
                 verifiedMessageToolDelivery: false,
-                satisfiesSourceDelivery: result.delivered && !result.deliveryAmbiguous,
+                satisfiesSourceDelivery: delivered === true,
                 unverifiedMessageToolDelivery: false,
               },
-              fallbackUsed: false,
-              delivered: result.deliveryAmbiguous ? undefined : result.delivered,
+              fallbackUsed: conversationDelivered,
+              delivered,
             }),
           }
         : {}),

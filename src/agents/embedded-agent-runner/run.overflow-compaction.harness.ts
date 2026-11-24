@@ -1,6 +1,4 @@
-/**
- * Test harness mocks for embedded-run overflow compaction coverage.
- */
+/** Test harness mocks for embedded-run overflow compaction coverage. */
 
 import { matchesContextOverflowMessage } from "@openclaw/ai/internal/shared";
 import { type Mock, vi } from "vitest";
@@ -26,6 +24,7 @@ import type { AuthProfileStore } from "../auth-profiles/types.js";
 import type { FailoverReason } from "../failover/signal.js";
 import type { AgentHarnessAttemptParams } from "../harness/types.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
+import { createModelRuntimeChoiceOwnerFixture } from "../model-runtime-choice.test-support.js";
 import { preparedModelRuntimeConfigsMatch } from "../prepared-model-runtime.owner.js";
 import type {
   PreparedModelRuntimeInput,
@@ -109,9 +108,7 @@ type MockResolvedModel = {
 const emptyPluginMetadataSnapshot = createPluginMetadataSnapshotFixture();
 
 type MockAgentDiscoveryStores = {
-  authStorage: {
-    setRuntimeApiKey: ReturnType<typeof vi.fn>;
-  };
+  authStorage: { setRuntimeApiKey: ReturnType<typeof vi.fn> };
   modelRegistry: Record<string, never>;
 };
 
@@ -172,16 +169,21 @@ export const mockedAcquireAgentRunPreparedModelRuntime = vi.fn(
     const metadataSnapshot = admitted
       ? admitted.pluginMetadataSnapshot
       : { ...emptyPluginMetadataSnapshot, workspaceDir: input.workspaceDir };
-    const snapshot = {
+    const snapshot: ReturnType<typeof createModelRuntimeChoiceOwnerFixture> = {
+      ...createModelRuntimeChoiceOwnerFixture(input.config, () => true, {
+        agentDir: input.agentDir,
+        workspaceDir: input.workspaceDir,
+        pluginRegistry: pluginRegistry
+          ? { ...pluginRegistry, agentHarnesses: [...pluginRegistry.agentHarnesses] }
+          : undefined,
+        metadataSnapshot,
+        modelCatalog: { entries: [], routeVariants: [], providerOutcomes: [] },
+      }),
       agentId: input.agentId,
-      agentDir: input.agentDir,
-      config: input.config,
-      workspaceDir: input.workspaceDir,
-      pluginRegistry: pluginRegistry
-        ? { ...pluginRegistry, agentHarnesses: [...pluginRegistry.agentHarnesses] }
-        : undefined,
-      metadataSnapshot,
-      createStores: () => ({ authStorage: {}, modelRegistry: {} }),
+      catalogOwner:
+        input.agentId && input.workspaceDir
+          ? { agentId: input.agentId, workspaceDir: input.workspaceDir }
+          : undefined,
     };
     return {
       snapshot,
@@ -199,12 +201,7 @@ export const mockedAcquireAgentRunPreparedModelRuntime = vi.fn(
 const mockedRunPostCompactionSideEffects = vi.fn(async () => {});
 const mockedSleepWithAbort = vi.fn(async (_ms: number, _abortSignal?: AbortSignal) => undefined);
 function createMockAgentDiscoveryStores(): MockAgentDiscoveryStores {
-  return {
-    authStorage: {
-      setRuntimeApiKey: vi.fn(),
-    },
-    modelRegistry: {},
-  };
+  return { authStorage: { setRuntimeApiKey: vi.fn() }, modelRegistry: {} };
 }
 
 const mockedCreateEmptyAgentDiscoveryStores = vi.fn(createMockAgentDiscoveryStores);

@@ -1,6 +1,6 @@
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import type { Evidence, LoadedRecord } from "./model.js";
-import type { ClaimInput } from "./mutation-contract.js";
+import type { Envelope, Evidence, LoadedRecord } from "./model.js";
+import type { ClaimInput, Receipt } from "./mutation-contract.js";
 import type { RememberInput, RememberItem, RememberResult } from "./remember-contract.js";
 import { exactLookup } from "./retrieval.js";
 import { inferSubject, resolveHint } from "./subject-infer.js";
@@ -19,6 +19,29 @@ const normalize = (value: string) =>
   value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v) => b.includes(v));
+
+/** Preserve source precision and assertion scope instead of treating equal words as equal facts. */
+const assertionKey = (
+  metadata: Pick<
+    Envelope,
+    | "assertion_origin"
+    | "occurred_at"
+    | "due_at"
+    | "valid_from"
+    | "valid_until"
+    | "expires_at"
+    | "owner"
+  >,
+) =>
+  JSON.stringify([
+    metadata.assertion_origin ?? "source",
+    metadata.occurred_at,
+    metadata.due_at,
+    metadata.valid_from,
+    metadata.valid_until,
+    metadata.expires_at,
+    metadata.owner,
+  ]);
 
 /**
  * Resolve one item's subject. A named subject uses exact ID/title/alias
@@ -52,7 +75,7 @@ function resolveSubject(data: Snapshot, item: RememberItem, withdrawn: Set<strin
 /**
  * Plan one remember call against the current authorized snapshot.
  * Each item gets a subject resolution and, when an active claim with the same
- * normalized text, kind and linked subjects already exists (or an earlier item
+ * normalized text, kind, linked subjects and assertion metadata exists (or an earlier item
  * in this call says the same thing), a duplicate marker so nothing is rewritten.
  */
 export function planRemember(
@@ -60,23 +83,29 @@ export function planRemember(
   active: LoadedRecord[],
   input: RememberInput,
   withdrawn: Set<string>,
+  legacyReceipt?: Receipt,
 ): PlannedItem[] {
   const claims = active.filter((r) => r.kind === "claim" && r.lifecycle === "active");
+  // Prefer original receipt IDs over equal-text assertions added after upgrade.
+  const published = new Set(legacyReceipt?.items?.map((item) => item.id));
+  claims.sort((a, b) => Number(published.has(b.id)) - Number(published.has(a.id)));
   const planned: PlannedItem[] = [];
   const keys: string[] = [];
   for (const item of input.items) {
     const resolution = resolveSubject(data, item, withdrawn);
     const entities = resolution.subjectId ? [resolution.subjectId] : [];
     const text = normalize(item.text);
-    // Exact repeat of saved knowledge: same words, kind and linked subjects.
+    const assertion = assertionKey({ ...item, assertion_origin: item.origin ?? "source" });
+    // Both saved and within-call duplicates must describe the same assertion.
     const existing = claims.find(
       (r) =>
         r.metadata.claim_kind === item.kind &&
         normalize(r.body) === text &&
-        sameSet(r.metadata.entities ?? [], entities),
+        sameSet(r.metadata.entities ?? [], entities) &&
+        (legacyReceipt || assertionKey(r.metadata) === assertion),
     );
     // Exact repeat inside this call collapses to its first occurrence.
-    const key = `${item.kind}\0${text}\0${entities.join(",")}`,
+    const key = `${item.kind}\0${text}\0${entities.join(",")}\0${legacyReceipt ? "" : assertion}`,
       earlier = keys.indexOf(key);
     keys.push(key);
     planned.push({

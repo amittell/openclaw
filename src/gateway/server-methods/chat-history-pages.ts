@@ -1,5 +1,5 @@
-import os from "node:os";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveClaudeCliProjectsDir } from "../../agents/command/claude-cli-project-dir.js";
 import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
 import { readLegacyCompactionMetrics } from "../../config/sessions/legacy-compaction-history.js";
 import { captureSessionActorTranscriptRead } from "../../config/sessions/session-actor-transcript-read.js";
@@ -22,12 +22,11 @@ import { prepareCompactionSpanSubagentCoordination } from "./chat-history-compac
 
 export { shouldReadAnchoredWindow } from "../chat-history-page-kernel.js";
 
+// History workers do not inherit the Gateway environment, so resolve Claude's
+// projects root (including CLAUDE_CONFIG_DIR) here.
 function prepareChatHistoryParams<Params extends ChatHistoryPageParams>(input: Params): Params {
   return getCliSessionBinding(input.entry, "claude-cli")?.sessionId
-    ? {
-        ...input,
-        cliHistoryHomeDir: process.env.HOME || os.homedir(),
-      }
+    ? { ...input, cliHistoryProjectsDir: resolveClaudeCliProjectsDir() }
     : input;
 }
 

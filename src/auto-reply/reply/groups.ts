@@ -12,6 +12,7 @@ import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { PreparedReplyConversation } from "./prompt-session-context.js";
 
 const groupsRuntimeLoader = createLazyImportLoader(() => import("./groups.runtime.js"));
+const silentReplyGuidance = `If no text reply is needed, including after a reaction or other action, reply with exactly "${SILENT_REPLY_TOKEN}" as the entire final answer, without commentary, punctuation, or formatting. ${SILENT_REPLY_TOKEN} discards anything written this turn that was not sent, so send confirmations before ending silently.`;
 
 async function resolveRuntimeChannelId(raw?: string | null): Promise<string | null> {
   const normalized = normalizeOptionalLowercaseString(raw);
@@ -173,9 +174,7 @@ function buildGroupChatContext(params: {
     // the group block itself.
     lines.push("Be extremely selective: reply only when directly addressed or clearly helpful.");
   }
-  lines.push(
-    `If no text reply is needed, including after a reaction or other action, reply with exactly "${SILENT_REPLY_TOKEN}" as the entire final answer, without commentary, punctuation, or formatting. ${SILENT_REPLY_TOKEN} discards anything written this turn that was not sent, so send confirmations before ending silently.`,
-  );
+  lines.push(silentReplyGuidance);
   return lines.join(" ");
 }
 
@@ -194,11 +193,18 @@ function buildDirectChatContext(params: {
       : undefined;
   return [
     `You are in a ${providerLabel} direct conversation.`,
+    ...(isInternalMessageChannel(params.sessionCtx.Provider)
+      ? [
+          "Other people may participate here. A mention of another person is not a request for you to reply. If addressed to someone else, stay silent unless invited or correcting key facts. Reply only when you are asked to help or can add clear value; do not acknowledge routine exchanges just because you received the message.",
+        ]
+      : []),
     ...(toolOnlyDelivery
       ? [toolOnlyDelivery.mechanism, ...toolOnlyDelivery.gate]
       : [
           "Your replies are automatically sent to this conversation unless the current-turn context says final replies stay private.",
         ]),
+    silentReplyGuidance,
+    "Do not use silence to abandon an outstanding request or hide a failure.",
   ].join(" ");
 }
 

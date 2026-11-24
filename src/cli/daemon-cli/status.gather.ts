@@ -25,7 +25,10 @@ import {
   ALL_GATEWAY_SECRET_INPUT_PATHS,
   readGatewaySecretInputValue,
 } from "../../gateway/secret-input-paths.js";
-import { readGatewayLastShutdownAsync } from "../../infra/gateway-boot-lifecycle.js";
+import {
+  readGatewayLastShutdownAsync,
+  readGatewayRecentCrashesAsync,
+} from "../../infra/gateway-boot-lifecycle.js";
 import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
 import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { formatPortDiagnostics } from "../../infra/ports-format.js";
@@ -45,7 +48,11 @@ import {
 import { VERSION } from "../../version.js";
 import { resolveGatewayLocalPortOverride } from "../gateway-port-option.js";
 import { parseTimeoutMsWithFallback } from "../parse-timeout.js";
-import { formatGatewayServiceInstallationDrift, normalizeListenerAddress } from "./shared.js";
+import {
+  formatGatewayServiceInstallationDrift,
+  normalizeListenerAddress,
+  type GatewayCrashHistory,
+} from "./shared.js";
 import { readDaemonStatusConfig } from "./status.config.js";
 import { inspectDaemonPortStatuses, resolveGatewayStatusSummary } from "./status.gateway.js";
 import { projectDaemonRuntimeStatus } from "./status.projection.js";
@@ -187,8 +194,11 @@ async function gatherDaemonStatusImpl(
       )
     : undefined;
   if (opts.deep && !trimToUndefined(opts.rpc.url)) {
-    const { preflightOpenClawDatabaseSchemas, OpenClawDatabaseSchemaPreflightError } =
-      await import("../../state/openclaw-database-preflight.js");
+    const {
+      preflightOpenClawDatabaseSchemas,
+      OpenClawDatabaseSchemaPreflightError,
+      getOpenClawDatabaseReadinessFailure,
+    } = await import("../../state/openclaw-database-preflight.js");
     // Diagnose a refused database before config and lifecycle readers try to open it.
     const schemas = await preflightOpenClawDatabaseSchemas({
       env: mergeGatewayServiceEnv(process.env, targetServiceCommand),
@@ -205,6 +215,7 @@ async function gatherDaemonStatusImpl(
       const { problem, recovery } = describeUnreadableStateDatabase(
         unreadableStateDatabase.path,
         unreadableStateDatabase.reason,
+        { cause: getOpenClawDatabaseReadinessFailure(unreadableStateDatabase) },
       );
       throw new Error(`${problem}. ${recovery}`);
     }
@@ -244,6 +255,12 @@ async function gatherDaemonStatusImpl(
     opts.deep && shouldInspectLocalGateway
       ? await readGatewayLastShutdownAsync(mergedDaemonEnv).catch(() => undefined)
       : undefined;
+  const crashHistory: GatewayCrashHistory | undefined = shouldInspectLocalGateway
+    ? await readGatewayRecentCrashesAsync(mergedDaemonEnv).then(
+        (recentCrashes) => ({ recentCrashes }),
+        (error: unknown) => ({ crashHistoryError: String(error) }),
+      )
+    : undefined;
   let duelingScopesWarning: string | null = null;
   if (opts.deep && serviceTargetsProbe && process.platform === "linux") {
     const { findSystemdGatewayInstallation, formatDuelingScopesWarning } =
@@ -431,7 +448,6 @@ async function gatherDaemonStatusImpl(
     const loadInstallRecords = () =>
       loadInstalledPluginIndexInstallRecords({
         env: mergedDaemonEnv,
-        artifactPreservingReadOnly: true,
       });
     try {
       if (opts.pluginVersionTarget === "restart") {
@@ -558,6 +574,7 @@ async function gatherDaemonStatusImpl(
     },
     gateway: {
       ...gateway,
+      ...crashHistory,
       ...(lastShutdown ? { lastShutdown } : {}),
       ...(duelingScopesWarning ? { duelingScopesWarning } : {}),
       ...(windowsFirewall?.applies ? { windowsFirewall } : {}),

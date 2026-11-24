@@ -26,12 +26,12 @@ import {
 } from "./cli-session-history.test-support.js";
 import { requireGatewayRecord } from "./test-helpers.assertions.js";
 
-async function readChatHistory(homeDir: string, entry: SessionEntry, localMessages: unknown[]) {
+async function readChatHistory(projectsDir: string, entry: SessionEntry, localMessages: unknown[]) {
   const binding = getCliSessionBinding(entry, "claude-cli");
   const importedMessages = binding?.sessionId
     ? await readClaudeCliSessionMessagesAsync({
         cliSessionId: binding.sessionId,
-        homeDir,
+        projectsDir,
         localSessionId: entry.sessionId,
         reseedReceipt: binding.reseedReceipt,
       })
@@ -51,11 +51,11 @@ function readBoundHistory(
   localMessages: unknown[],
   reseedReceipt?: ReturnType<typeof receipt>,
 ) {
-  return withClaudeProjectsDir(async ({ filePath, homeDir, sessionId }) => {
+  return withClaudeProjectsDir(async ({ filePath, projectsDir, sessionId }) => {
     await writeClaudeEntries(filePath, entries);
     const entry = boundEntry(sessionId);
     entry.cliSessionBindings = { "claude-cli": { sessionId, reseedReceipt } };
-    return { messages: await readChatHistory(homeDir, entry, localMessages), sessionId };
+    return { messages: await readChatHistory(projectsDir, entry, localMessages), sessionId };
   });
 }
 
@@ -96,7 +96,7 @@ function readImportedHistory(
   entries: readonly Record<string, unknown>[],
   options?: Omit<
     Parameters<typeof readClaudeCliSessionMessagesAsync>[0],
-    "cliSessionId" | "homeDir"
+    "cliSessionId" | "projectsDir"
   >,
 ) {
   return withClaudeProjectsDir(async ({ filePath, readMessages, sessionId }) => {
@@ -313,7 +313,7 @@ describe("cli session history", () => {
   });
 
   it("rejects path-like Claude CLI session ids", async () => {
-    await withClaudeProjectsDir(async ({ homeDir, filePath }) => {
+    await withClaudeProjectsDir(async ({ filePath }) => {
       const projectDir = path.dirname(filePath);
       const projectsDir = path.dirname(projectDir);
       const sentinel = `${JSON.stringify(claudeUser("must not import", { uuid: "path-traversal-sentinel" }))}\n`;
@@ -325,7 +325,7 @@ describe("cli session history", () => {
       }
 
       for (const cliSessionId of ["../outside", "nested/session", "nested\\session"]) {
-        expect(await readClaudeCliSessionMessagesAsync({ cliSessionId, homeDir })).toEqual([]);
+        expect(await readClaudeCliSessionMessagesAsync({ cliSessionId, projectsDir })).toEqual([]);
       }
     });
   });

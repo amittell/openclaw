@@ -14,7 +14,9 @@ import { resolveSandboxHostPathViaExistingAncestor } from "./host-paths.js";
 import type { SandboxConfig, SandboxDockerConfig, SandboxWorkspaceAccess } from "./types.js";
 import type { ReadOnlyWorkspaceSkillMount } from "./workspace-mounts.js";
 
-const SANDBOX_ENGINE_PROBE_TIMEOUT_MS = 5_000;
+// Matches the other sandbox engine control calls: on a busy host `podman info` waits on
+// storage locks for several seconds while the engine is still healthy.
+const SANDBOX_ENGINE_PROBE_TIMEOUT_MS = 30_000;
 const PODMAN_INIT_PATH = "/run/podman-init";
 const PODMAN_KEEP_ID_MAPPING_MIN_VERSION = [4, 3] as const;
 const PODMAN_GPUS_MIN_VERSION = [5, 0] as const;
@@ -75,11 +77,19 @@ function assertPodmanVersionAtLeast(
   );
 }
 
-function probePodman(args: string[]) {
-  return execContainer(PODMAN_SANDBOX_ENGINE, args, {
-    allowFailure: true,
-    signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
-  });
+async function probePodman(args: string[]) {
+  const signal = AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS);
+  try {
+    return await execContainer(PODMAN_SANDBOX_ENGINE, args, { allowFailure: true, signal });
+  } catch (error) {
+    if (!signal.aborted) {
+      throw error;
+    }
+    throw new Error(
+      `Podman did not answer \`podman ${args[0]}\` within ${SANDBOX_ENGINE_PROBE_TIMEOUT_MS / 1000}s. Check that Podman is responsive on the Gateway host (for example, \`podman info\`), then retry.`,
+      { cause: error },
+    );
+  }
 }
 
 async function isPodmanMachineConnection(params: {
@@ -359,12 +369,12 @@ export function resolvePodmanSandboxCreatePolicy(params: {
   cfg: SandboxDockerConfig;
   extraCreateArgs: string[];
 } {
-  const cfg =
+  let cfg =
     params.dockerTmpfsSource === "default"
       ? {
           ...params.cfg,
           // The shared default includes bare /run, but Podman mounts its init there.
-          // Read-only roots get Podman's native /run tmpfs below; writable roots use /run directly.
+          // Validate operator mounts before adding the owner-managed /run mount below.
           tmpfs: params.cfg.tmpfs.filter((entry) => entry !== "/run"),
         }
       : params.cfg;
@@ -395,6 +405,23 @@ export function resolvePodmanSandboxCreatePolicy(params: {
   const extraCreateArgs = ["--http-proxy=false"];
   if (params.cfg.readOnlyRoot) {
     extraCreateArgs.push("--read-only-tmpfs=true");
+    // Make Podman's implicit writable mounts explicit so allocation caps their size.
+    // The engine preserves its nested init bind inside this owner-managed /run tmpfs.
+    const mounted = new Set(
+      [
+        cfg.workdir,
+        ...cfg.tmpfs.map((entry) => entry.split(":", 1)[0]!),
+        ...(cfg.binds ?? []).map((entry) => splitSandboxBindSpec(entry)?.container ?? ""),
+        ...params.readOnlyWorkspaceSkillMounts.map((mount) => mount.containerPath),
+      ].map((target) => path.posix.normalize(target)),
+    );
+    cfg = {
+      ...cfg,
+      tmpfs: [
+        ...cfg.tmpfs,
+        ...["/tmp", "/var/tmp", "/run"].filter((target) => !mounted.has(target)),
+      ],
+    };
   }
   if (params.runtimeInfo.rootless) {
     if (params.cfg.user?.trim()) {

@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { AssistantMessage } from "../../llm/types.js";
+import { clearBoundaryMaintenance, decideContextPressure } from "../context-pressure.js";
 import { buildAssistantFailoverSignal } from "../embedded-agent-helpers/assistant-message-failures.js";
 import { classifyFailoverSignal } from "../failover/classify.js";
 import { agentSessionAutomaticCompaction } from "../sessions/agent-session-compaction.js";
@@ -24,6 +25,7 @@ import { prepareEmbeddedAttemptPromptPreflight } from "./run/attempt-prompt-pref
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import { recoverEmbeddedRunOverflow } from "./run/overflow-context-recovery.js";
+import { contextPressureSignal } from "./run/preemptive-compaction.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 import {
   clearEmbeddedSessionPromptStates,
@@ -411,7 +413,9 @@ describe("recoverEmbeddedRunOverflow", () => {
         promptError,
         attempt: {
           terminal: { kind: "failed", source, error: promptError },
-          ...(source === "precheck" ? { preflightRecovery: { route: "compact_only" } } : {}),
+          ...(source === "precheck"
+            ? { preflightRecovery: { pressure: "overflow", route: "compact_only" } }
+            : {}),
         },
       });
 
@@ -432,6 +436,79 @@ describe("recoverEmbeddedRunOverflow", () => {
       expect(input.prepareCurrentTranscriptRetry).not.toHaveBeenCalled();
     },
   );
+
+  // Fault injection: soft-pressure maintenance must continue the turn whatever compaction does.
+  it.each([
+    {
+      name: "summary provider unavailable",
+      result: { ok: false, compacted: false, reason: "The summary provider is unavailable" },
+    },
+    { name: "guard blocked", result: { ok: false, compacted: false, reason: "guard_blocked" } },
+    {
+      name: "compaction timeout",
+      result: { ok: false, compacted: false, reason: "Compaction timed out after 180000ms" },
+    },
+    {
+      name: "removed nothing",
+      result: {
+        ok: true,
+        compacted: true,
+        result: { summary: "s", tokensBefore: 210_000, tokensAfter: 210_000 },
+      },
+    },
+  ] as const)("continues the turn when boundary maintenance fails: $name", async ({ result }) => {
+    mocks.compact.mockResolvedValueOnce(result as CompactionResult);
+    const runId = `maintenance-${Math.random()}`;
+    const promptError = contextPressureSignal("maintenance");
+    const input = makeInput({
+      promptError,
+      attempt: {
+        terminal: { kind: "failed", source: "precheck", error: promptError },
+        preflightRecovery: {
+          route: "compact_only",
+          pressure: "maintenance",
+          source: "mid-turn",
+          estimatedPromptTokens: 210_000,
+          promptBudgetBeforeReserve: 204_000,
+          overflowTokens: 6_000,
+        },
+      },
+    });
+    input.runParams = { ...input.runParams, runId };
+    try {
+      expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+      expect(mocks.compact).toHaveBeenCalledOnce();
+      expect(input.prepareCurrentTranscriptRetry).toHaveBeenCalled();
+      // Maintenance that cannot reduce context is not retried at every later request.
+      expect(
+        decideContextPressure({
+          estimatedPromptTokens: 210_000,
+          windowTokens: 272_000,
+          maintenanceDue: true,
+          boundarySafe: true,
+          runId,
+        }),
+      ).toBeUndefined();
+    } finally {
+      clearBoundaryMaintenance(runId);
+    }
+  });
+
+  it("keeps the overflow failure when the request cannot fit and compaction fails", async () => {
+    mocks.compact.mockResolvedValueOnce({ ok: false, compacted: false, reason: "guard_blocked" });
+    const promptError = overflowError();
+    const input = makeInput({
+      promptError,
+      attempt: {
+        terminal: { kind: "failed", source: "precheck", error: promptError },
+        preflightRecovery: { route: "compact_only", pressure: "overflow", source: "mid-turn" },
+      },
+    });
+    expect(await recoverEmbeddedRunOverflow(input)).toMatchObject({
+      action: "surface",
+      kind: "compaction_failure",
+    });
+  });
 
   it("keeps provider overflow guidance when compaction only skipped", async () => {
     mocks.compact.mockResolvedValueOnce({
@@ -475,7 +552,7 @@ describe("recoverEmbeddedRunOverflow", () => {
           terminal: { kind: "failed", source: "precheck", error: overflowError() },
           sessionIdUsed: "session-1",
           messagesSnapshot: [],
-          preflightRecovery: { route: "compact_then_truncate" },
+          preflightRecovery: { pressure: "overflow", route: "compact_then_truncate" },
         },
       });
 
@@ -483,7 +560,7 @@ describe("recoverEmbeddedRunOverflow", () => {
       expect(mocks.truncateOversizedToolResults).toHaveBeenCalledWith(
         expect.objectContaining({
           projectionState: successorProjection,
-          protectTrailingToolResults: true,
+          preserveSentToolResults: true,
         }),
       );
       expect(input.prepareCompactedTranscriptRetry).toHaveBeenCalledOnce();
@@ -744,6 +821,7 @@ describe("recoverEmbeddedRunOverflow", () => {
         attempt: {
           terminal: { kind: "failed", source: "precheck", error: promptError },
           preflightRecovery: {
+            pressure: "overflow",
             route: "compact_then_truncate",
             source,
             estimatedPromptTokens: 268_138,
@@ -786,6 +864,7 @@ describe("recoverEmbeddedRunOverflow", () => {
         promptError: new Error("Context window exceeded: requested 12,000 tokens"),
         attempt: {
           preflightRecovery: {
+            pressure: "overflow",
             route: "compact_then_truncate",
             source: "mid-turn",
             estimatedPromptTokens: 268_138,
@@ -849,7 +928,7 @@ describe("recoverEmbeddedRunOverflow", () => {
     const result = await recoverEmbeddedRunOverflow(
       makeInput({
         state,
-        attempt: { preflightRecovery: { route: "compact_only" } },
+        attempt: { preflightRecovery: { pressure: "overflow", route: "compact_only" } },
       }),
     );
 

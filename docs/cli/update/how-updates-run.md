@@ -995,8 +995,12 @@ post-failure [Triage](/cli/triage) starts only after update ownership and servic
 compensation settle; it does not rewrite the failed update or grant new restart
 authority. These temporary validation snapshots are not a full-state backup;
 see [Rollback](/install/updating#rollback).
-If schema state cannot be verified, rollback is refused with
-`rollback-state-unverified`; unknown state never counts as schema-neutral.
+If schema state cannot be verified after a new-version Doctor or boot check may have
+written it, rollback is refused with `rollback-state-unverified`; unknown state never
+counts as schema-neutral. If package activation failed before the candidate Doctor
+opened state, an unreadable store is a recorded warning, not new evidence of data at
+risk; the update retains its original failure. In-place Git updates keep the
+conservative inspection behavior because they rewrite the serving checkout.
 
 If an update fails before activation, recovery observes the existing Gateway once
 without waiting for startup or restarting it. Native service and listener checks
@@ -1563,6 +1567,13 @@ reclaim these stages. If an interrupted update leaves one behind, confirm that
 no updater is still using it before removing that exact directory. This separation
 does not make simultaneous package swaps safe.
 
+After the new package is verified, failure to remove an unchanged obsolete npm
+package link records a `package-backup-retention` warning rather than failing
+the update. The warning names the link and any launcher backups or database
+snapshots retained with it. Inspect these paths before removing them; remove
+only the link itself, never recursively delete the checkout it names. Changed
+or unreadable backup links still fail closed.
+
 A matching installed version skips core replacement but still converges plugins. Core updates also
 refresh core-command completion; full plugin-command completion rebuilds remain explicit
 `openclaw completion --write-state` runs.
@@ -1625,3 +1636,8 @@ installation.
 This behavior belongs to the updater already running. Back up local edits before
 the first upgrade from an older updater that does not include it. Git checkouts
 continue to use the existing clean-worktree and Git update rules.
+
+When plugin convergence changes no config, the updater publishes its install
+records without rewriting the config file. This preserves its bytes and permits
+a provisioned read-only config. A real config change, including a requested
+channel change or Doctor repair, still requires a writable config.

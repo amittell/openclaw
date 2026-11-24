@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { getGatewayRecentCrashes } from "../infra/gateway-crash.js";
 import { resolveRuntimeServiceBuildId, resolveRuntimeServiceVersion } from "../version.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { authorizeHttpGatewayConnect } from "./auth.js";
@@ -117,18 +118,17 @@ export async function handleGatewayProbeRequest(
       ).ok;
     }
     const readiness = status === "ready" ? getReadiness : undefined;
-    const readPrepared = await readiness?.prepare().then(
-      ({ publish }) => publish,
-      (error: unknown) => () => {
-        throw error;
-      },
-    );
     const includeDetails = await shouldIncludeGatewayProbeDetails();
     try {
-      if (readPrepared) {
-        const result = readPrepared();
+      if (readiness) {
+        const result = readiness();
         statusCode = result.ready ? 200 : 503;
-        body = JSON.stringify(includeDetails ? result : { ready: result.ready });
+        const recentCrashes = includeDetails ? getGatewayRecentCrashes() : [];
+        body = JSON.stringify(
+          includeDetails
+            ? { ...result, ...(recentCrashes.length ? { recentCrashes } : {}) }
+            : { ready: result.ready },
+        );
       } else {
         const result = getStartup?.() ?? { ok: true, status: "started", uptimeMs: 0 };
         statusCode = result.ok ? 200 : 503;

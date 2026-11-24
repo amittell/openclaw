@@ -8,9 +8,11 @@ read_when:
 title: "Restart recovery"
 ---
 
-A graceful Gateway stop or restart records which root sessions are working, then
-aborts that work promptly. At the next startup, each marked session gets one
-ordinary system input asking the agent to inspect current state and continue.
+A graceful Gateway stop or restart records which root sessions are working or
+waiting, then aborts executing work promptly. At the next startup, an interrupted
+root gets one ordinary system input asking the agent to inspect current state and
+continue. A recorded yield with a surviving wake source stays parked; a lost
+source produces a visible failure instead.
 The transcript remains the agent's context; the Gateway does not reconstruct or
 replay the old execution.
 
@@ -25,6 +27,22 @@ A crash or `SIGKILL` does not write these markers. Nothing resumes automatically
 from that process. Open the conversation and send a message to continue. This is
 an accepted loss window: files, external actions, and tool effects may already
 have changed, so check them before repeating work.
+
+On upgrade from the retired restart-recovery subsystem (through 2026.10.9),
+startup and `openclaw doctor --fix` also repair tombstoned root sessions, with or
+without a recorded continuation. The repair backs up the original database,
+clears obsolete execution claims, and warns with the session key. Pending final
+delivery is retired with an unknown outcome rather than replayed under obsolete
+sender authority; its original content remains in the backup. Existing transcript
+content is unchanged. Eligible roots receive one ordinary resume input; manual
+archives, provider review, and external harness ownership retain their normal gates.
+Every retained fence and pending final must match the tombstone's recorded run or
+generation before retirement. A different generation, missing ownership link, or
+live execution leaves custody intact and prevents automatic resume of that row.
+Doctor names the session and asks the operator to inspect its retained identities
+and delivery outcome against the transcript before repairing custody. Legacy scalar
+delivery fields can still be normalized without discarding the pending final, so
+ordinary admission no longer depends on the retired tombstone gate.
 
 ## What survives a restart
 
@@ -45,6 +63,10 @@ A session counts as running when its own agent loop is active, a descendant
 sub-agent is running, or it owns a running background process. The Gateway reads
 these facts from their live in-memory owners during shutdown. A child contributes
 to its top-level requester; the child does not receive an independent resume input.
+Recorded yield waits retain their exact requester lifecycle, including dashboard
+roots. Surviving child or message waits do not run the model at startup. Stopped
+descendants instead trigger the root resume input to reconcile their saved work.
+Spawned children stay with their requester, not an independent root recovery.
 Idle and finished sessions are not marked. Cron occurrence sessions and
 ACP/external-harness sessions are excluded.
 
@@ -60,8 +82,14 @@ written and the session owner stops them for restart. A real grant revocation or
 permission change during that interval still cancels the affected work. At startup,
 queued inputs must regain current authority before they can execute.
 
-There are no restart checkpoints written per turn or tool call, startup orphan
-scans, or crash-time execution reconstruction.
+Older serialized yield waits without shutdown markers are reconciled from the
+existing registry and session identities. This does not replay arbitrary running
+turns after a crash or add per-turn restart checkpoints.
+
+A permanently failed child-completion handoff records actionable failure guidance.
+Only its original parked requester can receive the terminal event; a newer turn,
+Stop, or reset cannot inherit it. Older batches without the requester run ID get
+a batch-scoped notice without changing the current lifecycle.
 
 <a id="graceful-restarts-drain-first" />
 
@@ -346,7 +374,9 @@ adopts an unsettled cycle only when the entry has `abortedLastRun: true`, status
 `interrupted`, and an `updatedAt` within the six hours before this process started.
 Old shutdown marking updated that timestamp. Startup clears the cycle and sends
 the same single resume input under the current-authority rules below. Stale,
-future-dated, settled, tombstoned, `done`, and `killed` entries do not resume.
+future-dated, settled, `done`, and `killed` entries do not resume through that bridge.
+Legacy tombstones use the backed-up repair described above and do not require
+a recent timestamp or a continuation session.
 An installation stopped for longer than six hours before upgrading loses this
 one-time resume; send a new message to continue. Old execution and authority
 snapshots are not restored.
@@ -393,18 +423,31 @@ older shutdown markers without per-input source evidence. A channel identity
 without a profile does not authorize queued execution after restart.
 
 New messages arriving during a resumed run use ordinary steering and queue rules.
-There is no recovery-predecessor wait or special recovery admission lane. Explicit
-Stop, cancellation, archive, and reset keep their normal meanings.
+Resumed turns execute on the bounded `restart-recovery` lane at
+`agents.defaults.maxConcurrent`, independently of interactive and cron capacity.
+A recovery backlog cannot queue ahead of new cron runs. Per-session input order
+is unchanged; Stop, cancellation, archive, and reset keep their normal meanings.
 
 ### Subagents
 
 Graceful shutdown marks the root requester of a running child, then cancels the
-child through the ordinary abort path. The child settles terminally without a
-shutdown completion announcement or a "subagent failed" notice to its parent.
-Children are not adopted or independently resumed at startup.
+child through the ordinary abort path. The child retains its terminal error for
+completion delivery after startup; shutdown is not intentional cancellation by
+the requester. No completion announcement starts during shutdown. Children are
+not adopted or independently resumed at startup.
 
-The parent's single resume input covers reconciliation of its children. It can
-inspect their transcripts and results with the existing sub-agent tools, then
+Collector children retain their captured results. If shutdown recorded a terminal
+child before its collector result finished publishing, startup completes that
+record from the saved outcome. A resumed parent's `agents_wait` reads these
+recorded results, including stopped children, without waiting for a new execution
+or completion event. This does not restore the child's retired tool authority.
+
+A result already committed to the requester transcript is not submitted again.
+The Gateway resumes that interrupted turn using its normal restart input and the
+saved conversation. Unconsumed results remain with the completion registry, and
+deliberately yielded requesters remain parked for their children.
+
+The parent can inspect transcripts and results with the existing sub-agent tools, then
 send a new instruction or spawn replacements after checking what already happened.
 See [Sub-agent operations](/tools/subagents/operations).
 
@@ -487,7 +530,44 @@ to continue and inspect uncertain effects before repeating them.
 ## Automatic peer results
 
 Ordinary live `sessions_send` communication and its current authorization remain
-unchanged. Restart does not restore a peer sender, replay a requester-settle input,
-or launch a new model turn from a saved completion. Already-produced outbound
-messages and media retain their delivery owner. A running root session's resume
-input is responsible for inspecting pending child or peer work.
+unchanged. Startup can admit retained child-result delivery against the requester's
+current principal, exact session ID, and lifecycle revision. It does not reuse the
+previous process's authority or revive stopped, suppressed, archived, replaced, or
+reset work. Restored human authority remains bounded by its recorded permissions
+and current device, role, and access policy. Delivered receipts prevent a second
+restart from delivering the same result again.
+
+Already-produced outbound messages and media retain their delivery owner. Other
+pending peer work remains the responsibility of the root session's resume input.
+
+## Unexpected exits
+
+The Gateway records each run in its existing SQLite boot lifecycle. A graceful
+stop, drained `SIGTERM`, deployment handoff, or planned update restart closes the
+run. If the next startup finds that its predecessor did not close, it records
+one unexpected exit and logs `previous Gateway run ended unexpectedly`.
+
+The last ten crash records remain visible in `openclaw gateway status`, the
+`health` and `status` RPC results, and local or authenticated `/readyz` details.
+The Control UI's Debug health and status snapshots show these same records.
+Doctor shows a **Fix now** warning about any crash detected in the last 24 hours,
+or at least three detected in the last seven days, with a next step to inspect the
+recorded exits. This diagnostic does not trigger a repair or restart: a healthy
+successor remains ready. An unauthenticated remote readiness probe does not disclose it.
+
+Records include the previous PID, start time, and available version, build,
+runtime, and heartbeat facts. After startup, the Gateway performs bounded
+supervisor inspection for exit evidence. On systemd an indexed query reads structured
+exit records for the previous service run. A second query, limited to the final
+30 seconds and the previous PID and unit, checks for the exact self-recovery
+marker when a stalled main thread killed itself. Both queries share a one-second budget. On launchd it records the
+daemon's explicit last exit status and reason; an integer status is not treated
+as evidence of a signal. Missing evidence stays `cause unknown`;
+an ordinary fresh start is not evidence of a clean previous exit. The shared
+SQLite machine-state KV holds bounded diagnostic metadata alongside the existing
+boot receipt; there is no crash sidecar file or agent-database scan.
+
+Installed supervisors handle process restarts using their existing retry and
+crash-loop limits. Foreground `openclaw gateway` does not acquire an automatic
+restart loop. See [Gateway service and process troubleshooting](/gateway/troubleshooting/gateway-service-and-process#unexpected-gateway-exits)
+when crashes repeat.

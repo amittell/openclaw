@@ -362,11 +362,23 @@ console.log("headless-read-ok");`,
     );
   });
 
-  it("suggests a close filename without reading it", async () => {
-    const { tool } = await fileFixture("AGENTS.md", "instructions");
-    await expect(executeRead(tool, { path: "AGENT.md" })).rejects.toThrow(
-      /Did you mean: AGENTS\.md\?/,
+  it("ranks close filenames without scoring impossible lengths or reading suggestions", async () => {
+    const { tempDir, tool } = await fileFixture("AGENTS.md", "instructions");
+    const distant = "session-12345678-1234-1234-1234-123456789abc.jsonl";
+    await Promise.all(
+      ["AGENT.txt", "AGENTs.mdx", "AGENT.mdx", distant].map((name) =>
+        fs.writeFile(path.join(tempDir, name), "must not be read"),
+      ),
     );
+    const scoring = vi.spyOn(String.prototype, "charCodeAt");
+    try {
+      await expect(executeRead(tool, { path: "AGENT.md" })).rejects.toThrow(
+        /Did you mean: AGENT\.mdx, AGENTS\.md, AGENTs\.mdx\?/,
+      );
+      expect(scoring.mock.contexts).not.toContain(distant);
+    } finally {
+      scoring.mockRestore();
+    }
   });
 
   it("continues an oversized astral emoji line without splitting characters", async () => {
@@ -449,6 +461,31 @@ console.log("headless-read-ok");`,
     }
     expect(first.details.content + second.details.content).toBe(longLine);
     expect(textContent(second)).toContain("offset=3");
+  });
+
+  it("caps a non-EOF selection ending on a blank line and continues from that line", async () => {
+    const prefix = "é🦞\n".repeat(1999);
+    const { tool } = await fileFixture("selected-blank.txt", `${prefix}\n\nfiné`);
+    const first = await executeRead(tool, { path: "selected-blank.txt", limit: 2001 });
+    expect(first.details).toMatchObject({
+      kind: "truncated",
+      content: prefix,
+      continuation: { kind: "line", offset: 2001, limit: 1 },
+      truncation: {
+        truncatedBy: "lines",
+        outputLines: 2000,
+        outputBytes: Buffer.byteLength(prefix),
+        maxLines: 2000,
+      },
+    });
+    const next = await executeRead(tool, { path: "selected-blank.txt", offset: 2001, limit: 1 });
+    expect(next.details).toMatchObject({
+      kind: "truncated",
+      content: "",
+      continuation: { kind: "line", offset: 2002, limit: 1 },
+    });
+    const last = await executeRead(tool, { path: "selected-blank.txt", offset: 2002, limit: 1 });
+    expect(last.details).toEqual({ kind: "text", content: "finé" });
   });
 
   it("clamps non-positive line limits before slicing file content", async () => {

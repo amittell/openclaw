@@ -652,7 +652,7 @@ describe("prepared harness source delivery", () => {
       workspaceDir,
       pluginRegistry,
       metadataSnapshot: admittedMetadataSnapshot,
-    } as NonNullable<ReturnType<typeof getPreparedModelRuntimeBorrowedSnapshot>>;
+    };
     let publishedMetadataSnapshot = admittedMetadataSnapshot;
     const release = vi.fn(async () => {});
     let servedMetadataSnapshot: unknown;
@@ -677,7 +677,7 @@ describe("prepared harness source delivery", () => {
         return {
           ...baseLease,
           pluginGeneration: admittedGeneration,
-          snapshot: borrowed as typeof baseLease.snapshot,
+          snapshot: borrowed,
           [Symbol.asyncDispose]: release,
         };
       },

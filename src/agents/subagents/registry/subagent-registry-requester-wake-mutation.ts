@@ -1,16 +1,26 @@
+import { readSessionEntryReadOnlyInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
+import { persistGatewaySessionLifecycleEvent } from "../../../gateway/session-lifecycle-state.js";
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { recordGatewaySessionRunFailure } from "../../../sessions/session-run-error.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
+import { buildAnnounceIdempotencyKey } from "../../announce-idempotency.js";
+import { renderRuntimeCoordinationFailureCopy } from "../../failover/assistant-request-failure-copy.js";
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import { mutateRequesterCompletionBatch } from "../completion/subagent-completion-admission.store.js";
 import type {
   RequesterWakeCommittedWrite,
   RequesterWakeMutation,
 } from "../completion/subagent-completion-mutation.types.js";
+import { captureSubagentControllerInputRetirement } from "./subagent-controller-inputs.js";
 import type { SubagentLifecycleWakeContext } from "./subagent-registry-lifecycle-context.js";
+import { subagentRuns } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
-import { sameRequesterSettleRunIdentity } from "./subagent-requester-settle-identity.js";
-import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
+import type { RequesterSettleWakeState, SubagentRunRecord } from "./subagent-registry.types.js";
+import {
+  buildRequesterSettleWakeIdentity,
+  sameRequesterSettleRunIdentity,
+} from "./subagent-requester-settle-identity.js";
+import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
 export type RequesterWakeMutationReceipt = { committed?: RequesterWakeCommittedWrite };
 
@@ -40,6 +50,7 @@ export function assertRequesterSettleWakeBatchCurrent(
   batch: readonly SubagentRunRecord[],
   rearmGeneration: number | undefined,
   visibleFinalDelivered: boolean,
+  retiredFailure = false,
 ): void {
   for (const entry of batch) {
     const current = context.options.runs.get(entry.runId);
@@ -53,7 +64,12 @@ export function assertRequesterSettleWakeBatchCurrent(
       throw new Error("Requester wake batch changed before its outcome was recorded");
     }
     const resolve = getGatewayContextResolver(entry);
-    if (!visibleFinalDelivered && resolve && !resolve()) {
+    if (
+      !visibleFinalDelivered &&
+      !(retiredFailure && subagentRuns.isCompletionAuthorityRetired(current)) &&
+      resolve &&
+      !resolve()
+    ) {
       throw new Error("Requester wake Gateway owner is closed");
     }
   }
@@ -77,7 +93,15 @@ export async function mutateRequesterSettleWakeBatch(
     assertSubagentRegistryWriteSourceCurrent(stateContext);
     // An acknowledged write must reconcile its own postimages rather than replaying it.
     if (!receipt.committed) {
-      assertRequesterSettleWakeBatchCurrent(context, batch, rearmGeneration, visibleFinalDelivered);
+      assertRequesterSettleWakeBatchCurrent(
+        context,
+        batch,
+        rearmGeneration,
+        visibleFinalDelivered,
+        operation.kind === "settle" &&
+          !operation.outcome.delivered &&
+          operation.outcome.disposition === "permanent_failure",
+      );
     }
   };
   try {
@@ -118,4 +142,181 @@ export function settleRequesterSettleWakeBatch(
     stateContext,
     receipt,
   );
+}
+
+// Observed outcomes belong to the run owner, not the transient evaluation. Weak keys release
+// retired owners; the scope keeps a later yield generation from consuming an older receipt.
+export const pendingRequesterSettlements = new WeakMap<
+  object,
+  {
+    scope: string;
+    rearmGeneration: number | undefined;
+    receipt: RequesterWakeMutationReceipt;
+    stateContext: OpenClawStateWorkerContext;
+    settle: () => Promise<void>;
+  }
+>();
+export function hasPendingRequesterSettlement(
+  context: SubagentLifecycleWakeContext,
+  entry: SubagentRunRecord,
+): boolean {
+  const pending = pendingRequesterSettlements.get(getSubagentRunRuntimeKey(entry));
+  if (!pending) {
+    return false;
+  }
+  try {
+    assertSubagentRegistryWriteSourceCurrent(pending.stateContext);
+  } catch {
+    return false;
+  }
+  return isRetainedRequesterSettleWakeMember(
+    context,
+    entry,
+    pending.rearmGeneration,
+    pending.receipt,
+  );
+}
+
+/** Retain the observed outcome until its commit and requester lifecycle effect settle. */
+export function createRequesterWakeSettlement(params: {
+  context: SubagentLifecycleWakeContext;
+  scope: string;
+  batch: readonly SubagentRunRecord[];
+  rearmGeneration: number | undefined;
+  outcome: SubagentAnnounceDeliveryResult | undefined;
+  onCommitted?: () => void | Promise<void>;
+  stateContext: OpenClawStateWorkerContext;
+  admittedWake: RequesterSettleWakeState | undefined;
+  release: (members: readonly SubagentRunRecord[]) => void;
+}): () => Promise<void> {
+  const {
+    context,
+    scope,
+    batch,
+    rearmGeneration,
+    outcome,
+    onCommitted,
+    stateContext,
+    admittedWake,
+    release,
+  } = params;
+  // Retry bookkeeping with the observed outcome, never by replaying delivery or inventing failure.
+  const receipt: RequesterWakeMutationReceipt = {};
+  const retireInputs = batch.map(captureSubagentControllerInputRetirement);
+  const settlement = {
+    scope,
+    rearmGeneration,
+    receipt,
+    stateContext,
+    settle: async (): Promise<void> => {
+      const members = batch.filter(
+        (member) =>
+          pendingRequesterSettlements.get(getSubagentRunRuntimeKey(member)) === settlement &&
+          isRetainedRequesterSettleWakeMember(context, member, rearmGeneration, receipt),
+      );
+      // A quiet decision needs its whole cohort; a recorded outcome stays with surviving peers.
+      const settlesMembers =
+        members.length > 0 &&
+        (outcome !== undefined ||
+          receipt.committed !== undefined ||
+          members.length === batch.length);
+      if (
+        settlesMembers &&
+        !(await settleRequesterSettleWakeBatch(
+          context,
+          members,
+          rearmGeneration,
+          outcome,
+          stateContext,
+          receipt,
+        ))
+      ) {
+        return;
+      }
+      if (settlesMembers) {
+        const requester = batch[0];
+        if (
+          !admittedWake?.pauseNotice &&
+          (admittedWake?.requesterYieldBatch ||
+            (requester?.completionTarget === "parent" &&
+              outcome?.disposition === "permanent_failure")) &&
+          requester?.completionRequesterSessionId &&
+          outcome?.delivered !== true
+        ) {
+          const error =
+            outcome?.error ?? "Child completion could not continue the yielded request.";
+          const notice = renderRuntimeCoordinationFailureCopy("child_completion_delivery_failed");
+          const runId = admittedWake?.requesterRunId;
+          let failureNoticeOwned = false;
+          if (runId) {
+            // A newer turn, reset, or Stop cannot inherit the failed batch's terminal.
+            const persistence = await persistGatewaySessionLifecycleEvent({
+              sessionKey: requester.requesterSessionKey,
+              agentId: requester.requesterAgentId,
+              expectedWriter: {
+                runId,
+                sessionId: requester.completionRequesterSessionId,
+                lifecycleRevision: requester.completionRequesterLifecycleRevision,
+                requireYielded: true,
+              },
+              event: {
+                runId,
+                sessionId: requester.completionRequesterSessionId,
+                ts: Date.now(),
+                data: { phase: "error", error, errorNotice: notice },
+              },
+            });
+            failureNoticeOwned =
+              persistence === "failure-notice-recorded" || persistence === "terminal-retained";
+          }
+          // The failed partition belongs in the current chat, but never terminates its new writer.
+          const current = failureNoticeOwned
+            ? undefined
+            : await readSessionEntryReadOnlyInWorker({
+                sessionKey: requester.requesterSessionKey,
+                agentId: requester.requesterAgentId,
+                storePath: requester.requesterStorePath,
+              });
+          if (current?.sessionId && current.status !== "killed") {
+            const { batchKey } = buildRequesterSettleWakeIdentity({
+              requesterSessionKey: requester.requesterSessionKey,
+              requesterAgentId: requester.requesterAgentId,
+              batchRunIds: members.map((entry) => entry.runId),
+              rearmGeneration,
+            });
+            await recordGatewaySessionRunFailure({
+              target: {
+                sessionKey: requester.requesterSessionKey,
+                agentId: requester.requesterAgentId,
+                storePath: requester.requesterStorePath,
+                sessionId: current.sessionId,
+                expectedLifecycleRevision: current.lifecycleRevision,
+              },
+              runId: buildAnnounceIdempotencyKey(batchKey + ":delivery-failure"),
+              error,
+              notice,
+              assertCommitAllowed: () => assertSubagentRegistryWriteSourceCurrent(stateContext),
+            });
+          }
+        }
+        for (const retire of retireInputs) {
+          retire();
+        }
+        await onCommitted?.();
+      }
+      for (const member of batch) {
+        const key = getSubagentRunRuntimeKey(member);
+        if (pendingRequesterSettlements.get(key) === settlement) {
+          pendingRequesterSettlements.delete(key);
+        }
+      }
+      if (settlesMembers) {
+        release(members);
+      }
+    },
+  };
+  for (const member of batch) {
+    pendingRequesterSettlements.set(getSubagentRunRuntimeKey(member), settlement);
+  }
+  return settlement.settle;
 }

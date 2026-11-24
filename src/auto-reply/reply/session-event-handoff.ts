@@ -137,6 +137,7 @@ function enqueueSessionEventAttempt(
   let operation: ReplyOperation | undefined;
   let inputRecorder: UserTurnTranscriptRecorder | undefined;
   let delivered = false;
+  let conversationResultCommitted: true | undefined;
   let deliveryAttempted = false;
   let deliveryAmbiguous = false;
   let deliveryError: string | undefined;
@@ -156,8 +157,7 @@ function enqueueSessionEventAttempt(
   const jobTools = options.scheduledAutomation
     ? resolveCronRunToolsAllow(options.scheduledAutomation.job)
     : undefined;
-  const producerTools = options.expectedTarget?.toolsAllow;
-  const toolsAllow = intersectSessionEventToolsAllow(jobTools, producerTools);
+  const toolsAllow = intersectSessionEventToolsAllow(jobTools, options.expectedTarget?.toolsAllow);
   const assertOwnerCurrent = () => {
     if (settlement === "finished") {
       throw new Error("Session event occurrence is settled");
@@ -169,8 +169,7 @@ function enqueueSessionEventAttempt(
     }
     options.assertCurrent?.();
     options.expectedTarget?.assertCurrent?.();
-    const currentConfig = getSessionEventRuntimeConfig();
-    resolveConfiguredAgentId(currentConfig, agentId);
+    resolveConfiguredAgentId(getSessionEventRuntimeConfig(), agentId);
     if (!isDeletionBlocked || isDeletionBlocked()) {
       throw new Error("Session event agent is being deleted");
     }
@@ -377,6 +376,7 @@ function enqueueSessionEventAttempt(
         errorReason: status === "failed" ? errorReason : undefined,
         interruptedByRestart: terminalOutcome.stopReason === "restart",
         delivered,
+        conversationResultCommitted,
         deliveryAttempted,
         deliveryAmbiguous,
         deliveryError,
@@ -413,15 +413,16 @@ function enqueueSessionEventAttempt(
     if (kind === "final" && payload.text) {
       summary ??= truncateUtf16Safe(payload.text, 2000);
     }
-    if (options.deliver === false || target?.deliver === false) {
-      return;
-    }
-    if (kind === "final" && sourceDeliveryOutcome?.satisfiesSourceDelivery) {
-      return;
-    }
-    if (!route?.channel || route.channel === INTERNAL_MESSAGE_CHANNEL) {
-      // The normal transcript remains the result for internal/WebChat turns.
-      // This is not evidence of a transport send.
+    // The normal transcript remains the result for internal/WebChat turns.
+    // Skipping delivery is not evidence of a transport send.
+    if (
+      options.deliver === false ||
+      target?.deliver === false ||
+      (options.suppressErrorDelivery && payload.isError === true) ||
+      (kind === "final" && sourceDeliveryOutcome?.satisfiesSourceDelivery) ||
+      !route?.channel ||
+      route.channel === INTERNAL_MESSAGE_CHANNEL
+    ) {
       return;
     }
     const deliverReply = await prepareSessionEventDelivery(route, assertCurrent);
@@ -626,6 +627,7 @@ function enqueueSessionEventAttempt(
               nextCheckMs = terminal.nextCheckMs;
               sourceDeliveryOutcome = terminal.sourceDeliveryOutcome;
               automationResult = terminal.automationResult;
+              conversationResultCommitted = terminal.conversationResultCommitted;
               delivered ||= sourceDeliveryOutcome?.satisfiesSourceDelivery === true;
             },
           },

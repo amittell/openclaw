@@ -114,7 +114,7 @@ export type ChatHistoryPageParams = {
   pageCursor?: ChatHistoryPageCursor;
   compactionId?: string;
   ignoreCliSessionImports?: boolean;
-  cliHistoryHomeDir?: string;
+  cliHistoryProjectsDir?: string;
 };
 
 type SessionHistoryTranscriptMeta = {

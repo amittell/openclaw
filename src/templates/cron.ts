@@ -18,7 +18,11 @@ export type { PersistedTemplateCronRef } from "./cron-records.js";
 export type TemplateCronGateway = {
   add: (
     input: Record<string, unknown>,
-    options?: { commitGuard?: () => void; existingRef?: PersistedTemplateCronRef },
+    options?: {
+      commitGuard?: () => void;
+      existingRef?: PersistedTemplateCronRef;
+      captureOwnerProfileId?: (ownerProfileId: string | undefined) => void;
+    },
   ) => Promise<unknown>;
   get?: (schedulerJobId: string) => Promise<unknown>;
   list?: (agentId: string) => Promise<unknown>;
@@ -50,13 +54,12 @@ function templateCronSchedulerJobFromResult(value: unknown): { id: string } | un
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  const record = value as Record<string, unknown>;
-  if (typeof record.id === "string" && record.id) {
-    return { id: record.id };
+  if ("id" in value && typeof value.id === "string" && value.id) {
+    return { id: value.id };
   }
-  const job = record.job;
-  if (job && typeof job === "object" && typeof (job as Record<string, unknown>).id === "string") {
-    return { id: (job as Record<string, unknown>).id as string };
+  const job = "job" in value ? value.job : undefined;
+  if (job && typeof job === "object" && "id" in job && typeof job.id === "string") {
+    return { id: job.id };
   }
   return undefined;
 }
@@ -117,6 +120,14 @@ export function templateCronGatewayJobMatchesRef(
   value: unknown,
 ): boolean {
   if (!value || typeof value !== "object") {
+    return false;
+  }
+  // Creator provenance is scheduler-private, not a public ownerProfileId field.
+  // Read it only inside this operation before projecting the public definition.
+  const actor = (value as Partial<CronStoredJob>).createdActor;
+  const ownerProfileId =
+    actor?.type === "human" && actor.source === "profile" ? actor.id : undefined;
+  if (ref.nativeOwnership && ref.nativeOwnership.ownerProfileId !== ownerProfileId) {
     return false;
   }
   const live = cronJobDefinitionFromReadView(value as Partial<CronJob>);
@@ -266,6 +277,9 @@ export async function installTemplateCronJobsStateless(
         result = templateCronSchedulerJobFromResult(
           await options.gateway.add(templateCronGatewayInput(plan.agent.finalId, ref), {
             commitGuard: assertCurrent,
+            captureOwnerProfileId: (ownerProfileId) => {
+              ref = { ...ref, nativeOwnership: { ownerProfileId } };
+            },
           }),
         );
         assertCurrent();
@@ -279,7 +293,11 @@ export async function installTemplateCronJobsStateless(
               await options.gateway.list(plan.agent.finalId),
               ref.declarationKey,
             );
-            if (listed && templateCronGatewayJobMatchesRef(plan.agent.finalId, ref, listed)) {
+            if (
+              ref.nativeOwnership &&
+              listed &&
+              templateCronGatewayJobMatchesRef(plan.agent.finalId, ref, listed)
+            ) {
               result = listed;
             }
           } catch {

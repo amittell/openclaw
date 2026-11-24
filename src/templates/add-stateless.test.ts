@@ -1,6 +1,6 @@
 import "../test-utils/prepare-compiled-subprocesses.js";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -16,6 +16,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isCronWithinActiveHours } from "../cron/active-hours.js";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
+import { toPublicCronJob } from "../cron/public-job.js";
 import { CronService } from "../cron/service.js";
 import { createNoopLogger } from "../cron/service.test-harness.js";
 import { completeAgentDeletionJournalInDatabase } from "../state/agent-deletion-journal.js";
@@ -35,6 +36,7 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import {
   applyTemplateAddPlanStateless,
+  stageTemplateAddHostRequirementsStateless,
   type StatelessTemplateAddOptions,
 } from "./add-stateless.js";
 import * as cronInstall from "./cron.js";
@@ -67,7 +69,9 @@ function createTemplateCronAdapter(cron: CronService) {
       if (!normalized) {
         throw new Error("invalid cron input");
       }
-      return await cron.add(normalized, { commitGuard: options?.commitGuard });
+      const createdActor = { type: "human", source: "profile", id: "template-owner" } as const;
+      options?.captureOwnerProfileId?.(createdActor.id);
+      return await cron.add(normalized, { createdActor, commitGuard: options?.commitGuard });
     },
     list: async () => ({ jobs: await cron.list({ includeDisabled: true }) }),
     get: async (id) => {
@@ -216,8 +220,13 @@ describe("stateless Template Add", () => {
   });
 
   it.each(["workspace failure", "lost config acknowledgement"] as const)(
-    "rolls back the new agent and workspace after %s",
+    "rolls back the new agent and reseeds bootstrap on retry after %s",
     async (failure) => {
+      const bootstrap = "Run these first-time agent instructions.\n";
+      writeFileSync(path.join(stateDir, "source", "BOOTSTRAP.md"), bootstrap);
+      const reread = await readTemplateManifestFile(source.source.manifestPath);
+      assert(reread.ok);
+      source = reread;
       const plan = await buildPlan();
       let writes = 0;
       const message =
@@ -251,6 +260,14 @@ describe("stateless Template Add", () => {
         failure === "workspace failure" ? [] : ["main"],
       );
       expect(existsSync(plan.agent.workspace)).toBe(false);
+
+      const retryPlan = await buildPlan();
+      expect(retryPlan.agent.workspace).toBe(plan.agent.workspace);
+      const retried = await apply(retryPlan);
+      expect(retried.status).toBe("complete");
+      expect(await readFile(path.join(retryPlan.agent.workspace, "BOOTSTRAP.md"), "utf8")).toBe(
+        bootstrap,
+      );
     },
   );
 
@@ -271,6 +288,29 @@ describe("stateless Template Add", () => {
     expect(result.error?.message).toContain("Workspace changed");
     expect(Object.keys(config.agents.entries)).toEqual(["main", "workspace-agent"]);
     expect(existsSync(path.join(plan.agent.workspace, "USER.md"))).toBe(true);
+  });
+
+  it("removes the new agent from the config file when runtime activation fails", async () => {
+    const plan = await buildPlan();
+    const stage = await stageTemplateAddHostRequirementsStateless(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
+    });
+    assert(stage.kind !== "partial");
+    const agentStage = await stage.stageAgent();
+    assert(agentStage.kind !== "partial");
+    const result = await agentStage.fail(new Error("runtime unavailable"), "add_failed");
+
+    expect(result).toMatchObject({
+      status: "partial",
+      configCommitted: false,
+      workspaceCreated: false,
+      error: { code: "add_failed", message: "runtime unavailable" },
+    });
+    const written = JSON.parse(await readFile(path.join(stateDir, "openclaw.json"), "utf8"));
+    expect(Object.keys(written.agents.entries)).toEqual(["main"]);
+    expect(existsSync(plan.agent.workspace)).toBe(false);
+    config = written;
+    expect((await buildPlan()).agent.finalId).toBe(plan.agent.finalId);
   });
 
   const configured = { command: "npx", args: ["example-mcp"] };
@@ -333,10 +373,12 @@ describe("stateless Template Add", () => {
       );
       const unsetMcpServer = vi.spyOn(mcpMutation, "unsetConfiguredMcpServer");
       unsetMcpServer.mockResolvedValue({ ...configSnapshot, ok: true, removed: true });
+      const servers = { "new-server": changed ? { command: "different-command" } : configured };
       vi.spyOn(mcpConfig, "listConfiguredMcpServers").mockResolvedValue({
         ...configSnapshot,
         ok: true,
-        mcpServers: { "new-server": changed ? { command: "different-command" } : configured },
+        authoredConfig: { mcp: { servers } },
+        mcpServers: servers,
       });
       vi.spyOn(packageInstall, "installTemplatePackages").mockResolvedValueOnce([
         introducedPackage,
@@ -402,6 +444,7 @@ async function portableSource(fixture: OpenClawTestState) {
 
 it.each([
   { every: "5m", changed: "none" },
+  { every: "5m", changed: "lost-reply" },
   { every: "0m", changed: "none" },
   { every: "5m", changed: "source" },
   { every: "5m", changed: "definition" },
@@ -482,7 +525,11 @@ it.each([
                 }
                 throw new Error("Second automation could not be added");
               }
-              return gateway.add(input, options);
+              const added = await gateway.add(input, options);
+              if (changed === "lost-reply") {
+                throw new Error("cron.add reply lost after commit");
+              }
+              return added;
             },
             writeScratch:
               changed === "missing-scratch-adapter"
@@ -541,6 +588,24 @@ it.each([
         }
         expect(result.status, result.error?.message).toBe("complete");
         expect(jobs).toHaveLength(2);
+        for (const ref of result.cronJobs) {
+          const job = await cron.readJob(ref.schedulerJobId!);
+          expect(job?.createdActor).toEqual({
+            type: "human",
+            source: "profile",
+            id: "template-owner",
+          });
+          expect(toPublicCronJob(job!)).not.toHaveProperty("createdActor");
+          expect(cronInstall.templateCronGatewayJobMatchesRef(plan.agent.finalId, ref, job)).toBe(
+            true,
+          );
+          expect(
+            cronInstall.templateCronGatewayJobMatchesRef(plan.agent.finalId, ref, {
+              ...job,
+              createdActor: { type: "human", source: "profile", id: "different-owner" },
+            }),
+          ).toBe(false);
+        }
         expect(jobs.every((job) => job.enabled === (every !== "0m"))).toBe(true);
         expect(jobs.find((job) => job.name === "Summary")?.payload).toMatchObject({
           kind: "agentTurn",

@@ -16,16 +16,6 @@ import {
   resetSlackSlashMocks,
 } from "./slash.test-harness.js";
 
-vi.mock("openclaw/plugin-sdk/agent-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/agent-runtime")>(
-    "openclaw/plugin-sdk/agent-runtime",
-  );
-  return {
-    ...actual,
-    loadPreparedModelCatalog: vi.fn(async () => []),
-  };
-});
-
 type StaticCommandChoice = string | { value: string; label: string };
 
 const slashCommandFixtures = vi.hoisted(() => {
@@ -143,6 +133,8 @@ vi.mock("openclaw/plugin-sdk/command-auth-native", async () => {
   );
   return {
     ...actual,
+    resolveCommandArgMenuAsync: (params: Parameters<typeof actual.resolveCommandArgMenuAsync>[0]) =>
+      actual.resolveCommandArgMenuAsync({ ...params, catalog: [] }),
     findCommandByNativeName: (
       ...args: Parameters<typeof actual.findCommandByNativeName>
     ): ReturnType<typeof actual.findCommandByNativeName> =>

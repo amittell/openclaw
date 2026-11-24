@@ -124,11 +124,17 @@ async function suggestLocalReadPaths(filePath: string): Promise<string[]> {
     }
     throw error;
   }
-  const requested = basename(filePath).toLowerCase();
+  const filename = basename(filePath);
+  const requested = filename.toLowerCase();
   const maxDistance = Math.max(1, Math.floor(requested.length * 0.4));
-  return entries
-    .map((entry) => ({ entry, distance: levenshteinDistance(requested, entry.toLowerCase()) }))
-    .filter(({ entry, distance }) => entry !== basename(filePath) && distance <= maxDistance)
+  const matches: { entry: string; distance: number }[] = [];
+  for (const entry of entries) {
+    const distance = levenshteinDistance(requested, entry.toLowerCase(), maxDistance);
+    if (entry !== filename && distance !== null) {
+      matches.push({ entry, distance });
+    }
+  }
+  return matches
     .toSorted(
       (left, right) => left.distance - right.distance || left.entry.localeCompare(right.entry),
     )
@@ -156,7 +162,7 @@ interface ReadOperations {
   decodeText?: (params: { buffer: Buffer; absolutePath: string }) => string;
   readFile: (absolutePath: string, signal?: AbortSignal) => Promise<Buffer>;
   /** Check if file is readable (throw if not) */
-  access: (absolutePath: string) => Promise<void>;
+  access: (absolutePath: string, signal?: AbortSignal) => Promise<void>;
   /** Detect image MIME type, return null or undefined for non-images */
   detectImageMimeType?: (
     absolutePath: string,
@@ -280,9 +286,10 @@ async function resolveReadToolInputPath(
 async function resolveReadToolPathFromAbsolute(
   ops: ReadOperations,
   absolutePath: string,
+  signal?: AbortSignal,
 ): Promise<{ absolutePath: string; note?: string }> {
   try {
-    await ops.access(absolutePath);
+    await ops.access(absolutePath, signal);
     return { absolutePath };
   } catch (error) {
     if (!hasErrnoCode(error, "ENOENT") && !hasErrnoCode(error, "ENOTDIR")) {
@@ -292,7 +299,7 @@ async function resolveReadToolPathFromAbsolute(
     const matches: string[] = [];
     for (const candidate of getReadPathVariants(absolutePath)) {
       try {
-        await ops.access(candidate);
+        await ops.access(candidate, signal);
         matches.push(candidate);
       } catch (candidateError) {
         if (!hasErrnoCode(candidateError, "ENOENT") && !hasErrnoCode(candidateError, "ENOTDIR")) {
@@ -467,7 +474,11 @@ export function createReadToolDefinition(
                 queueKeysResolution,
                 async () => {
                   const absoluteInputPath = await inputPathResolution;
-                  const resolved = await resolveReadToolPathFromAbsolute(ops, absoluteInputPath);
+                  const resolved = await resolveReadToolPathFromAbsolute(
+                    ops,
+                    absoluteInputPath,
+                    signal,
+                  );
                   assertFileToolNotAborted(signal);
                   return {
                     ...resolved,
@@ -491,6 +502,7 @@ export function createReadToolDefinition(
                         }),
                   };
                 },
+                signal,
               );
               ({ absolutePath, note, buffer, text: capturedText } = snapshot);
             } catch (error) {

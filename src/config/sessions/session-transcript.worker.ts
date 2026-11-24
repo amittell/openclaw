@@ -231,7 +231,7 @@ serveOwnedWorkerTasks(
       }
       if (request.kind === "transcript-stats-batch") {
         const { readTranscriptStatsBatchReadOnlySync } =
-          await import("./session-accessor.sqlite-read.js");
+          await import("./session-accessor.sqlite-transcript-stats-read.js");
         return {
           kind: request.kind,
           stats: readTranscriptStatsBatchReadOnlySync(
@@ -612,6 +612,7 @@ serveOwnedWorkerTasks(
             };
           }
           if (
+            request.kind === "compaction-preparation" ||
             request.kind === "transcript-hydration" ||
             request.kind === "transcript-maintenance" ||
             request.kind === "current-turn-entry" ||
@@ -649,6 +650,9 @@ serveOwnedWorkerTasks(
               : request.kind,
             () => withSessionTranscriptProjectionReceipt(request.projectionReceipt, readRequest),
             request.validation,
+            request.creationClaim
+              ? { witness: request.creationClaim, assertCurrent: () => control.throwIfCancelled() }
+              : undefined,
           )
         : { ok: true, value: await readRequest() };
     } catch (error) {

@@ -13,6 +13,7 @@ import type {
   CliBackendExecute,
   CliBackendExecutionMode,
   CliBackendPromptContext,
+  CliBackendTurnInterrupt,
 } from "../../plugins/cli-backend.types.js";
 import type { PluginInstanceConsumer } from "../../plugins/plugin-instance.types.js";
 import type { SpawnSecretInput } from "../../process/supervisor/types.js";
@@ -243,6 +244,8 @@ export type PreparedCliRunContext = {
   contextEngine?: ContextEngine;
   deferContextEngineDisposalUntil?: (promise: Promise<void>) => void;
   contextEngineTurnPrompt?: string;
+  /** Set after bootstrap; sent as current-turn context so the system prompt stays cacheable. */
+  contextEngineSystemPromptAddition?: string;
   promptContext?: CliBackendPromptContext;
   /** Logical model input retained for policy/observation hooks when transport context is separate. */
   promptForHooks?: string;
@@ -287,4 +290,12 @@ export type PreparedCliRunContext = {
   trajectoryRecorder?: {
     recordEvent: (type: string, data?: Record<string, unknown>) => void;
   } | null;
+};
+
+export type CliMcpCapture = {
+  captureKey?: string;
+  beginCapture: (captureKey: string | undefined, assertCurrent: () => void) => void;
+  registerTurnInterrupt?: (interrupt: CliBackendTurnInterrupt | undefined) => void;
+  waitForTurnInterrupt?: () => Promise<void>;
+  onInputSubmitted?: () => void;
 };

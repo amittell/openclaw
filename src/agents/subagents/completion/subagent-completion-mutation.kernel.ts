@@ -238,14 +238,11 @@ function commitCompletionMutations(
 }
 
 function prepareRequesterBatch(
-  database: OpenClawStateDatabase,
   params: Extract<SubagentCompletionMutation, { kind: "requesterWake" | "requesterBatch" }>,
 ): Array<{ expected: SubagentRunRecord; subagent: SubagentRunRecord }> {
   const entries = params.entries;
-  const ids = new Set(entries.map(({ subagent }) => subagent.runId));
   const first = entries[0]?.subagent;
   const cohort = first?.requesterSettleWake?.batchRunIds?.toSorted().join("\0");
-  const checkedOmittedIds = new Set<string>();
   return entries.map(({ subagent: expected }) => {
     const changedOwner = () =>
       new Error("subagent completion owner changed before settlement: " + expected.runId);
@@ -261,25 +258,7 @@ function prepareRequesterBatch(
     ) {
       throw changedOwner();
     }
-    // Outcome settlement owns the whole frozen wave; quiet wake decisions may select
-    // current members without settling the remaining siblings' delivery outcomes.
-    for (const id of params.kind === "requesterBatch" &&
-    !(subagent.pauseReason === "sessions_yield" && subagent.requesterSettleWake.pauseNotice)
-      ? (subagent.requesterSettleWake?.batchRunIds ?? [])
-      : []) {
-      if (!ids.has(id) && !checkedOmittedIds.has(id)) {
-        const member = readSubagentRun(database, id);
-        if (
-          member?.requesterSettleWake &&
-          member.requesterSettleWake.rearmGeneration ===
-            subagent.requesterSettleWake?.rearmGeneration
-        ) {
-          throw changedOwner();
-        }
-        // Planning performs no writes, so this check holds for the remaining same-wave rows.
-        checkedOmittedIds.add(id);
-      }
-    }
+    // Admission owns the selected partition. Unselected siblings retain their outcomes.
     return { expected, subagent };
   });
 }
@@ -291,7 +270,7 @@ function mutateRequesterBatch(
   if (request.committed) {
     return reconcileRequesterWake(database, request);
   }
-  const batch = prepareRequesterBatch(database, request);
+  const batch = prepareRequesterBatch(request);
   const params =
     request.kind === "requesterBatch"
       ? {
@@ -351,6 +330,9 @@ function mutateRequesterBatch(
       subagent.pauseReason !== "sessions_yield" &&
       subagent.expectsCompletionMessage === true &&
       (["pending", "in_progress"].includes(subagent.delivery?.status ?? "pending") ||
+        (!params.outcome.delivered &&
+          subagent.delivery?.status === "failed" &&
+          subagent.delivery.disposition === "retryable") ||
         settleExpiredDelivery)
     ) {
       if (params.outcome.delivered) {

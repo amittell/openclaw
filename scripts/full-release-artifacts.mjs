@@ -131,18 +131,23 @@ export function validateArtifactProducerRun(
   { allowNewerAttempts = false, allowFailure = false } = {},
 ) {
   validateArtifactProducerTuple(runId, runAttempt);
+  const plugin = request.stage === "plugin-npm";
+  const workflow = plugin ? ".github/workflows/plugin-npm-release.yml" : WORKFLOW;
+  const title = plugin
+    ? `Plugin NPM Artifact Preflight [${request.npmDistTag}] ${request.sourceSha} (${request.dispatchId})`
+    : `Full Release Artifacts ${request.dispatchId}`;
   requireValue(
     String(run.id) === String(runId) &&
       (allowNewerAttempts
         ? DECIMAL.test(String(run.run_attempt)) && BigInt(run.run_attempt) >= BigInt(runAttempt)
         : String(run.run_attempt) === String(runAttempt)) &&
       run.event === "workflow_dispatch" &&
-      String(run.path).split("@", 1)[0] === WORKFLOW &&
+      String(run.path).split("@", 1)[0] === workflow &&
       run.repository?.full_name === request.repository &&
       run.head_repository?.full_name === request.repository &&
       run.head_sha === request.toolingSha &&
       run.head_branch === request.workflowRef &&
-      run.display_title === `Full Release Artifacts ${request.dispatchId}`,
+      run.display_title === title,
     "Artifact producer run identity changed.",
   );
   requireValue(
@@ -269,7 +274,13 @@ function findArtifact(request, runId, name, { retained = false } = {}) {
   return metadata;
 }
 
-async function readArtifact(request, runId, name, fileName, { retained = false } = {}) {
+async function readArtifact(
+  request,
+  runId,
+  name,
+  fileName,
+  { retained = false, retryMetadataNotFound = false, deadlineMs } = {},
+) {
   const metadata = findArtifact(request, runId, name, { retained });
   if (!metadata) {
     return undefined;
@@ -287,6 +298,8 @@ async function readArtifact(request, runId, name, fileName, { retained = false }
     },
     maxArchiveBytes: MAX_ARCHIVE_BYTES,
     token: process.env.GH_TOKEN,
+    retryMetadataNotFound: !retained && retryMetadataNotFound,
+    outerDeadlineMs: deadlineMs,
   }).catch((/** @type {unknown} */ error) => {
     if (
       retained &&
@@ -822,6 +835,7 @@ async function waitForArtifact(request, env) {
           runId,
           name,
           raw ? "prepared-npm-bundle.json" : "artifact-receipt.json",
+          { retryMetadataNotFound: raw, deadlineMs: deadline },
         )
       )?.value;
       if (receipt && raw) {

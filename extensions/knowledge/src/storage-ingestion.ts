@@ -32,7 +32,12 @@ const RELINK_BASIS = {
 } as const;
 /** Multi-record ingestion: batches, remembered claims and subject relinking. */
 export class StorageIngestion extends StorageLifecycle {
-  async batch(input: BatchInput, access: VaultAccess, actor: string): Promise<Receipt> {
+  async batch(
+    input: BatchInput,
+    access: VaultAccess,
+    actor: string,
+    rememberIntent?: string,
+  ): Promise<Receipt> {
     if (!Check(BatchInput, input) || Buffer.byteLength(canonical(input)) > 1024 * 1024) {
       throw new Error(
         "Invalid batch input or batch exceeds 1 MiB. Use at most 25 records; retain originals with knowledge_attach.",
@@ -43,7 +48,7 @@ export class StorageIngestion extends StorageLifecycle {
       throw new Error("Writes disabled or connected vault changed; no batch accepted.");
     }
     const scope = scopeKey(access.scope),
-      intent = digest(canonical({ operation: "batch", input }));
+      intent = rememberIntent ?? digest(canonical({ operation: "batch", input }));
     await this.initialize(access);
     const prior = this.store.withDatabase((db) => this.row(db, scope, input.requestId));
     if (prior) {
@@ -152,6 +157,7 @@ export class StorageIngestion extends StorageLifecycle {
             id: keys.get(item.key)!,
             data,
             snapshot,
+            occupied: (candidate) => parts.some((part) => part.record.path === candidate),
           }),
         );
       }
@@ -250,21 +256,48 @@ export class StorageIngestion extends StorageLifecycle {
     }
     await this.initialize(access);
     const requestId = input.requestId,
-      scope = scopeKey(access.scope);
+      scope = scopeKey(access.scope),
+      intent = `remember:${digest(canonical({ operation: "remember", input }))}`;
+    const prior = this.store.withDatabase((db) => this.row(db, scope, requestId));
+    if (prior?.intent.startsWith("remember:")) {
+      this.checkReplay(prior, intent);
+      if (prior.state === "accepted") {
+        // An accepted write blocks catalog reads; validate before resuming it.
+        this.resume(access, requestId);
+      }
+    }
     const { plan, fingerprint } = await this.run(access, async (vault) => {
       const data = await vault.scan(),
         withdrawn = this.store.withDatabase((db) =>
           withdrawnIds(db, this.retrievalBinding(access)),
         );
       return {
-        plan: planRemember(data, eligible(data, withdrawn, false), input, withdrawn),
+        // Legacy receipts recorded the text/kind/subjects decision, not the
+        // original assertions. Replay that decision only; never publish newly
+        // distinguished assertions under an already accepted request ID.
+        plan: planRemember(
+          data,
+          eligible(data, withdrawn, false),
+          input,
+          withdrawn,
+          prior && !prior.intent.startsWith("remember:")
+            ? (JSON.parse(prior.receipt) as Receipt) // SAFETY: accept and recovery persist Receipt.
+            : undefined,
+        ),
         fingerprint: data.ontology?.fingerprint,
       };
     });
-    const prior = this.store.withDatabase((db) => this.row(db, scope, requestId));
     const inserts = plan.flatMap((p, n) => (p.duplicateOf || p.sameAs !== undefined ? [] : [n]));
     let receipt: Receipt | null = null;
     if (prior) {
+      if (inserts.length) {
+        throw new Error(
+          "Request ID already belongs to a different payload. Use the original payload for retries.",
+        );
+      }
+      // Legacy receipts retain their batch digest, not the original remember input.
+      // Original excerpt, attribution and suppressed assertions are unknowable;
+      // retain historical reconciliation without inventing missing intent.
       // A replay finds its own published claims as duplicates; keys map them back.
       receipt = this.resume(access, requestId);
       for (const item of receipt.items ?? []) {
@@ -311,6 +344,7 @@ export class StorageIngestion extends StorageLifecycle {
         },
         access,
         actor,
+        intent,
       );
     }
     const inserted = new Map((receipt?.items ?? []).map((i) => [Number(i.key.slice(1)), i.id]));

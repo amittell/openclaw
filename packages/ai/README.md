@@ -24,7 +24,8 @@ provider plugin hooks, and diagnostics logging) can be injected with
 `configureAiTransportHost`; the defaults are inert. Node callers that need
 runtime-local policy can use `createNodeLlmRuntime`; it preserves that host across
 provider work without replacing the process default. `createLlmRuntime` continues
-to use the process-default host.
+to use the process-default host. The default host and its asynchronous scope are
+shared across duplicate package module instances, including native plugins.
 
 Embedding hosts can implement optional `isLogEnabled(subsystem, level)` to skip
 diagnostic preparation for disabled sinks. Hosts without it retain emission-time
@@ -34,6 +35,11 @@ OpenAI HTTP adapters report rejected response status and headers through
 `onResponse` before consuming the error body. Successful streaming responses
 invoke the callback before the first event. Retry and failover policy remains
 with the application.
+
+Anthropic Messages and OpenAI-compatible Chat Completions calls stop waiting for
+payload and response hooks when the request signal aborts. A hook can continue
+running after cancellation; embedding hosts can retain that work through
+`observePendingProviderWork` until it settles.
 
 Hosts that attach request state to async contexts should supply
 `runInDetachedAsyncContext` from a context-free root initialized before requests

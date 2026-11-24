@@ -138,6 +138,11 @@ the aggregate result budget when reducing them would rewrite already-sent
 history; session pruning and compaction remain the owners of intentional
 history changes.
 
+When a preflight check predicts overflow, OpenClaw can cap results from the
+current tool batch before sending them. If that cannot make room, it compacts
+retained history instead of truncating previously sent results in place.
+Recovery after an actual provider rejection can still truncate those results.
+
 OpenAI Chat Completions also preserves valid native tool-call IDs during replay
 and disambiguates repeated IDs deterministically. Changing result text or IDs
 between turns can invalidate an otherwise reusable provider prefix. Stable
@@ -399,7 +404,7 @@ Source: `src/agents/embedded-agent-runner/google-prompt-cache.ts`.
 
 CLI backends that emit JSONL usage events (`jsonlDialect: "claude-stream-json"` or `"gemini-stream-json"`) go through a shared usage parser that recognizes several field-name variants, including a plain `cached` counter mapped to `cacheRead`. When the CLI's JSON payload omits a direct input-token field, OpenClaw derives it as `input_tokens - cached`. This is usage normalization only - it does not create Anthropic/OpenAI-style prompt-cache markers for these CLI-driven models.
 
-Claude Code has no OpenClaw-controlled `cache_control` breakpoint on `--append-system-prompt-file`, so OpenClaw keeps its complete system prompt in that transport. When the bounded version check finds Claude Code 2.1.98 or newer, bundled `claude-cli` also passes `--exclude-dynamic-system-prompt-sections`. The first CLI execution or direct Anthropic OAuth request starts the shared check; concurrent executions reuse it, and API catalog discovery does not start it. That Claude Code flag moves only Claude's own per-machine cwd, environment, memory-path, and Git-status sections out of its native system prompt; an older, unknown, or failed check keeps the established argv. `cacheRetention` still has no effect on this path.
+Claude Code has no OpenClaw-controlled `cache_control` breakpoint in its system prompt, so OpenClaw keeps its complete system prompt in that transport. Agent turns send it as Claude Code's replacement system prompt, so Claude Code's default prompt, including sections it rewrites when a session resumes, stays out of the cached prefix; one-shot side completions still use `--append-system-prompt-file`. When the bounded version check finds Claude Code 2.1.98 or newer, bundled `claude-cli` also passes `--exclude-dynamic-system-prompt-sections`. The first CLI execution or direct Anthropic OAuth request starts the shared check; concurrent executions reuse it, and API catalog discovery does not start it. That Claude Code flag moves only Claude's own per-machine cwd, environment, memory-path, and Git-status sections out of its native system prompt; an older, unknown, or failed check keeps the established argv. `cacheRetention` still has no effect on this path.
 
 One-shot helper runs dispatched through a CLI backend, such as Active Memory recall on `claude-cli`, get a new session key on every run. Those runs carry the Runtime facts line (agent, session, model, channel) in their only user turn instead of the system prompt, so repeated recalls of one agent send a byte-identical system prompt and can reuse Claude's prompt cache. Normal CLI turns keep the Runtime line in the system prompt.
 

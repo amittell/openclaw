@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs, { lstat, mkdir, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, sep } from "node:path";
 import * as tar from "tar";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,9 +71,9 @@ async function writeRichProject(root: string): Promise<void> {
 
 describe("Template projects", () => {
   it("matches the cross-platform golden artifact digest", async () => {
-    const output = join(tempDirs.make("openclaw-template-golden-"), "golden.tgz");
-    const result = await buildTemplateProject(goldenProject, output);
-
+    const project = join(tempDirs.make("openclaw-template-golden-"), "project");
+    await symlink(goldenProject, project, process.platform === "win32" ? "junction" : "dir");
+    const result = await buildTemplateProject(project, `${project}.tgz`);
     expect(result.integrity).toBe(GOLDEN_ARTIFACT_INTEGRITY);
   });
 
@@ -162,6 +163,28 @@ describe("Template projects", () => {
     expect(validated.template.templateMarkdownBody?.toString()).toContain(
       "purpose-built OpenClaw agent",
     );
+  });
+
+  it.each(["package.json", "CLAW.md"])("cleans up a failed %s write before retry", async (file) => {
+    const root = join(tempDirs.make("openclaw-template-create-failed-"), "research-assistant");
+    const original = fs.writeFile;
+    const failed = vi.spyOn(fs, "writeFile").mockImplementation(async (target, data, options) => {
+      if (typeof data === "string" && data.startsWith(file === "package.json" ? "{" : "---")) {
+        await original(target, data.slice(0, 8), options);
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      }
+      return original(target, data, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(createTemplateProject(root)).rejects.toMatchObject({ code: "ENOSPC" });
+    } finally {
+      failed.mockRestore();
+      syncBuiltinESMExports();
+    }
+    await expect(lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await createTemplateProject(root);
+    await expect(validateTemplateProject(root)).resolves.toMatchObject({ ok: true });
   });
 
   it("keeps one concurrent creator's completed project", async () => {
@@ -477,4 +500,26 @@ describe("Template project packages", () => {
 
     expect(first.integrity).not.toBe(second.integrity);
   });
+});
+
+it.each(["package.json", "CLAW.md"])("cleans up a failed %s write before retry", async (file) => {
+  const root = join(tempDirs.make("openclaw-template-create-failed-"), "research-assistant");
+  const original = fs.writeFile;
+  const failed = vi.spyOn(fs, "writeFile").mockImplementation(async (target, data, options) => {
+    if (typeof data === "string" && data.startsWith(file === "package.json" ? "{" : "---")) {
+      await original(target, data.slice(0, 8), options);
+      throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    }
+    return original(target, data, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    await expect(createTemplateProject(root)).rejects.toMatchObject({ code: "ENOSPC" });
+  } finally {
+    failed.mockRestore();
+    syncBuiltinESMExports();
+  }
+  await expect(lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  await createTemplateProject(root);
+  await expect(validateTemplateProject(root)).resolves.toMatchObject({ ok: true });
 });

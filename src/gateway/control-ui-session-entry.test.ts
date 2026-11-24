@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import {
+  AgentDatabaseAdmissionError,
+  createAgentDatabaseInspectionRefusal,
+  recordAgentDatabaseAdmissions,
+} from "../state/agent-database-admission.js";
+import type { getAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
 import {
   buildControlUiSessionEntryUrl as entryUrl,
   parseControlUiSessionReturnPath as parseReturn,
@@ -20,6 +29,11 @@ vi.mock(import("./control-ui-session-path-resolve.js"), async (importOriginal) =
   ...(await importOriginal()),
   resolveControlUiSessionPath: resolveSession,
 }));
+type AgentDatabasePreparation = Pick<
+  NonNullable<ReturnType<typeof getAgentDatabaseStartupAdmission>>,
+  "waitForAgentPreparation"
+>;
+
 const canonical = "/control/chat/main/launch-12345678aaaa40008000000000000001";
 const entry = entryUrl(canonical, "/control");
 const profile = { profileId: "viewer", displayName: "Viewer", hasAvatar: false, updatedAt: 1 };
@@ -36,9 +50,11 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ key: "agent:main:topic", agentId: "main", isCurrent: current });
 });
+afterEach(() => recordAgentDatabaseAdmissions([], { source: "startup" }));
 async function request(
   path = entry,
   mode: "token" | "password" | "trusted-proxy" = "trusted-proxy",
+  startup?: AgentDatabasePreparation,
 ) {
   const response = createResponse();
   const serveApp = vi.fn<Parameters<typeof serveControlUiSessionEntry>[0]["serveApp"]>(
@@ -51,10 +67,115 @@ async function request(
     projection,
     auth: { ...AUTH_TOKEN, mode },
     serveApp,
+    ...(startup ? { agentDatabaseStartup: startup } : {}),
   });
   return { ...response, serveApp };
 }
 describe("protected canonical session handoff", () => {
+  function preparingSource() {
+    const entered = createDeferred();
+    const readReady = createDeferred();
+    const completion = createDeferred();
+    // The physical source can differ from the logical agent in the URL.
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: "shared-store",
+      paths: [],
+      reason: "Source inspection is pending",
+      pending: true,
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    let hasPendingAgents = true;
+    // Model the release preparation contract at the HTTP boundary, not the
+    // newer extracted observation owner. Read and write readiness stay distinct.
+    const startup = {
+      get hasPendingAgents() {
+        return hasPendingAgents;
+      },
+      waitForAgentPreparation: vi.fn<AgentDatabasePreparation["waitForAgentPreparation"]>(
+        (agentId, options) => {
+          if (agentId !== refusal.agentId) {
+            return undefined;
+          }
+          return racePromiseWithAbortSignal(
+            options?.forWrite === false ? readReady.promise : completion.promise,
+            options?.signal,
+          );
+        },
+      ),
+    };
+    resolveSession.mockImplementation(() => {
+      entered.resolve();
+      throw new AgentDatabaseAdmissionError(refusal);
+    });
+    return {
+      startup,
+      entered: entered.promise,
+      readable() {
+        resolveSession.mockResolvedValue({
+          key: "agent:main:topic",
+          agentId: "main",
+          isCurrent: current,
+        });
+        readReady.resolve();
+      },
+      finish() {
+        hasPendingAgents = false;
+        completion.resolve();
+        readReady.resolve();
+      },
+    };
+  }
+
+  it.each([false, true])(
+    "holds protected entry for its source's read readiness (probe=%s)",
+    async (probe) => {
+      const preparation = preparingSource();
+      let settled = false;
+      const response = request(
+        probe ? `${entry}&probe=1` : entry,
+        "trusted-proxy",
+        preparation.startup,
+      ).then((value) => {
+        settled = true;
+        return value;
+      });
+      void response.catch(() => {});
+      try {
+        await preparation.entered;
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        preparation.readable();
+        const result = await response;
+        expect(result.res.statusCode).toBe(probe ? 204 : 200);
+        expect(result.serveApp).toHaveBeenCalledTimes(probe ? 0 : 1);
+        expect(result.setHeader).toHaveBeenCalledWith("Cache-Control", "no-store");
+        // Full writable preparation is deliberately still pending.
+        expect(preparation.startup.hasPendingAgents).toBe(true);
+      } finally {
+        preparation.finish();
+      }
+    },
+  );
+
+  it("cancels a closed request without cancelling source preparation", async () => {
+    const preparation = preparingSource();
+    const work = new AsyncWorkScope();
+    const response = work.run(() => request(entry, "trusted-proxy", preparation.startup));
+    void response.catch(() => {});
+    try {
+      await preparation.entered;
+      const closed = new Error("Request closed");
+      work.beginClose(closed);
+      await expect(response).rejects.toMatchObject({ name: "AbortError", cause: closed });
+      preparation.readable();
+      expect(
+        (await request(`${entry}&probe=1`, "trusted-proxy", preparation.startup)).res.statusCode,
+      ).toBe(204);
+    } finally {
+      preparation.finish();
+    }
+  });
+
   it.each([
     ["dashboard=expanded", "dashboard=expanded"],
     ["draft=Follow+up&dashboard=expanded&openclaw_mount_recovery=1791731984160", "draft=second"],

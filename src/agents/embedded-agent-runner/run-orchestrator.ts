@@ -50,6 +50,7 @@ import {
   runOutsidePreparedModelRuntimePluginGenerationScope,
   withPreparedModelRuntimePluginGenerationScope,
 } from "../prepared-model-runtime-generation-scope.js";
+import { copyPreparedModelRuntimeSnapshotBindings } from "../prepared-model-runtime.capture.js";
 import {
   PreparedModelRuntimeInitialRunAdmissionError,
   PreparedModelRuntimeOwnerNotPublishedError,
@@ -87,6 +88,7 @@ import {
 } from "./run/model-admission.js";
 import {
   bindRunToPreparedModelRuntime,
+  initializeReadOnlyRunModelCatalog,
   resolvePreparedRuntimeWorkspaces,
 } from "./run/prepared-runtime-context.js";
 import { createEmbeddedRunProgressController } from "./run/progress-controller.js";
@@ -369,9 +371,14 @@ async function runEmbeddedAgentForSession(
             });
           preparedRuntimeResource = preparedModelRuntimeLease;
           startupStages.mark("prepared-runtime");
-          const preparedModelRuntimeOwnerSnapshot = preparedModelRuntimeLease.snapshot;
           let preparedLeaseActive = true;
           try {
+            const preparedModelRuntimeOwnerSnapshot = await initializeReadOnlyRunModelCatalog(
+              params,
+              preparedModelRuntimeLease.snapshot,
+              requestedRuntimeSelection,
+              laneController.abortSignal,
+            );
             throwIfAborted();
             if (
               params.pluginGeneration &&
@@ -397,10 +404,10 @@ async function runEmbeddedAgentForSession(
               sessionId: params.sessionId,
             });
             const { activeProjectKeys } = projects;
-            const preparedModelRuntime = Object.freeze({
-              ...preparedModelRuntimeOwnerSnapshot,
-              ...projects,
-            });
+            const preparedModelRuntime = copyPreparedModelRuntimeSnapshotBindings(
+              preparedModelRuntimeOwnerSnapshot,
+              Object.freeze({ ...preparedModelRuntimeOwnerSnapshot, ...projects }),
+            );
             const runPrepared = async () => {
               params = refresh.withDeliveryCallbacks(params);
               const preparedAgentId = workspaceResolution.agentId;

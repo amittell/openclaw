@@ -1,5 +1,6 @@
 import { createContainerEnvFile } from "../../infra/container-env-file.js";
 import { observeDiagnosticsTimelinePhases } from "../../infra/diagnostics-timeline.js";
+import { stripGatewayAllocatorEnv } from "../../process/child-env.js";
 import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import { buildGitHubExecLaunchArgv } from "../github-exec-launch.js";
 import { CLEARED_GITHUB_CREDENTIALS } from "../github-host.js";
@@ -168,6 +169,8 @@ async function createContainerSandboxBackend(
           : "";
         // Use absolute path for sh to avoid dependency on PATH resolution during exec.
         argv.push(containerId, "/bin/sh", "-lc", `${pathExport}${command}`);
+        const hostEnv = { ...(boundEngine.baseEnv ?? process.env) };
+        stripGatewayAllocatorEnv(hostEnv);
         return {
           argv: githubProfileDir
             ? buildGitHubExecLaunchArgv(argv, githubProfileDir, {
@@ -175,7 +178,7 @@ async function createContainerSandboxBackend(
                 externalCommandShell,
               })
             : argv,
-          env: boundEngine.baseEnv ?? process.env,
+          env: hostEnv,
           stdinMode: usePty || stdin ? "pipe-open" : "pipe-closed",
           finalizeToken: envFile.cleanup satisfies ContainerExecFinalizeToken,
         };
@@ -396,7 +399,9 @@ async function runContainerSandboxShellCommand(
 
 function createContainerSandboxBackendManager(
   engine: SandboxContainerEngine,
-): SandboxBackendManager {
+): SandboxBackendManager & {
+  stopRuntime(entry: SandboxRegistryEntry, assertCurrent: () => void): Promise<void>;
+} {
   const resolveTarget = (entry: SandboxRegistryEntry) => {
     if (engine.id !== "podman") {
       return entry.backendTarget;
@@ -418,6 +423,28 @@ function createContainerSandboxBackendManager(
         : bindDockerPersistentTarget(dockerPersistentTargetFromEngineTarget(target))
       : engine;
   return {
+    // The registry owner holds runtime admission, the entry lock, and allocation's lifecycle queue.
+    async stopRuntime(entry, assertCurrent) {
+      const target = resolveTarget(entry);
+      await validateSandboxContainerEngineTarget(engine, target);
+      assertCurrent();
+      const runtimeEngine = bindTarget(target);
+      const state = await containerState(runtimeEngine, entry.containerName, {
+        strict: true,
+        includePaused: true,
+      });
+      assertCurrent();
+      if (state.exists && (state.running || state.paused)) {
+        const signal = AbortSignal.timeout(30_000);
+        if (state.paused) {
+          await execContainer(runtimeEngine, ["unpause", state.id], { assertCurrent, signal });
+        }
+        await execContainer(runtimeEngine, ["stop", "--time", "0", state.id], {
+          assertCurrent,
+          signal,
+        });
+      }
+    },
     async describeRuntime({ entry, config, agentId }) {
       const target = resolveTarget(entry);
       await validateSandboxContainerEngineTarget(engine, target);

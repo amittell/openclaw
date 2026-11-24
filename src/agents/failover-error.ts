@@ -13,6 +13,7 @@ import { isAgentRunStaleLifecycleError } from "../infra/agent-lifecycle-error.js
 import { copyErrorDiagnostic } from "../infra/error-diagnostics.js";
 import { collectErrorGraphCandidates, readErrorName } from "../infra/errors.js";
 import { isLocalStorageOutcomeError } from "../infra/sqlite-error-diagnostics.js";
+import { SkillResourceDeliveryLimitError } from "../skills/runtime/resource-delivery-error.js";
 import { failoverReasonFromClassification } from "./failover/classification-rules.js";
 import {
   classifyFailoverSignal,
@@ -69,6 +70,8 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "SessionTranscriptReadFenceError",
   "SqliteWorkerError",
   "SessionCapabilityMetadataChangedError",
+  "SessionDeliveryGenerationUnavailableError",
+  "SessionDeliveryGenerationRevokedError",
 ]);
 
 export { recordModelFallbackStop } from "./model-fallback-stop.js";
@@ -311,6 +314,7 @@ function hasRuntimeCoordinationFailure(err: unknown): boolean {
   }
   return collectErrorGraphCandidates(err, resolveNestedErrors).some(
     (candidate) =>
+      candidate instanceof SkillResourceDeliveryLimitError ||
       isSessionWorkStartInvalidatedError(candidate) ||
       RUNTIME_COORDINATION_ERROR_NAMES.has(readErrorName(candidate)) ||
       resolveExecutionApprovalFailureMessage(readDirectErrorMessage(candidate)) !== undefined,
