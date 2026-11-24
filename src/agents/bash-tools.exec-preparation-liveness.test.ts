@@ -88,7 +88,7 @@ it.each([1800, 0, null])(
     try {
       await preparing.promise;
       expect(liveness.view.deadlineAtMs).toBe(timeoutSec ? 1_800_010 : undefined);
-      expect(watchdog.decide(900_011).action).toBe(timeoutSec ? "warn" : "stop");
+      expect(watchdog.decide(900_011).action).toBe(timeoutSec ? "observe" : "stop");
       if (timeoutSec) {
         expect(watchdog.decide(2_700_011).action).toBe("stop");
       }
@@ -97,7 +97,7 @@ it.each([1800, 0, null])(
       const handle = await pending;
       expect(liveness.view.deadlineAtMs).toBe(timeoutSec ? 2_800_010 : undefined);
       if (timeoutSec) {
-        expect(watchdog.decide(2_700_011).action).toBe("warn");
+        expect(watchdog.decide(2_700_011).action).toBe("observe");
         await vi.advanceTimersByTimeAsync(1_800_001);
         expect((await handle.promise).timedOut).toBe(true);
         expect(kill).toHaveBeenCalledWith("SIGTERM");

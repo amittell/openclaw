@@ -48,7 +48,8 @@ function harness(overrides: Partial<ProcessSession> = {}) {
     backgrounded: true,
     ...overrides,
   });
-  Object.assign(session, overrides);
+  // These sessions have no exit wake; the carry's shared fixture arms one by default.
+  Object.assign(session, { notifyOnExit: false }, overrides);
   addSession(session);
   const tool = createProcessTool();
   const call = (action: string, extra: Record<string, unknown> = {}, signal?: AbortSignal) =>
