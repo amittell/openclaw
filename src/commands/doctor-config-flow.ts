@@ -7,10 +7,7 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { configIncludeOwnsAgentRoster } from "../config/agent-roster-provenance.js";
 import { readRecentConfigAuditRecords } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
-import {
-  retainLegacyDefaultAgentId,
-  tryGetLegacyDefaultAgentId,
-} from "../config/legacy.default-agent-owner.js";
+import { tryGetLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveLegacyAgentRosterOwner } from "../config/legacy.roster.js";
 import { findLegacyConfigRuleIssues } from "../config/legacy.shared.js";
 import { CONFIG_PATH } from "../config/paths.js";
@@ -52,6 +49,7 @@ import {
 import { listDoctorConfiguredChannelIds } from "./doctor/shared/configured-channel-ids.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import { LEGACY_AGENT_ROSTER_RULES } from "./doctor/shared/legacy-config-migrations.runtime.entries.js";
+import { retainResolvedLegacyDefaultAgentId } from "./doctor/shared/legacy-owner-retention.js";
 import type { DoctorPluginMetadataSnapshotState } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
 import { planProviderRenames } from "./doctor/shared/provider-rename.js";
 import { canWriteDoctorInclude } from "./doctor/shared/roster-include-write.js";
@@ -192,10 +190,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     preflight.rosterMigrationOwnerId ??
     tryGetLegacyDefaultAgentId(state.candidate) ??
     resolveLegacyAgentRosterOwner(preflight.rosterMigrationSource ?? sourceRosterConfig);
-  if (legacyDefaultAgentId) {
-    retainLegacyDefaultAgentId(state.cfg, legacyDefaultAgentId);
-    retainLegacyDefaultAgentId(state.candidate, legacyDefaultAgentId);
-  }
+  retainResolvedLegacyDefaultAgentId(legacyDefaultAgentId, state.cfg, state.candidate);
   const persistCanonicalAgentRoster =
     snapshot.exists && rosterMigrationNeeded && !configIncludeOwnsAgentRoster(snapshot);
   if (persistCanonicalAgentRoster) {
@@ -628,9 +623,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     }
   }
   const cfg = confirmedWorkspace?.config ?? finalized.cfg;
-  if (legacyDefaultAgentId) {
-    retainLegacyDefaultAgentId(cfg, legacyDefaultAgentId);
-  }
+  retainResolvedLegacyDefaultAgentId(legacyDefaultAgentId, cfg);
   const includeBoundaryWrite =
     shouldWriteConfig &&
     canWriteDoctorInclude(
