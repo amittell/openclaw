@@ -70,7 +70,7 @@ type ExtractedRecentConversationText = {
 
 /**
  * One transcript event as recent conversation text, with whether it is a delivery-only row,
- * or undefined when it is not selectable. Exported for transcript.ts's grounded reader.
+ * or undefined when it is not selectable. Exported for transcript-recent-grounding.ts's reader.
  */
 export function extractRecentConversationText(
   event: TranscriptEvent,
