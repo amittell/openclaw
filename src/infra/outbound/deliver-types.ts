@@ -94,7 +94,8 @@ export type OutboundPayloadDeliverySuppressionReason =
 export type OutboundDeliveryFailureStage = AuditMessageFailureStage;
 export type OutboundPayloadDeliveryKind = AuditMessageDeliveryKind;
 
-const PLATFORM_MESSAGE_NOT_DISPATCHED_ERROR_CODE = "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED";
+export const PLATFORM_MESSAGE_NOT_DISPATCHED_ERROR_CODE =
+  "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED";
 
 /**
  * Provider assertion that no recipient-visible send began. Set retryable=false

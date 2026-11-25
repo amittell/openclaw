@@ -17,6 +17,8 @@ export type EmbeddedRunTerminalRetryState = {
   compactionContinuationAttempts: number;
   beforeFinalizeRevisionAttempts: number;
   silentStopNudges: number;
+  /** A message send in this run failed after it started and may have reached the user. */
+  messageSendMayHaveLanded: boolean;
 };
 
 export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryState {
@@ -29,5 +31,6 @@ export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryS
     compactionContinuationAttempts: 0,
     beforeFinalizeRevisionAttempts: 0,
     silentStopNudges: 0,
+    messageSendMayHaveLanded: false,
   };
 }

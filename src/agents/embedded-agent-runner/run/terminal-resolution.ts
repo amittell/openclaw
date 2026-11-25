@@ -4,7 +4,6 @@ import {
   retainSilentFinalPayloads,
   setReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
-import { isSilentReplyText } from "../../../auto-reply/tokens.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { classifyGatewayStorageFailure } from "../../../infra/sqlite-error-diagnostics.js";
@@ -27,7 +26,6 @@ import {
   resolveReplyExpectation,
   shouldDeliverMissingReplyNotice,
 } from "../../reply-completion.js";
-import { isRuntimeToolAllowed } from "../../tool-policy-match.js";
 import { log } from "../logger.js";
 import type { EmbeddedRunReplayState } from "../replay-state.js";
 import type { EmbeddedAgentRunResult, TraceAttempt } from "../types.js";
@@ -54,7 +52,6 @@ import {
   isRejectedBeforeDispatch,
   resolveNonVisibleTurnRetryInstructions,
   resolveSettledToolBatchEvidence,
-  SILENT_STOP_DELIVERY_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -67,6 +64,7 @@ import {
 } from "./incomplete-turn-resolution.js";
 import type { RunEmbeddedAgentInternalParams as TerminalRunParams } from "./internal-params.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
+import { recordPossiblyDeliveredMessageSend, startSilentStopNudge } from "./silent-stop-nudge.js";
 import { resolveSubagentReasoningOnlyExhaustion } from "./subagent-reasoning-only-retry.js";
 import {
   isEmbeddedRunTerminalAbort,
@@ -77,7 +75,6 @@ import {
 import type { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
 import {
   MAX_BEFORE_AGENT_FINALIZE_REVISIONS,
-  MAX_SILENT_STOP_NUDGES,
   type EmbeddedRunTerminalRetryState,
 } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
@@ -161,6 +158,7 @@ export async function resolveEmbeddedRunTerminal(input: {
   contextRecoveryState: EmbeddedRunContextRecoveryState;
 }): Promise<TerminalResolution> {
   const { runParams, attempt, retryState, sessionPromptState } = input;
+  recordPossiblyDeliveredMessageSend(retryState, attempt.lastToolError);
   const replyExpectation = resolveReplyExpectation(runParams);
   const runLogContext = `runId=${runParams.runId} sessionId=${runParams.sessionId}`;
   const modelLogContext = `${runLogContext} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model}`;
@@ -399,48 +397,20 @@ export async function resolveEmbeddedRunTerminal(input: {
     return { action: "retry" };
   }
 
-  // Silent-stop nudge: under message_tool_only the model can end the turn with
-  // assistant text it never sent through the message tool; the payload builder
-  // suppresses that text, so the user gets no reply at all. Key on the raw
-  // assistant text (payloads are already suppressed here), excluding an
-  // intentional NO_REPLY.
-  const silentStopAssistantText = attempt.assistantTexts.some(
-    (text) => text.trim().length > 0 && !isSilentReplyText(text),
-  );
-  // A `sessions_send` target answers its caller inline through the tool result, so its
-  // text is not an undelivered user reply. An announce back to the user still is.
-  const answersCallerInline =
-    runParams.inputProvenance?.kind === "inter_session" &&
-    runParams.inputProvenance.sourceTool === "sessions_send";
-  // As in stranded-reply recovery, the delivery retry may call only the message tool.
-  // Without a callable message tool the final text is private by design, and a harness
-  // that cannot enforce the narrowed set would fail the retry, so neither is nudged.
-  const messageOnlyRetryAvailable =
-    input.harnessEnforcesToolPolicy &&
-    (attempt.messageToolCallable ?? isRuntimeToolAllowed("message", runParams.toolsAllow));
-  const silentStopDeliveryGap =
-    runParams.sourceReplyDeliveryMode === "message_tool_only" &&
-    !answersCallerInline &&
-    silentStopAssistantText &&
-    attempt.didDeliverSourceReplyViaMessageTool !== true &&
-    (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&
-    !terminalAborted &&
-    !promptError &&
-    !terminalTimedOut &&
-    !attempt.clientToolCalls &&
-    !attempt.yieldDetected &&
-    !hasAttemptTerminalState(attempt) &&
-    messageOnlyRetryAvailable;
-  if (silentStopDeliveryGap && retryState.silentStopNudges < MAX_SILENT_STOP_NUDGES) {
-    retryState.silentStopNudges += 1;
-    sessionPromptState.activateInternalPrompt(SILENT_STOP_DELIVERY_RETRY_INSTRUCTION, {
-      retryToolsAllow: ["message"],
-    });
-    log.warn(
-      `silent-stop nudge: undelivered visible text under message_tool_only; ` +
-        `retrying ${retryState.silentStopNudges}/${MAX_SILENT_STOP_NUDGES}: ` +
-        `runId=${runParams.runId} sessionId=${runParams.sessionId}`,
-    );
+  if (
+    startSilentStopNudge({
+      runParams,
+      attempt,
+      retryState,
+      sessionPromptState,
+      harnessEnforcesToolPolicy: input.harnessEnforcesToolPolicy,
+      attemptEnded:
+        terminalAborted ||
+        Boolean(promptError) ||
+        terminalTimedOut ||
+        hasAttemptTerminalState(attempt),
+    })
+  ) {
     return { action: "retry" };
   }
 
