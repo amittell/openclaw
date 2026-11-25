@@ -48,7 +48,7 @@ import {
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
 } from "./agent-runner-auto-fallback.js";
 import { handleAgentExecutionError } from "./agent-runner-error-handler.js";
-import { resolveAutoFallbackPrimaryProbeClearSelection } from "./agent-runner-execution-auto-fallback-evidence.js";
+import { createAutoFallbackPrimaryProbeClearEvidence } from "./agent-runner-execution-auto-fallback-evidence.js";
 import {
   applyMcpAppModelContext,
   type AppContextTurnParams,
@@ -59,7 +59,6 @@ import type {
   AgentTurnExecutionResult,
   AgentTurnInternalResult,
   AgentTurnParams,
-  RuntimeFallbackAttempt,
 } from "./agent-runner-execution.types.js";
 import {
   markAgentRunFailureReplyPayload,
@@ -374,18 +373,14 @@ async function executeAgentTurnInternalLoop(
   };
   // Fork: probe-clear evidence comes from the last settled cycle. The reconcile runs
   // inside the first cycle, before its attempts exist, so it sees none there (as on 10.3).
-  let settledFallbackAttempts: RuntimeFallbackAttempt[] = [];
+  const probeClearEvidence = createAutoFallbackPrimaryProbeClearEvidence(effectiveRun);
   const clearRecoveredAutoFallbackPrimaryProbe = async (paramsForClear: {
     provider: string;
     model: string;
   }): Promise<void> =>
     await clearRecoveredAutoFallbackPrimaryProbeSelection({
       run: effectiveRun,
-      ...resolveAutoFallbackPrimaryProbeClearSelection({
-        activeProbe: effectiveRun.autoFallbackPrimaryProbe,
-        settled: paramsForClear,
-        attempts: settledFallbackAttempts,
-      }),
+      ...probeClearEvidence.resolveClearSelection(paramsForClear),
       sessionKey: params.sessionKey,
       activeSessionStore: params.activeSessionStore,
       getActiveSessionEntry: params.getActiveSessionEntry,
@@ -443,7 +438,7 @@ async function executeAgentTurnInternalLoop(
         outcome: "completed",
       });
       cycle = await settleAgentFallbackCycle({ cycle: cycleParams, fallbackResult });
-      settledFallbackAttempts = cycle.kind === "completed" ? cycle.fallbackAttempts : [];
+      probeClearEvidence.recordSettledCycle(cycle);
     } catch (err) {
       if (err instanceof LiveSessionModelSwitchError) {
         liveModelSwitchRetries += 1;

@@ -1,6 +1,8 @@
 /** Durable-evidence rule for clearing a recovered auto-fallback primary probe. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { RuntimeFallbackAttempt } from "./agent-runner-execution.types.js";
+import type { AgentFallbackCycleResult } from "./agent-runner-fallback-cycle.types.js";
+import type { FollowupRun } from "./queue.js";
 
 type ModelSelection = { provider: string; model: string };
 
@@ -40,7 +42,7 @@ function hasDurableAutoFallbackPrimaryProbeFailureEvidence(params: {
  * narrows this on later (post-compaction) iterations; on the first pass a
  * settled non-probe candidate always clears the pin.
  */
-export function resolveAutoFallbackPrimaryProbeClearSelection(params: {
+function resolveAutoFallbackPrimaryProbeClearSelection(params: {
   activeProbe: ModelSelection | undefined;
   settled: ModelSelection;
   attempts: readonly RuntimeFallbackAttempt[];
@@ -60,4 +62,25 @@ export function resolveAutoFallbackPrimaryProbeClearSelection(params: {
   })
     ? params.settled
     : { provider: activeProbe.provider, model: activeProbe.model };
+}
+
+/**
+ * Holds one turn's probe-clear evidence: the attempts of the last settled
+ * fallback cycle, read against the run's active probe when a clear is resolved.
+ */
+export function createAutoFallbackPrimaryProbeClearEvidence(
+  run: Pick<FollowupRun["run"], "autoFallbackPrimaryProbe">,
+) {
+  let settledAttempts: readonly RuntimeFallbackAttempt[] = [];
+  return {
+    recordSettledCycle: (cycle: AgentFallbackCycleResult): void => {
+      settledAttempts = cycle.kind === "completed" ? cycle.fallbackAttempts : [];
+    },
+    resolveClearSelection: (settled: ModelSelection): ModelSelection =>
+      resolveAutoFallbackPrimaryProbeClearSelection({
+        activeProbe: run.autoFallbackPrimaryProbe,
+        settled,
+        attempts: settledAttempts,
+      }),
+  };
 }
