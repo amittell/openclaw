@@ -1,7 +1,7 @@
 import type { ProviderPromptState } from "./provider-prompt-state.js";
 
-/** Most changed field names that one history or provider-prefix diagnostic lists. */
-export const MAX_HISTORY_DIFF_FIELDS = 8;
+/** Most changed field names that one provider-prefix diagnostic lists. */
+const MAX_HISTORY_DIFF_FIELDS = 8;
 // Output caps bound the completion, not the prompt that provider prefix caches key on.
 // Completions routes re-clamp the cap from the remaining context budget on most requests.
 const OUTPUT_CAP_PARAMETERS = new Set(["max_tokens", "max_completion_tokens", "max_output_tokens"]);

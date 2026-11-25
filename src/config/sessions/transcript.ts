@@ -72,7 +72,7 @@ import {
   type SessionTranscriptDeliveryMirror,
   type SubagentCompletionDirectDeliveryMirror,
 } from "./transcript-mirror.js";
-import { readRecentGroundedConversationTurns } from "./transcript-recent-grounding.js";
+import { readRecentGroundedConversationTurns } from "./transcript-recent-grounded-read.js";
 import type {
   ReadRecentSessionConversationTextOptions,
   ReadRecentSessionConversationTurnOptions,
@@ -164,7 +164,7 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
   options: ReadRecentSessionConversationTurnOptions = {},
 ): Promise<SessionRecentConversationTurn[]> {
   try {
-    // The fork's grounded selection (transcript-recent-grounding.ts) replaces 11.10's
+    // The fork's grounded selection (transcript-recent-grounded-read.ts) replaces 11.10's
     // recent-text worker read here.
     return await readRecentGroundedConversationTurns(scope, assertCurrent, options);
   } catch (error) {
