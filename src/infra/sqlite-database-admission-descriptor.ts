@@ -260,10 +260,15 @@ export function createSqliteDatabaseDescriptorOwner(
       }
       params.assertCurrent();
       const current = state.registry.records.get(identity(opened));
+      // A native open that won custody during fs.open keeps its descriptor as the primary.
       const record =
         current && !isRetired(current)
           ? current
-          : state.registry.retainDescriptor(physical.canonicalPath, descriptor, opened);
+          : state.registry.retainDescriptor(
+              physical.canonicalPath,
+              state.registry.descriptors.get(identity(opened))?.descriptor ?? descriptor,
+              opened,
+            );
       state.registry.observeLocation(filename, record.identity);
       if (exists) {
         seals.load(record, { seal, refusal });

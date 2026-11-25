@@ -2,13 +2,18 @@ import { randomUUID } from "node:crypto";
 import fs, { type BigIntStats } from "node:fs";
 import path from "node:path";
 import { setEnvironmentData, threadId } from "node:worker_threads";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { SqliteCleanCloseSealRefusal } from "./sqlite-clean-close-seal.js";
 import {
   changedAdmissionEntries,
   changedAdmissionWriteScopes as changedWriteScopes,
 } from "./sqlite-database-admission-delta.js";
 import { SQLITE_DATABASE_ADMISSIONS_KEY } from "./sqlite-database-admission-key.js";
+import {
+  scopeRetention,
+  snapshotWriteScopes,
+  writeScopeBytes,
+  type WriteScopeBuckets,
+} from "./sqlite-database-admission-write-scope-buckets.js";
 import {
   isSoleDatabaseFileDescriptor,
   readDatabaseIdentityBirthtime,
@@ -77,12 +82,6 @@ export type ScopedWriteRevision = {
 };
 
 const MAX_WRITE_SCOPE_BYTES = 1024 * 1024;
-const scopeRetention = resolveGlobalSingleton(
-  Symbol.for("openclaw.sqliteDatabaseWriteScopeRetention"),
-  () => new WeakMap<Map<string, ScopedWriteRevision>, { bytes: number; retired: Set<string> }>(),
-);
-// Account for UTF-16 keys plus the UUID, shared cell, and map/snapshot entries.
-const writeScopeBytes = (key: string) => key.length * 2 + 256;
 
 /** Idle receipts cache freshness; active effect guards retain their exact shared cells. */
 export function retainSqliteDatabaseWriteScope(
@@ -272,65 +271,11 @@ export function revokeSqliteDatabaseAdmissionFacts(record: Admission | undefined
   advanceSqliteDatabaseGeneration(record, "factRevision");
 }
 
-// Bucket snapshots bound copy-on-write work without retaining a history of revisions.
-const EMPTY_WRITE_SCOPE_BUCKETS = Array.from(
-  { length: 128 },
-  () => new Map<string, ScopedWriteRevision>(),
-);
-type WriteScopeBuckets = typeof EMPTY_WRITE_SCOPE_BUCKETS;
 type PublishedAdmission = {
   metadata: Omit<Admission, "writeScopes">;
   writeScopes: WriteScopeBuckets;
   snapshot: AdmissionSnapshot;
 };
-
-function snapshotWriteScopes(
-  current: Admission["writeScopes"],
-  previous: WriteScopeBuckets = EMPTY_WRITE_SCOPE_BUCKETS,
-  keys?: readonly string[],
-): WriteScopeBuckets {
-  let buckets = previous;
-  const retention = scopeRetention.get(current);
-  const visit = (value: ScopedWriteRevision | undefined, key: string) => {
-    let hash = 0;
-    for (let index = 0; index < key.length; index++) {
-      hash = (hash * 31 + key.charCodeAt(index)) | 0;
-    }
-    const index = hash & (EMPTY_WRITE_SCOPE_BUCKETS.length - 1);
-    const retired = !value || Atomics.load(value.state, 1) !== 0;
-    if (retired) {
-      if (current.delete(key) && retention) {
-        retention.bytes -= writeScopeBytes(key);
-      }
-    }
-    if (retired ? !previous[index]!.has(key) : previous[index]!.get(key) === value) {
-      return;
-    }
-    if (buckets === previous) {
-      buckets = previous.slice();
-    }
-    if (buckets[index] === previous[index]) {
-      buckets[index] = new Map(previous[index]);
-    }
-    if (retired) {
-      buckets[index]!.delete(key);
-    } else {
-      buckets[index]!.set(key, value!);
-    }
-  };
-  if (keys) {
-    for (const key of keys) {
-      visit(current.get(key), key);
-    }
-  } else {
-    current.forEach(visit);
-  }
-  for (const key of retention?.retired ?? []) {
-    visit(current.get(key), key);
-  }
-  retention?.retired.clear();
-  return buckets;
-}
 
 export type SqliteDatabaseAdmissionCursor = {
   revision: number;
@@ -344,6 +289,8 @@ export function createSqliteDatabaseAdmissionCursor(): SqliteDatabaseAdmissionCu
 export type SqliteDatabaseDescriptorCustody = Pick<Admission, "descriptor" | "facts"> & {
   file: BigIntStats;
   location: string;
+  /** Same-file descriptors acquired after native admission won custody; they retire with it. */
+  additionalDescriptors?: Set<number>;
 };
 
 export class SqliteDatabaseAdmissionRegistry {
@@ -467,11 +414,12 @@ export class SqliteDatabaseAdmissionRegistry {
   retainDescriptorCustody(location: string, descriptor: number, opened: BigIntStats): void {
     const identity = readSqliteDatabaseAdmissionIdentity(opened);
     const existing = this.descriptors.get(identity);
-    if (existing && existing.descriptor !== descriptor) {
-      throw new Error("SQLite descriptor custody changed during admission");
-    }
     if (!existing) {
       this.descriptors.set(identity, { location, descriptor, file: opened, facts: new Map() });
+    } else if (existing.descriptor !== descriptor) {
+      // A synchronous native open can acquire custody while async fstat is pending.
+      // Keep both descriptors until joint retirement; closing either can drop POSIX locks.
+      (existing.additionalDescriptors ??= new Set()).add(descriptor);
     }
   }
 
@@ -518,13 +466,14 @@ export class SqliteDatabaseAdmissionRegistry {
   retireDescriptor(identity: string, options: { requireSoleDescriptor?: boolean }): boolean {
     const record = this.records.get(identity);
     const descriptor = this.descriptors.get(identity)?.descriptor ?? record?.descriptor;
+    const extras = this.descriptors.get(identity)?.additionalDescriptors;
     if (descriptor === undefined) {
       return false;
     }
     const file = fs.fstatSync(descriptor, { bigint: true });
     if (
       file.nlink > 1n ||
-      (options.requireSoleDescriptor && !isSoleDatabaseFileDescriptor(descriptor, file))
+      (options.requireSoleDescriptor && !isSoleDatabaseFileDescriptor(descriptor, file, extras))
     ) {
       return false;
     }
@@ -532,6 +481,7 @@ export class SqliteDatabaseAdmissionRegistry {
       Atomics.store(new Int32Array(record.generation), SqliteDatabaseGenerationSlot.retired, 1);
     }
     fs.closeSync(descriptor);
+    extras?.forEach(fs.closeSync);
     this.descriptors.delete(identity);
     this.forget(identity);
     this.publish();
@@ -547,6 +497,8 @@ export class SqliteDatabaseAdmissionRegistry {
     for (const current of this.records.values()) {
       if (isSqliteDatabaseAdmissionRetired(current)) {
         if (readSqliteDatabaseGeneration(current, "retired") === 1) {
+          // A worker can retire the shared descriptor; its host still owns any extras.
+          this.descriptors.get(current.identity)?.additionalDescriptors?.forEach(fs.closeSync);
           this.descriptors.delete(current.identity);
         }
         this.forget(current.identity);

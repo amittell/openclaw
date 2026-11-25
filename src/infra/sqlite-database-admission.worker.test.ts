@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, linkSync, realpathSync, renameSync, statSync } from "node:fs";
+import fs, { existsSync, fstatSync, linkSync, realpathSync, renameSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MessagePort, Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { observeMainThreadFs } from "../test-utils/main-thread-fs-spies.test-support.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -15,9 +16,11 @@ import {
   readSqliteDatabaseAdmissions,
   readSqliteDatabaseWriteRevision,
   readSqliteDatabaseScopedWriteToken,
+  readSqliteDatabaseScopedWriteTokensForPath,
   retireSqliteDatabaseWriteScopes,
   publishSqliteDatabaseAdmission,
   prepareOwnedSqliteDatabaseAdmission,
+  prepareSqliteDatabaseAdmissionAsync,
   getSqliteDatabaseAdmission,
   retireSqliteDatabaseAdmissionForPath,
   trackSqliteDatabaseAdmissionWorker,
@@ -413,6 +416,70 @@ function createDatabase(location: string, value: number): void {
   database.exec("CREATE TABLE proof (value INTEGER NOT NULL)");
   database.prepare("INSERT INTO proof VALUES (?)").run(value);
 }
+
+it.each(["host", "worker"] as const)(
+  "keeps a native admission that wins asynchronous descriptor acquisition until %s retirement",
+  async (owner) => {
+    const location = path.join(tempDirs.make("sqlite-admission-async-custody-"), "proof.sqlite");
+    createDatabase(location, 42);
+    const admitted = () =>
+      captureSqliteDatabaseAdmissions().find((record) => record.location === location);
+    const acquired = createDeferred<number>();
+    const resume = createDeferred();
+    const fstat = fs.fstat;
+    // Hold the asynchronous owner after fs.open so a host-thread native open wins custody.
+    vi.spyOn(fs, "fstat").mockImplementationOnce((descriptor, options, callback) => {
+      acquired.resolve(descriptor);
+      void resume.promise.then(() => fstat(descriptor, options, callback));
+    });
+    const pending = prepareSqliteDatabaseAdmissionAsync({ location, assertCurrent() {} });
+    const extraDescriptor = await acquired.promise;
+    const database = openDatabase(location);
+    admitSqliteSchema(database);
+    const original = admitted()!;
+    const token = readSqliteDatabaseScopedWriteToken(database, "active");
+    try {
+      resume.resolve();
+      await pending;
+      expect(admitted()?.generationId).toBe(original.generationId);
+      expect(readSqliteDatabaseScopedWriteTokensForPath(location, ["active"])).toEqual([token]);
+      expect(fstatSync(extraDescriptor).isFile()).toBe(true);
+      database.exec("UPDATE proof SET value = 43");
+      expect(readSqliteDatabaseScopedWriteTokensForPath(location, ["active"])).not.toEqual([token]);
+    } finally {
+      database.close();
+      if (owner === "host") {
+        retireSqliteDatabaseAdmissionForPath(location, {
+          requireSoleDescriptor: process.platform === "linux",
+        });
+      } else {
+        const relay = createSqliteDatabaseAdmissionRelay(() => {});
+        const worker = readerWorker(
+          location,
+          `
+          const { withSqliteDatabaseAdmissionExchange, retireSqliteDatabaseAdmissionForPath } = await import(workerData.admission);
+          const { exchangeSqliteDatabaseAdmissions } = await import(workerData.relay);
+          withSqliteDatabaseAdmissionExchange(
+            (records, location, create, observed) => exchangeSqliteDatabaseAdmissions(workerData.port, records, location, create, observed),
+            () => retireSqliteDatabaseAdmissionForPath(workerData.location));
+          parentPort.postMessage("retired");
+          workerData.port.close();
+          unregister();
+        `,
+          relay.port,
+        );
+        try {
+          expect((await once(worker, "message"))[0]).toBe("retired");
+        } finally {
+          await worker.terminate();
+          await relay.finish();
+        }
+      }
+    }
+    expect(() => fstatSync(original.descriptor)).toThrow();
+    expect(() => fstatSync(extraDescriptor)).toThrow();
+  },
+);
 
 it("does not lend captured admission to a retained replacement", async () => {
   const root = tempDirs.make("sqlite-admission-captured-replacement-");
