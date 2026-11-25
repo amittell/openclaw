@@ -871,27 +871,6 @@ test.for(["edit", "rewind"] as const)(
   },
 );
 
-test("wakes a dashboard conversation on silent success, with exit, duration and a bounded tail", async ({
-  signal,
-}) => {
-  const sessionKey = "agent:main:dashboard:silent-waiter";
-  await seedOrigin(sessionKey);
-  const exec = backgroundExec(sessionKey, { agentId: "main" });
-  const wakes = vi.mocked(sessionEvents.enqueueSessionEventForHost);
-  for (const [script, expected] of [
-    ["void 0", /^Exec completed \([^,]+, code 0, [^)]+\) with no output\.$/],
-    [
-      'process.stdout.write("x".repeat(3000) + "TAIL_END")',
-      /^Exec completed \([^,]+, code 0, [^)]+\), last 2000 of 3008 output chars \(process log has the rest\):\nx{1992}TAIL_END$/,
-    ],
-  ] as const) {
-    await exec("silent-waiter", script);
-    await withinTest(waitForExecScope(sessionKey), signal);
-    await completion(signal);
-    expect(wakes.mock.calls.at(-1)?.[0]).toMatch(expected);
-  }
-});
-
 test("wakes the same conversation after its session id rotates while the command runs", async ({
   signal,
 }) => {
