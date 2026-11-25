@@ -435,6 +435,11 @@ export type EmbeddedRunAttemptResult = {
   /** A real model response completed successfully during this attempt, before any later failure. */
   hasSuccessfulModelResponse?: boolean;
   lastToolError?: ToolErrorSummary;
+  /**
+   * Fork carry: a message send in this run failed after it started and may have reached the
+   * user. The attempt carryover and the plugin-refresh owner keep it on every later attempt.
+   */
+  messageSendMayHaveLanded?: true;
   didSendViaMessagingTool: boolean;
   didDeliverSourceReplyViaMessageTool?: boolean;
   sourceReplyDelivered?: true;

@@ -20,22 +20,18 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 
 /**
  * A message send that failed after it started may still have reached the user, unless the
- * platform said it never dispatched. Nudging after it could send the reply twice, so the run
- * remembers it across its retried attempts (each attempt starts with no tool error).
+ * platform said it never dispatched. Nudging after it could send the reply twice.
  */
-export function recordPossiblyDeliveredMessageSend(
-  retryState: EmbeddedRunTerminalRetryState,
+export function isPossiblyDeliveredMessageSend(
   lastToolError: ToolErrorSummary | undefined,
-): void {
-  if (
-    lastToolError &&
+): boolean {
+  return (
+    lastToolError !== undefined &&
     normalizeLowercaseStringOrEmpty(lastToolError.toolName) === "message" &&
     lastToolError.executionStarted === true &&
     lastToolError.mutatingAction === true &&
     lastToolError.errorCode !== PLATFORM_MESSAGE_NOT_DISPATCHED_ERROR_CODE
-  ) {
-    retryState.messageSendMayHaveLanded = true;
-  }
+  );
 }
 
 /** Starts the delivery retry when this attempt owes one; true means the run retries. */
@@ -63,6 +59,10 @@ export function startSilentStopNudge(params: {
     runParams.inputProvenance?.kind === "inter_session" &&
     runParams.inputProvenance.sourceTool === "sessions_send";
   // An exec-completion wake and a system-event turn invite NO_REPLY, so their silence is valid.
+  // Each attempt starts with no tool error; an earlier attempt's send arrives as the carried fact.
+  const sendMayHaveLanded =
+    attempt.messageSendMayHaveLanded === true ||
+    isPossiblyDeliveredMessageSend(attempt.lastToolError);
   const silenceIsValid =
     isExecCompletionInputProvenance(runParams.inputProvenance) || runParams.trigger === "event";
   // As in stranded-reply recovery, the delivery retry may call only the message tool.
@@ -75,7 +75,7 @@ export function startSilentStopNudge(params: {
     runParams.sourceReplyDeliveryMode === "message_tool_only" &&
     !answersCallerInline &&
     !silenceIsValid &&
-    !retryState.messageSendMayHaveLanded &&
+    !sendMayHaveLanded &&
     undeliveredText &&
     attempt.didDeliverSourceReplyViaMessageTool !== true &&
     (attempt.messagingToolSourceReplyPayloads?.length ?? 0) === 0 &&

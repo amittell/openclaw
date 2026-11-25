@@ -51,6 +51,8 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
   const pendingToolMedia = createPendingToolMediaCarry();
   const successfulToolNames = new Set<string>();
   let delivered: AttemptDeliveryState | undefined;
+  // Fork carry: a send that may have landed in an earlier runtime generation still counts.
+  let messageSendMayHaveLanded = false;
   let continuation: RunEmbeddedAgentParamsWithSessionFile | undefined;
   const closeGeneration = () => {
     continuation = undefined;
@@ -76,6 +78,7 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
       successfulToolNames.add(name);
     }
     delivered = copyAttemptDeliveryState(attempt);
+    messageSendMayHaveLanded ||= attempt.messageSendMayHaveLanded === true;
     pendingToolMedia.capture(attempt);
     const { runInput, sessionPromptState: session, usageAccumulator: usage } = input;
     const params = runInput.runParams;
@@ -129,13 +132,19 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
     mergeToolMedia: pendingToolMedia.merge,
     applyDeliveryState: <T extends Parameters<typeof copyAttemptDeliveryState>[0]>(
       attempt: T,
-    ): T =>
-      delivered
-        ? Object.assign(
-            attempt,
-            copyAttemptDeliveryState(normalizeEmbeddedRunAttemptResult(attempt), delivered),
-          )
-        : attempt,
+    ): T => {
+      if (!delivered) {
+        return attempt;
+      }
+      Object.assign(
+        attempt,
+        copyAttemptDeliveryState(normalizeEmbeddedRunAttemptResult(attempt), delivered),
+      );
+      if (messageSendMayHaveLanded) {
+        attempt.messageSendMayHaveLanded = true;
+      }
+      return attempt;
+    },
     withDeliveryCallbacks: (
       params: RunEmbeddedAgentParamsWithSessionFile,
     ): RunEmbeddedAgentParamsWithSessionFile => {
@@ -257,6 +266,7 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
     close: () => {
       closeGeneration();
       delivered = undefined;
+      messageSendMayHaveLanded = false;
       pendingToolMedia.clear();
       successfulToolNames.clear();
     },

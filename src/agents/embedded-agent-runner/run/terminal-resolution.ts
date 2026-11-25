@@ -64,7 +64,7 @@ import {
 } from "./incomplete-turn-resolution.js";
 import type { RunEmbeddedAgentInternalParams as TerminalRunParams } from "./internal-params.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
-import { recordPossiblyDeliveredMessageSend, startSilentStopNudge } from "./silent-stop-nudge.js";
+import { startSilentStopNudge } from "./silent-stop-nudge.js";
 import { resolveSubagentReasoningOnlyExhaustion } from "./subagent-reasoning-only-retry.js";
 import {
   isEmbeddedRunTerminalAbort,
@@ -158,7 +158,6 @@ export async function resolveEmbeddedRunTerminal(input: {
   contextRecoveryState: EmbeddedRunContextRecoveryState;
 }): Promise<TerminalResolution> {
   const { runParams, attempt, retryState, sessionPromptState } = input;
-  recordPossiblyDeliveredMessageSend(retryState, attempt.lastToolError);
   const replyExpectation = resolveReplyExpectation(runParams);
   const runLogContext = `runId=${runParams.runId} sessionId=${runParams.sessionId}`;
   const modelLogContext = `${runLogContext} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model}`;

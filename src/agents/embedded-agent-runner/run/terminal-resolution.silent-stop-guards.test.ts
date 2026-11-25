@@ -5,6 +5,7 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import { createAttemptCarryover } from "./attempt-result.js";
 import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "./incomplete-turn-recovery.js";
 import { prepareAttempt } from "./terminal-preparation.test-support.js";
 import { resolveEmbeddedRunTerminal } from "./terminal-resolution.js";
@@ -37,7 +38,7 @@ describe("silent-stop nudge guards", () => {
     },
     {
       name: "an earlier attempt's send that may have landed",
-      retryState: { messageSendMayHaveLanded: true },
+      carried: { messageSendMayHaveLanded: true },
       nudged: false,
     },
     {
@@ -57,13 +58,13 @@ describe("silent-stop nudge guards", () => {
     const input = makeTerminalInput({
       attemptAssistant: assistant,
       runParams: { sourceReplyDeliveryMode: "message_tool_only", ...row.runParams },
-      ...(row.retryState ? { retryState: row.retryState } : {}),
       attempt: makeEmbeddedRunnerAttempt({
         lastAssistant: assistant,
         currentAttemptAssistant: assistant,
         assistantTexts: [text],
         messageToolCallable: true,
         ...(row.lastToolError ? { lastToolError: row.lastToolError } : {}),
+        ...row.carried,
         toolMetas: [
           { toolName, toolCallId: "call", isError: Boolean(row.lastToolError), replaySafe: true },
         ],
@@ -98,9 +99,24 @@ describe("silent-stop nudge guards", () => {
         : [],
     );
     expect(resolved.action).toBe(row.nudged ? "retry" : "complete");
-    if (row.lastToolError) {
-      // The run remembers only a send that may have landed, for its later attempts.
-      expect(input.retryState.messageSendMayHaveLanded).toBe(!row.nudged);
-    }
+  });
+});
+
+// Each attempt starts with no tool error, so the fact must ride on the attempts after it.
+describe("possibly-landed send carryover", () => {
+  it.each([
+    { name: "a send that failed after it started", error: sendFailed(), carried: true },
+    {
+      name: "a send refused before dispatch",
+      error: sendFailed(PLATFORM_MESSAGE_NOT_DISPATCHED_ERROR_CODE),
+      carried: undefined,
+    },
+  ])("$name -> carried=$carried", ({ error, carried }) => {
+    const carryover = createAttemptCarryover();
+    const failed = makeEmbeddedRunnerAttempt({ lastToolError: error });
+    const later = makeEmbeddedRunnerAttempt({});
+    carryover.apply(failed);
+    carryover.apply(later);
+    expect(later.messageSendMayHaveLanded).toBe(carried);
   });
 });

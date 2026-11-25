@@ -1,2 +1,2 @@
-# The silent-stop nudge's delivery guards: a started send that may have landed (this attempt or an earlier one), a send refused before dispatch, and the exec-completion and system-event exemptions.
-106
+# The silent-stop nudge's delivery guards: a started send that may have landed (this attempt, or carried from an earlier attempt or runtime generation), a send refused before dispatch, and the exec-completion and system-event exemptions.
+122
