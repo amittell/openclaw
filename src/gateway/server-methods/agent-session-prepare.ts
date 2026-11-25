@@ -179,8 +179,9 @@ async function prepareAdmittedAgentSession(
     respondError(params.respond, ErrorCodes.INVALID_REQUEST, archivedSessionError);
     return undefined;
   }
-  // The cron executor resumes its own yields in place; nothing else starts a turn on its run.
-  if (isEndedCronRun(canonicalKey)) {
+  // The cron executor resumes its own yields in place. The one other turn on its run is the
+  // server-owned generated-media continuation admitted above, which starts after the run ends.
+  if (!isGeneratedMediaCronContinuation && isEndedCronRun(canonicalKey)) {
     respondError(params.respond, ErrorCodes.INVALID_REQUEST, CRON_RUN_ENDED_ERROR);
     return undefined;
   }

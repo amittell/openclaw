@@ -113,6 +113,8 @@ it("admits a cron run turn only while its executor owns the run", () =>
         request: { sessionKey, message: "late result", idempotencyKey: "late" },
         respond,
         requestedSessionKey: sessionKey,
+        canUseCronRunContinuation: false,
+        lifecycleGeneration: "test",
       });
 
     const claim = claimAgentRunContext(

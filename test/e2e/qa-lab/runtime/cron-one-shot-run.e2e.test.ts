@@ -87,10 +87,14 @@ describe("one-shot cron run background work", () => {
       }),
     );
     // The command exits after the run ended: refused once, and no turn reaches the model.
+    // Fork 11.7: the run's idle continuation row is removed when the run ends, and this
+    // exec-notify reads the session before admission (main follows the chat by key since
+    // #200099), so the exit is withheld as a deleted conversation, not refused at admission.
     await waitFor(() => {
-      expect(logs()).toContain("completion was not admitted (cron run has ended");
+      expect(logs()).toContain("withheld (the conversation was deleted)");
     }, 60_000);
-    expect(logs().split("completion was not admitted").length - 1).toBe(1);
+    expect(logs().split("withheld (the conversation was deleted)").length - 1).toBe(1);
+    expect(logs()).not.toContain("completion was not admitted");
     expect(await laterRequests()).toEqual([]);
   }, 240_000);
 
