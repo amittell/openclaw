@@ -14,7 +14,6 @@ import { BACKGROUND_RESULT_PLACEMENT_CUSTOM_TYPE } from "../../../packages/agent
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
-import { expectedCompactionSummary } from "../../agents/test-helpers/compaction-checkpoint.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
@@ -54,7 +53,6 @@ import {
 import { seedUnindexedTranscriptForTest } from "./session-accessor.sqlite-import.test-support.js";
 import { resolveSqliteTranscriptReadScope } from "./session-accessor.sqlite-read-scope.js";
 import { isIndexedSessionEntry } from "./session-entry-codec.js";
-import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
 import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import { waitForSessionTranscriptProjection as waitProjection } from "./session-transcript-reconcile.js";
 import { transcriptMessage } from "./transcript-message.test-support.js";
@@ -777,74 +775,6 @@ it("retains the latest boundary and counts earlier resets before a truncated tai
   );
   expect(context.opaqueParents.get("middle")).toBe("summary");
   expect(context.boundaryCount).toBe(2);
-});
-
-it("keeps reset history closed across compaction with a warm history cache", async ({ scope }) => {
-  const manager = SessionManager.open(scope);
-  const appendUser = (content: string) =>
-    manager.appendMessage({ role: "user", content, timestamp: 1 });
-  const expectHistory = async (ids: string[]) => {
-    manager.flushPendingPersistence();
-    await waitProjection(scope);
-    const page = readHistory(scope);
-    expect(page.totalMessages).toBe(ids.length);
-    expect(page.events.map(({ event }) => (event as { id: string }).id)).toEqual(ids);
-    const hydrated = await prepareSessionTranscriptHydration(scope, { compaction: true }).read();
-    expect(hydrated.kind).toBe("bounded");
-    expect(hydrated.snapshot).toEqual(boundedContext(scope, { compaction: true }));
-  };
-  const expectContext = (messages: unknown[]) => {
-    expect(manager.buildSessionContext().messages).toMatchObject(messages);
-    expect(activeStats(scope).eventCount).toBe(messages.length);
-  };
-  const summary = (text: string) => ({ role: "compactionSummary", summary: text });
-  const message = (content: string) => ({ role: "user", content });
-
-  appendUser("before-reset user");
-  manager.appendMessage(
-    makeAgentAssistantMessage({ content: [{ type: "text", text: "before-reset assistant" }] }),
-  );
-  const resetId = manager.appendResetBoundary("new");
-  const abandoned = appendUser("abandoned branch");
-  manager.branch(resetId);
-  const freshUserId = appendUser("fresh user");
-  await expectHistory([freshUserId]);
-  expect(eventIds(boundedContext(scope, { compaction: true }).events)).not.toContain(abandoned);
-
-  const freshCompactionId = manager.appendCompaction("fresh-only summary", freshUserId, 100);
-  await expectHistory([freshUserId]);
-  expectContext([
-    summary(
-      expectedCompactionSummary("fresh-only summary", {
-        entryId: freshCompactionId,
-        shadowedEntryCount: 1,
-      }),
-    ),
-    message("fresh user"),
-  ]);
-
-  const nextUserId = appendUser("after compaction");
-  await expectHistory([freshUserId, nextUserId]);
-  expect(activeStats(scope).eventCount).toBe(3);
-
-  manager.appendResetBoundary("new", nextUserId);
-  const newestUserId = appendUser("after second reset");
-  await expectHistory([nextUserId, newestUserId]);
-  expectContext([message("after compaction"), message("after second reset")]);
-
-  const newestCompactionId = manager.appendCompaction("newest-only summary", newestUserId, 100);
-  await expectHistory([nextUserId, newestUserId]);
-  const reopened = SessionManager.open(scope);
-  expect(reopened.buildSessionContext().messages).toMatchObject([
-    summary(
-      expectedCompactionSummary("newest-only summary", {
-        entryId: newestCompactionId,
-        shadowedEntryCount: 2,
-      }),
-    ),
-    message("after second reset"),
-  ]);
-  expect(activeStats(scope).eventCount).toBe(2);
 });
 
 it("counts paired reset tool results without counting discarded orphan results", async ({

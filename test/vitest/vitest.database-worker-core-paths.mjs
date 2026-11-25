@@ -261,6 +261,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/channels/turn/pending-delivery-notice.integration.test.ts",
   "src/channels/turn/run-channel-turn.settlement.test.ts",
   "src/config/sessions/session-accessor.sqlite-bounded-context.test.ts",
+  "src/config/sessions/session-accessor.sqlite-bounded-context.reset-compaction.test.ts",
   "src/gateway/server-methods/chat-transcript-persistence.mirrors.test.ts",
   "src/gateway/chat-display-projection.media.test.ts",
   "src/config/sessions/session-message-rewrite.test.ts",
