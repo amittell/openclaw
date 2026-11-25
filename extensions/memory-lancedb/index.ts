@@ -33,7 +33,7 @@ import {
 } from "./embeddings.js";
 import { memoryVisibilityScopeForCaller } from "./lancedb-schema.js";
 import { MemoryDB, type MemoryEntry } from "./lancedb-store.js";
-import { dropMediaNoteLines, sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
+import { dropMediaNoteLines } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
 import {
   type AutoCaptureMessageProgress,
@@ -50,7 +50,6 @@ import {
   normalizeRecallQuery,
   prepareAutoCaptureMessages,
   projectMemorySearchResult,
-  shouldCapture,
 } from "./memory-policy.js";
 import { registerMemoryRefreshTool, withMemoryLock } from "./memory-refresh.js";
 import {
@@ -58,10 +57,6 @@ import {
   createLanceDbMemoryProviderRuntime,
 } from "./provider-runtime.js";
 import { startMemoryRecall } from "./recall-service.js";
-
-// Fork: test/memory-lancedb-system-turn-capture.test.ts reaches these through the plugin entry,
-// since root tests import only an extension's public surfaces.
-export { capturableUserText, sanitizeForMemoryCapture, shouldCapture };
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),

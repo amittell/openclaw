@@ -4,7 +4,7 @@ import {
   capturableUserText,
   sanitizeForMemoryCapture,
   shouldCapture,
-} from "../extensions/memory-lancedb/index.js";
+} from "../extensions/memory-lancedb/test-api.js";
 import { SILENT_STOP_DELIVERY_RETRY_INSTRUCTION } from "../src/agents/embedded-agent-runner/run/incomplete-turn-recovery.js";
 import { TOOL_FAILURE_INSTRUCTION } from "../src/agents/tool-outcome-instructions.js";
 import { formatSystemTurnPrompt } from "../src/sessions/system-turn-prompt.js";
