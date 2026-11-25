@@ -1,0 +1,2 @@
+# sessions_yield awaits wake-armed background commands in one-shot runs: hidden-subagent and cron-run resume, the no-sessions_yield guidance, and the yield claim on the run's own commands.
+98

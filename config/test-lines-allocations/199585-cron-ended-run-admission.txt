@@ -1,0 +1,2 @@
+# Ended cron runs refuse late turns: the admission-boundary case, the live-run completion batching regression, and the one-shot cron e2e (yield resume, an ended run's refused exit, child result), with the 11.7 adaptation.
+205
