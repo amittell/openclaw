@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createStandingNavigationPolicy } from "./pw-session-navigation-standing.js";
 
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+// mock-isolation: the first-denial warning must throw, which the real subsystem logger never does.
 vi.mock("openclaw/plugin-sdk/logging-core", () => ({
   createSubsystemLogger: () => ({ child: () => ({ warn }) }),
 }));
