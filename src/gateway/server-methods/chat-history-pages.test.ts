@@ -1,9 +1,10 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ChatHistoryPageParams } from "../../config/sessions/session-history-types.js";
 import {
   encodeChatHistoryResponsePage,
   prepareChatHistoryResponsePage,
 } from "../chat-history-response-page.js";
+import { shouldReadAnchoredWindow } from "./chat-history-pages.js";
 
 it("serializes message content once for budgeting and encoding, fresh on each request", () => {
   let reads = 0;
@@ -150,4 +151,51 @@ it("only measures the selected history window and its boundary group", () => {
       })),
     );
   }
+});
+
+describe("shouldReadAnchoredWindow", () => {
+  const cli = "claude-cli-session-1";
+
+  it("reads a compaction span even when the session has a CLI import binding", () => {
+    // Regression: the span shares the anchored branch with messageId, which
+    // deliberately falls through to the CLI merge. Falling through here answered a
+    // span request with the live tail and reported success, so the caller could not
+    // tell the shadowed rows were never read.
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: undefined,
+        compactionId: "entry-compaction-1",
+        cliSessionId: cli,
+      }),
+    ).toBe(true);
+  });
+
+  it("still lets messageId fall through to the CLI merge", () => {
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: "entry-message-1",
+        compactionId: undefined,
+        cliSessionId: cli,
+      }),
+    ).toBe(false);
+  });
+
+  it("reads anchored windows directly without a CLI binding", () => {
+    for (const anchor of [
+      { messageId: "entry-message-1", compactionId: undefined },
+      { messageId: undefined, compactionId: "entry-compaction-1" },
+    ]) {
+      expect(shouldReadAnchoredWindow({ ...anchor, cliSessionId: undefined })).toBe(true);
+    }
+  });
+
+  it("leaves an unanchored tail read to the normal path", () => {
+    expect(
+      shouldReadAnchoredWindow({
+        messageId: undefined,
+        compactionId: undefined,
+        cliSessionId: undefined,
+      }),
+    ).toBe(false);
+  });
 });

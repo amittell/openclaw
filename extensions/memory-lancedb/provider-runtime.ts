@@ -181,7 +181,8 @@ export function createLanceDbMemoryProviderRuntime(
                 vector,
                 maxResults + PROVIDER_SEARCH_OVERFETCH_EXTRA,
                 minScore,
-                { timeoutMs, beforeRead: assertReadAllowed },
+                // resolveReadDenial admits only the operator or the owner-private audience.
+                { timeoutMs, beforeRead: assertReadAllowed, visibilityScope: "owner" },
               ),
           });
           let recall: Awaited<typeof recallOperation.result>;
@@ -234,6 +235,7 @@ export function createLanceDbMemoryProviderRuntime(
             filter: { column: "id", operator: "=", value: id },
             limit: 1,
             beforeRead: assertReadAllowed,
+            visibilityScope: "owner",
           });
           assertCurrent();
           const text = rows[0]?.text;

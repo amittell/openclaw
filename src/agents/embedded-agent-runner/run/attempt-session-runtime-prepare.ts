@@ -64,6 +64,7 @@ import { resolveAttemptTrajectorySessionFile } from "./attempt-transcript-helper
 import type { prepareEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle-prepare.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 import { measureEmbeddedAgentPreparation } from "./preparation-timing.js";
+import { installSettledFinalizationToolCallStop } from "./settled-finalization-tool-stop.js";
 import { projectTrajectorySessionTarget } from "./shared-run-context.js";
 import type { EmbeddedAttemptExternalAbortController, EmbeddedRunAttemptResult } from "./types.js";
 
@@ -437,6 +438,9 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   );
   const { activeSession, setActiveSessionSystemPrompt, settingsManager } = preparedAgentSession;
   sessionTools.refresh = preparedAgentSession.refreshTools;
+  installSettledFinalizationToolCallStop(activeSession.agent, attempt);
+  // Replay authority follows live delivery's trust set; refreshTools updates it in place.
+  sessionManager.setTrustedLocalMediaToolNames?.(preparedAgentSession.trustedLocalMediaToolNames);
   const recordCurrentTurnImageFailure = (count: number) => {
     state.currentTurnImageFailureCount = Math.max(state.currentTurnImageFailureCount, count);
   };

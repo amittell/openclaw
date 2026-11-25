@@ -367,6 +367,10 @@ describe("updateSessionStoreAfterAgentRun", () => {
       cfg: s.cfg,
       sessionId: first.sessionId,
       sessionKey: first.sessionKey!,
+      // Fork: a run whose model differs from the configured default is a fallback and
+      // is not persisted (session-store.ts isFromFallback), so configure the run's model.
+      defaultProvider: "claude-cli",
+      defaultModel: "claude-sonnet-4-6",
       result: runResult({
         provider: "claude-cli",
         model: "claude-sonnet-4-6",

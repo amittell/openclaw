@@ -1,5 +1,7 @@
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
+import { resetGatewayShuttingDownForTest } from "./gateway-shutdown-state.js";
+import { resetGatewayRestartTraceForTest } from "./restart-trace.js";
 import { createChatRunState } from "./server-chat-state.js";
 import type {
   GatewayCloseParams as GatewayTeardownParams,
@@ -20,6 +22,14 @@ type GatewayCloseFixtureMocks = Pick<
 type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
 
 /** Read the captured first close-effect call without changing its mock behavior. */
+
+// Fork: a close marks the process-global shutdown state (gateway-shutdown-state.ts) and
+// may leave a restart trace open. Every close suite that imports this fixture registers
+// this reset, so its next case, and the next file in a shared worker, starts clean.
+afterEach(() => {
+  resetGatewayRestartTraceForTest();
+  resetGatewayShuttingDownForTest();
+});
 
 export function createGatewayCloseTestHandlerFactory({
   prepareGatewayClose,
@@ -100,6 +110,10 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
         close: (cb: (err?: Error | null) => void) => cb(null),
         closeIdleConnections: vi.fn(),
       } as never,
+      armPostShutdownExitWatchdog: vi.fn(() => null),
+      // Default the tests to the terminal CLI/daemon owner mode; embedded-mode
+      // coverage overrides this back to undefined.
+      postShutdownExitWatchdogEnabled: true,
       ...overrides,
     };
   };

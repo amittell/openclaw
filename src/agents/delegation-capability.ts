@@ -5,6 +5,7 @@ import {
   normalizeInputProvenance,
 } from "../sessions/input-provenance.js";
 import type { ModelFallbackAttemptProvenance } from "./model-fallback.types.js";
+import { copyOwnerOnlyToolStubMarker } from "./owner-only-tool-stub-marker.js";
 import { hasVerifiedRequesterCompletionHandoff } from "./requester-tool-policy.js";
 import { withPreparedSessionCapabilityRead } from "./subagents/spawn/subagent-session-store.js";
 import { createRuntimeToolMatcher } from "./tool-policy-match.js";
@@ -153,8 +154,10 @@ function wrapReportOnlyTool(tool: AnyAgentTool, allowedActions: ReadonlySet<stri
   });
   // Plugin ownership lives in a WeakMap keyed by tool identity, so the proxy
   // needs its own entry; otherwise plugin-owned report-only tools drop out of
-  // the effective cron-creator allowlist for the rest of the run.
+  // the effective cron-creator allowlist for the rest of the run. An owner-only
+  // stub must stay marked so grants keep excluding it.
   copyPluginToolMeta(tool, wrapped);
+  copyOwnerOnlyToolStubMarker(tool, wrapped);
   return wrapped;
 }
 

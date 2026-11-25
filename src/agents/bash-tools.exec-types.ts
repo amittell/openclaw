@@ -12,6 +12,7 @@ import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import type { EmbeddedFullAccessBlockedReason } from "./embedded-agent-runner/types.js";
 import type { ExecApprovalTransport } from "./exec-approval-transport.js";
 import type { ExecReviewerConfig } from "./exec-auto-reviewer.js";
+import type { ExecCompletionRequester } from "./exec-completion-requester.js";
 import type { PreparedGitHubToolEnvironment } from "./github-tool-identity.types.js";
 
 /** Restart notification policy captured only for a durable launch. */
@@ -93,6 +94,8 @@ export type ExecToolDefaults = ExecToolRoutingDefaults & {
   currentThreadTs?: string;
   /** Channel-owned sender/chat metadata. Exec subprocesses receive only sender/chat IDs. */
   channelContext?: PluginHookChannelContext;
+  /** Host-captured sender of the turn that builds this tool; its completions continue as them. */
+  completionRequester?: ExecCompletionRequester;
   accountId?: string;
   approvalReviewerDeviceId?: string;
   /** Deny approval-requiring commands without creating operator approval events. */

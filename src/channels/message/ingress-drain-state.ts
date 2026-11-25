@@ -6,9 +6,9 @@ import type {
 } from "./ingress-queue.types.js";
 
 export class IngressAdoptionLostError extends Error {
-  readonly code: "guillotined" | "superseded" | "reclaimed";
+  readonly code: "guillotined" | "superseded" | "reclaimed" | "aborted";
 
-  constructor(code: "guillotined" | "superseded" | "reclaimed") {
+  constructor(code: "guillotined" | "superseded" | "reclaimed" | "aborted") {
     super(`ingress adoption lost: ${code}`);
     this.name = "IngressAdoptionLostError";
     this.code = code;
@@ -17,6 +17,48 @@ export class IngressAdoptionLostError extends Error {
 
 export function isIngressAdoptionLostError(error: unknown): error is IngressAdoptionLostError {
   return error instanceof IngressAdoptionLostError;
+}
+
+type IngressDispatchQuiescence = {
+  task: Promise<void>;
+  isDispatchSettled: () => boolean;
+  markDispatchSettled: () => void;
+  markDeferred: () => void;
+  markDeferredSettled: () => void;
+};
+
+export function createIngressDispatchQuiescence(): IngressDispatchQuiescence {
+  let dispatchSettled = false;
+  let deferred = false;
+  let deferredSettled = false;
+  let resolveTask!: () => void;
+  const task = new Promise<void>((resolve) => {
+    resolveTask = resolve;
+  });
+  const resolveIfQuiesced = () => {
+    if (dispatchSettled && !deferred) {
+      resolveTask();
+    }
+  };
+  return {
+    task,
+    isDispatchSettled: () => dispatchSettled,
+    markDispatchSettled: () => {
+      dispatchSettled = true;
+      resolveIfQuiesced();
+    },
+    markDeferred: () => {
+      // Settlement may race ahead of the dispatcher's deferred return.
+      if (!deferredSettled) {
+        deferred = true;
+      }
+    },
+    markDeferredSettled: () => {
+      deferredSettled = true;
+      deferred = false;
+      resolveIfQuiesced();
+    },
+  };
 }
 
 export type ChannelIngressDrainDispatchResult =
@@ -45,6 +87,8 @@ export type ActiveHandlerState<TPayload, TMetadata> = {
   guillotined: boolean;
   /** Closed code: pre-adoption supersede has claimed settle ownership. */
   superseded: boolean;
+  quiescence: IngressDispatchQuiescence;
+  stallSettlementTask?: Promise<void>;
   /** Single settle owner for complete / fail / release / supersede / guillotine. */
   settleOnce: (fn: () => Promise<void>) => Promise<void>;
 };
@@ -78,7 +122,9 @@ export function armIngressClaimRefresh<TPayload, TMetadata>(
   // Keep lease alive until tombstone commits (includes complete-retry wedge).
   const intervalMs = Math.max(1, Math.floor(claimLeaseMs / 3));
   state.claimRefreshTimer = setInterval(() => {
-    if (state.phase === "settled" || state.guillotined || state.superseded) {
+    // Fork (#132409): a guillotined or superseded claim stays held until its old dispatch
+    // quiesces and its settlement commits, so its lease is refreshed until it settles.
+    if (state.phase === "settled") {
       clearIngressClaimRefresh(state);
       return;
     }

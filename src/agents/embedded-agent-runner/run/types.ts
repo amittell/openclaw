@@ -442,6 +442,11 @@ export type EmbeddedRunAttemptResult = {
   /** A real model response completed successfully during this attempt, before any later failure. */
   hasSuccessfulModelResponse?: boolean;
   lastToolError?: ToolErrorSummary;
+  /**
+   * Fork carry: a message send in this run failed after it started and may have reached the
+   * user. The attempt carryover and the plugin-refresh owner keep it on every later attempt.
+   */
+  messageSendMayHaveLanded?: true;
   didSendViaMessagingTool: boolean;
   didDeliverSourceReplyViaMessageTool?: boolean;
   sourceReplyDelivered?: true;
@@ -491,6 +496,11 @@ export type EmbeddedRunAttemptResult = {
    * how config-enabled code mode stays visible as a no-op on harness routes.
    */
   codeModeEngaged?: boolean;
+  /**
+   * True when this attempt's tool surface, after every policy layer, could call the
+   * message tool. Absent when the harness does not report its tool surface.
+   */
+  messageToolCallable?: boolean;
   /** Completed assistant round trips observed during this attempt. */
   assistantTurns?: number;
   /** Inner bridge call counts from this attempt's tool-search/code-mode catalog. */

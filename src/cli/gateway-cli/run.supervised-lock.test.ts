@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  resetGatewayRestartTraceForTest,
+  startGatewayRestartTrace,
+} from "../../gateway/restart-trace.js";
 import { GatewayLockError } from "../../infra/gateway-lock.js";
 import { GatewayStateOwnerContentionError } from "../../infra/gateway-state-owner.js";
 import * as sleeping from "../../utils/sleep.js";
@@ -161,5 +166,97 @@ describe("supervised gateway lock recovery", () => {
     expect(health(200, '{"ok":true,"status":"ready"}')).toBe(false);
     expect(health(404, "not found")).toBe(false);
     expect(health(200, "not json")).toBe(false);
+  });
+
+  it("logs the preflight zombie-detected signal when probe returns unhealthy", async () => {
+    const originalRestartTraceEnv = process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
+    process.env.OPENCLAW_GATEWAY_RESTART_TRACE = "1";
+    try {
+      createClock();
+      startGatewayRestartTrace("test.preflight.start");
+      const log = { info: vi.fn(), warn: vi.fn() };
+
+      await expect(
+        recover({
+          startLoop: rejectLoop(new GatewayLockError("gateway already running")),
+          supervisor: "launchd",
+          log,
+          probeHealth: vi.fn(async () => false),
+        }),
+      ).rejects.toThrow();
+
+      const warnMessages = log.warn.mock.calls.map(([msg]) => String(msg));
+      expect(
+        warnMessages.some((msg) =>
+          msg.includes("gateway.preflight.zombie_detected supervisor=launchd port=18789"),
+        ),
+      ).toBe(true);
+
+      // The signal is emitted once per recovery cycle, not on every retry tick:
+      // a normally-draining incumbent would otherwise inflate telemetry with a
+      // duplicate alert per tick across its whole drain window. The `.some`
+      // assertion above only pins that the warn fires at all, so without this
+      // count the `zombieDetection.loggedThisCycle` latch in run-supervised-lock.ts is live
+      // production behaviour with no coverage. beta.2 asserted this; it was
+      // lost as collateral when a conflict-marker cleanup resolved the hunk to
+      // the empty beta.3 side.
+      const zombieWarnCount = warnMessages.filter((msg) =>
+        msg.includes("gateway.preflight.zombie_detected"),
+      ).length;
+      expect(zombieWarnCount).toBe(1);
+    } finally {
+      resetGatewayRestartTraceForTest();
+      if (originalRestartTraceEnv === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
+      } else {
+        process.env.OPENCLAW_GATEWAY_RESTART_TRACE = originalRestartTraceEnv;
+      }
+    }
+  });
+});
+
+describe("createConfiguredGatewayHealthProbe", () => {
+  let server: Server;
+  let port: number;
+  let nextStatus = 200;
+  let requestedPaths: Array<string | undefined> = [];
+
+  beforeEach(async () => {
+    nextStatus = 200;
+    requestedPaths = [];
+    server = createServer((req, res) => {
+      requestedPaths.push(req.url);
+      res.statusCode = nextStatus;
+      res.end(JSON.stringify({ ok: nextStatus === 200, status: "live" }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      throw new Error("server did not bind");
+    }
+    port = addr.port;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  it("treats a 200 response as healthy", async () => {
+    nextStatus = 200;
+    await expect(
+      testing.createConfiguredGatewayHealthProbe({})({ host: "127.0.0.1", port }),
+    ).resolves.toBe(true);
+  });
+
+  it("treats a 503 shutting-down response as unhealthy", async () => {
+    nextStatus = 503;
+    await expect(
+      testing.createConfiguredGatewayHealthProbe({})({ host: "127.0.0.1", port }),
+    ).resolves.toBe(false);
+    expect(requestedPaths).toEqual(["/healthz?strict=1"]);
   });
 });

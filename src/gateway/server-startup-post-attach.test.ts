@@ -30,8 +30,8 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import {
+  createServiceCronHost,
   createServiceRegistration,
-  createServiceCronHost as createCronHost,
 } from "../plugins/services.test-support.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import {
@@ -2599,8 +2599,8 @@ describe("startGatewayPostAttachRuntime", () => {
         handler: runGatewayStart,
         source: "lifetime-context",
       });
-      const initialCron = createCronHost();
-      const depsCron = closing === "close" ? initialCron : createCronHost();
+      const initialCron = createServiceCronHost();
+      const depsCron = closing === "close" ? initialCron : createServiceCronHost();
       let currentCron = initialCron;
       const params = createPostAttachParams({
         trackStartupWork: (run) => {
@@ -2636,7 +2636,7 @@ describe("startGatewayPostAttachRuntime", () => {
       const serviceGetter = hoisted.startPluginServices.mock.calls[0]?.[0].getCronService;
       expect(serviceGetter?.()).toBe(closing === "restart" ? initialCron : undefined);
 
-      const reloadedCron = createCronHost();
+      const reloadedCron = createServiceCronHost();
       currentCron = reloadedCron;
       params.deps.cron = (closing === "close" ? reloadedCron : depsCron) as never;
       expect(getCron()).toBe(reloadedCron);

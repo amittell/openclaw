@@ -9,6 +9,7 @@ import {
 } from "../extensions/qa-channel/api.js";
 import { createQaBusState, startQaBusServer } from "../extensions/qa-lab/api.js";
 import { createMessageTool } from "../src/agents/tools/message-tool-execution.js";
+import { resetMessageToolSendSuppressionForTest } from "../src/agents/tools/message-tool-execution.send-suppression.js";
 import { buildThreadingToolContext } from "../src/auto-reply/reply/agent-runner-utils.js";
 import { resolveReplyToMode } from "../src/auto-reply/reply/reply-threading.js";
 import * as bootstrapRegistry from "../src/channels/plugins/bootstrap-registry.js";
@@ -27,6 +28,10 @@ import { withOpenClawTestState } from "../src/test-utils/openclaw-test-state.js"
 afterEach(() => {
   vi.restoreAllMocks();
   setActivePluginRegistry(createTestRegistry([]));
+  // Every case here shares one conversationId, one nonce, and (when trusted) one
+  // runId, so this fork's intra-run duplicate-send tracker would otherwise carry a
+  // prior case's sends into the next one and suppress them outright.
+  resetMessageToolSendSuppressionForTest();
 });
 
 const conversationId = "qa-shared-id";
@@ -210,16 +215,29 @@ describe("QA message-tool current conversation delivery", () => {
             await expect(send(args)).rejects.toThrow("Completion source replies");
           }
         }
-        await send({});
-        await send({ target: `dm:${conversationId}`, accountId: "SECONDARY", replyTo: inbound.id });
+        // INTENTIONAL DIVERGENCE FROM UPSTREAM INPUT: upstream sends one nonce
+        // twice. This case measures routing, accounts and threading, not the fork's
+        // intra-run duplicate-send guard, which has its own coverage in
+        // message-tool.duplicate-send.test.ts, so the two sends carry distinct text.
+        // Restoring the shared nonce to "match upstream" re-weakens this case to
+        // `trusted ? 1 : 2`, which is the regression this exists to prevent.
+        await send({ message: `${nonce} 1` });
+        await send({
+          message: `${nonce} 2`,
+          target: `dm:${conversationId}`,
+          accountId: "SECONDARY",
+          replyTo: inbound.id,
+        });
         const snapshot = await getQaBusState(baseUrl);
+        // Exact text per index pins ordering with content: a containment check
+        // would pass even if both sends carried the same index.
         expect(
           snapshot.messages.filter((message) => message.direction === "outbound"),
         ).toMatchObject(
-          Array.from({ length: 2 }, () => ({
+          [1, 2].map((index) => ({
             conversation: inbound.conversation,
             accountId: "secondary",
-            text: nonce,
+            text: `${nonce} ${index}`,
             replyToId: inbound.id,
             threadId: "topic",
           })),

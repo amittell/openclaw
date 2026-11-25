@@ -33,6 +33,7 @@ import { isRunnerToolCallBlock } from "./attempt-tool-call-block-type.js";
 import { resolveToolCallName } from "./attempt-tool-call-name-resolution.js";
 import { hasComposedVisibleAnswerAfterSettledTools } from "./incomplete-turn-classification.js";
 import { shouldTreatEmptyAssistantReplyAsSilent } from "./incomplete-turn-recovery.js";
+import { isPossiblyDeliveredMessageSend } from "./silent-stop-nudge.js";
 import { readSubscriptionCompletionEvidence } from "./subscription-completion-evidence.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
@@ -43,14 +44,26 @@ export function createAttemptCarryover() {
   let latestMcpAppChannelView: EmbeddedRunAttemptResult["latestMcpAppChannelView"];
   let latestMcpConnectAction: EmbeddedRunAttemptResult["latestMcpConnectAction"];
   let modelAttempt: AgentRuntimeModelAttempt | undefined;
+  // Fork carry: each attempt starts with no tool error, so a send that may have landed stays known.
+  let messageSendMayHaveLanded = false;
   return {
     apply(
       attempt: Pick<
         EmbeddedRunAttemptResult,
-        "latestMcpAppChannelView" | "latestMcpConnectAction" | "modelAttempt"
+        | "latestMcpAppChannelView"
+        | "latestMcpConnectAction"
+        | "modelAttempt"
+        | "lastToolError"
+        | "messageSendMayHaveLanded"
       >,
     ): void {
       modelAttempt = attempt.modelAttempt;
+      messageSendMayHaveLanded ||=
+        attempt.messageSendMayHaveLanded === true ||
+        isPossiblyDeliveredMessageSend(attempt.lastToolError);
+      if (messageSendMayHaveLanded) {
+        attempt.messageSendMayHaveLanded = true;
+      }
       latestMcpAppChannelView = attempt.latestMcpAppChannelView ?? latestMcpAppChannelView;
       attempt.latestMcpAppChannelView = latestMcpAppChannelView;
       latestMcpConnectAction = attempt.latestMcpConnectAction ?? latestMcpConnectAction;

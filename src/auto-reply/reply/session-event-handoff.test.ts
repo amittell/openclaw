@@ -570,6 +570,31 @@ describe("session event target custody", () => {
     }
   });
 
+  // Fork branch-native #190472 (bf164e56334): the exec-captured requester restored on a
+  // completion turn is part of the batch identity.
+  it("refuses to batch completions that retain different requesters", async ({
+    state: { env },
+  }) => {
+    const capture = (senderId?: string) =>
+      captureTarget("main", sessionKey, {
+        env,
+        ...(senderId ? { requester: { route, senderId, chatType: "group" as const } } : {}),
+      });
+    const [alice, aliceAgain, bob, none] = await Promise.all([
+      capture("alice"),
+      capture("alice"),
+      capture("bob"),
+      capture(),
+    ]);
+    // The combined turn restores the first target's requester for every target.
+    expect(() => combineSessionEventTargetsForHost([alice, aliceAgain])).not.toThrow();
+    for (const other of [bob, none]) {
+      expect(() => combineSessionEventTargetsForHost([alice, other])).toThrow(
+        "different requesters",
+      );
+    }
+  });
+
   it("retains store, route and producer limits across lookup", async ({
     state: { env, path: fixturePath, storePath },
   }) => {

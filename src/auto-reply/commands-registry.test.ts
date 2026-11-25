@@ -203,6 +203,22 @@ describe("commands registry", () => {
     },
   );
 
+  it("registers /temperature with a numeric arg and the /temp alias", () => {
+    const temperature = chatCommand("temperature");
+    expect(temperature.nativeName).toBe("temperature");
+    expect(temperature.nativeAliases).toEqual(["temp"]);
+    expect(temperature.textAliases).toEqual(["/temperature", "/temp"]);
+    expect(temperature.args?.[0]?.type).toBe("number");
+    expect(nativeCommand("temp").key).toBe("temperature");
+    expect(normalizeCommandBody("/TEMP 0.7")).toBe("/temperature 0.7");
+    const tempNativeSpec = expectDefined(
+      listNativeCommandSpecs().find((spec) => spec.name === "temp"),
+      "native spec temp",
+    );
+    expect(tempNativeSpec.acceptsArgs).toBe(true);
+    expect(tempNativeSpec.isAlias).toBe(true);
+  });
+
   it("filters commands based on config flags", () => {
     const disabled = listChatCommandsForConfig(restrictedConfig(false));
     expectSetMembers(commandKeySet(disabled), ["config", "plugins", "debug"], false);

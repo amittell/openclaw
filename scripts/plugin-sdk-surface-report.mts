@@ -323,7 +323,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // Binding inspection: +1 (#192623); service V3 types in core and plugin-entry: +8 (#176886).
       // Decisions HTTP replaces the unshipped OpenAI executor: +3 net (#195641).
       // Gateway person principal and access-refresh classifier: +2 (#196276, #176886).
-      3888,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      3891,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -380,7 +381,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: the same appendReplyMediaFailures receipt formatter (#186751).
       // +7 net: the callable subset of the same source-audited feature-cut exports.
       // Harness +2, transcript replay +1, binding inspection +1, Decisions +1 net, Gateway +2.
-      2243,
+      // +3: findTruncatedSecret, getLongestRegisteredSecretLength and hasConfiguredRedactPatterns bound diagnostics-otel content-capture redaction (#158145).
+      2246,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

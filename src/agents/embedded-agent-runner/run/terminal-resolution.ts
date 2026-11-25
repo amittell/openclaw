@@ -68,6 +68,8 @@ import {
 } from "./incomplete-turn-resolution.js";
 import type { RunEmbeddedAgentInternalParams as TerminalRunParams } from "./internal-params.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
+import { startSilentStopNudge } from "./silent-stop-nudge.js";
+import { resolveSubagentReasoningOnlyExhaustion } from "./subagent-reasoning-only-retry.js";
 import {
   isEmbeddedRunTerminalAbort,
   isEmbeddedRunTerminalInterrupted,
@@ -129,6 +131,8 @@ export async function resolveEmbeddedRunTerminal(input: {
   attemptAuthProfileStore: AuthProfileStore;
   apiKeyInfo: ResolvedProviderAuth | null;
   agentHarnessId: string;
+  /** The attempt's harness enforces a narrowed tool set, so a retry can be limited. */
+  harnessEnforcesToolPolicy: boolean;
   settledTurnFinalizationOutcome: "not-attempted" | "answered" | "failed";
   pluginHarnessOwnsTransport: boolean;
   pluginHarnessOwnsAuthBootstrap: boolean;
@@ -305,16 +309,22 @@ export async function resolveEmbeddedRunTerminal(input: {
   sessionPromptState.clearCompactionContinuation();
 
   if (reasoningOnlyRetriesExhausted && !input.prepared.finalAssistantVisibleText) {
+    const exhaustedTurn = resolveSubagentReasoningOnlyExhaustion({
+      input,
+      terminalInterrupted,
+      promptError,
+      terminalAssistantError,
+      incompleteTurnFallbackSafe,
+      terminalToolPresentation,
+      availableTerminalToolPresentation,
+    });
     log.warn(
       `reasoning-only retries exhausted: ${modelLogContext} attempts=${retryState.reasoningOnlyAttempts}/${DEFAULT_REASONING_ONLY_RETRY_LIMIT} — surfacing incomplete-turn error`,
     );
     return completeEmbeddedRun({
       ...input,
       continuationPending,
-      incompleteTurnText: MISSING_REPLY_NOTICE_TEXT,
-      payloadCount: 0,
-      incompleteTurnFallbackSafe,
-      terminalToolPresentation,
+      ...exhaustedTurn,
     });
   }
   if (
@@ -371,6 +381,23 @@ export async function resolveEmbeddedRunTerminal(input: {
       `before_agent_finalize requested one more pass: ${runLogContext} ` +
         `attempt=${retryState.beforeFinalizeRevisionAttempts}/${MAX_BEFORE_AGENT_FINALIZE_REVISIONS}`,
     );
+    return { action: "retry" };
+  }
+
+  if (
+    startSilentStopNudge({
+      runParams,
+      attempt,
+      retryState,
+      sessionPromptState,
+      harnessEnforcesToolPolicy: input.harnessEnforcesToolPolicy,
+      attemptEnded:
+        terminalAborted ||
+        Boolean(promptError) ||
+        terminalTimedOut ||
+        hasAttemptTerminalState(attempt),
+    })
+  ) {
     return { action: "retry" };
   }
 

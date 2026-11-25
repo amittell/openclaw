@@ -3,6 +3,7 @@ import {
   normalizeOutboundLocation,
   type OutboundLocation,
 } from "openclaw/plugin-sdk/channel-inbound";
+import { markTelegramVisibleReplyDelivered } from "./bot-processing-outcome.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
 import { withTelegramNativeQuoteFallback } from "./reply-parameters.js";
 import {
@@ -83,6 +84,9 @@ export async function sendLocationTelegram(
         }, retryLabel);
       },
     });
+    // Location sends bypass the prepared-send acceptance ledger, so they record
+    // the replay guard's "already spoke to the user" fact themselves.
+    markTelegramVisibleReplyDelivered();
     const acceptedParams = toAcceptedThreadScopedParams(delivery.acceptedParams);
     return finalizeTelegramOutbound({
       context,

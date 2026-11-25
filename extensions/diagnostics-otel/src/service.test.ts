@@ -248,6 +248,7 @@ import {
 } from "./service-exporter-health.js";
 import { createDiagnosticsLogExporter } from "./service-logs.js";
 import { createDiagnosticsOtelService } from "./service.js";
+import { mockCall, mockCallArg } from "./service.mock-calls.test-support.js";
 import {
   counter,
   histogram,
@@ -327,22 +328,6 @@ function startedSpanParentContexts(name: string) {
   return telemetryState.tracer.startSpan.mock.calls
     .filter((call) => call[0] === name)
     .map((call) => call[2]?.spanContext);
-}
-
-function mockCall<T extends unknown[]>(mock: { mock: { calls: T[] } }, callIndex = 0): T {
-  const call = mock.mock.calls.at(callIndex);
-  if (!call) {
-    throw new Error(`Expected mock call at index ${callIndex}`);
-  }
-  return call;
-}
-
-function mockCallArg<T extends unknown[], K extends number>(
-  mock: { mock: { calls: T[] } },
-  argIndex: K,
-  callIndex = 0,
-) {
-  return mockCall(mock, callIndex)[argIndex];
 }
 
 type TestExporterOptions = {
@@ -2908,7 +2893,11 @@ describe("diagnostics-otel service", () => {
       trace: createTestTrace(GRANDCHILD_SPAN_ID, SPAN_ID),
     });
 
-    expect(startedSpanParentContexts("openclaw.run")).toEqual([undefined, undefined]);
+    // Both runs parent to the materialized upstream scope (a real, exported span), never
+    // to each other through a shared alias.
+    const scopeSpanId = spanByName("openclaw.turn.scope").spanContext().spanId;
+    const runParents = startedSpanParentContexts("openclaw.run");
+    expect(runParents.map((context) => context?.spanId)).toEqual([scopeSpanId, scopeSpanId]);
   });
 
   test.each([false, true])(
@@ -2936,8 +2925,14 @@ describe("diagnostics-otel service", () => {
         }
         await flushDiagnosticEvents();
         const parentContext = startedSpanParentContexts("openclaw.model.call")[0];
+        // The run's upstream scope is materialized and tracked, so a model event naming that
+        // scope parents to the scope span (a real, exported span) rather than through a run
+        // alias; a late model event naming the run itself still parents to the run span.
+        const expectedParentContext = late
+          ? runSpanContext
+          : spanByName("openclaw.turn.scope").spanContext();
         expect(parentContext?.traceId).toBe(TRACE_ID);
-        expect(parentContext?.spanId).toBe(runSpanContext.spanId);
+        expect(parentContext?.spanId).toBe(expectedParentContext.spanId);
       } finally {
         if (late) {
           vi.useRealTimers();
@@ -2951,15 +2946,16 @@ describe("diagnostics-otel service", () => {
   test("bounds retained run contexts by evicting the oldest completed runs", async () => {
     await startServiceFixture(["traces", "metrics"]);
 
-    // Each completed run retains its own span id plus its upstream alias, so
-    // this comfortably overflows the bound and evicts the earliest run.
-    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS; index += 1) {
+    // Each completed run retains its own span id. (The upstream alias is no longer
+    // created because the fix materializes the shared upstream scope into a real
+    // tracked span, so this overflows the bound by one and evicts the earliest run.)
+    for (let index = 0; index < MAX_RETAINED_TRUSTED_SPAN_CONTEXTS + 1; index += 1) {
       const runId = `run-${index}`;
       const runTrace = createTestTrace(numberedSpanId(index), SPAN_ID);
       emitTrustedEvent("run.started", { runId, trace: runTrace });
       emitTrustedEvent("run.completed", { runId, trace: runTrace });
     }
-    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS - 1);
+    const newestRunSpanId = numberedSpanId(MAX_RETAINED_TRUSTED_SPAN_CONTEXTS);
     const newestRunSpan = telemetryState.spans.findLast((span) => span.name === "openclaw.run");
     telemetryState.tracer.startSpan.mockClear();
 
@@ -2972,7 +2968,14 @@ describe("diagnostics-otel service", () => {
 
     const usageParents = startedSpanParentContexts("openclaw.model.usage");
     expect(usageParents[0]?.spanId).toBe(newestRunSpan?.spanContext().spanId);
-    expect(usageParents[1]).toBeUndefined();
+    // The evicted run's upstream scope is now materialized into a real, exported span, so
+    // the late usage links to that scope span instead of being parentless.
+    const evictedScopeSpan = telemetryState.spans.findLast(
+      (span) => span.name === "openclaw.turn.scope",
+    );
+    expect(usageParents[1]?.spanId).toBe(
+      evictedScopeSpan?.spanContext.mock.results[0]?.value?.spanId,
+    );
   });
 
   test("does not create live started spans for untrusted lifecycle diagnostics", async () => {

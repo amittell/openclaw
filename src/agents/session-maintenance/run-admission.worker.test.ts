@@ -10,6 +10,7 @@ import type { GatewayRequestContext } from "../../gateway/server-methods/types.j
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { AsyncWorkScope, getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { observeMainThreadFs } from "../../test-utils/main-thread-fs-spies.test-support.js";
@@ -154,3 +155,28 @@ it("keeps optional maintenance out of the finished session's active run state", 
     }
     expectEffects(1);
   }));
+
+// Upstream #196115 (open, head 622cf1bd17cf): its regression row, written against beta.3's run.test-support.ts.
+it("finishes post-turn upkeep after the foreground async work scope closes", async () => {
+  await withOpenClawTestState({ label: "maintenance-async-handoff" }, async ({ env }) => {
+    const { scope, schedule } = await setup(env, "maintenance-async-handoff");
+    const foreground = new AsyncWorkScope();
+    const finished = createDeferred<boolean>();
+    memory.runMemoryFlushIfNeeded.mockImplementationOnce(async () => {
+      // Model preparation and its session readers observe the ambient work signal.
+      getAsyncWorkSignal()?.throwIfAborted();
+      return {};
+    });
+    try {
+      foreground.run(() => schedule(finished.promise));
+      await foreground.drain();
+      finished.resolve(true);
+      await waitForSessionMaintenance(scope.sessionKey);
+      expectEffects(1);
+    } finally {
+      finished.resolve(false);
+      await waitForSessionMaintenance(scope.sessionKey);
+      await foreground.drain();
+    }
+  });
+});

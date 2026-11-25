@@ -1,0 +1,3 @@
+# Silent private subagent completions settle in one parent turn through the real Gateway and runner,
+# plus the private reply-policy rows (port of upstream #185388 with #185667 precedence).
+231

@@ -418,6 +418,9 @@ describe("queued ingress acceptance", () => {
           expect(await drain.drainOnce()).toEqual({ started: multipleInputs ? 2 : 1 });
           await drain.waitForIdle();
           if (multipleInputs) {
+            // Fork carry (#132409): the stalled input's cancel callback waits for its dead-letter
+            // write, a SQLite worker round trip (about 6 ms) that fake time cannot advance.
+            const firstFailed = observeChannelIngressQueueWrite(queue, "fail", "first-input");
             scheduleFollowupDrain(key, runFollowup);
             await vi.advanceTimersByTimeAsync(50);
             expect(preparation).not.toHaveBeenCalled();
@@ -429,6 +432,7 @@ describe("queued ingress acceptance", () => {
             expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
             await vi.advanceTimersByTimeAsync(60);
             expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
+            await expect(firstFailed).resolves.toBe(true);
             await vi.advanceTimersByTimeAsync(250);
             expect(selectedGroups).toContainEqual(["Second request"]);
             // The waiting input keeps its heartbeat until its own preparation fails.

@@ -80,9 +80,16 @@ test.each(["separate", "shared"] as const)(
       await health();
       await requestHealth();
       // The post-connect passive refresh runs independently of the explicit probe.
-      await Promise.all(
-        vi.mocked(collector.collectGatewayHealthSnapshot).mock.results.map(({ value }) => value),
-      );
+      // FORK DIVERGENCE (#89526, carried): a runtime-config publication during a health
+      // collection retires it and collects again. rpcReq republishes the fixture config on every
+      // call, so the passive refresh started at hello re-collects and would overlap the reads
+      // measured below. Let every collection in flight settle first.
+      const collect = vi.mocked(collector.collectGatewayHealthSnapshot);
+      for (let seen = -1; seen !== collect.mock.results.length;) {
+        seen = collect.mock.results.length;
+        await Promise.allSettled(collect.mock.results.map(({ value }) => value));
+        await flushImmediate();
+      }
       sqliteSummaries.mockClear();
       const projection = expectDefined(
         vi.mocked(collector.collectGatewayHealthSnapshot).mock.calls.at(-1)?.[0]

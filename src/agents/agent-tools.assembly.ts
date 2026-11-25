@@ -59,6 +59,7 @@ import {
 } from "./conversation-capability-profile.js";
 import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.js";
 import { applyDelegationCapability } from "./delegation-capability.js";
+import { resolveExecCompletionRequester } from "./exec-completion-requester.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { resolveGatewayExecAuthority } from "./execution-authority.js";
 import { applyGatewayToolPolicy } from "./gateway-tool-policy.js";
@@ -289,6 +290,7 @@ export function* assembleOpenClawCodingTools(
               currentMessagingTarget: options?.currentMessagingTarget,
               currentThreadTs: options?.currentThreadTs,
               channelContext: options?.channelContext,
+              completionRequester: resolveExecCompletionRequester(options),
               accountId: options?.agentAccountId,
               approvalReviewerDeviceId: options?.approvalReviewerDeviceId,
               nonInteractiveApproval: options?.swarmCollector,

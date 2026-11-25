@@ -1,11 +1,13 @@
-import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
+import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
 import { expect, test, vi } from "vitest";
 import { assignOtelModelContentAttributes } from "./service-genai-content.js";
 
 const MAX = 128 * 1024;
 
-vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>();
+// The fork's content normalizer (#158145 carry) reaches redactSensitiveText through
+// logging-core, not security-runtime, so the spy must sit on that module.
+vi.mock("openclaw/plugin-sdk/logging-core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/logging-core")>();
   return { ...actual, redactSensitiveText: vi.fn(actual.redactSensitiveText) };
 });
 
@@ -28,9 +30,14 @@ test("redacts each string of a large transcript once and masks it in every attri
   ]);
 
   const calls = vi.mocked(redactSensitiveText).mock.calls.map(([value]) => value);
-  for (const output of outputs) {
-    expect(calls.filter((value) => value === output)).toHaveLength(1);
-  }
+  // The fork's normalizer (#158145 carry) redacts bounded windows of what it exports instead
+  // of memoizing whole strings, so "once" is a bound on total work: no more characters than
+  // the transcript holds. Redacting every string per attribute (#158116) is about 3x that.
+  const transcriptChars = outputs.reduce((total, output) => total + output.length, 0);
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.reduce((total, value) => total + value.length, 0)).toBeLessThanOrEqual(
+    transcriptChars,
+  );
   expect(Math.max(...calls.map((value) => value.length))).toBeLessThanOrEqual(4 * MAX);
   for (const key of ["gen_ai.input.messages", "input.value", "openclaw.content.input_messages"]) {
     expect(attr(key).length).toBeLessThanOrEqual(MAX);

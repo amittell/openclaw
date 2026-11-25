@@ -288,6 +288,7 @@ describe("production lint suppressions", () => {
         "src/agents/auth-profiles/external-cli-scope.ts|unicorn/no-array-sort|2",
         "src/agents/auth-profiles/oauth-refresh-fence.ts|preserve-caught-error|1",
         "src/agents/auth-profiles/oauth-refresh-peers.ts|preserve-caught-error|1",
+        "src/agents/auth-profiles/sanitize.ts|no-control-regex|2",
         "src/agents/code-mode-mcp-api.ts|unicorn/no-array-sort|1",
         "src/agents/computer-use-node-capabilities.ts|unicorn/no-array-sort|1",
         // Sort only freshly materialized private arrays; avoid a second copying sort.

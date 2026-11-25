@@ -1,5 +1,5 @@
 import type { AssistantMessage, ProviderReplayState } from "@openclaw/llm-core";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "../../types.js";
 import { findCutPoint } from "../compaction/compaction.js";
 import {
@@ -15,6 +15,8 @@ import type { SessionTreeEntry as Entry } from "../types.js";
 import {
   buildSessionContext,
   collectSessionContextEntryFact,
+  countCompactionShadowedEntries,
+  formatCompactionCheckpointHandle,
   iterateSessionContextEntryFacts,
   projectSessionEntryMessage,
 } from "./session.js";
@@ -241,7 +243,12 @@ it.each([
         compaction("compacted", "entry-2", `entry-${expectedIndex}`, "Earlier conversation", 1_000),
       ]);
       expect(replay.messages).toMatchObject([
-        { role: "compactionSummary", summary: "Earlier conversation" },
+        {
+          role: "compactionSummary",
+          summary: expect.stringMatching(
+            /^Earlier conversation\n\[compaction checkpoint compacted\]$/,
+          ),
+        },
         ...[
           { role: "user", content: "original request" },
           { role: "custom", customType, content: "metadata ".repeat(100), details },
@@ -305,7 +312,7 @@ it("replays only the retained tail and newer entries after compaction", () => {
   ]);
   expect(context).toMatchObject({ thinkingLevel: "off", model });
   expectTranscript(context.messages, [
-    ["compactionSummary", "older context"],
+    ["compactionSummary", "older context\n[compaction checkpoint compaction]"],
     ["user", "retained"],
     ["assistant", [text("retained checkpoint")]],
     ["assistant", [text("retained Anthropic checkpoint")]],
@@ -380,6 +387,105 @@ it("keeps tool ownership within the latest reset when resets repeat", () => {
   expect(keptAssistant).not.toHaveProperty("providerReplay");
   expect(Object.getOwnPropertyDescriptor(keptAssistant ?? {}, historyPrelude)?.value).toBe(true);
   expect(JSON.stringify(context.messages)).not.toContain("discarded conversation");
+});
+
+describe("compaction checkpoint handle", () => {
+  function checkpointCompaction(
+    id: string,
+    parentId: string,
+    summary: string,
+    firstKeptEntryId: string,
+    shadowedEntryCount?: number,
+  ): Entry {
+    return {
+      type: "compaction",
+      id,
+      parentId,
+      timestamp,
+      summary,
+      firstKeptEntryId,
+      tokensBefore: 1,
+      ...(shadowedEntryCount === undefined ? {} : { shadowedEntryCount }),
+    };
+  }
+  // Path: u1 a1 [u2 a2 c1 u3 a3 model] u4 c2 u5 — c2 shadows the bracketed span (5 rows,
+  // the model change is not a transcript row) and keeps u4 verbatim.
+  const twoCompactions: Entry[] = [
+    user("u1", null, "one"),
+    assistant("a1", "u1", "two"),
+    user("u2", "a1", "three"),
+    assistant("a2", "u2", "four"),
+    checkpointCompaction("c1", "a2", "first summary", "u2", 2),
+    user("u3", "c1", "five"),
+    assistant("a3", "u3", "six"),
+    { type: "model_change", ...entryBase("model", "a3"), ...model },
+    user("u4", "model", "seven"),
+    checkpointCompaction("c2", "u4", "second summary", "u4", 5),
+    user("u5", "c2", "eight"),
+  ];
+
+  it("appends one handle line naming the boundary and what it shadows", () => {
+    const messages = buildSessionContext(twoCompactions).messages;
+
+    expect(messages).toMatchObject([
+      {
+        role: "compactionSummary",
+        summary: "second summary\n[compaction checkpoint c2: shadows 5 earlier entries]",
+      },
+      { content: "seven" },
+      { content: "eight" },
+    ]);
+  });
+
+  it("renders the stored count when a bounded read no longer holds the shadowed rows", () => {
+    // A bounded load starts at c2's kept prefix; counting this path would report 0.
+    const bounded = buildSessionContext(twoCompactions.slice(8)).messages;
+
+    expect(bounded).toEqual(buildSessionContext(twoCompactions).messages);
+  });
+
+  it("renders no count for a boundary written before the count was stored", () => {
+    const legacy = twoCompactions.map((entry) =>
+      entry.id === "c2" ? checkpointCompaction("c2", "u4", "second summary", "u4") : entry,
+    );
+
+    expect(buildSessionContext(legacy).messages[0]).toMatchObject({
+      summary: "second summary\n[compaction checkpoint c2]",
+    });
+  });
+
+  it("counts from the previous kept prefix, or the path start when no boundary exists", () => {
+    expect(countCompactionShadowedEntries(twoCompactions.slice(0, 9), "u4")).toBe(5);
+    expect(countCompactionShadowedEntries(twoCompactions.slice(0, 4), "u2")).toBe(2);
+  });
+
+  it("lets the host add read wording but hard-caps the line", () => {
+    const seen: unknown[] = [];
+    const hinted = buildSessionContext(twoCompactions, {
+      formatCheckpointHandle: (handle) => {
+        seen.push(handle);
+        return formatCompactionCheckpointHandle(handle, "history_reader can read them");
+      },
+    }).messages;
+    const oversized = buildSessionContext(twoCompactions, {
+      formatCheckpointHandle: () => "x".repeat(500),
+    }).messages;
+
+    expect(seen).toEqual([{ entryId: "c2", shadowedEntryCount: 5 }]);
+    expect(hinted[0]).toMatchObject({
+      summary:
+        "second summary\n[compaction checkpoint c2: shadows 5 earlier entries; history_reader can read them]",
+    });
+    const oversizedSummary = (oversized[0] as { summary: string }).summary;
+    expect(oversizedSummary.split("\n").at(-1)).toHaveLength(160);
+  });
+
+  it("adds no handle when the branch has no compaction", () => {
+    const messages = buildSessionContext(twoCompactions.slice(0, 2)).messages;
+
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(messages)).not.toContain("compaction checkpoint");
+  });
 });
 
 it("selects background reset context from detached facts without validating discarded placements", () => {

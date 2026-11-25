@@ -55,6 +55,7 @@ import {
   buildStructuredFallbackSummary,
   extractOpaqueIdentifiers,
   formatGeneratedSplitTurnSection,
+  formatQualityFeedbackReasons,
   resolveQualityGuardMaxRetries,
   resolveSummaryReserveTokens,
   wrapUntrustedInstructionBlock,
@@ -653,10 +654,7 @@ export async function executeCompactionSafeguard(
           ? "Fix all issues and include every required section with exact identifiers preserved."
           : "Fix all issues and include every required section while following the configured identifier policy.";
       const budgetInstruction = `Keep the complete summary body within ${finalized.bodyBudget} UTF-16 code units so the finalized artifact remains valid after required suffixes.`;
-      const qualityFeedbackReasons = wrapUntrustedInstructionBlock(
-        "Quality check feedback",
-        `Previous summary failed quality checks (${reasons}).`,
-      );
+      const qualityFeedbackReasons = formatQualityFeedbackReasons(reasons);
       correctiveInstructions = qualityFeedbackReasons
         ? `${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
         : `${qualityFeedbackInstruction}\n${budgetInstruction}`;
@@ -690,6 +688,7 @@ const testing = {
 } as const;
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is symbol-indexable at runtime; this test-only guarded write adds a unique symbol key and reads nothing back.
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.compactionSafeguardTestApi")] =
     testing;
 }

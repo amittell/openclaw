@@ -3,7 +3,6 @@ import { captureSessionTranscriptTargetBinding } from "../../../config/sessions/
 import { attachModelProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { copyExplicitSkillSelectionFileHost } from "../../../skills/discovery/skill-command-provenance.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { createAgentHarnessCompletionScope } from "../../agent-harness-completion-scope.js";
 import { resizeExecApprovalContinuationPrompt } from "../../bash-tools.exec-approval-output.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
@@ -40,6 +39,8 @@ import type { PreparedEmbeddedAttemptDispatchInput } from "./execution-context.j
 import { resolveEmbeddedAttemptBasePrompt } from "./helpers.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 import { prepareEmbeddedAttemptPromptExecution } from "./prompt-image-preparation.js";
+import { createRequireActiveAssertion } from "./run-attempt-dispatch.active-assertion.js";
+import { resolveSessionTemperatureParams } from "./run-attempt-dispatch.session-temperature.js";
 import { projectEmbeddedMessageContext } from "./shared-run-context.js";
 import { MAX_BEFORE_AGENT_FINALIZE_REVISIONS } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -132,6 +133,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
   }
+  const sessionSampling = await resolveSessionTemperatureParams(runInput);
   const runtimePlan = buildAgentRuntimePlan({
     provider,
     modelId,
@@ -148,19 +150,13 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     agentDir,
     agentId: workspaceResolution.agentId,
     thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel, effectiveModel),
-    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode },
+    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode, ...sessionSampling },
   });
   if (!params.admittedRunContext) {
     throw new Error("embedded attempt reached dispatch without an admitted run context");
   }
   const admittedRunContext = params.admittedRunContext;
-  const requireActiveAssertion = (signal?: AbortSignal) => {
-    const assertion = resolveAdmittedRunActiveAssertion(admittedRunContext, signal);
-    if (!assertion) {
-      throw new Error("embedded attempt reached dispatch without an active admitted run");
-    }
-    return assertion;
-  };
+  const requireActiveAssertion = createRequireActiveAssertion(admittedRunContext);
   const assertTrajectoryCurrent = requireActiveAssertion(params.abortSignal);
   const trajectoryRecorder = await prepareEmbeddedHarnessTrajectory({
     attempt: params,

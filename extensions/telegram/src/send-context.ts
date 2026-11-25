@@ -293,6 +293,7 @@ export async function withTelegramApiContext<T>(
   }
   let api: TelegramApi;
   if (opts.api) {
+    // SAFETY: TelegramApiOverride is the caller-supplied injection seam; supplying one asserts it implements the surface used here.
     api = opts.api as TelegramApi;
   } else {
     const client = resolveTelegramClientOptions(account);

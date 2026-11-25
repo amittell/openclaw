@@ -1,0 +1,2 @@
+# The multi-input collect steering case awaits the stalled input's dead-letter write, which the carried #132409 cancel callback waits for.
+4

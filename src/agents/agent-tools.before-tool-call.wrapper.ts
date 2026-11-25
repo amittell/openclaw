@@ -44,10 +44,10 @@ import {
 } from "./agent-tools.before-tool-call.diagnostics.js";
 import { runBeforeToolCallHook } from "./agent-tools.before-tool-call.policy.js";
 import {
-  buildAdjustedParamsKey,
   clearTrackedToolExecution,
-  preExecutionBlockedToolCallIds,
+  MAX_TRACKED_TOOL_CALL_IDS,
   recordAdjustedParamsForToolCall,
+  recordPreExecutionBlockedToolCall,
   recordStructuredReplaySafeToolCall,
   recordToolExecutionStarted,
   recordToolExecutionTracked,
@@ -82,6 +82,7 @@ import {
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
 import { createGatewayToolPolicyAssertion } from "./gateway-tool-policy.js";
+import { isOwnerOnlyToolStub } from "./owner-only-tool-stub-marker.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "./timeout.js";
 import {
@@ -100,7 +101,6 @@ import type { AnyAgentTool } from "./tools/common.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
-const MAX_TRACKED_TOOL_CALL_IDS = 1024;
 const INTERNAL_DISPOSED_RESULT = {
   content: [],
   details: { status: "skipped", deniedReason: "internal-dispose" },
@@ -211,7 +211,7 @@ export function recordStructuredReplayTrustForToolCall(
 
 export function buildBlockedToolResult(params: {
   reason: string;
-  deniedReason?: HookBlockedReason;
+  deniedReason?: HookBlockedReason | "owner-only";
   toolCallId?: string;
   runId?: string;
 }) {
@@ -240,7 +240,8 @@ export function wrapToolWithBeforeToolCallHook(
     isCodeModeControlTool(tool) && tool.name === CODE_MODE_WAIT_TOOL_NAME
       ? refresh.assertActive
       : refresh.assertCurrent;
-  if (!execute) {
+  // An owner-only stub refuses every call itself; hooks and approvals must never see it.
+  if (!execute || isOwnerOnlyToolStub(tool)) {
     return tool;
   }
   const toolName = tool.name || "tool";
@@ -665,14 +666,6 @@ export function rewrapToolWithBeforeToolCallHook(
     rebuilt = wrapExecution(rebuilt);
   }
   return rebuilt;
-}
-
-function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {
-  if (!toolCallId) {
-    return;
-  }
-  preExecutionBlockedToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
-  pruneTrackedToolCallIds(preExecutionBlockedToolCallIds);
 }
 
 function pruneTrackedToolCallIds(ids: Set<string>): void {

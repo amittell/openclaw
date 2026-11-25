@@ -18,6 +18,7 @@ import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import type { TelegramMediaRef } from "./bot-message-context.js";
 import type { TelegramMessageContextOptions } from "./bot-message-context.types.js";
 import {
+  captureTelegramVisibleReplyDelivered,
   createTelegramSpooledReplayDeferredParticipant,
   createTelegramSpooledReplayParticipant,
   getTelegramSpooledReplayDeferredParticipant,
@@ -28,7 +29,7 @@ import {
   type TelegramSpooledReplayDeferredParticipant,
   type TelegramSpooledReplaySettlementHold,
 } from "./bot-processing-outcome.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   describeReplyTarget,
   resolveTelegramMessageThreadSpec,
@@ -246,6 +247,10 @@ export function createTelegramMessagePipeline({
     let dispatchDedupeCommitted = false;
     let spooledReplayFinalResult: TelegramMessageProcessingResult | undefined;
     let spooledReplayFinalization: Promise<TelegramMessageProcessingResult> | undefined;
+    // Settlement below is also invoked from contexts this dispatch does not own
+    // (the reply queue's retained onAbandoned runs on the followup drain chain),
+    // so bind the visible-reply fact here while this attempt's frame is current.
+    const hasDeliveredVisibleReply = captureTelegramVisibleReplyDelivered();
     // Callback-submit retries also set options.spooledReplay without durable ingress.
     // Media aborts retry only when the update frame or a buffered participant owns replay.
     const durableMediaReplay =
@@ -297,7 +302,14 @@ export function createTelegramMessagePipeline({
         return await spooledReplayFinalization;
       }
       const finalization = (async () => {
-        if (result.kind === "completed" || result.kind === "dropped") {
+        // A retryable failure that ALREADY delivered a reply is not safely
+        // retryable: releasing the guard lets the spool replay a turn that has
+        // spoken, and the user sees the answer twice. Commit the guard instead so
+        // the replay is duplicate-suppressed. Only the guard is committed - the
+        // spool row still follows its own retry/dead-letter policy.
+        const repliedBeforeFailing =
+          result.kind === "failed-retryable" && hasDeliveredVisibleReply();
+        if (result.kind === "completed" || result.kind === "dropped" || repliedBeforeFailing) {
           // Do not cache or settle a durable-adoption failure. Deferred queue
           // ownership retries this callback with the same spool participants.
           const releaseSettlementHolds = beginSpooledReplaySettlementHolds(
@@ -398,6 +410,7 @@ export function createTelegramMessagePipeline({
       const hydrateMedia = async (
         sourceMessage: Parameters<typeof resolveMedia>[0]["ctx"]["message"],
         replyFileId: string,
+        scope: string | undefined,
         node?: TelegramCachedMessageNode,
       ): Promise<TelegramMediaRef | undefined> => {
         let mediaRef: TelegramMediaRef | undefined;
@@ -420,6 +433,7 @@ export function createTelegramMessagePipeline({
             },
             maxBytes: mediaMaxBytes,
             ...mediaRuntime,
+            scope,
           });
           if (!media) {
             return undefined;
@@ -462,7 +476,15 @@ export function createTelegramMessagePipeline({
           replyFileId &&
           (!replyFileUniqueId || !seenFileUniqueIds.has(replyFileUniqueId)) &&
           (await shouldHydrateReplyMedia(node, index))
-            ? await hydrateMedia(node.sourceMessage, replyFileId, node)
+            ? await hydrateMedia(
+                node.sourceMessage,
+                replyFileId,
+                buildTelegramMediaScope(
+                  node.sourceMessage.chat?.id,
+                  node.sourceMessage.message_thread_id,
+                ),
+                node,
+              )
             : undefined;
         if (mediaRef) {
           replyMedia.push(mediaRef);
@@ -488,7 +510,13 @@ export function createTelegramMessagePipeline({
         (!externalFileUniqueId || !seenFileUniqueIds.has(externalFileUniqueId)) &&
         (await shouldHydrateReplyMedia(externalTarget, 0))
       ) {
-        const mediaRef = await hydrateMedia(externalReply, externalFileId);
+        // Stamp the chat this turn arrived in: the scope keeps inbound files attributable
+        // to the conversation that saved them, not to the external message's origin.
+        const mediaRef = await hydrateMedia(
+          externalReply,
+          externalFileId,
+          buildTelegramMediaScope(replyCtx.message.chat?.id, replyCtx.message.message_thread_id),
+        );
         if (mediaRef) {
           replyMedia.push(mediaRef);
         }
@@ -558,7 +586,15 @@ export function createTelegramMessagePipeline({
         }
         const media: TelegramMediaRef[] = [];
         for (const { messageId, node, fileId } of photos.slice(-SENDER_MEDIA_LIMIT)) {
-          const mediaRef = await hydrateMedia(node.sourceMessage, fileId, node);
+          const mediaRef = await hydrateMedia(
+            node.sourceMessage,
+            fileId,
+            buildTelegramMediaScope(
+              node.sourceMessage.chat?.id,
+              node.sourceMessage.message_thread_id,
+            ),
+            node,
+          );
           if (!mediaRef) {
             continue;
           }

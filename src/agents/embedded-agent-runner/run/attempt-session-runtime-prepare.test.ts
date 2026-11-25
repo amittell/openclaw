@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type Model,
+} from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { buildSessionContext } from "../../../../packages/agent-core/src/harness/session/session.js";
@@ -32,6 +37,7 @@ import {
   refreshNativeGitHubConfiguration,
 } from "../../github-read-identity.js";
 import { createAgentHarnessToolSurfaceRuntimeCore } from "../../harness/tool-surface-bridge.js";
+import { Agent } from "../../runtime/index.js";
 import { createSandboxTestContext } from "../../sandbox/test-fixtures.js";
 import type { SessionEntry } from "../../sessions/session-manager-types.js";
 import {
@@ -40,11 +46,13 @@ import {
 } from "../../sessions/session-manager-view-types.js";
 import { createMcpStubTool } from "../../test-helpers/agent-tool-stubs.js";
 import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
+import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import { createToolSearchTools, applyToolSearchCatalog } from "../../tool-search.js";
 import { createGitHubPublishTool } from "../../tools/github-publish-tool.js";
 import { prepareEmbeddedAttemptClientTools } from "./attempt-client-tools.js";
 import { createAttemptSetupFixture } from "./attempt-setup.test-support.js";
 import { prepareEmbeddedAttemptToolCatalog } from "./attempt-tool-catalog.js";
+import type { EmbeddedRunAttemptParams } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
   createAnthropicPayloadLogger: vi.fn(),
@@ -180,6 +188,9 @@ function createFixture() {
       [sessionManagerReadTranscriptBranch]: () => [activeMarker],
       getBoundaryCount: () => 0,
       [sessionManagerReadToolResultProjectionEntries]: () => [activeMarker],
+      setTrustedLocalMediaToolNames: vi.fn((_names: ReadonlySet<string>) => {
+        order.push("trust-handoff");
+      }),
     },
     activeSession: {
       messages: [{ role: "user" }, { role: "assistant" }],
@@ -201,6 +212,7 @@ function createFixture() {
     activeSession: f.activeSession,
     clientToolDefs: [{ name: "read" }, { name: "write" }],
     setActiveSessionSystemPrompt: vi.fn(),
+    trustedLocalMediaToolNames: new Set(["read"]),
   };
   const promptStateLease = { state: f.promptState, [Symbol.dispose]: vi.fn() };
   const transport = {
@@ -852,9 +864,14 @@ describe("prepareEmbeddedAttemptSessionRuntime", () => {
     );
     expect(fixture.order.join(" ")).toBe(
       "manager own-sessionManager own-ownsSessionManager prompt-state own-promptStateLease own-getUserTranscriptContexts " +
-        "agent-session own-session owned-boundary boundary settle-tracker arm-session-abort " +
+        "agent-session own-session trust-handoff owned-boundary boundary settle-tracker arm-session-abort " +
         "own-buildAbortSettlePromise own-yield context-guards own-removeToolResultContextGuard cache-trace " +
         "payload-logger trajectory own-trajectoryRecorder transport",
+    );
+    // The guard must hold live delivery's own Set: refreshTools mutates it in place.
+    expect(fixture.sessionManager.setTrustedLocalMediaToolNames).toHaveBeenCalledOnce();
+    expect(fixture.sessionManager.setTrustedLocalMediaToolNames.mock.calls[0]?.[0]).toBe(
+      fixture.agentSession.trustedLocalMediaToolNames,
     );
     expect(result.sessionPromptState).toBe(fixture.promptState);
     expect(result.toolResultPromptProjectionState).toBe(fixture.promptState.toolResults);
@@ -1034,5 +1051,77 @@ describe("trajectory preparation through the public runtime", () => {
     expect(mocks.createTrajectory).not.toHaveBeenCalled();
     expect(mocks.trajectoryMetadata).not.toHaveBeenCalled();
     await expect(fs.access(path.join(stateDir, "agents"))).rejects.toThrow();
+  });
+});
+
+describe("tool-free settled-turn finalization", () => {
+  const model: Model = {
+    id: "test-model",
+    name: "Test Model",
+    api: "openai-completions",
+    provider: "test-provider",
+    baseUrl: "https://example.test",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1_000,
+    maxTokens: 1_000,
+  };
+
+  function response(content: AssistantMessage["content"]): AssistantMessage {
+    return {
+      role: "assistant",
+      content,
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: createZeroUsageFixture(),
+      stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
+      timestamp: Date.now(),
+    };
+  }
+
+  /** The measured model: it calls an unavailable tool, then answers once told it is missing. */
+  async function runPreparedAgentLoop(attempt: Partial<EmbeddedRunAttemptParams>) {
+    const responses = [
+      response([{ type: "toolCall", id: "call-write", name: "write", arguments: {} }]),
+      response([{ type: "text", text: "The final answer." }]),
+    ];
+    const streamFn = vi.fn(() => {
+      const message = responses[Math.min(streamFn.mock.calls.length, responses.length) - 1]!;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message });
+        stream.end();
+      });
+      return stream;
+    });
+    const agent = new Agent({ initialState: { model, tools: [] }, streamFn });
+    const fixture = createFixture();
+    Object.assign(fixture.activeSession, { agent });
+    Object.assign(fixture.input.attempt, attempt);
+    await prepareEmbeddedAttemptSessionRuntime(fixture.input);
+    await agent.prompt("Summarize the settled work.");
+    return { agent, streamFn };
+  }
+
+  it("ends at the first tool call instead of answering Tool not found with another model call", async () => {
+    const { agent, streamFn } = await runPreparedAgentLoop({
+      operation: "settled-tool-finalization",
+      disableTools: true,
+    });
+
+    expect(streamFn).toHaveBeenCalledOnce();
+    expect(agent.state.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+    ]);
+  });
+
+  it("keeps answering tool errors in ordinary tools-disabled attempts", async () => {
+    const { streamFn } = await runPreparedAgentLoop({ operation: "attempt", disableTools: true });
+
+    expect(streamFn).toHaveBeenCalledTimes(2);
   });
 });

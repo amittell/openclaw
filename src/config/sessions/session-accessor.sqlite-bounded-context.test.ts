@@ -14,6 +14,7 @@ import { BACKGROUND_RESULT_PLACEMENT_CUSTOM_TYPE } from "../../../packages/agent
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { expectedCompactionSummary } from "../../agents/test-helpers/compaction-checkpoint.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
@@ -810,9 +811,17 @@ it("keeps reset history closed across compaction with a warm history cache", asy
   await expectHistory([freshUserId]);
   expect(eventIds(boundedContext(scope, { compaction: true }).events)).not.toContain(abandoned);
 
-  manager.appendCompaction("fresh-only summary", freshUserId, 100);
+  const freshCompactionId = manager.appendCompaction("fresh-only summary", freshUserId, 100);
   await expectHistory([freshUserId]);
-  expectContext([summary("fresh-only summary"), message("fresh user")]);
+  expectContext([
+    summary(
+      expectedCompactionSummary("fresh-only summary", {
+        entryId: freshCompactionId,
+        shadowedEntryCount: 1,
+      }),
+    ),
+    message("fresh user"),
+  ]);
 
   const nextUserId = appendUser("after compaction");
   await expectHistory([freshUserId, nextUserId]);
@@ -823,11 +832,16 @@ it("keeps reset history closed across compaction with a warm history cache", asy
   await expectHistory([nextUserId, newestUserId]);
   expectContext([message("after compaction"), message("after second reset")]);
 
-  manager.appendCompaction("newest-only summary", newestUserId, 100);
+  const newestCompactionId = manager.appendCompaction("newest-only summary", newestUserId, 100);
   await expectHistory([nextUserId, newestUserId]);
   const reopened = SessionManager.open(scope);
   expect(reopened.buildSessionContext().messages).toMatchObject([
-    summary("newest-only summary"),
+    summary(
+      expectedCompactionSummary("newest-only summary", {
+        entryId: newestCompactionId,
+        shadowedEntryCount: 2,
+      }),
+    ),
     message("after second reset"),
   ]);
   expect(activeStats(scope).eventCount).toBe(2);

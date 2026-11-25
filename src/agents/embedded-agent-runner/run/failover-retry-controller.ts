@@ -1,6 +1,6 @@
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
-import { sleepWithAbort } from "../../../infra/backoff.js";
+import { computeBackoff, sleepWithAbort } from "../../../infra/backoff.js";
 import { emitDiagnosticsTimelineEvent } from "../../../infra/diagnostics-timeline.js";
 import { monotonicNow } from "../../../shared/monotonic-time.js";
 import {
@@ -28,6 +28,7 @@ import { log } from "../logger.js";
 import type { TraceAttempt } from "../types.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
+import { resolveOverloadFailoverBackoffPolicy } from "./helpers.js";
 import type { prepareEmbeddedRunRuntime } from "./runtime.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
@@ -115,6 +116,8 @@ export function createEmbeddedRunFailoverRetryController(input: {
     : 0;
   const { provider, modelId } = preparedRuntime;
   const advanceAttemptAuthProfile = preparedRuntime.advanceAttemptAuthProfile;
+  const overloadBackoffPolicy = resolveOverloadFailoverBackoffPolicy(params.config);
+  let overloadFailoverAttempts = 0;
   let rateLimitProfileRotations = 0;
   let transientRetryCount = 0;
   let outputLimitRetryCount = 0;
@@ -231,6 +234,20 @@ export function createEmbeddedRunFailoverRetryController(input: {
 
   return {
     overloadProfileRotationLimit: MAX_OVERLOAD_PROFILE_ROTATIONS,
+    // Exponential same-model overload backoff before spending a failover slot:
+    // sustained provider overload otherwise burns the whole profile rotation budget
+    // in a few hundred milliseconds.
+    maybeBackoffBeforeOverloadFailover: async (reason: FailoverReason | null) => {
+      if (reason !== "overloaded" || overloadBackoffPolicy.maxMs <= 0) {
+        return;
+      }
+      overloadFailoverAttempts += 1;
+      const delayMs = computeBackoff(overloadBackoffPolicy, overloadFailoverAttempts);
+      log.warn(
+        `overload backoff before failover for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)}: attempt=${overloadFailoverAttempts} delayMs=${delayMs}`,
+      );
+      await sleepWithAbort(delayMs, params.abortSignal);
+    },
     get transientRetryCount() {
       return transientRetryCount;
     },

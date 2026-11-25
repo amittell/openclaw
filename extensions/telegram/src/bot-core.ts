@@ -181,7 +181,9 @@ export async function createTelegramBotCore(
         void deferredWork.task
           .then((deferredResult) => {
             updateTracker.finishUpdate(begin.update, {
-              completed: deferredResult.kind !== "failed-retryable",
+              completed:
+                !deferredWork.wasOwnerAbortedWhilePending() &&
+                deferredResult.kind !== "failed-retryable",
             });
           })
           .catch(() => {
@@ -189,8 +191,12 @@ export async function createTelegramBotCore(
           });
         return;
       }
-      if (result?.kind === "failed-retryable" && isTelegramSpooledReplayUpdate(ctx.update)) {
-        throw new TelegramSpooledReplayProcessingError(result.error);
+      if (result?.kind === "failed-retryable") {
+        if (isTelegramSpooledReplayUpdate(ctx.update)) {
+          throw new TelegramSpooledReplayProcessingError(result.error);
+        }
+        updateTracker.finishUpdate(begin.update, { completed: false });
+        return;
       }
       updateTracker.finishUpdate(begin.update, { completed: true });
     } catch (error) {
@@ -417,6 +423,7 @@ export async function createTelegramBotCore(
     } finally {
       await threadBindingManager?.stop();
     }
+    // SAFETY: the wrapper forwards the original parameter tuple and return value unchanged; only the overload set is re-attached.
   }) as typeof bot.stop;
   if (disabledBindingAdapter) {
     registerSessionBindingAdapterV2(disabledBindingAdapter);

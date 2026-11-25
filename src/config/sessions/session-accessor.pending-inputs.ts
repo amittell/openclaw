@@ -17,6 +17,7 @@ import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contrac
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { rethrowIncognitoSessionError } from "../../state/incognito-session-error.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
+import { resolveCommittedPendingInputReplay } from "./session-accessor.pending-input-replay.js";
 import {
   preparePendingInputRequest,
   resolveCommittedPendingInputRequestHash,
@@ -112,6 +113,7 @@ export function readWithdrawnSessionPendingInputId(
 function ownerReceipt(
   owner: SessionPendingInputOwner,
   queuedReplay?: true,
+  requestHash?: string,
 ): SessionPendingInputReceipt {
   const message = parseSessionPendingInputMessage(owner.messageJson);
   owner.requesterOrigin ??= decodeRequesterOrigin(message["__openclaw"]?.requesterOrigin);
@@ -122,6 +124,7 @@ function ownerReceipt(
         : "queued";
     },
     inputId: queuedReplay ? owner.transcriptInputId : owner.inputId,
+    ...(requestHash ? { requestHash } : {}),
     message,
     run: (operation) => runWithSessionPendingInput(owner, operation),
     runAsync: (operation) =>
@@ -407,6 +410,7 @@ async function stagePreparedPendingInput(
         return {
           state: "consumed",
           inputId: existing.input_id,
+          requestHash,
           message: parseSessionPendingInputMessage(existing.message_json),
           run: () => {
             throw new Error("Pending input has already been consumed");
@@ -566,6 +570,23 @@ async function stagePreparedPendingInput(
         requestHash = committedHash;
         await assertCurrent();
       }
+      // The answered-turn replay rule (fork; session-accessor.pending-input-replay.ts). Upstream's
+      // "already-delivered" check only finds the input in the transcript, not its answer.
+      // trackCompletion retries keep 9.5's contract and are always admitted.
+      const replay = options.trackCompletion
+        ? "admit"
+        : await resolveCommittedPendingInputReplay({
+            scope,
+            store,
+            options,
+            idempotencyKey: identity.idempotencyKey,
+            requestHash,
+            committed,
+          });
+      if (replay !== "admit") {
+        // Rotated (undefined) or answered (a terminal consumed receipt).
+        return replay;
+      }
       owner = {
         ...ownerScope,
         inputId: randomUUID(),
@@ -586,7 +607,7 @@ async function stagePreparedPendingInput(
       retained = true;
       // Replays have committed bytes but still need execution and completion custody.
       const replayOwner = owner;
-      return Object.assign(ownerReceipt(replayOwner, true), completionMethods, {
+      return Object.assign(ownerReceipt(replayOwner, true, requestHash), completionMethods, {
         validateCommittedReplay: async () => {
           replayOwner.assertCurrent();
           if (!options.trackCompletion && !previous && !existing) {
@@ -691,7 +712,7 @@ async function stagePreparedPendingInput(
           );
         }
         retained = true;
-        return Object.assign(ownerReceipt(owner), completionMethods);
+        return Object.assign(ownerReceipt(owner, undefined, requestHash), completionMethods);
       },
       // Committed input now belongs to the receiver; the original source can retire.
       { checkAfter: false },

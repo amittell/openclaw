@@ -107,6 +107,7 @@ export function createSessionCompactionEntry(
   fromHook?: boolean,
   metadata?: CompactionEntry["__openclaw"],
   tokensAfter?: number,
+  shadowedEntryCount?: number,
 ): CompactionEntry {
   return {
     type: "compaction",
@@ -119,6 +120,7 @@ export function createSessionCompactionEntry(
     details,
     fromHook,
     ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+    ...(shadowedEntryCount !== undefined ? { shadowedEntryCount } : {}),
     ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
   };
 }

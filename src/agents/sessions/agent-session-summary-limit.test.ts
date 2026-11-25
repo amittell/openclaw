@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
 import { stripSummaryFloor } from "../../../packages/agent-core/src/harness/compaction/compaction-floor.js";
@@ -75,11 +76,16 @@ describe("configured compaction summary limit", () => {
 
     const result = await session.compact();
     expect(stripSummaryFloor(result.summary).length).toBe(expectedLimit);
-    expect(
+    const compaction = expectDefined(
       sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
-    ).toMatchObject({ summary: result.summary });
+      "compaction entry",
+    );
+    expect(compaction).toMatchObject({ summary: result.summary });
+    // The fork appends the checkpoint handle to the MODEL context only (agent-core session.ts,
+    // fork-only); the persisted entry above keeps the bare summary. Three of the four messages
+    // are shadowed: keepRecentTokens keeps only the last reply.
     expect(session.messages.find((message) => message.role === "compactionSummary")).toMatchObject({
-      summary: result.summary,
+      summary: `${result.summary}\n[compaction checkpoint ${compaction.id}: shadows 3 earlier entries]`,
     });
     expect(result.summary).toContain("[Compaction summary truncated to fit budget]");
   });

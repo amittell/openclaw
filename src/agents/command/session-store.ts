@@ -57,6 +57,14 @@ export async function updateSessionStoreAfterAgentRun(params: {
    */
   preserveRuntimeModel?: boolean;
   preserveUserFacingSessionModelState?: boolean;
+  /**
+   * When true, this run was served by a fallback model. The fallback is an
+   * in-flight transient choice, not a durable session setting, so runtime
+   * model/context persistence is skipped and the configured primary is retried
+   * once it recovers. Defaults to comparing the run's model/provider against
+   * the configured defaults.
+   */
+  isFromFallback?: boolean;
 }) {
   const {
     cfg,
@@ -108,20 +116,34 @@ export async function updateSessionStoreAfterAgentRun(params: {
   if (updatesContext && expectedSession.sessionId !== sessionId) {
     return;
   }
+  // Treat contextTokens as part of the runtime-model snapshot: when this run
+  // was served by a fallback we must not persist the fallback model's context
+  // window alongside the preserved primary model, otherwise status %used and
+  // compaction heuristics desync from the configured model.
+  const isFromFallback = preserveRuntimeModel
+    ? false
+    : (params.isFromFallback ?? (modelUsed !== defaultModel || providerUsed !== defaultProvider));
   const next: SessionEntry = {
     ...entry,
     updatedAt: now,
     sessionStartedAt: entry.sessionStartedAt ?? now,
     lastInteractionAt: touchInteraction ? now : entry.lastInteractionAt,
     lastActivityAt: touchActivity ? now : entry.lastActivityAt,
-    ...(preserveRuntimeModel
+    ...(preserveRuntimeModel || isFromFallback
       ? {}
       : {
           contextTokens,
           contextTokensSource,
         }),
   };
-  if (!preserveRuntimeModel) {
+  if (isFromFallback) {
+    // Do not persist a fallback model as the session's runtime model. If we did,
+    // resolveSessionModelRef would return the fallback on every subsequent request
+    // and the configured primary model would never be retried after it recovers.
+    // Preserve the existing entry's contextTokens too so status/compaction stay
+    // aligned with the unchanged primary model.
+    next.contextTokens = entry.contextTokens;
+  } else if (!preserveRuntimeModel) {
     setSessionRuntimeModel(next, {
       provider: providerUsed,
       model: modelUsed,

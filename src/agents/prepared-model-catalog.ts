@@ -5,6 +5,7 @@ import { isAbortError } from "../infra/abort-signal.js";
 import { prepareRemoteModelCatalogStartupSnapshot } from "../model-catalog/remote-overlay.js";
 import { readRemoteModelCatalogStartupPublication } from "../model-catalog/remote-startup-snapshot.js";
 import {
+  AgentSelectionRequiredError,
   listAgentIds,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -177,10 +178,24 @@ function resolveInputs(params: LoadPreparedModelCatalogParams = {}): {
   inventory: PreparedModelRuntimeInput;
 } {
   const config = params.config ?? getRuntimeConfig();
-  const explicitOrDefaultAgentId =
-    params.agentId ??
-    (params.agentDir === undefined ? resolveAmbientOwnerAgentId(config) : undefined);
+  // Unscoped reads (no agentId/agentDir) own the ambient-owner lookup. On an explicit
+  // multi-agent roster with no default, that lookup throws AgentSelectionRequiredError
+  // (the self-poll regression). Degrade only that ambient case to the no-owner shape
+  // callers already tolerate; explicit per-agent reads keep the intentional
+  // AgentSelectionRequiredError contract untouched.
+  let explicitOrDefaultAgentId: string | undefined = params.agentId;
+  if (explicitOrDefaultAgentId === undefined && params.agentDir === undefined) {
+    try {
+      explicitOrDefaultAgentId = resolveAmbientOwnerAgentId(config);
+    } catch (error) {
+      if (!(error instanceof AgentSelectionRequiredError)) {
+        throw error;
+      }
+      explicitOrDefaultAgentId = undefined;
+    }
+  }
   const agentDir =
+    // SAFETY: resolveAgentDir forwards this to normalizeAgentId, which accepts null/undefined and falls back to the default agent id, so a cleared selection still resolves a directory.
     params.agentDir ?? resolveAgentDir(config, explicitOrDefaultAgentId as string, params.env);
   const matchingAgentIds =
     explicitOrDefaultAgentId !== undefined

@@ -534,6 +534,7 @@ export function createPluginRegistrars(state: PluginRegistryState) {
         workspaceAccess:
           opts?.workspaceAccess ?? (typeof tool !== "function" && !versioned ? "execute" : true),
         ...(promptGuidance ? { promptGuidance } : {}),
+        ...(opts?.ownerOnly === true ? { ownerOnly: true as const } : {}),
         origin: record.origin,
       }),
       // Host-owned membership must not re-enter the callable wrapper's graph walk.

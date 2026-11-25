@@ -46,7 +46,7 @@ import {
   type MediaGroupEntry,
 } from "./bot-updates.js";
 import type { TelegramMediaKind } from "./bot/body-helpers.js";
-import { resolveMedia } from "./bot/delivery.resolve-media.js";
+import { buildTelegramMediaScope, resolveMedia } from "./bot/delivery.resolve-media.js";
 import {
   buildTelegramGroupPeerId,
   buildTelegramThreadParams,
@@ -408,7 +408,12 @@ export function createTelegramInboundMedia({
         albumMediaKinds.add(nativeKind);
         let media;
         try {
-          media = await resolveMedia({ ctx, maxBytes: mediaMaxBytes, ...mediaRuntime });
+          media = await resolveMedia({
+            ctx,
+            maxBytes: mediaMaxBytes,
+            ...mediaRuntime,
+            scope: buildTelegramMediaScope(entry.chatId, entry.threadSpec.id),
+          });
         } catch (error) {
           // Only the album's owner leaving replays it. A failed attachment must not
           // hide the rest of the album or hold the chat behind it.

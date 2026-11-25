@@ -1,13 +1,24 @@
+import assert from "node:assert/strict";
 import { Bot } from "grammy";
+import type { Message } from "grammy/types";
 import {
   createAcceptedChannelDeliveryResult,
   createChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
+import { createStructuredOutboundPayloadPlan } from "openclaw/plugin-sdk/channel-outbound";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import { dispatchReplyWithBufferedBlockDispatcher as dispatchThroughSharedOwner } from "openclaw/plugin-sdk/reply-dispatch-runtime";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createTelegramMessagePipeline } from "./bot-handlers.message-pipeline.js";
+import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import {
   createBot,
   createContext,
@@ -21,12 +32,19 @@ import {
   dispatchWithContext,
   editMessageTelegram,
   emitToolStart,
+  loadSessionStore,
+  readLatestAssistantTextByIdentity,
   telegramDepsForTest,
   type DispatchReplyWithBufferedBlockDispatcherArgs as DispatchArgs,
   editMessageReplyMarkupTelegram,
   emitTelegramMessageSentHooks,
 } from "./bot-message-dispatch.test-harness.js";
+import {
+  runWithTelegramUpdateProcessingFrame,
+  type TelegramMessageProcessingResult,
+} from "./bot-processing-outcome.js";
 import type * as DeliveryRepliesModule from "./bot/delivery.replies.js";
+import type { TelegramContext } from "./bot/types.js";
 import { asTelegramClientFetch } from "./client-fetch.js";
 import type * as DraftStreamModule from "./draft-stream.js";
 import type { TelegramDraftStream } from "./draft-stream.js";
@@ -163,6 +181,23 @@ function dispatchTurn(
   });
 }
 
+function createLoggedRuntime() {
+  const log = vi.fn<(...args: unknown[]) => void>();
+  return {
+    runtime: {
+      log,
+      error: vi.fn(),
+      exit: () => {
+        throw new Error("exit");
+      },
+    },
+    outcomeLines: () =>
+      log.mock.calls
+        .map((args) => args.join(" "))
+        .filter((line) => line.startsWith("telegram final delivery outcome=")),
+  };
+}
+
 describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -285,11 +320,114 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
     },
   );
 
+  it("logs a final answer finalized in the preview as one outcome line", async () => {
+    const { bot, messages, sendMessage, editMessageText } = await observeTransport();
+    const { runtime, outcomeLines } = createLoggedRuntime();
+    const preview = "Answer in progress while the model keeps writing";
+    const final = "Complete answer edited into the preview";
+    resolveReply(
+      async () => ({ text: final }),
+      async (params) => {
+        await params.replyOptions?.onAssistantMessageStart?.();
+        await params.replyOptions?.onPartialReply?.({ text: preview });
+        await createDraftStream.mock.results[0]?.value?.flush();
+        expect([...messages.values()]).toEqual([preview]);
+      },
+    );
+
+    const result = await dispatchTurn(bot, { runtime });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(runtime.error).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: "completed" });
+    expect([...messages.values()]).toEqual([final]);
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(editMessageText).toHaveBeenCalled();
+    expect(outcomeLines()).toEqual([
+      `telegram final delivery outcome=preview-finalized chat=123 message=${[...messages.keys()][0]}`,
+    ]);
+  });
+
+  it("logs a final whose recovered transcript text has nothing to send as skipped", async () => {
+    const { bot, messages } = await observeTransport();
+    const { runtime, outcomeLines } = createLoggedRuntime();
+    // The final looks cut off, so the longer transcript text replaces it. That text is
+    // one complete reply directive, which leaves nothing to send.
+    const directive = `[[reply_to:${"1".repeat(75)}]]`;
+    const truncated = directive.slice(0, 61);
+    loadSessionStore.mockReturnValue({
+      "agent:test:telegram:direct:123": { sessionId: "s1", updatedAt: 1 },
+    });
+    readLatestAssistantTextByIdentity.mockResolvedValue({
+      text: directive,
+      timestamp: Date.now() + 1_000,
+    });
+    dispatchReplyMock.mockImplementationOnce(async ({ dispatcherOptions }) => {
+      const [plan] = createStructuredOutboundPayloadPlan([{ text: `${truncated}...` }]);
+      assert(plan && dispatcherOptions.deliverPrepared, "Prepared delivery missing");
+      await dispatcherOptions.deliverPrepared(plan, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+    });
+
+    await dispatchTurn(bot, { runtime });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect([...messages.values()]).toEqual([]);
+    expect(outcomeLines()).toEqual([
+      "telegram final delivery outcome=skipped chat=123 reason=channel_transform",
+    ]);
+  });
+
+  it("logs a final cancelled by a sending hook as a skipped outcome", async () => {
+    const { bot, messages } = await observeTransport();
+    const { runtime, outcomeLines } = createLoggedRuntime();
+    deliverInbound.mockResolvedValueOnce({
+      status: "handled_no_send",
+      reason: "no_visible_result",
+      delivery: { suppression: { reason: "cancelled_by_message_sending_hook" } },
+    });
+    resolveReply(async () => ({ text: "A final the sending hook cancels" }));
+
+    await dispatchTurn(bot, { streamMode: "progress", runtime });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // The cancelled answer sends nothing; the status notice uses its separate delivery path.
+    expect([...messages.values()]).toEqual([
+      "No answer was returned. Ask again if you still need one.",
+    ]);
+    expect(outcomeLines()).toEqual([
+      "telegram final delivery outcome=skipped chat=123 reason=cancelled_by_message_sending_hook",
+    ]);
+  });
+
+  it("logs a preview send that may have landed as a retained outcome", async () => {
+    const { bot, sendMessage } = await observeTransport();
+    const { runtime, outcomeLines } = createLoggedRuntime();
+    sendMessage.mockRejectedValueOnce(
+      Object.assign(new Error("fetch failed"), {
+        cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+      }),
+    );
+    resolveReply(async () => ({ text: "A final whose preview send is unconfirmed" }));
+
+    await dispatchTurn(bot, {
+      runtime,
+      retryDispatchErrors: true,
+      suppressFailureFallback: true,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(outcomeLines()).toEqual([
+      "telegram final delivery outcome=preview-retained chat=123 reason=adapter_returned_no_identity",
+    ]);
+  });
+
   it.each(["recording", "replacement", "second"] as const)(
     "preserves the accepted answer across a %s failure",
     async (failure) => {
       const { bot, messages, sendMessage, editMessageText } = await observeTransport();
       const status = createReactions();
+      const { runtime, outcomeLines } = createLoggedRuntime();
       const first = "First accepted answer";
       const preview = "Answer in progress while checking the completed result";
       const final = "Complete answer already accepted by Telegram";
@@ -322,6 +460,7 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       );
       const result = await dispatchTurn(bot, {
         status,
+        runtime,
         cfg:
           failure === "replacement"
             ? undefined
@@ -340,6 +479,13 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       if (failure === "second") {
         const visible = [...messages.entries()];
         expect(visible[0]?.[1]).toBe(first);
+        // A thrown final reports its error, without adding a settled outcome.
+        expect(outcomeLines()).toEqual([
+          `telegram final delivery outcome=preview-finalized chat=123 message=${visible[0]?.[0]}`,
+        ]);
+        expect(runtime.error).toHaveBeenCalledWith(
+          expect.stringContaining("telegram final reply failed"),
+        );
         expect(sendMessage.mock.calls.filter(([, text]) => text === first)).toHaveLength(1);
         expect(visible.some(([, text]) => text === final)).toBe(false);
         expect(visible.some(([, text]) => text === failedDelivery)).toBe(true);
@@ -348,6 +494,9 @@ describeTelegramDispatch("dispatchTelegramMessage final-delivery-lifecycle", () 
       } else {
         expect(result).toEqual({ kind: "completed" });
         expect([...messages.values()]).toEqual([final]);
+        expect(outcomeLines()).toEqual([
+          `telegram final delivery outcome=${failure === "recording" ? "preview-finalized-partial" : "sent"} chat=123 message=${[...messages.keys()][0]}`,
+        ]);
         if (failure === "recording") {
           expect(sendMessage).toHaveBeenCalledOnce();
           expect(recordContext).toHaveBeenCalledWith(
@@ -625,6 +774,115 @@ describeTelegramDispatch("dispatchTelegramMessage native questions", () => {
         register.mockRestore();
         vi.useRealTimers();
       }
+    },
+  );
+});
+
+function replayedMessage(messageId: number): Message {
+  return {
+    message_id: messageId,
+    date: 1736380800,
+    chat: { id: 4242, type: "private" },
+    from: { id: 77, is_bot: false, first_name: "Operator" },
+    text: "does this answer twice?",
+  } as Message;
+}
+
+/**
+ * Runs one spooled attempt through the real message pipeline and its dispatch
+ * dedupe guard. The attempt delivers a real final through dispatch, then the
+ * reply queue abandons it before adoption, and the spool redelivers the update.
+ */
+async function abandonAfterVisibleFinal(streamMode: "partial" | "off", messageId: number) {
+  const message = replayedMessage(messageId);
+  const { bot, messages } = await observeTransport();
+  const dispatchRuntime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+  const final = "The answer this attempt already showed";
+  const processMessage = vi.fn(async (args: { turnContext?: Record<string, unknown> }) => {
+    resolveReply(
+      async () => ({ text: final }),
+      async (params) => {
+        if (streamMode === "partial") {
+          await params.replyOptions?.onAssistantMessageStart?.();
+          await params.replyOptions?.onPartialReply?.({
+            text: "The answer this attempt is streaming now",
+          });
+          await createDraftStream.mock.results[0]?.value?.flush();
+        }
+      },
+    );
+    await dispatchTurn(bot, { streamMode, runtime: dispatchRuntime });
+    const settle = args.turnContext?.finalizeSpooledReplayResult as (
+      result: TelegramMessageProcessingResult,
+    ) => Promise<TelegramMessageProcessingResult>;
+    return await settle({ kind: "failed-retryable", error: new Error("turn-abandoned") });
+  });
+  // The pipeline reads the published runtime config, as the Gateway's turn does;
+  // sent-message state and the allow-from store come through the harness module mocks.
+  const cfg = { channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } } } as OpenClawConfig;
+  setRuntimeConfigSnapshot(cfg);
+  try {
+    const pipeline = createTelegramMessagePipeline({
+      accountId: "default",
+      ownerAgentId: "main",
+      bot: { api: {} },
+      cfg,
+      mediaMaxBytes: 1,
+      opts: { token: "tok" },
+      telegramCfg: {},
+      logger: getChildLogger({ module: "telegram/replay-guard-delivery-test" }),
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      shouldSkipUpdate: () => false,
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveGroupActivation: () => undefined,
+      resolveGroupRequireMention: () => false,
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      processMessage,
+    } as unknown as RegisterTelegramHandlerParams);
+    const claimed = await pipeline.claimMessageDispatchDedupe(message, 99);
+    const attempt = await runWithTelegramUpdateProcessingFrame(
+      async () =>
+        await pipeline.processMessageWithReplyChain({
+          ctx: {
+            message,
+            update: { update_id: 991 },
+          } as unknown as TelegramContext,
+          msg: message,
+          allMedia: [],
+          storeAllowFrom: [],
+          options: { spooledReplay: true },
+          dispatchDedupeClaims: claimed.process ? claimed.claims : [],
+        }),
+    );
+    const redelivered = await pipeline.claimMessageDispatchDedupe(message, 99);
+    return {
+      dispatchErrors: dispatchRuntime.error.mock.calls.map((args) => args.join(" ")),
+      visible: [...messages.values()],
+      final,
+      firstProcess: claimed.process,
+      attemptKind: attempt.value.kind,
+      redeliveredProcess: redelivered.process,
+    };
+  } finally {
+    clearRuntimeConfigSnapshot();
+  }
+}
+
+describeTelegramDispatch("Telegram replay guard after a visible final", () => {
+  it.each([
+    { path: "preview finalized in place", streamMode: "partial", messageId: 12949 },
+    { path: "sent by the reply deliverer", streamMode: "off", messageId: 12950 },
+  ] as const)(
+    "refuses to replay an abandoned attempt whose final was $path",
+    async ({ streamMode, messageId }) => {
+      const run = await abandonAfterVisibleFinal(streamMode, messageId);
+
+      expect(run.dispatchErrors).toEqual([]);
+      expect(run.visible).toEqual([run.final]);
+      expect(run.firstProcess).toBe(true);
+      expect(run.attemptKind).toBe("failed-retryable");
+      // A redelivery that processes again re-runs the turn: the answer shows twice.
+      expect(run.redeliveredProcess).toBe(false);
     },
   );
 });

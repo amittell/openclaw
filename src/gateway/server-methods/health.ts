@@ -11,6 +11,7 @@ import { settleCurrentReadPreparations } from "../../shared/current-read-authori
 import { prepareStatusSummary } from "../../status/summary.js";
 import { buildContextEngineHealthSummary } from "../health/context-engine.js";
 import { buildDeliveryQueueHealthSummary } from "../health/delivery-queue.js";
+import { omitRuntimeConfigHealthForClient } from "../health/runtime-config-cap.js";
 import type { ChannelHealthSummary, HealthSummary } from "../health/types.js";
 import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
@@ -65,6 +66,26 @@ export const healthHandlers: GatewayRequestHandlers = {
     const wantsProbe = params?.probe === true;
     const includeSensitive = client?.connect.scopes?.includes(ADMIN_SCOPE) ?? false;
     const now = Date.now();
+    const respondFresh = () =>
+      respondUnavailableOnThrow(respond, async () => {
+        const snap = await refreshHealthSnapshot({ probe: wantsProbe, includeSensitive });
+        const childRuntime = await prepareChildRuntimeViability();
+        const viability = childRuntime.publish();
+        respond(
+          true,
+          omitRuntimeConfigHealthForClient(
+            {
+              ...snap,
+              coreReady: context.getReadiness?.(viability).coreReady,
+              modelRuntime: getPreparedModelRuntimeStartupStatus(),
+              childRuntime: formatPublishedChildRuntime(viability, includeSensitive),
+              recentCrashes: getGatewayRecentCrashes(),
+            },
+            client?.connect?.caps,
+          ),
+          undefined,
+        );
+      });
     const cached = getHealthCache();
     let cachedDiffersFromRuntime = false;
     if (!wantsProbe && cached) {
@@ -101,26 +122,35 @@ export const healthHandlers: GatewayRequestHandlers = {
       const viability = childRuntime.publish();
       // A reset sampler has no current window; never revive the cached reading.
       const eventLoop = getEventLoopHealth?.();
+      if (getHealthCache() !== cached) {
+        // A config observation or runtime publication retired this snapshot during the
+        // reads above. Its runtimeConfig is stale with it, so answer from a refresh.
+        await respondFresh();
+        return;
+      }
       respond(
         true,
-        {
-          ...cachedState,
-          // Readiness follows live admission, never the health snapshot's refresh cadence.
-          coreReady: context.getReadiness?.(viability).coreReady,
-          modelRuntime: getPreparedModelRuntimeStartupStatus(),
-          ...(eventLoop ? { eventLoop } : {}),
-          ...(contextEngines ? { contextEngines } : {}),
-          ...(deliveryQueues ? { deliveryQueues } : {}),
-          ...(configReloadHotReloadStatus
-            ? { configReload: { hotReloadStatus: configReloadHotReloadStatus } }
-            : {}),
-          // Live check. The cache must not keep a path that disappeared after it was stored.
-          childRuntime: formatPublishedChildRuntime(
-            viability,
-            client?.connect.scopes?.includes(ADMIN_SCOPE) ?? false,
-          ),
-          recentCrashes: getGatewayRecentCrashes(),
-        },
+        omitRuntimeConfigHealthForClient(
+          {
+            ...cachedState,
+            // Readiness follows live admission, never the health snapshot's refresh cadence.
+            coreReady: context.getReadiness?.(viability).coreReady,
+            modelRuntime: getPreparedModelRuntimeStartupStatus(),
+            ...(eventLoop ? { eventLoop } : {}),
+            ...(contextEngines ? { contextEngines } : {}),
+            ...(deliveryQueues ? { deliveryQueues } : {}),
+            ...(configReloadHotReloadStatus
+              ? { configReload: { hotReloadStatus: configReloadHotReloadStatus } }
+              : {}),
+            // Live check. The cache must not keep a path that disappeared after it was stored.
+            childRuntime: formatPublishedChildRuntime(
+              viability,
+              client?.connect.scopes?.includes(ADMIN_SCOPE) ?? false,
+            ),
+            recentCrashes: getGatewayRecentCrashes(),
+          },
+          client?.connect?.caps,
+        ),
         undefined,
         { cached: true },
       );
@@ -131,25 +161,7 @@ export const healthHandlers: GatewayRequestHandlers = {
       }
       return;
     }
-    await respondUnavailableOnThrow(respond, async () => {
-      const snap = await refreshHealthSnapshot({ probe: wantsProbe, includeSensitive });
-      const childRuntime = await prepareChildRuntimeViability();
-      const viability = childRuntime.publish();
-      respond(
-        true,
-        {
-          ...snap,
-          coreReady: context.getReadiness?.(viability).coreReady,
-          modelRuntime: getPreparedModelRuntimeStartupStatus(),
-          childRuntime: formatPublishedChildRuntime(
-            viability,
-            client?.connect.scopes?.includes(ADMIN_SCOPE) ?? false,
-          ),
-          recentCrashes: getGatewayRecentCrashes(),
-        },
-        undefined,
-      );
-    });
+    await respondFresh();
   },
   status: async ({ respond, client, params, context }) => {
     const scopes = client?.connect.scopes ?? [];

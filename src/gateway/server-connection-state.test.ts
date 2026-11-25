@@ -1,5 +1,6 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { WebSocket } from "ws";
+import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -679,5 +680,33 @@ describe("gateway connection state", () => {
     reads.count = 0;
 
     expectConnection(false);
+  });
+
+  it("broadcasts health runtimeConfig only to clients that advertise runtime-config-health", () => {
+    const state = createGatewayConnectionState({
+      scheduler: createTestGatewayScheduler(),
+      bootId: "health-runtime-config",
+      cfg: {} as OpenClawConfig,
+    });
+    onTestFinished(() => state.mentionInbox.dispose());
+    const reads = { count: 0 };
+    const legacy = makeClient("legacy", reads);
+    const advertised = makeClient("advertised", reads);
+    advertised.client.connect.caps = [GATEWAY_CLIENT_CAPS.RUNTIME_CONFIG_HEALTH];
+    // A health-summary client keeps the summary projection when runtimeConfig is gated.
+    const summary = makeClient("summary", reads);
+    summary.client.connect.caps = [GATEWAY_CLIENT_CAPS.HEALTH_SUMMARY];
+    state.clients.add(legacy.client);
+    state.clients.add(advertised.client);
+    state.clients.add(summary.client);
+    const runtimeConfig = { state: "drift", driftPaths: ["agents.defaults.model"] };
+    const payloadSentTo = (send: ReturnType<typeof vi.fn>) =>
+      (JSON.parse(String(send.mock.calls.at(0)?.at(0))) as { payload?: unknown }).payload;
+
+    state.broadcast("health", { ok: true, ts: 1, agents: [], runtimeConfig });
+
+    expect(payloadSentTo(legacy.send)).toEqual({ ok: true, ts: 1, agents: [] });
+    expect(payloadSentTo(advertised.send)).toEqual({ ok: true, ts: 1, agents: [], runtimeConfig });
+    expect(payloadSentTo(summary.send)).toEqual({ ok: true, ts: 1 });
   });
 });

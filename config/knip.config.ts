@@ -1322,6 +1322,11 @@ const config = {
     "src/gateway/openclaw-id/tunnel-supervisor.ts": ["exports", "types"],
     "extensions/openclaw-id-access/browser/owner-signing.ts": ["exports"],
     "extensions/openclaw-id-access/browser/people-format.ts": ["exports"],
+    // Module-global reset helpers exist only to isolate the restart-trace and
+    // healthz-shutdown-log singletons between focused gateway tests; there is
+    // no production caller, but the state they reset is production state.
+    "src/gateway/restart-trace.ts": ["exports"],
+    "src/gateway/server-http.ts": ["exports"],
   },
   workspaces: {
     ".": {

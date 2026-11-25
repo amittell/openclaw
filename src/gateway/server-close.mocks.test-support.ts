@@ -87,3 +87,29 @@ vi.mock("../agents/session-suspension.js", () => ({
 vi.mock("../acp/control-plane/manager.js", () => ({
   disposeAcpSessionManager: mocks.disposeAcpSessionManager,
 }));
+
+// Fork: the post-shutdown exit-watchdog suite (server-close.exit-watchdog.test.ts) resets
+// the shared mocks through this helper; it mocks the subsystem logger itself, as
+// server-close.test.ts does.
+export function resetServerCloseMocks(): void {
+  mocks.logInfo.mockClear();
+  mocks.logWarn.mockClear();
+  mocks.listChannelPlugins.mockReset();
+  mocks.listChannelPlugins.mockReturnValue([]);
+  mocks.disposeAllCodeModeRuns.mockReset();
+  mocks.fenceSessionSuspensionWritesForGatewayShutdown.mockReset();
+  // A reset, not a clear: leftover once-implementations must not leak between tests (#166014).
+  for (const mock of [
+    mocks.disposeAgentHarnesses,
+    mocks.disposeAllSessionMcpRuntimes,
+    mocks.triggerInternalHook,
+    mocks.disposeAllBundleLspRuntimes,
+    mocks.drainRetainedEmbeddingProviders,
+    mocks.stopGmailWatcher,
+    mocks.closeProviderTransportDispatcherPool,
+    mocks.disposeAcpSessionManager,
+  ]) {
+    mock.mockReset();
+    mock.mockResolvedValue(undefined);
+  }
+}

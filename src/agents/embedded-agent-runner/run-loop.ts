@@ -11,6 +11,7 @@ import {
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import { isStrictAgenticExecutionContractActive } from "../execution-contract.js";
 import type { FailoverReason } from "../failover/signal.js";
+import { agentHarnessEnforcesConversationToolPolicy } from "../harness/support.js";
 import { readCapturedPreparedModelRuntimeCatalog } from "../prepared-model-runtime.capture.js";
 import type { ToolOutcomeObservation } from "../tool-outcome-observation.js";
 import { normalizeUsage } from "../usage.js";
@@ -281,6 +282,10 @@ export async function runPreparedEmbeddedLoop(
         ...admittedRunInput,
         runParams: {
           ...params,
+          // A delivery-only retry runs with the narrower tool set it was given.
+          ...(sessionPromptState.retryToolsAllow
+            ? { toolsAllow: sessionPromptState.retryToolsAllow }
+            : {}),
           onCompactionRequestBudget: accounting.onCompactionRequestBudget,
           onContextAccountingEvent: accounting.onContextAccountingEvent,
         },
@@ -605,6 +610,7 @@ export async function runPreparedEmbeddedLoop(
           attemptAuthProfileStore: preparedRuntime.attemptAuthProfileStore,
           apiKeyInfo: getApiKeyInfo(),
           agentHarnessId: agentHarness.id,
+          harnessEnforcesToolPolicy: agentHarnessEnforcesConversationToolPolicy(agentHarness),
           settledTurnFinalizationOutcome,
           pluginHarnessOwnsTransport,
           pluginHarnessOwnsAuthBootstrap,

@@ -71,6 +71,7 @@ import type { DurableExecOptions } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
 import type { ExecApprovalTransport } from "./exec-approval-transport.js";
+import type { ExecCompletionRequester } from "./exec-completion-requester.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { openPrivateTempFileStream } from "./sessions/tools/private-temp-file.js";
@@ -241,6 +242,8 @@ export async function runExecProcess({
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  /** Host-captured sender of the starting turn; its completion continues under their policy. */
+  notifyRequester?: ExecCompletionRequester;
   timeoutSec: number | null;
   /** Whether exec may return a supervised session for later continuation. */
   processContinuationAvailable?: boolean;
@@ -295,6 +298,7 @@ export async function runExecProcess({
         agentId: opts.agentId,
         eventRouting: opts.eventRouting,
         notifyDeliveryContext: normalizeDeliveryContext(opts.notifyDeliveryContext),
+        notifyRequester: opts.notifyRequester,
         notifyOnExit: opts.notifyOnExit,
         notifyOnExitEmptySuccess: opts.notifyOnExitEmptySuccess === true,
         exitNotified: false,

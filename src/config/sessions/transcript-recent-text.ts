@@ -52,6 +52,11 @@ export type ReadRecentSessionConversationTextOptions = {
   minTimestampMs?: number;
   role?: "user" | "assistant";
   preferUpstreamUserText?: boolean;
+  /**
+   * Channel replay only: clamp each entry to 32 KiB and the whole read to 128 KiB. Provenance
+   * readers such as session-upstream-monitor.ts compare complete text and leave this unset.
+   */
+  boundReplayBytes?: boolean;
 };
 
 export type ReadRecentSessionConversationTurnOptions = ReadRecentSessionConversationTextOptions & {
@@ -63,7 +68,11 @@ type ExtractedRecentConversationText = {
   entry: SessionRecentConversationTurn;
 };
 
-function extractRecentConversationText(
+/**
+ * One transcript event as recent conversation text, with whether it is a delivery-only row,
+ * or undefined when it is not selectable. Exported for transcript.ts's grounded reader.
+ */
+export function extractRecentConversationText(
   event: TranscriptEvent,
   options: ReadRecentSessionConversationTurnOptions = {},
 ): ExtractedRecentConversationText | undefined {

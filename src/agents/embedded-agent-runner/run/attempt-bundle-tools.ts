@@ -10,6 +10,7 @@ import {
 import { wrapToolWithAbortSignal } from "../../agent-tools.abort.js";
 import { wrapToolWithBeforeToolCallHook } from "../../agent-tools.before-tool-call.wrapper.js";
 import { filterLocalModelLeanTools } from "../../local-model-lean.js";
+import { dropOwnerOnlyToolStubsNamed } from "../../owner-only-tool-stubs.js";
 import { recordAgentCleanupFailure } from "../../run-cleanup-timeout.js";
 import { normalizeAgentRuntimeTools } from "../../runtime-plan/tools.js";
 import { createRuntimeToolMatcher } from "../../tool-policy-match.js";
@@ -77,10 +78,6 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
           sessionId: params.attempt.sessionId,
         }),
     });
-  const tools = await withRuntimeToolSchemaQuarantine((record) =>
-    normalizeTools(toolsEnabled ? toolsRaw : [], record),
-  );
-  phases.mark("attempt.bundle-tools.mcp-config");
   const auxiliaryToolsEnabled =
     toolsEnabled &&
     params.attempt.trigger !== "memory" &&
@@ -95,6 +92,14 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
     const matchesRuntime = createRuntimeToolMatcher(effectiveToolsAllow);
     clientTools = clientTools.filter((definition) => matchesRuntime(definition.function.name));
   }
+  const clientToolNames = clientTools?.map((tool) => tool.function.name) ?? [];
+  const buildTools = (recordQuarantine: RuntimeToolSchemaQuarantineRecorder) =>
+    dropOwnerOnlyToolStubsNamed(
+      normalizeTools(toolsEnabled ? toolsRaw : [], recordQuarantine),
+      clientToolNames,
+    );
+  const tools = await withRuntimeToolSchemaQuarantine(buildTools);
+  phases.mark("attempt.bundle-tools.mcp-config");
   const bundleMetadataSnapshot = params.setup.getCurrentAttemptPluginMetadataSnapshot();
   // Scoped registries are partial views; only complete snapshots can bypass bundle discovery.
   const bundleManifestRegistry =
@@ -264,8 +269,7 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
       tools,
       uncompactedEffectiveTools,
       refreshTools: (recordQuarantine: RuntimeToolSchemaQuarantineRecorder) => {
-        const nextTools = normalizeTools(toolsEnabled ? toolsRaw : [], recordQuarantine);
-        tools.splice(0, tools.length, ...nextTools);
+        tools.splice(0, tools.length, ...buildTools(recordQuarantine));
         const nextEffectiveTools = projectTools(tools, recordQuarantine);
         uncompactedEffectiveTools.splice(
           0,

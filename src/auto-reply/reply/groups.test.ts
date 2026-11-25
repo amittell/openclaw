@@ -106,9 +106,11 @@ it.each([
     expect(automatic).toMatch(/^### Conversation Behavior\nYou are in a /);
     expect(privateReply).toMatch(/^### Conversation Behavior\nYou are in a /);
     expect(automatic).toContain(`automatically sent to this ${destination}`);
-    expect(privateReply).toContain(`not automatically sent to this ${destination}`);
-    expect(privateReply).toContain("Normal final replies are private");
-    expect(privateReply).toContain("message tool with action=send");
+    // The fork rewrote this sentence: upstream's "not automatically sent" reads as a
+    // sanctioned third option and turns a decided reply into a silent non-delivery.
+    // Same meaning, fork wording, still pinned to the resolved destination label.
+    expect(privateReply).toContain(`is never posted to this ${destination}`);
+    expect(privateReply).toContain("message tool with action=send is your only way to be heard");
     expect(privateReply).toContain("do not call message(action=send)");
     expect(privateReply).not.toContain("Your replies are automatically sent");
     if (kind === "direct") {
@@ -128,6 +130,80 @@ it.each([
     );
   },
 );
+
+// The prompt failure this pins: an agent that has already decided to answer reads
+// "your final answer stays private" as a sanctioned quiet way to answer, emits plain
+// text, calls no tool, and the person waiting gets nothing. Both message_tool_only
+// surfaces must state one delivery path and must never offer a private-answer exit.
+it.each([
+  {
+    name: "group chat",
+    provider: "whatsapp",
+    kind: "group",
+    destination: "this group chat",
+    responseLabel: "visible group response",
+  },
+  {
+    name: "channel",
+    provider: "mattermost",
+    kind: "channel",
+    destination: "this channel",
+    responseLabel: "visible channel response",
+  },
+  {
+    name: "direct conversation",
+    provider: "telegram",
+    kind: "direct",
+    destination: "this conversation",
+    responseLabel: "visible direct response",
+  },
+])(
+  "keeps the message_tool_only reply decision separable from its delivery path: $name",
+  ({ provider, kind, destination, responseLabel }) => {
+    const prompt = sourceContext(provider, kind, true);
+
+    // Mechanism: exactly one delivery path, stated as a fact about the destination.
+    expect(prompt).toContain(
+      `In ${destination} the message tool with action=send is your only way to be heard`,
+    );
+    expect(prompt).toContain(
+      `Your normal final answer is private and is never posted to ${destination}.`,
+    );
+
+    // Gate: both exits adjacent, and the "no reply" exit never grants a private answer.
+    expect(prompt).toContain(
+      `If this turn needs no ${responseLabel}, do not call message(action=send) and end the turn. If it does, deliver it with message(action=send) before the turn ends; a reply left in your final answer reaches nobody.`,
+    );
+    expect(prompt).not.toContain("stays private and will not be posted");
+    expect(prompt).not.toMatch(/no visible[^.]*response is needed[^.]*\.\s*Your normal final/u);
+  },
+);
+
+// Ordering here is load-bearing, not cosmetic. A live model A/B
+// (scripts/dev/message-tool-only-prompt-live-proof.ts) measured a significant rise in
+// sends on ambient turns when the group block ended on the delivery gate instead of on
+// the selectivity sentence: the last thing the prompt says is the thing a weaker model
+// acts on. Keep the gate before the selectivity close so the block still ends on
+// "be selective" the way it did before this change.
+// Upstream #170534 now appends the shared NO_REPLY line after every group block, so the
+// selectivity close is the last line before it rather than the end of the prompt.
+it("closes group message_tool_only guidance with selectivity, after the delivery gate", () => {
+  const prompt = sourceContext("discord", "group", true);
+  const gateIndex = prompt.indexOf("If this turn needs no visible group response");
+  const selectivityIndex = prompt.lastIndexOf("Be extremely selective:");
+  expect(gateIndex).toBeGreaterThan(-1);
+  expect(selectivityIndex).toBeGreaterThan(gateIndex);
+  expect(prompt).toMatch(
+    /Be extremely selective: reply only when directly addressed or clearly helpful\. If no text reply is needed,/u,
+  );
+  expect(prompt.indexOf("If no text reply is needed")).toBeGreaterThan(selectivityIndex);
+});
+
+it("scopes the whether-versus-how reminder to group message_tool_only turns", () => {
+  const selectivitySplit = "Selectivity governs whether you reply, never how you deliver it.";
+  expect(sourceContext("mattermost", "channel", true)).toContain(selectivitySplit);
+  expect(sourceContext("mattermost", "channel")).not.toContain(selectivitySplit);
+});
 
 it("reads markdown table guidance from channel metadata", () => {
   expect(sourceContext("discord", "unknown")).toBe("");

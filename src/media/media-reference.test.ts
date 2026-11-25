@@ -67,6 +67,28 @@ it("parses inbound media URIs for sandbox-relative staging", () => {
   });
 });
 
+it.each([
+  "media://inbound:123/x.png",
+  // A bare colon sets NO port, so parsed.port is "" exactly as for the canonical form.
+  "media://inbound:/x.png",
+  "media://user@inbound/x.png",
+  "media://user:pw@inbound:9/x.png",
+])("rejects the inbound media URI authority %s", (source) => {
+  // Every one of these reports hostname "inbound", so no parsed field separates them
+  // from the canonical spelling; only the raw authority does.
+  expect(new URL(source).hostname).toBe("inbound");
+  expect(() => parseInboundMediaUri(source)).toThrow(/Unsupported media URI location/);
+});
+
+it("keeps accepting the canonical inbound authority and still rejects a cased one", () => {
+  expect(parseInboundMediaUri("media://inbound/x.png")).not.toBeNull();
+  // `media:` is a non-special scheme, so URL preserves the host case and an uppercase
+  // authority was already rejected before this change. Pinning shipped behavior.
+  expect(() => parseInboundMediaUri("MEDIA://INBOUND/x.png")).toThrow(
+    /Unsupported media URI location/,
+  );
+});
+
 it("maps canonical inbound media URIs to local paths for direct file readers", async () => {
   const { id, source, physicalPath } = await createInboundFile();
   await expect(resolveInbound(source)).resolves.toStrictEqual({ id, physicalPath });

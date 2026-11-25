@@ -247,28 +247,28 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 0
   },
   "dynamicToolsJson": {
-    "chars": 88266,
-    "roughTokens": 22067
+    "chars": 88571,
+    "roughTokens": 22143
   },
   "openClawBaseInstructions": {
     "chars": 8756,
     "roughTokens": 2189
   },
   "openClawDeveloperInstructions": {
-    "chars": 3683,
-    "roughTokens": 921
+    "chars": 3753,
+    "roughTokens": 939
   },
   "openClawParentLocalInstructions": {
     "chars": 507,
     "roughTokens": 127
   },
   "totalTextOnly": {
-    "chars": 15115,
-    "roughTokens": 3779
+    "chars": 15185,
+    "roughTokens": 3797
   },
   "totalWithDynamicToolsJson": {
-    "chars": 103383,
-    "roughTokens": 25846
+    "chars": 103758,
+    "roughTokens": 25940
   },
   "userInputText": {
     "chars": 879,
@@ -421,7 +421,7 @@ When explicitly_mentioned_bot is true, the incoming message mentions your channe
 
 
 ### Conversation Behavior
-You are in a Telegram direct conversation. Normal final replies are private and are not automatically sent to this conversation. To post visible output here, use the message tool with action=send; the target defaults to this conversation. If no visible direct response is needed, do not call message(action=send). Your normal final answer stays private and will not be posted to the conversation. If no text reply is needed, including after a reaction or other action, reply with exactly "NO_REPLY" as the entire final answer, without commentary, punctuation, or formatting. NO_REPLY discards anything written this turn that was not sent, so send confirmations before ending silently. Do not use silence to abandon an outstanding request or hide a failure.
+You are in a Telegram direct conversation. In this conversation the message tool with action=send is your only way to be heard; the target defaults to this conversation. Your normal final answer is private and is never posted to this conversation. If this turn needs no visible direct response, do not call message(action=send) and end the turn. If it does, deliver it with message(action=send) before the turn ends; a reply left in your final answer reaches nobody. If no text reply is needed, including after a reaction or other action, reply with exactly "NO_REPLY" as the entire final answer, without commentary, punctuation, or formatting. NO_REPLY discards anything written this turn that was not sent, so send confirmations before ending silently. Do not use silence to abandon an outstanding request or hide a failure.
 
 <collaboration_mode>
 Prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. Ask the user directly when required input prevents progress; silence is not an answer or approval.

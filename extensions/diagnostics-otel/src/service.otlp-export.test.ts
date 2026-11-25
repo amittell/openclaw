@@ -368,11 +368,25 @@ test("leaves message and exec spans parentless when no ancestor was exported", a
   await service.stop?.(ctx);
 
   const spans = sdk.exporter.getFinishedSpans();
-  expect(spans.map((span) => span.name)).toEqual(["openclaw.message.processed", "openclaw.exec"]);
-  for (const span of spans) {
-    expect(span.parentSpanContext).toBeUndefined();
-    expect(span.spanContext().traceId).not.toBe(requestScope.traceId);
-  }
+  // The message span stays a parentless root; the exec span materializes
+  // openclaw.turn.scope (ended at service stop).
+  expect(spans.map((span) => span.name).toSorted()).toEqual([
+    "openclaw.exec",
+    "openclaw.message.processed",
+    "openclaw.turn.scope",
+  ]);
+  const messageSpan = spans.find((span) => span.name === "openclaw.message.processed");
+  const execSpan = spans.find((span) => span.name === "openclaw.exec");
+  const scopeSpan = spans.find((span) => span.name === "openclaw.turn.scope");
+  // The message event names no parent scope, so nothing is materialized for it.
+  expect(messageSpan?.parentSpanContext).toBeUndefined();
+  expect(messageSpan?.spanContext().traceId).not.toBe(requestScope.traceId);
+  // Fork: the exec span now parents to the materialized turn scope (a real, exported,
+  // sampled span) instead of being parentless, so it no longer names a span nobody
+  // exported.
+  expect(scopeSpan).toBeDefined();
+  expect(execSpan?.parentSpanContext?.spanId).toBe(scopeSpan?.spanContext().spanId);
+  expect(execSpan?.spanContext().traceId).toBe(scopeSpan?.spanContext().traceId);
 }, 30_000);
 
 test.each(["signal", "shared"])(

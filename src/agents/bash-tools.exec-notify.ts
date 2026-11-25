@@ -25,6 +25,7 @@ import {
   hasExitWake,
   renderExecExitLabel,
   renderExecOutputFile,
+  selectExecCompletionContent,
 } from "./bash-tools.exec-output.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
@@ -72,10 +73,17 @@ export function prepareExecExitNotification(
   if (!owner) {
     return undefined;
   }
+  // Fork branch-native #190472 (bf164e56334), beside upstream #185476's tool-caller capture. Drop
+  // notifyRequester/completionRequester and exec-completion-requester.ts when a tag carries #190472.
+  // The completion continues its starting sender's work only on that turn's own route.
+  const route = session.notifyDeliveryContext;
+  const requester =
+    session.notifyRequester && route?.channel ? { ...session.notifyRequester, route } : undefined;
   return captureSessionEventTarget(owner, targetKey, {
     operatorAuthority: getGatewayToolCallerIdentity()?.operatorAuthority,
     // The completion continues the requester's own command, not a new sender's request.
     retainRequesterOwner: true,
+    ...(requester ? { requester } : {}),
   }).then(
     (target) => {
       if (oneShot && sessionsYieldAvailable) {
@@ -232,8 +240,12 @@ function prepareExecExitWake(
     return undefined;
   }
   // The retained tail (last 2,000 chars) lets the woken turn act; the output file has the rest.
+  // Output that fit keeps the full tail; a truncated tail prefers its last non-empty line so
+  // the wake names the outcome, not a mid-line fragment. A structured tail (e.g. a JSON blob)
+  // keeps the whole tail.
   const tail = session.tail;
-  const output = tail.trim();
+  const output =
+    session.totalOutputChars > tail.length ? selectExecCompletionContent(tail.trim()) : tail.trim();
   if (
     status === "completed" &&
     session.exitCode === 0 &&

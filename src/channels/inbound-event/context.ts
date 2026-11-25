@@ -272,7 +272,9 @@ export function finalizeChannelInboundContext<T extends Record<string, unknown>>
     const finalizeQuote = (quoteMedia?: readonly InboundMediaFacts[] | null) => {
       if (!(selfQuote && suppressSelfQuoteMedia)) {
         for (const fact of quoteMedia ?? []) {
-          media.push({ ...fact, source: "quote" });
+          // `source` is 11.10's quote provenance (#166640); `quoted` is the fork's #192348 marker,
+          // which hasInboundAudio reads so a text reply to a voice note gets no inbound auto-TTS.
+          media.push({ ...fact, source: "quote", quoted: true });
         }
       }
       const { media: _media, isSelf: _isSelf, ...stripped } = quote;

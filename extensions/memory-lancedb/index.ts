@@ -31,11 +31,13 @@ import {
   isMemoryRecallTimeoutError,
   MemoryRecallEmbeddingError,
 } from "./embeddings.js";
+import { memoryVisibilityScopeForCaller } from "./lancedb-schema.js";
 import { MemoryDB, type MemoryEntry } from "./lancedb-store.js";
 import { dropMediaNoteLines, sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
 import {
   type AutoCaptureMessageProgress,
+  capturableUserText,
   captureFingerprint,
   cleanMemorySearchResults,
   detectCategory,
@@ -43,24 +45,37 @@ import {
   findCleanDuplicateMemory,
   formatRecalledMemoryForModel,
   formatRelevantMemoriesContext,
+  isHeartbeatHookContext,
   looksLikePromptInjection,
   normalizeRecallQuery,
   prepareAutoCaptureMessages,
   projectMemorySearchResult,
   shouldCapture,
 } from "./memory-policy.js";
+import { registerMemoryRefreshTool, withMemoryLock } from "./memory-refresh.js";
 import {
   createEmbeddingHealthTracker,
   createLanceDbMemoryProviderRuntime,
 } from "./provider-runtime.js";
 import { startMemoryRecall } from "./recall-service.js";
 
+// Fork: test/memory-lancedb-system-turn-capture.test.ts reaches these through the plugin entry,
+// since root tests import only an extension's public surfaces.
+export { capturableUserText, sanitizeForMemoryCapture, shouldCapture };
+
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),
 );
 
 const DEFAULT_TOOL_RECALL_TIMEOUT_MS = 15_000;
-const AUTO_RECALL_TIMEOUT_MS = 15_000;
+// Fork: auto-recall runs on the prompt-build hot path, so its embed timeout doubles
+// as a startup-stall budget: a healthy embedder answers in well under a second,
+// so 5s is generous headroom while still capping the worst-case wait. A breach
+// trips the shared recall cooldown, so the next turns skip the embed instantly
+// instead of re-paying the timeout every turn. The explicit memory_recall tool
+// keeps its longer budget (DEFAULT_TOOL_RECALL_TIMEOUT_MS): the user is actively
+// waiting on that call, so failing it fast is the wrong trade.
+const AUTO_RECALL_TIMEOUT_MS = 5_000;
 const AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const AUTO_RECALL_RESULT_CAP = 3;
 const DEFAULT_RECALL_COOLDOWN_MS = 60_000;
@@ -287,6 +302,7 @@ export default definePluginEntry({
         const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
 
         const currentCfg = resolveCurrentHookConfig();
+        const visibilityScope = memoryVisibilityScopeForCaller(ctx, currentCfg);
         const recallMaxChars = currentCfg.recallMaxChars;
         const cooldown = readMemoryRecallCooldown(agentId);
         if (cooldown) {
@@ -304,6 +320,7 @@ export default definePluginEntry({
           search: (vector, timeoutMs) =>
             db.search(agentId, vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1, {
               timeoutMs,
+              visibilityScope,
             }),
         });
         let recall: Awaited<typeof recallOperation.result>;
@@ -425,9 +442,15 @@ export default definePluginEntry({
       async execute(_toolCallId, params) {
         assertRetainedToolEnabled(agentId, ctx.getRuntimeConfig);
         const { query, memoryId } = params as { query?: string; memoryId?: string };
+        // A turn can forget only rows it can read.
+        const visibilityScope = memoryVisibilityScopeForCaller(ctx, resolveCurrentHookConfig());
 
         if (memoryId) {
-          const deleted = await db.delete(agentId, memoryId);
+          // Acquire the per-ID lock so a concurrent memory_refresh replace on the
+          // same ID cannot race this delete.
+          const deleted = await withMemoryLock(memoryId, () =>
+            db.delete(agentId, memoryId, { visibilityScope }),
+          );
           if (!deleted) {
             return memoryDeleteFailureResult(memoryId);
           }
@@ -445,7 +468,7 @@ export default definePluginEntry({
             normalizeRecallQuery(query, recallMaxChars),
             currentCfg.embedding,
           );
-          const results = await db.search(agentId, vector, 5, 0.7);
+          const results = await db.search(agentId, vector, 5, 0.7, { visibilityScope });
 
           if (results.length === 0) {
             return textResult("No matching memories found.", { found: 0 });
@@ -453,7 +476,7 @@ export default definePluginEntry({
 
           const singleResult = results.length === 1 ? results[0] : undefined;
           if (singleResult && singleResult.score > 0.9) {
-            const deleted = await db.delete(agentId, singleResult.entry.id);
+            const deleted = await db.delete(agentId, singleResult.entry.id, { visibilityScope });
             if (!deleted) {
               return memoryDeleteFailureResult(singleResult.entry.id);
             }
@@ -485,6 +508,16 @@ export default definePluginEntry({
       },
     }));
 
+    registerMemoryRefreshTool({
+      api,
+      db,
+      embeddings,
+      resolveEnabledAgentId,
+      assertRetainedToolEnabled,
+      resolveRuntimeConfig,
+      resolveCurrentConfig: resolveCurrentHookConfig,
+    });
+
     registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig, {
       dbPath: resolvedDbPath,
       storageOptions: cfg.storageOptions,
@@ -493,6 +526,12 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
+        // Heartbeat turns build a prompt but are not user turns: recalling there
+        // spends embed latency and prompt budget on a turn nobody reads, and can
+        // trip the recall cooldown that a real turn then inherits.
+        if (isHeartbeatHookContext(ctx)) {
+          return undefined;
+        }
         if (isIncognitoSessionKey(ctx.sessionKey)) {
           return undefined;
         }
@@ -542,6 +581,8 @@ export default definePluginEntry({
             embed: (timeoutMs) =>
               embeddings.embed(agentId, recallQuery, currentCfg.embedding, timeoutMs()),
             beforeSearch: () => toolAuthority.assertActive(),
+            // The prompt hook carries no owner bit, so this keeps the store's default team
+            // scope for every turn; the owner reads owner rows through memory_recall.
             search: (vector, timeoutMs) =>
               db.search(agentId, vector, AUTO_RECALL_OVERFETCH_LIMIT, 0.3, { timeoutMs }),
           });
@@ -554,8 +595,12 @@ export default definePluginEntry({
                 `auto-recall timed out after ${Math.round(AUTO_RECALL_TIMEOUT_MS / 1000)}s`,
               );
             }
+            // An embedding timeout parks recall for DEFAULT_RECALL_COOLDOWN_MS (the constant
+            // recordMemoryRecallCooldown uses), so the warn reports that real duration.
             api.logger.warn?.(
-              `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
+              recallOperation.phase === "embedding"
+                ? `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; pausing recall for ${Math.round(DEFAULT_RECALL_COOLDOWN_MS / 1000)}s to avoid restalling prompt build`
+                : `memory-lancedb: auto-recall timed out after ${AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
             );
             return undefined;
           }
@@ -627,14 +672,11 @@ export default definePluginEntry({
                 continue;
               }
               for (const text of extractUserTextContent(message)) {
-                const sanitized = sanitizeForMemoryCapture(text);
-                if (
-                  !sanitized ||
-                  !shouldCapture(sanitized, {
-                    customTriggers: currentCfg.customTriggers,
-                    maxChars: currentCfg.captureMaxChars,
-                  })
-                ) {
+                const sanitized = capturableUserText(text, {
+                  customTriggers: currentCfg.customTriggers,
+                  maxChars: currentCfg.captureMaxChars,
+                });
+                if (!sanitized) {
                   continue;
                 }
                 const textFingerprint = captureFingerprint(sanitized);

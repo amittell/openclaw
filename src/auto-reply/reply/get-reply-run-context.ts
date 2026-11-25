@@ -559,17 +559,34 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   const buildReplyPromptEnvelopeBase = () => {
     const isRoomEvent = inboundEventKind === "room_event";
     const normalizedInboundUserContext = inboundUserContext.trim();
+    const carrierUserContext = projectTelegramCurrentMessageCarrier(
+      normalizedInboundUserContext,
+      sessionCtx,
+    );
     const resumableRoomEventContext = isRoomEvent
       ? buildRoomEventContext(buildResumableRoomContext(normalizedInboundUserContext))
       : undefined;
-    const currentInboundContextText = isRoomEvent
-      ? buildRoomEventContext(normalizedInboundUserContext)
-      : (inboundUserContextPromptJoiner === " "
-          ? [deliveryDirective, normalizedInboundUserContext]
-          : [normalizedInboundUserContext, deliveryDirective]
-        )
-          .filter(Boolean)
-          .join("\n\n");
+    // A space joiner binds the context's trailing inline header to the user body,
+    // so the delivery directive goes first there (#166869).
+    const renderCurrentInboundContext = (userContext: string, promptJoiner?: string) =>
+      isRoomEvent
+        ? buildRoomEventContext(userContext)
+        : (promptJoiner === " "
+            ? [deliveryDirective, userContext]
+            : [userContext, deliveryDirective]
+          )
+            .filter(Boolean)
+            .join("\n\n");
+    const currentInboundContextText = renderCurrentInboundContext(
+      normalizedInboundUserContext,
+      inboundUserContextPromptJoiner,
+    );
+    // Version-3 sessions send the legacy text as its own carrier message, where
+    // no prompt joiner completes Telegram's bare "#<id>:" header.
+    const carrierText =
+      carrierUserContext === normalizedInboundUserContext
+        ? undefined
+        : renderCurrentInboundContext(carrierUserContext);
     const resetModelBody = isBareSessionReset
       ? [
           inboundUserContext,
@@ -594,12 +611,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     const fragments: RuntimeContextFragment[] = [
       ...(isRoomEvent ? [{ kind: "runtime-instruction" as const, text: ROOM_EVENT_PROMPT }] : []),
       ...(normalizedInboundUserContext
-        ? [
-            {
-              kind: "conversation-data" as const,
-              text: projectTelegramCurrentMessageCarrier(normalizedInboundUserContext, sessionCtx),
-            },
-          ]
+        ? [{ kind: "conversation-data" as const, text: carrierUserContext }]
         : []),
       ...(deliveryDirective
         ? [{ kind: "runtime-instruction" as const, text: deliveryDirective }]
@@ -610,6 +622,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
         ? {
             text: currentInboundContextText,
             fragments,
+            ...(carrierText ? { carrierText } : {}),
             ...(resumableRoomEventContext ? { resumableText: resumableRoomEventContext } : {}),
             promptJoiner: inboundUserContextPromptJoiner,
             ...(activeGoalContext ? { injectedGoalContexts: [activeGoalContext] } : {}),

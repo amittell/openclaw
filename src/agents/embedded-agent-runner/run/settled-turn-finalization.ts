@@ -4,6 +4,7 @@ import {
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
+import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import type { SessionTranscriptWriterFence } from "../../../config/sessions/transcript-write-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import {
@@ -16,6 +17,7 @@ import {
   classifyAgentRunTerminalOutcome,
 } from "../../agent-run-terminal-outcome.js";
 import { runAgentHarnessSettledTurnFinalization } from "../../harness/selection.js";
+import { RejectedToolCallSettledTurnFinalizationError } from "../../harness/settled-turn-finalization-outcome.js";
 import type { AgentHarness } from "../../harness/types.js";
 import { observeReplyDelivery, resolveReplyExpectation } from "../../reply-completion.js";
 import { withSessionManagerWriteAssertion } from "../../sessions/session-manager-write-admission.js";
@@ -35,10 +37,12 @@ import { resolveRuntimeModelAttempt } from "./backend.js";
 import {
   isSettledTurnCutOffByOutputLimit,
   resolveSettledTurnFinalizationRequest,
+  SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import { CUT_OFF_SUMMARY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
+import { resolveAnswerOnlyFinalizationRequest } from "./settled-turn-finalization-request.js";
 import {
   isEmbeddedRunTerminalTimeout,
   resolveEmbeddedRunAttemptTerminalOutcome,
@@ -52,6 +56,10 @@ type CreateAttemptControls = ReturnType<
   typeof createEmbeddedRunLaneController
 >["createAttemptControls"];
 const MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS = 2;
+// "low" is a level every reasoning transport accepts. "off" is not kept: a
+// response that exhausted its budget on reasoning at "off" shows the transport
+// ignored it and fell back to its default effort.
+const ANSWER_ONLY_THINK_LEVELS = new Set<ThinkLevel>(["minimal", "low"]);
 type TerminalPreparationBase = Omit<
   TerminalPreparationInput,
   | "attempt"
@@ -120,7 +128,7 @@ async function prepareSettledTurnFinalization(
     ...delivery,
   });
   await priceTerminalUsage(prepared);
-  const prompt = resolveSettledTurnFinalizationRequest({
+  const finalizationRequest = {
     runParams: input.runParams,
     attempt,
     activeErrorContext: input.activeErrorContext,
@@ -137,8 +145,18 @@ async function prepareSettledTurnFinalization(
     settledTurnFinalizationAvailable:
       !input.runParams.providerReviewAcknowledgment &&
       typeof options.harness.finalizeSettledTurn === "function",
-  });
-  return { prepared, prompt, observeSourceDelivery, priceTerminalUsage };
+  };
+  // A response that spent its whole budget on reasoning needs less reasoning,
+  // not another settled-tool pass at the same effort, so this request wins.
+  const answerOnlyPrompt = resolveAnswerOnlyFinalizationRequest(finalizationRequest);
+  const prompt = answerOnlyPrompt ?? resolveSettledTurnFinalizationRequest(finalizationRequest);
+  return {
+    prepared,
+    prompt,
+    answerOnly: answerOnlyPrompt !== null,
+    observeSourceDelivery,
+    priceTerminalUsage,
+  };
 }
 
 /** Requests projection only after the canonical delivery and finalization decision. */
@@ -199,7 +217,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     input.finalization,
   );
   let { prepared } = preparation;
-  const { prompt, observeSourceDelivery } = preparation;
+  const { prompt, answerOnly, observeSourceDelivery } = preparation;
   const preserveInitial = (finalizationOutcome: "not-attempted" | "failed") => ({
     ...initial,
     prepared,
@@ -221,37 +239,65 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   const describeRun = () =>
     `runId=${runParams.runId} sessionId=${runParams.sessionId} provider=${errorContext.provider}/${errorContext.model}`;
   // Neither empty recovery nor intentional silence replaces a classified failure or tool error.
+  // An answer-only pass that produces no answer also keeps its incomplete turn.
   const preserveOriginalTerminal =
+    answerOnly ||
     Boolean(initial.attempt.lastToolError) ||
     isEmbeddedRunTerminalTimeout(initial.terminalState.outcome) ||
     classifyAgentRunTerminalOutcome(initial.terminalState.outcome) === "failure";
+  const answerOnlyThinkLevel = answerOnly
+    ? resolveAnswerOnlyThinkLevel(input.finalization.preparedAttempt.thinkLevel)
+    : undefined;
+  // The answer-only pass is the turn's one bounded recovery; it never repeats.
+  const maxFinalizationAttempts = answerOnly ? 1 : MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS;
   log.warn(
-    `settled post-tool turn lacked a final answer: ${describeRun()} — running isolated finalization`,
+    answerOnlyThinkLevel
+      ? `final response spent its output budget on reasoning: ${describeRun()} — running one answer-only finalization (tools disabled, thinking=${answerOnlyThinkLevel})`
+      : `settled post-tool turn lacked a final answer: ${describeRun()} — running isolated finalization`,
   );
   let finalizationOutcome: "answered" | "empty" | "failed" = "failed";
   let finalizerAnswered = false;
   try {
     let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
     let finalizationAttempt = 0;
+    let attemptPrompt = prompt;
     for (;;) {
       finalizationAttempt += 1;
       assertFinalizationActive();
       const runFinalization = () =>
         runPreparedSettledTurnFinalization({
-          attempt: finalizationParams,
+          attempt: answerOnlyThinkLevel
+            ? { ...finalizationParams, thinkLevel: answerOnlyThinkLevel }
+            : finalizationParams,
           settledAttempt: initial.attempt,
           harness: input.finalization.harness,
-          prompt,
+          prompt: attemptPrompt,
           createAttemptControls: input.finalization.createAttemptControls,
           abortSignal: input.finalization.abortSignal,
         });
-      finalization = finalizationParams.sessionManager
-        ? await withSessionManagerWriteAssertion(
-            finalizationParams.sessionManager,
-            assertFinalizationActive,
-            runFinalization,
-          )
-        : await runFinalization();
+      try {
+        finalization = finalizationParams.sessionManager
+          ? await withSessionManagerWriteAssertion(
+              finalizationParams.sessionManager,
+              assertFinalizationActive,
+              runFinalization,
+            )
+          : await runFinalization();
+      } catch (error) {
+        // A pass that stopped at a rejected tool call did no work. It spends
+        // the same bounded attempt an empty pass would, never a new budget.
+        if (
+          !(error instanceof RejectedToolCallSettledTurnFinalizationError) ||
+          finalizationAttempt >= maxFinalizationAttempts
+        ) {
+          throw error;
+        }
+        log.warn(
+          `settled-turn finalization stopped at a tool call with tools disabled: ${describeRun()} tools=${error.toolNames.join(",")} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
+        );
+        attemptPrompt = `${prompt}\n\n${SETTLED_FINALIZATION_TOOL_CALL_RETRY_INSTRUCTION}`;
+        continue;
+      }
       assertFinalizationActive();
       finalizerAnswered = finalization.outcome === "answered";
       attempt = finalization.attempt;
@@ -275,20 +321,17 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
         }
         break;
       }
-      if (
-        finalization.outcome !== "empty" ||
-        finalizationAttempt >= MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-      ) {
+      if (finalization.outcome !== "empty" || finalizationAttempt >= maxFinalizationAttempts) {
         break;
       }
       log.warn(
-        `settled-turn finalization completed without a visible answer: ${describeRun()} — retrying ${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS - 1} with tools disabled`,
+        `settled-turn finalization completed without a visible answer: ${describeRun()} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
       );
     }
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(
-        `settled-turn finalization completed without a visible answer: ${describeRun()} attempts=${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS} — preserving failed recovery`,
+        `settled-turn finalization completed without a visible answer: ${describeRun()} attempts=${finalizationAttempt}/${maxFinalizationAttempts} — preserving failed recovery`,
       );
     }
   } catch (error) {
@@ -310,7 +353,17 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     return preserveInitial("failed");
   }
 
+  // Fork (answer-only pass, kept over upstream #182231): when the turn ran no tools, that length
+  // stop cut off reasoning, not work, so the pass's answer completes the turn with no cut-off
+  // notice. After tool work (#178300's case, and the 10-01 turn the pass was built from) a
+  // tool-free summary cannot show the work finished, so the notice and failed status stand
+  // (Alex, 2026-11-16, room #617). Tool work is this attempt's tools or the run's side effects.
+  const answerOnlyExempt =
+    answerOnly &&
+    initial.attempt.toolMetas.length === 0 &&
+    !initial.attempt.replayMetadata.hadPotentialSideEffects;
   const recoveredOutputLimit =
+    !answerOnlyExempt &&
     finalizerAnswered &&
     finalizationOutcome === "answered" &&
     initial.terminalState.outcome.stopReason === "length";
@@ -352,6 +405,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   // A tool-free summary cannot show that the cut-off work finished, so the host
   // says the turn was cut short instead of presenting the summary as a clean finish.
   if (
+    !answerOnlyExempt &&
     finalizationOutcome === "answered" &&
     finalizedPrepared.payloadsWithToolMedia?.length &&
     isSettledTurnCutOffByOutputLimit(initial.attempt)
@@ -408,6 +462,10 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     finalizationOutcome:
       finalizationOutcome === "answered" ? ("answered" as const) : ("failed" as const),
   };
+}
+
+function resolveAnswerOnlyThinkLevel(level: ThinkLevel): ThinkLevel {
+  return ANSWER_ONLY_THINK_LEVELS.has(level) ? level : "low";
 }
 
 function resolveSessionWriterDeliveryAuthority(

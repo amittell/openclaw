@@ -191,6 +191,8 @@ export function createEmbeddedRunAuthController(params: EmbeddedRunAuthControlle
       return;
     }
     if (runtimeAuthState.refreshInFlight) {
+      // Settles: its only await is a withAuthDeadline step, which the hard
+      // backstop bounds even when the run deadline is unlimited or paused.
       return runtimeAuthState.refreshInFlight;
     }
     // Publish only while the captured credential state is still active.

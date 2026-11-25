@@ -1,6 +1,7 @@
 import { sha256Hex as captureFingerprint } from "openclaw/plugin-sdk/node-crypto-runtime";
 import {
   asOptionalRecord,
+  asRecord,
   normalizeLowercaseStringOrEmpty,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeHtml, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -10,7 +11,11 @@ import {
   type MemoryCategory,
 } from "./config.js";
 import type { MemoryDB, MemorySearchResult } from "./lancedb-store.js";
-import { looksLikeEnvelopeSludge } from "./memory-capture-sanitization.js";
+import {
+  looksLikeEnvelopeSludge,
+  sanitizeForMemoryCapture,
+  stripLeadingTimestampPrefix,
+} from "./memory-capture-sanitization.js";
 
 export function extractUserTextContent(message: unknown): string[] {
   const msgObj = asOptionalRecord(message);
@@ -176,11 +181,37 @@ export function looksLikePromptInjection(text: string): boolean {
   return PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+// Core's formatSystemTurnPrompt prefixes every turn OpenClaw writes itself (stranded-reply retry,
+// restart recovery, transcript follow-ups) with this marker and sends it as a user-role message.
+// A plugin cannot import that helper, so the marker is matched here.
+const SYSTEM_TURN_PROMPT_PREFIX = "[System]";
+
+/** True for an OpenClaw-generated system turn, which is not something the user said. */
+export function isSystemTurnPromptText(text: string): boolean {
+  return stripLeadingTimestampPrefix(text.trimStart()).startsWith(SYSTEM_TURN_PROMPT_PREFIX);
+}
+
+// Heartbeat turns are machine-generated keepalives, not user conversation:
+// injecting recalled memories into them wastes an embed on the prompt-build
+// hot path and pollutes the heartbeat prompt with unrelated context.
+export function isHeartbeatHookContext(ctx: unknown): boolean {
+  const record = asRecord(ctx);
+  if (!record) {
+    return false;
+  }
+  if (record.trigger === "heartbeat") {
+    return true;
+  }
+  return typeof record.sessionKey === "string" && /(?:^|:)heartbeat$/.test(record.sessionKey);
+}
+
 // Legacy label-only rows slip past now that header detection keys on the provenance marker, and the
 // marker-free checks catch only payload/bracket shapes. `doctor --fix` deletes sentinel and fenced rows
 // (memory-lancedb-legacy-envelope-rows); dynamic-label prose survives both, accepted over a reader here.
+// System turns stored before capture rejected them stay out of recall and duplicate matching.
+// Fork: `doctor --fix` also deletes them (memory-lancedb-system-turn-rows).
 function isRecallableMemoryText(text: string): boolean {
-  return text.trim().length > 0 && !looksLikeEnvelopeSludge(text);
+  return text.trim().length > 0 && !looksLikeEnvelopeSludge(text) && !isSystemTurnPromptText(text);
 }
 
 function normalizeStoredMemoryText(text: string): string {
@@ -247,11 +278,24 @@ function matchesCustomTrigger(text: string, customTriggers?: string[]): boolean 
   return customTriggers.some((trigger) => lower.includes(trigger.toLocaleLowerCase()));
 }
 
+/** The text auto-capture stores for one user text block, or undefined when it must not be stored. */
+export function capturableUserText(
+  text: string,
+  options?: { customTriggers?: string[]; maxChars?: number },
+): string | undefined {
+  // Check the raw turn: sanitizing can drop the marker line along with a quoted context block.
+  if (isSystemTurnPromptText(text)) {
+    return undefined;
+  }
+  const sanitized = sanitizeForMemoryCapture(text);
+  return sanitized && shouldCapture(sanitized, options) ? sanitized : undefined;
+}
+
 export function shouldCapture(
   text: string,
   options?: { customTriggers?: string[]; maxChars?: number },
 ): boolean {
-  if (looksLikeEnvelopeSludge(text)) {
+  if (looksLikeEnvelopeSludge(text) || isSystemTurnPromptText(text)) {
     return false;
   }
   const maxChars = options?.maxChars ?? DEFAULT_CAPTURE_MAX_CHARS;

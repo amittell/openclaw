@@ -6,7 +6,6 @@ import type {
 } from "../../gateway/session-transcript-read.types.js";
 import { SOURCE_PAGE_MAX_BYTES } from "../../gateway/session-transcript-source-pages.js";
 import { registerNodeSqliteDisposeCallback } from "../../infra/kysely-sync-cache-state.js";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { isPostgresSqlConnection, sqlPublicationAnchor } from "../../infra/sql-connection.js";
 import { hasUncommittedSqliteWrites } from "../../infra/sqlite-schema-facts.js";
@@ -19,6 +18,7 @@ import {
 } from "../../sessions/transcript-anchor-page.js";
 import type { TranscriptReadWindowOptions } from "../../sessions/transcript-read-window.js";
 import { isVisibleTranscriptRecord } from "../../sessions/transcript-visible-record.js";
+import { readActiveMessagePositionRows } from "./session-accessor.sqlite-active-message-positions.js";
 import type {
   SessionTranscriptRawDeltaLimits,
   TranscriptEvent,
@@ -44,7 +44,6 @@ import type {
   VisibleHistoryProjection,
 } from "./session-accessor.sqlite-history-projection.types.js";
 import {
-  getActiveTranscriptKysely,
   readSnapshotEventRows,
   type SessionTranscriptMessageAnchorPage,
   type SessionTranscriptMessageEventPage,
@@ -94,7 +93,7 @@ function retainHistoryWindowOwner(database: CurrentTranscriptProjection["databas
   historyWindowOwners.add(database);
 }
 
-function readBoundaryEvents(
+export function readBoundaryEvents(
   projection: CurrentTranscriptProjection,
   boundaries: Iterable<VisibleHistoryBoundary>,
 ): Map<number, TranscriptEvent> {
@@ -110,7 +109,7 @@ function readBoundaryEvents(
   );
 }
 
-function readVisibleHistoryRange(
+export function readVisibleHistoryRange(
   projection: CurrentTranscriptProjection,
   start: number,
   endExclusive: number,
@@ -299,18 +298,8 @@ export function readTranscriptDisplayDeltaFromProjection(
   const visible = resolveVisibleMessagePositions(projection);
   const firstSeq = result.events[0]!.seq;
   const lastSeq = result.events.at(-1)!.seq;
-  const db = getActiveTranscriptKysely(projection.database);
   const sequences = new Map(
-    executeSqliteQuerySync(
-      projection.database.db,
-      db
-        .selectFrom("session_transcript_active_events")
-        .select(["event_seq", "message_position"])
-        .where("session_id", "=", projection.resolved.sessionId)
-        .where("event_seq", ">=", firstSeq)
-        .where("event_seq", "<=", lastSeq)
-        .where("message_position", "is not", null),
-    ).rows.map((row) => [
+    readActiveMessagePositionRows(projection, { firstSeq, lastSeq }).map((row) => [
       row.event_seq,
       row.message_position === null
         ? undefined

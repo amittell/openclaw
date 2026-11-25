@@ -348,6 +348,7 @@ src/agents/model-serving-context.ts
 src/agents/openai-model-routes.ts
 src/agents/openai-routing.ts
 src/agents/owner-display.ts
+src/agents/owner-only-tool-stub-marker.ts
 src/agents/requester-origin.ts
 src/agents/plugin-model-catalog-repair.ts
 src/agents/plugin-model-catalog.kernel.ts
@@ -2942,11 +2943,13 @@ src/gateway/worker-environments/workspace-conflicts.ts
 src/infra/sibling-temp-file.ts
 src/interactive/payload.ts
 src/media/media-reference.ts
+src/media/media-grounding-limits.ts
 src/media/inbound-media-path.ts
 src/media/store-path.ts
 src/media/store.shared.ts
 src/media/store.ts
 src/media/generated-html-provenance.ts
+src/media/store.scope-stamp.ts
 src/sessions/session-run-error-presentation.ts
 src/sessions/user-turn-media.ts
 src/shared/channel-read-authority.ts

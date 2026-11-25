@@ -27,6 +27,7 @@ import {
 import { createControlUiSessionPrRead } from "./control-ui-session-pr-read.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import { retireDeviceTokenClients } from "./device-token-client-lifecycle.js";
+import { markGatewayShuttingDown } from "./gateway-shutdown-state.js";
 import { publishHooksTokenEnvKey } from "./hooks.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-method-policy.js";
 import { startNodeConnectionNotifications } from "./node-connection-notifications.js";
@@ -38,6 +39,7 @@ import { createGatewayCronReconciliation } from "./server-cron-reconciled.js";
 import { createGatewayDiagnosticsConfigurator } from "./server-diagnostics.js";
 import { applyGatewayLaneConcurrency, resolveGatewayLaneConcurrency } from "./server-lanes.js";
 import { createGatewayCloseEntrypoints } from "./server-lifecycle-close.js";
+import { sealAndJoinSidecarStopOwners } from "./server-lifecycle.sidecar-stops.js";
 import { createGatewayServerLiveState } from "./server-live-state.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
 import type { GatewayCloseOptions, GatewayServerOptions } from "./server-public.js";
@@ -65,6 +67,10 @@ export async function prepareGatewayLifecycle(params: {
   logCron: GatewayLogger;
   shutdownRuntime: GatewayShutdownRuntime;
   exitAfterStartupFailure?: GatewayServerOptions["exitAfterStartupFailure"];
+  // Only the terminal CLI/daemon start owns process exit, so only it may arm the
+  // post-shutdown force-exit watchdog. Carried as a resolved boolean rather than
+  // widening this surface to the whole GatewayServerOptions object.
+  postShutdownExitWatchdogEnabled?: boolean;
 }) {
   const { runtime, port, log, logCron, shutdownRuntime } = params;
   const requestEntryLifetime = new GatewayRequestEntryLifetime();
@@ -401,6 +407,8 @@ export async function prepareGatewayLifecycle(params: {
   const healthWork = new AsyncWorkScope();
   let closeCleanupStarted = false;
   const markClosePreludeStarted = (options?: GatewayCloseOptions) => {
+    // Flip /healthz to 503 before any await; every close path enters here first.
+    markGatewayShuttingDown();
     if (closeCleanupStarted) {
       return params.pluginMetadata.beginClose();
     }
@@ -504,18 +512,8 @@ export async function prepareGatewayLifecycle(params: {
   const stopConnectionDependentSidecars = connectionDependentSidecarStopOwner.stopAndJoin;
   const postReadySidecarStopOwner = runtimeState.postReadySidecars;
   const gatewayLifetimeSidecarStopOwner = runtimeState.gatewayLifetimeSidecars;
-  const sealAndJoinRegisteredSidecarStops = async () => {
-    const results = await Promise.allSettled([
-      postReadySidecarStopOwner.sealAndJoin(),
-      gatewayLifetimeSidecarStopOwner.sealAndJoin(),
-    ]);
-    const failure = results.find(
-      (result): result is PromiseRejectedResult => result.status === "rejected",
-    );
-    if (failure) {
-      throw failure.reason;
-    }
-  };
+  const sealAndJoinRegisteredSidecarStops = () =>
+    sealAndJoinSidecarStopOwners([postReadySidecarStopOwner, gatewayLifetimeSidecarStopOwner]);
   const prepareClose = async (optsValue?: GatewayCloseOptions) => {
     exitAfterClose = optsValue?.exitAfterClose === true;
     // Fence admission now; database cleanup must wait for restart marker persistence.
@@ -598,6 +596,9 @@ export async function prepareGatewayLifecycle(params: {
                   }
                 },
               },
+              // Only the terminal CLI/daemon path owns process exit; embedded starts
+              // stay process-neutral so a handled close cannot kill the host process.
+              postShutdownExitWatchdogEnabled: params.postShutdownExitWatchdogEnabled === true,
               bonjourStop: kernel.swapDiscovery(null)?.stop ?? null,
               tailscaleCleanup: runtimeState.tailscaleCleanup,
               clearSecretsRuntimeSnapshot: clearSecretsRuntimeSnapshotState,
@@ -663,6 +664,10 @@ export async function prepareGatewayLifecycle(params: {
     const closeOptions = {
       reason: "gateway startup failed",
       exitAfterClose: params.exitAfterStartupFailure?.(error) === true,
+      // Nonzero forced-exit status: if this failed-startup cleanup wedges and the
+      // watchdog must kill the process, a failure-only supervisor still relaunches
+      // instead of reading exit 0 as an intentional clean stop.
+      postShutdownExitCode: 1,
     };
     runtime.startupTrace.close();
     await runGatewayCloseSteps({

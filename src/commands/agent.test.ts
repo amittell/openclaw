@@ -1466,8 +1466,8 @@ describe("agentCommand", () => {
     "routes and reuses keys for the %s agent",
     async (mode, { home, store }) => {
       await useRealCommandSessionPersistence();
-      vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId }) =>
-        createDefaultAgentResult({ sessionId }),
+      vi.mocked(runEmbeddedAgent).mockImplementation(async ({ sessionId, provider, model }) =>
+        createDefaultAgentResult({ sessionId, provider, model }),
       );
 
       const explicit = mode === "explicit";

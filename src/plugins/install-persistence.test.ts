@@ -16,6 +16,7 @@ import {
   resetPluginsCliTestState,
   pluginsCliRuntimeLogs,
   setInstalledPluginIndexInstallRecords,
+  setRecoveredPluginInstallRecords,
   configWriteMock as writeConfig,
   writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock as writeIndex,
   applyPluginUninstallDirectoryRemovalMock as removeDirectory,
@@ -522,6 +523,27 @@ it("does not add disabled installs to restrictive allowlists", async () => {
 
   expect(next.plugins).toMatchObject({ allow: ["memory-core"], deny: ["memory-lancedb"] });
   expect(next.plugins?.entries?.["memory-lancedb"]).toBeUndefined();
+});
+
+// A recovered index record is not durable prior ownership: the install joins the allowlist.
+it("adds installed plugins to restrictive allowlists before enabling", async () => {
+  const install = npmInstall("alpha@1.0.0");
+  const enabledConfig: OpenClawConfig = {
+    plugins: { allow: ["memory-core", "alpha"], entries: { alpha: { enabled: true } } },
+  };
+  enablePlugin.mockImplementation((...args: unknown[]) => {
+    const [cfg, pluginId] = args as [OpenClawConfig, string];
+    expect(pluginId).toBe("alpha");
+    expect(cfg.plugins?.allow).toEqual(["memory-core", "alpha"]);
+    return { config: enabledConfig, enabled: true };
+  });
+  setRecoveredPluginInstallRecords({ alpha: install });
+
+  const next = await persistNpm("alpha", { config: { plugins: { allow: ["memory-core"] } } });
+
+  expect(next).toEqual(enabledConfig);
+  expect(enablePlugin).toHaveBeenCalledTimes(1);
+  expect(writeIndex.mock.calls[0]?.[0]).toMatchObject({ alpha: install });
 });
 const install = {
   source: "npm" as const,

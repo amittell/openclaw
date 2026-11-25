@@ -394,6 +394,28 @@ it("keeps tool activation within the prepared allowlist", async () => {
   expect(session.getActiveToolNames()).toEqual(["custom_lookup"]);
 });
 
+it("names sessions_history in the compaction checkpoint only when the session registers it", async () => {
+  const readCheckpoint = async (tools: string[]) => {
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeUserMessage("summarized", 1));
+    const kept = sessionManager.appendMessage(makeUserMessage("kept", 2));
+    const compactionId = sessionManager.appendCompaction("summary", kept, 100);
+    await createSdkSession({ sessionManager, tools });
+    return { compactionId, context: sessionManager.buildSessionContext().messages };
+  };
+
+  const registered = await readCheckpoint(["sessions_history"]);
+  expect(registered.context[0]).toMatchObject({
+    role: "compactionSummary",
+    summary: `summary\n[compaction checkpoint ${registered.compactionId}: shadows 1 earlier entries; sessions_history can read them by compactionId]`,
+  });
+  const unregistered = await readCheckpoint([]);
+  expect(unregistered.context[0]).toMatchObject({
+    role: "compactionSummary",
+    summary: `summary\n[compaction checkpoint ${unregistered.compactionId}: shadows 1 earlier entries]`,
+  });
+});
+
 it("preserves an exact base system prompt when active tools change", async () => {
   const customTool = createTool({
     promptSnippet: "  Lookup\n test  values  ",

@@ -53,7 +53,10 @@ it("embeds a CLI search with the explicitly requested agent's authentication", a
     "private account memory",
     expect.any(Object),
   );
-  expect(harness.search).toHaveBeenCalledWith("private", [0.1, 0.2], 5, 0.3);
+  // The operator's CLI reads owner-only memories too.
+  expect(harness.search).toHaveBeenCalledWith("private", [0.1, 0.2], 5, 0.3, {
+    visibilityScope: "owner",
+  });
   expect(harness.close).toHaveBeenCalledTimes(1);
 });
 
@@ -91,6 +94,7 @@ it.each([
 it.each([
   ["category", "=", "preference"],
   ["importance", ">=", 0.8],
+  ["visibility", "=", "owner"],
 ])("passes a typed query filter to storage: %s", async (column, operator, value) => {
   const input = `${column} ${operator} ${typeof value === "string" ? `'${value}'` : value}`;
   await harness.run("query", "--filter", input);
@@ -100,10 +104,12 @@ it.each([
   );
 });
 
-it.each(["agentId = 'beta'", "category = 'preference' OR agentId = 'beta'", "importance = 'high'"])(
-  "rejects a filter before storage access: %s",
-  async (filter) => {
-    await expect(harness.run("query", "--filter", filter)).rejects.toThrow();
-    expect(harness.query).not.toHaveBeenCalled();
-  },
-);
+it.each([
+  "agentId = 'beta'",
+  "category = 'preference' OR agentId = 'beta'",
+  "importance = 'high'",
+  "visibility = 'shared'",
+])("rejects a filter before storage access: %s", async (filter) => {
+  await expect(harness.run("query", "--filter", filter)).rejects.toThrow();
+  expect(harness.query).not.toHaveBeenCalled();
+});

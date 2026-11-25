@@ -6,7 +6,8 @@ const lanceMocks = vi.hoisted(() => ({
   queryRows: vi.fn(async () => [{ id: "known" }]),
   deleteRows: vi.fn(),
   checkoutLatest: vi.fn(async () => undefined),
-  schema: vi.fn(async () => ({ fields: [{ name: "agentId" }] })),
+  // A current table: agent scope plus the visibility tag, so opening it migrates nothing.
+  schema: vi.fn(async () => ({ fields: [{ name: "agentId" }, { name: "visibility" }] })),
 }));
 
 vi.mock("./lancedb-runtime.js", async (importOriginal) => ({
@@ -63,7 +64,7 @@ test("shared initialization and close retain custody until admitted reads settle
     return rows.promise;
   });
   const reading = [query(), query()];
-  schema.resolve({ fields: [{ name: "agentId" }] });
+  schema.resolve({ fields: [{ name: "agentId" }, { name: "visibility" }] });
   await started.promise;
   expect(lanceMocks.schema).toHaveBeenCalledTimes(1);
   expect(lanceMocks.checkoutLatest).not.toHaveBeenCalled();

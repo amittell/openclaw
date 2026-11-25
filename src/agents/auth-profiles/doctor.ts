@@ -4,7 +4,11 @@
  * to provider plugin doctor copy.
  */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { formatCliCommand } from "../../cli/command-format.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { listProfilesForProvider } from "./profile-list.js";
+import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
+import { sanitizeProfileIdForDisplay } from "./sanitize.js";
 import type { AuthProfileStore } from "./types.js";
 
 const QWEN_PORTAL_OAUTH_MIGRATION_HINT =
@@ -18,6 +22,10 @@ function hasLegacyQwenPortalOAuthProfile(store: AuthProfileStore, profileId?: st
     (profile) =>
       profile?.type === "oauth" && normalizeProviderId(profile.provider) === "qwen-portal",
   );
+}
+
+function sanitizeDoctorDisplayValue(value: unknown): string | undefined {
+  return typeof value === "string" ? sanitizeProfileIdForDisplay(value) : undefined;
 }
 
 type FormatAuthDoctorHintParams = {
@@ -47,5 +55,47 @@ export async function formatAuthDoctorHint(params: FormatAuthDoctorHintParams): 
         profileId: params.profileId,
       }),
   );
-  return typeof pluginHint === "string" && pluginHint.trim() ? pluginHint : "";
+  if (typeof pluginHint === "string" && pluginHint.trim()) {
+    return pluginHint;
+  }
+
+  const legacyProfileId = params.profileId ?? "anthropic:default";
+  const suggested = suggestOAuthProfileIdForLegacyDefault({
+    cfg: params.cfg,
+    store: params.store,
+    provider: normalizedProvider,
+    legacyProfileId,
+  });
+  if (!suggested || suggested === legacyProfileId) {
+    return "";
+  }
+
+  const storeOauthProfiles = listProfilesForProvider(params.store, normalizedProvider)
+    .filter((id) => params.store.profiles[id]?.type === "oauth")
+    .map((id) => sanitizeDoctorDisplayValue(id) ?? "")
+    .join(", ");
+
+  const cfgMode = params.cfg?.auth?.profiles?.[legacyProfileId]?.mode;
+  const cfgProvider = params.cfg?.auth?.profiles?.[legacyProfileId]?.provider;
+
+  // Sanitize all user/config-derived display fields before embedding them in
+  // error/log output to prevent terminal injection via crafted values.
+  const safeProvider = sanitizeDoctorDisplayValue(normalizedProvider) ?? normalizedProvider;
+  const safeConfigProvider = sanitizeDoctorDisplayValue(cfgProvider);
+  const safeConfigMode = sanitizeDoctorDisplayValue(cfgMode);
+  const safeProfileId = sanitizeDoctorDisplayValue(legacyProfileId) ?? legacyProfileId;
+  const safeSuggested = sanitizeDoctorDisplayValue(suggested) ?? suggested;
+
+  return [
+    "Doctor hint (for GitHub issue):",
+    `- provider: ${safeProvider}`,
+    `- config: ${safeProfileId}${
+      safeConfigProvider || safeConfigMode
+        ? ` (provider=${safeConfigProvider ?? "?"}, mode=${safeConfigMode ?? "?"})`
+        : ""
+    }`,
+    `- auth store oauth profiles: ${storeOauthProfiles || "(none)"}`,
+    `- suggested profile: ${safeSuggested}`,
+    `Fix: run "${formatCliCommand("openclaw doctor --yes")}"`,
+  ].join("\n");
 }

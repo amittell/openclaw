@@ -25,6 +25,7 @@ import {
   resetLaneState,
   rotateAnswerLaneAfterQueuedBlocksSettle,
 } from "./bot-message-dispatch-draft.js";
+import { logFinalDeliveryOutcome } from "./bot-message-dispatch-final-delivery-log.js";
 import {
   applyQuoteReplyTarget,
   projectPayloadForDelivery,
@@ -485,6 +486,7 @@ export async function deliverFinalAnswerText(
       visibleReplySent: false,
       suppression: { reason: "channel_transform" },
     };
+    logFinalDeliveryOutcome(turn, { kind: "skipped", deliveryResult });
     await observeFinalDelivery(turn, deliveryResult);
     return { kind: "skipped", deliveryResult };
   }
@@ -537,6 +539,7 @@ export async function deliverFinalAnswerText(
       bindPendingFinalDelivery,
     });
   }
+  logFinalDeliveryOutcome(turn, result);
   if (result.kind === "preview-finalized-partial" && !result.confirmedFinalContent) {
     turn.previewLifecycle.observeFailure(result.deliveryResult);
   } else {

@@ -72,7 +72,18 @@ describe("downloadInboundMedia", () => {
     saveMediaStream.mockRejectedValueOnce(error);
     await expect(download(IMAGE, 7)).rejects.toBe(error);
     expect(downloadMediaMessage.mock.calls[0]?.[1]).toBe("stream");
-    expect(saveMediaStream).toHaveBeenCalledWith(stream, "image/jpeg", "inbound", 7, undefined);
+    // Fork (56cb4a3b826): inbound media ids carry the originating chat scope; IMAGE has no remoteJid.
+    expect(saveMediaStream).toHaveBeenCalledWith(
+      stream,
+      "image/jpeg",
+      "inbound",
+      7,
+      undefined,
+      undefined,
+      {
+        scope: undefined,
+      },
+    );
   });
 
   it.each([

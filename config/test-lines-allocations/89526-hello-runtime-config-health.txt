@@ -1,0 +1,2 @@
+# Fork carry #89526: the hello runtime-config health cases, moved out of connect-hello.update-scope.test.ts, which 11.10 deleted (#198943).
+271

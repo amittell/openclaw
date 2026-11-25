@@ -1,6 +1,7 @@
 /** Assembles an agent session from the run owner's selected model and prepared resources. */
 import { markModelPayloadObserver } from "@openclaw/ai/internal/model-request-body";
 import { clampThinkingLevel } from "@openclaw/ai/internal/runtime";
+import { formatCompactionCheckpointHandle } from "../../../packages/agent-core/src/index.js";
 import { setInternalToolRepeatPolicy } from "../../../packages/agent-core/src/internal-hooks.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import type { SessionMetadataCommit } from "../../config/sessions/transcript-write-context-store.js";
@@ -18,6 +19,7 @@ import {
   type AgentTool,
   type ThinkingLevel,
 } from "../runtime/index.js";
+import { SESSIONS_HISTORY_CHECKPOINT_READ_HINT } from "../tool-description-presets.js";
 import type { AgentSessionConfig } from "./agent-session-types.js";
 import { AgentSession } from "./agent-session.js";
 import type { ExtensionRunner } from "./extensions/index.js";
@@ -114,6 +116,13 @@ export async function createAgentSession(
 ): Promise<{ session: AgentSession }> {
   const { modelRegistry, settingsManager, sessionManager } = options;
   const cwd = options.cwd ?? sessionManager.getCwd();
+  // Set from the tools this session registers, before its first context read, so every
+  // context build in the run renders the same checkpoint line.
+  sessionManager.setCompactionCheckpointHandleFormatter(
+    options.tools.includes("sessions_history")
+      ? (handle) => formatCompactionCheckpointHandle(handle, SESSIONS_HISTORY_CHECKPOINT_READ_HINT)
+      : undefined,
+  );
 
   const initialTarget = sessionManager.getSessionTarget();
   const initialSessionId = sessionManager.getSessionId();

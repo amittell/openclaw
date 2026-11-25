@@ -81,6 +81,8 @@ export type PluginToolRegistration = PluginRegistrationOwner & {
   workspaceAccess?: boolean | "execute";
   /** Shown only while one of `names` is callable; see listToolPromptGuidance. */
   promptGuidance?: string;
+  /** Registered owner-only: non-owner turns receive refusing stubs of these tools. */
+  ownerOnly?: true;
   /** Loader-owned provenance. Missing values are conservative legacy registrations. */
   origin?: PluginOrigin;
 };

@@ -4,6 +4,7 @@ import {
   iterateSessionContextEntries,
   iterateSessionContextMessages,
   projectSessionContextMessage,
+  withCompactionCheckpointHandle,
 } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   isSyntheticMissingToolResult,
@@ -535,11 +536,24 @@ function withTranscriptContextSnapshot<T>(
             version,
             readEntry,
             *readMessages() {
+              // The detached reader renders the same read-time checkpoint line as
+              // buildSessionContext; without it a Codex-backed context read shows a
+              // compaction summary naming no handle.
               // PostgreSQL's synchronous adapter buffers a whole result, unlike SQLite's cursor.
               if (isPostgresSqlConnection(database.db)) {
-                yield* iterateSessionContextMessages(entries, readEntry);
+                yield* iterateSessionContextMessages(
+                  entries,
+                  withCompactionCheckpointHandle(entries, readEntry),
+                );
                 return;
               }
+              // Batched rows hydrate from their own payload; the handle wraps that read, which
+              // projectSessionContextMessage makes synchronously for the row just assigned.
+              let rowEventJson = "";
+              const readBatchedEntry = withCompactionCheckpointHandle(
+                entries,
+                (entry: ContextEntry) => hydrateContextEntry(rowEventJson, entry),
+              );
               const selections = iterateSessionContextEntries(entries);
               let next = selections.next();
               while (!next.done) {
@@ -579,9 +593,8 @@ function withTranscriptContextSnapshot<T>(
                         )
                         .orderBy("seq", "asc"),
                     )) {
-                  const message = projectSessionContextMessage(batch[index++]!, (entry) =>
-                    hydrateContextEntry(row.event_json, entry),
-                  );
+                  rowEventJson = row.event_json;
+                  const message = projectSessionContextMessage(batch[index++]!, readBatchedEntry);
                   if (message) {
                     yield message;
                   }

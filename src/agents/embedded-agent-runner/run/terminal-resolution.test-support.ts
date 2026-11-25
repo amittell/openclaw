@@ -117,6 +117,7 @@ export function makeTerminalInput(input: TerminalInputOverrides = {}): TerminalI
     attemptAuthProfileStore: profileStore,
     apiKeyInfo: null,
     agentHarnessId: "builtin-openclaw",
+    harnessEnforcesToolPolicy: true,
     settledTurnFinalizationOutcome: "not-attempted",
     pluginHarnessOwnsTransport: false,
     pluginHarnessOwnsAuthBootstrap: false,

@@ -4,7 +4,8 @@
   "doctorContract": {
     "stateMigrations": [
       { "id": "memory-lancedb-agent-scope" },
-      { "id": "memory-lancedb-legacy-envelope-rows", "doctorOnly": true }
+      { "id": "memory-lancedb-legacy-envelope-rows", "doctorOnly": true },
+      { "id": "memory-lancedb-system-turn-rows", "doctorOnly": true }
     ]
   },
   "name": "Memory LanceDB",
@@ -24,7 +25,7 @@
   },
   "kind": "memory",
   "contracts": {
-    "tools": ["memory_forget", "memory_recall", "memory_store"]
+    "tools": ["memory_forget", "memory_recall", "memory_refresh", "memory_store"]
   },
   "toolMetadata": {
     "memory_forget": { "sideEffecting": true },
@@ -53,6 +54,12 @@
       "help": "Optional provider or OpenAI-compatible embedding endpoint base URL",
       "advanced": true
     },
+    "embedding.fallbackBaseUrl": {
+      "label": "Fallback Base URL",
+      "placeholder": "http://standby-host:8000/api/v1",
+      "help": "Optional secondary OpenAI-compatible embedding endpoint; used only when the primary baseUrl fails",
+      "advanced": true
+    },
     "embedding.dimensions": {
       "label": "Dimensions",
       "placeholder": "1536",
@@ -71,6 +78,10 @@
     "autoRecall": {
       "label": "Auto-Recall",
       "help": "Automatically inject relevant memories into context"
+    },
+    "ownerRecallInGroups": {
+      "label": "Owner Memories in Groups",
+      "help": "Let the owner's own turns in group and channel chats recall owner-only memories. Off: only the owner's direct chat can."
     },
     "dreaming": {
       "label": "Dreaming",
@@ -122,7 +133,7 @@
       "id": "memory-recall",
       "title": "Memory recall",
       "order": 40,
-      "properties": ["autoRecall", "recallMaxChars"]
+      "properties": ["autoRecall", "ownerRecallInGroups", "recallMaxChars"]
     },
     {
       "id": "dreaming",
@@ -153,6 +164,9 @@
           "baseUrl": {
             "type": "string"
           },
+          "fallbackBaseUrl": {
+            "type": "string"
+          },
           "dimensions": {
             "type": "integer",
             "minimum": 1
@@ -166,6 +180,9 @@
         "type": "boolean"
       },
       "autoRecall": {
+        "type": "boolean"
+      },
+      "ownerRecallInGroups": {
         "type": "boolean"
       },
       "dreaming": {

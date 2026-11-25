@@ -1,4 +1,6 @@
 export const SECURITY_TARGET_NAME_VALUE_RE = /^[A-Za-z0-9@/_.:-]{1,256}$/u;
+// Shared with the content-normalization tests, which pin the log-body bound.
+export const MAX_OTEL_LOG_BODY_CHARS = 4 * 1024;
 export const OTEL_SEMCONV_STABILITY_OPT_IN_ENV = "OTEL_SEMCONV_STABILITY_OPT_IN";
 export const GEN_AI_LATEST_EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental";
 export const GEN_AI_TOKEN_USAGE_BUCKETS = [

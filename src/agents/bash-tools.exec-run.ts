@@ -566,6 +566,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           agentId,
           eventRouting: defaults?.eventRouting,
           notifyDeliveryContext,
+          notifyRequester: defaults?.completionRequester,
           timeoutSec:
             params.timeoutSeconds ??
             (startsService ? serviceTimeoutSec(subagentSession) : defaultTimeoutSec),
