@@ -5424,3 +5424,101 @@ the subagents.
   331 to 2,207 MB).
 - `preprod-pipeline-collect` failed at 01:50Z with `Wait for Agents failed`. Not new: 9 of its runs on 2026-11-20
   under the 11.5 carry failed the same way.
+
+## 11.7: the carry moves to the v2026.11.7 tag (2026-11-23 to 2026-11-25)
+
+Upstream v2026.11.7 (commit `e31bbf056de3`, tag object `de3c8f72b0a6`) is v2026.11.6 plus 736 linear commits. Alex,
+room #664 to #669: merge the tag with four upstream fixes from the post-11.6 error investigation, carry #199283 so
+#199585 can come too (the yield chain, shown to him before it went on the branch), update his upstream PRs, fix the
+two silent-stop nudge cases the qualification found, and rework #175029.
+
+**The merge.** `941cada64f6` merges the tag into the 11.6 carry `d57cd122466` (first parent the carry, as before).
+31 files conflicted; the commit message lists each resolution. The carry's #199122 port keeps #200854 on top: 11.7
+backports #199122 without #200854's last-line wake content.
+
+**Upstream fixes carried on top** (the error investigation's list, 2026-11-21):
+
+- `eb394fc496a` #199587 (watchdog `warn` state and the `stalled session:` line removed), `53c82182e5c` #199113 (one
+  wake turn for background commands that exit together), `0196e05bf34` #198843 (unreachable and undeliverable
+  completions logged, cherry-picked from `fbdeb6e150e`).
+- #195987 (deferred restart resume) is not carried, and the small fork patch Alex chose for it (room #665) turned out
+  unnecessary: the tag already has `885c560bac1` "retain captured agent scope during restart discovery", the fix for
+  #200651, the custody bug behind the failed resume after the 11.6 deploy. It is an ancestor of v2026.11.7 and of this
+  branch, and not of `d57cd122466` or the deployed `65eb3e94cb1`.
+- The yield chain (Alex, rooms #665/#666/#669): `965ea05e79c` is #199283 (`1fff14f6019`); 22 of its 28 files carry
+  upstream's changed lines exactly. The others keep 11.7's subagent docs wording (#192369's hidden/visible split is not
+  in 11.7), the `sessions_yield` options type without `terminal`, and 11.7's `exec-notify` import, and two prompt
+  snapshots are regenerated. `183830d72cc` is #199585 (`d0733c6e0e8`); 18 of 19 files match, and
+  `exec-tool-timeout.ts` is skipped because 11.7 lacks the function it edits. `19321429c45` adapts #199585 to 11.7:
+  the ended-run refusal skips the server-owned generated-media continuation (11.7 still runs cron media after the run
+  ends; upstream moved it inline in #199529), and the one-shot cron e2e expects the late exit to be withheld as a
+  deleted conversation (11.7's exec-notify reads the session before admission; main changed that in #200099).
+  `49dd9a1ee70` allocates its test lines.
+
+**Fork changes made with the carry**, in order:
+
+- `e0db5f135e0`: config baseline and codex prompt snapshots regenerated for the merge.
+- `97020d0df41`: `prepareCronSession` declares its return type, keeping `run-prepare.ts` at the 700-line cap.
+- `4ff0e628764`, `28ccf76e3fc`, `6e0d06f880f`, `95aca08fce6`, `566661df1c5`: tests aligned with the carry. The state
+  test's mock dedupes failures and still calls the real refusal owner; three exec tests opt out of the shared
+  fixture's exit wake; the Auto Review case expects `observe`, since #199587 removes `warn`, as main's copy does; the
+  replayed compaction summary carries the checkpoint line; and the message-tool loop suite resets the duplicate-send
+  guard, which `test/setup.env.ts` (unit-fast) does not.
+- `781cfee88cd`: a fork defect, already in the 11.6 carry. `readSessionContextSeed` and actor memory's full-fidelity
+  path rendered no compaction checkpoint line, so a seeded context sent and priced a summary with no handle.
+  `session-context-seed.test.ts` caught it; the 11.6 qualification ran only files the carry changed.
+- `0187c66b08e`, `9f672b52e9b` (Alex, room #668: "Fix both, with tests"): the silent-stop nudge now skips a turn whose
+  message send failed after it started and may have reached the user (a send the platform refused before dispatch is
+  still nudged), and skips exec-completion and system-event turns, whose silence is valid. The first commit kept the
+  fact in the terminal retry state, which the plugin-refresh and normalization retries bypass;
+  `run.plugin-runtime-refresh-delivery.integration.test.ts` still failed. The second moves it onto the attempt, carried
+  by the attempt carryover and the plugin-refresh owner. The nudge moved into `silent-stop-nudge.ts`
+  (`terminal-resolution.ts` 726 -> 696 lines).
+- `27c9aad543a`: the merge kept two byte-identical copies of one exec follow-up test; the tag's copy goes.
+- `ff07d977de8`: the multi-input steering case waits for the stalled input's dead-letter write. The carried #132409
+  watchdog makes a guillotined claim's cancel callback wait for that write, a SQLite worker round trip of 5 to 6 ms of
+  real time that the test's fake 250 ms advance cannot move. Not something a user sees.
+
+Schema and toolchain are unchanged from 11.6: agent 38, state 36, pnpm 12.15.0, the same Node range. `package.json`
+and the lockfile changed, so a deploy runs a fresh install. No migration runs on deploy; the 11.6 carry stays a valid
+rollback.
+
+**PR round** (Alex, rooms #667 and #668). Eight PRs were brought up to date with main and their evidence refreshed:
+#191301, #191787, #170110, #191857, #190472, #190572, #200282 and #168611, plus a note on #200854 (11.7 ships #199122
+without it). #175029 (room #669): two of its three cases failed on main `00a9cbf6d65` because #203271 removed
+`DEFAULT_MODEL`, so the fixture's handoff was never consumed, and #199529 removed two handler parameters. The PR is at
+`d0ac4439e28` with the fixture bound to its configured model; it stays test-only here. Still uncarried: #200282 (the
+fork's owner-only memory visibility owns that policy) and #168611 and #175029 (test-only). #190472 stays
+branch-native.
+
+**Qualification** (M4, Node 26.12.1, Vitest on Node):
+
+- Static gate at `97020d0df41` and again at the head `49dd9a1ee70` (`qual-117.sh`, 2026-11-25 03:20Z to 03:27Z):
+  build (192 s), tsgo:all, assertion safety, line cap, format, wrapper inventory, plugin SDK surface, test mock
+  exports, conflict markers, prompt snapshots and config docs rc 0. oxlint rc 1 on the two inherited `max-lines`
+  errors (`ingress-drain.ts` 753, `ingress-monitor.ts` 701), as in 11.6. The test-lines ratchet is red and inherited:
+  the bare tag is 784 lines over its own ceiling (6,389,672 against 6,388,888, `--base v2026.11.6`), and this branch
+  21,414 (6,414,112 against 6,392,698). Each change carried here adds an allocation, as before.
+- Wide run at `28ccf76e3fc` (1,775 files in chunks of 40, then 630 under `src/gateway/` one per process; 2026-11-24
+  04:14Z to 11:08Z). The failing files were run alone on the carry and on the bare tag. Seven were caused by the
+  merge and are fixed above: `code-mode.bridge.autoreview`, `agent-session-summary-limit`, `session-context-seed`,
+  `run.plugin-runtime-refresh-delivery.integration`, `message-tool-terminal.loop`, `followup-turn-execution.steering`
+  and `session-message-events.exec-completion`. One is inherited: `doctor-state-storage.test.ts` ("diagnoses an
+  immutable database at the command boundary") fails alone on the bare tag too, on the same assertion. The rest (the
+  spawn-broker files, `worker.runtime`, `control-ui-session-pr-access`, `server-agent-database-startup`,
+  `server.spawn-broker`, the TUI PTY and Discord-capture e2e files) were the run's TMPDIR, not the carry: their logs
+  hold `listen EINVAL` (57 in chunk 40, 130 in chunk 43, 2 gateway files), and they pass with a short TMPDIR (below).
+  An earlier reading called them order-sensitive because they passed alone; that run's TMPDIR was shorter.
+- The yield chain's 223 targeted files at `43718a3c78c` (the chain before its patch-identical rebase onto
+  `ff07d977de8`): 223 of 223 report, 3,189 passed, 23 skipped, 0 failed.
+- At the head `49dd9a1ee70`, one process per file: every test file changed since `28ccf76e3fc`, plus the wide run's
+  failing files (2026-11-25 03:27Z to 04:29Z). 31 of 31 report: 433 passed, 4 failed, 4 skipped; 13 of them ran
+  again with a short TMPDIR after the first pass hit the socket limit below. The 4 failures are inherited and fail
+  the same way on the bare tag: `doctor-state-storage.test.ts` (1, the same assertion) and `tui-pty-local.e2e.test.ts`
+  (3: the local-mode turn ends with `run error: Session MCP runtime scheduler has not been bound by its lifecycle
+  owner` before any model request, 4 times in the tag's log as well; no upstream issue mentions it). The bots run
+  the Gateway, not the local TUI mode.
+- A TMPDIR trap on this host: with `TMPDIR` under `.../68acf50e-c117/tmp/final-files`, the spawn-broker and worker
+  tests fail with `listen EINVAL`, because their Unix socket paths reach 108 to 114 bytes and macOS caps `sun_path` at 104. Keep TMPDIR short (`/Volumes/m4-store/alex/agent-scratch/t68` gives 79).
+
+Not deployed. A deploy needs Alex's go and a release-tag recheck.
