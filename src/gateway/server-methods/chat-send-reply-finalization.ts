@@ -161,7 +161,10 @@ export async function finalizeChatSendDispatchedReplies(
     runtimeOwnsTranscript?: boolean;
     state: "final" | "aborted";
     stopReason?: string;
-    /** Answered-turn marker; invoked only when this turn actually reached `final`. */
+    /**
+     * Answered-turn marker; invoked only when this turn actually reached `final`, before and
+     * after this finalizer commits the user turn. It records once a commit exists.
+     */
     recordCompletedTurn?: () => void;
   },
 ): Promise<void> {
@@ -176,9 +179,13 @@ export async function finalizeChatSendDispatchedReplies(
   } = params;
   const { agentId, backingSessionId, cfg, clientRunId, sessionKey, sessionLoadOptions } = session;
   const stopReason = params.state === "aborted" ? "aborted" : "stop";
-  if (params.state === "final") {
-    params.recordCompletedTurn?.();
-  }
+  const recordCompletedTurn = () => {
+    if (params.state === "final") {
+      params.recordCompletedTurn?.();
+    }
+  };
+  // A runtime-committed turn is marked here, before any early return below.
+  recordCompletedTurn();
   const btwResult = buildChatSendBtwSideResult(deliveredReplies);
   if (btwResult) {
     broadcastSideResult({
@@ -343,6 +350,8 @@ export async function finalizeChatSendDispatchedReplies(
     } else {
       await persistUserTurnTranscript();
     }
+    // A command turn commits only in the persist above.
+    recordCompletedTurn();
     if (!authorizeDelivery("transcript append")) {
       return;
     }
