@@ -28,6 +28,7 @@ import { estimateCompactionHistoryTokens } from "../sessions/context-token-press
 import { withSessionCompactionPersistenceAsync as persistCompaction } from "../sessions/session-compaction-persistence.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
+import { expectedCompactionSummary } from "../test-helpers/compaction-checkpoint.js";
 import { prepareHarnessContextMedia } from "./context-media-runtime.js";
 import type { AgentHarnessContextMediaRequest } from "./host-capability-types.js";
 import { bindBoundedSeed } from "./host-seed.js";
@@ -77,6 +78,17 @@ const assistant = (text: string) =>
   makeAssistantMessageFixture({ content: [{ type: "text", text }] });
 const appendUser = async (manager: SessionManager, text: string, timestamp: number) =>
   expectDefined(await manager.appendMessageAsync(makeUserMessage(text, timestamp)), "seed turn");
+/** Seeded context renders the active boundary's checkpoint line too (781cfee88cd). */
+function seededSummary(manager: SessionManager, summary: string) {
+  const boundary = manager.getBranch().findLast((entry) => entry.type === "compaction");
+  if (boundary?.type !== "compaction") {
+    throw new Error("Expected an active compaction boundary");
+  }
+  return expectedCompactionSummary(summary, {
+    entryId: boundary.id,
+    shadowedEntryCount: boundary.shadowedEntryCount,
+  });
+}
 const seedConfig = (maxActiveTranscriptBytes: number | string, enabled?: boolean) => ({
   agents: { defaults: { compaction: { maxActiveTranscriptBytes, enabled } } },
 });
@@ -285,7 +297,9 @@ it.each<SeedCase>([
           expect(seed.filter((message) => message.role === "compactionSummary")).toEqual(
             oversizedSummary
               ? []
-              : expect.arrayContaining([expect.objectContaining({ summary: generatedSummary })]),
+              : expect.arrayContaining([
+                  expect.objectContaining({ summary: seededSummary(manager, generatedSummary) }),
+                ]),
           );
           expect(loadSessionEntry(target)?.compactionCount).toBe(1);
           expect(loadSessionEntry(target)?.transcriptByteCompactionLatch).toBeUndefined();
@@ -294,7 +308,10 @@ it.each<SeedCase>([
           expect(loadTranscriptEventsSync(target)).toEqual(originalEvents);
           expect(JSON.stringify(seed)).toContain("Older history outside that window is omitted");
           expect(seed).toContainEqual(
-            expect.objectContaining({ role: "compactionSummary", summary }),
+            expect.objectContaining({
+              role: "compactionSummary",
+              summary: seededSummary(manager, expectDefined(summary, "declined summary")),
+            }),
           );
         }
         expect(loadTranscriptEventsSync(target)).toEqual(expect.arrayContaining(originalEvents));
