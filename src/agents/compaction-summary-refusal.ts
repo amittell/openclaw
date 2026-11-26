@@ -28,6 +28,14 @@ function requireCompactionMessages(
 
 /** A transcript custom entry: persisted and readable, never projected into model context. */
 const COMPACTION_ATTEMPT_CUSTOM_TYPE = "openclaw.compaction-attempt";
+
+/** The row `settleCompactionSafeguardCancellation` appends for its attempt. */
+export function isCompactionAttemptRecord<E extends { type: string; customType?: string }>(
+  entry: E | undefined,
+): entry is E & { type: "custom"; customType: typeof COMPACTION_ATTEMPT_CUSTOM_TYPE } {
+  return entry?.type === "custom" && entry.customType === COMPACTION_ATTEMPT_CUSTOM_TYPE;
+}
+
 type CompactionAttempt = {
   /** `refusal`, the provider failover class (timeout, overloaded, format...), or `unknown`. */
   failure: string;

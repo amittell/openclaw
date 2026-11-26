@@ -9,6 +9,7 @@ import { setCompactionSafeguardCancellation } from "../agent-hooks/compaction-sa
 import { sanitizeCompactionReplayMessages } from "../compaction-replay.js";
 import {
   compactWithoutNewSummary,
+  isCompactionAttemptRecord,
   settleCompactionSafeguardCancellation,
   settleCompactionSummary,
   withCompactionSummaryRoute,
@@ -303,7 +304,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     // The branch prepared here and the leaf committed onto below must be the same leaf:
     // the awaited hook/summarizer can outlive an append, and a compaction committed under
     // a moved leaf would shadow entries it never summarized.
-    const preparedLeafId = this.sessionManager.getLeafId();
+    let preparedLeafId = this.sessionManager.getLeafId();
     // One boundary per attempt: the budgets below price its checkpoint line with this id.
     const checkpointEntryId = generateSessionEntryId();
     const prepared = prepareAgentCompactionWork(pathEntries, {
@@ -346,6 +347,13 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           preparation,
           options,
         );
+        // Settling records this attempt on the prepared leaf. That row is the attempt's own, as
+        // in the native owner, so the commit below goes onto it; any other append still moves
+        // the leaf away from what was summarized.
+        const leaf = this.sessionManager.getLeafEntry();
+        if (isCompactionAttemptRecord(leaf) && leaf.parentId === preparedLeafId) {
+          preparedLeafId = leaf.id;
+        }
         if (!floor) {
           return { status: "aborted" };
         }
