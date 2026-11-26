@@ -5522,3 +5522,218 @@ branch-native.
   tests fail with `listen EINVAL`, because their Unix socket paths reach 108 to 114 bytes and macOS caps `sun_path` at 104. Keep TMPDIR short (`/Volumes/m4-store/alex/agent-scratch/t68` gives 79).
 
 Not deployed. A deploy needs Alex's go and a release-tag recheck.
+
+## 11.10: the carry moves to the v2026.11.10 tag (2026-11-25)
+
+Upstream v2026.11.10 (commit `6ea542fd97e2`, tag object `891104d3aa17`, npm `latest` since 2026-11-25 05:07Z) was
+cut from main on 2026-11-16 at `48cd549b1c4`. The 11.7 line was cut from main on 2026-10-29 at `9559c51dd05`, so
+11.10 is not a descendant of 11.7: it has 8,309 commits 11.7 lacks, and 11.7 has 1,679 that 11.10 lacks. Alex, room
+#671: "is 11.10 live now? if so, lets merge forward into a new upgrade-v2026.11.10 branch".
+
+**The merge.** As for the 11.5 cut, the fork's delta over 11.7 is replayed onto 11.10:
+`git merge-tree --write-tree --merge-base=v2026.11.7 v2026.11.10 <11.7 carry f4fd6097437>` gave 146 conflicted
+paths (130 content, 9 modify/delete, 7 add/add; an auto-base merge gives 2,418). Five lanes resolved them by owner
+area, each file as 11.10's file plus the fork delta 11.10 still needs; where 11.10 already ships a fix the fork had
+picked, the file is 11.10's. The merge commit's first parent is 11.10 plus the picks below, its second the 11.7
+carry.
+
+Fork changes retired with this carry, each because 11.10 now owns the responsibility:
+
+- The per-call context-total writer (the #164551 variant): Alex closed #164551 on 2026-11-03 as superseded by #190017
+  (`e0ed68c7b84`) and #190161 (`1498a2c2e6d`), both in 11.10. `attempt-context-total-tokens.ts`, its test and
+  test-support, `session-store.context-totals.test.ts` and the writer's hunks in 8 files are gone; those 8 files equal
+  11.10's. The "Per-call context total" section above and its rows describe history, not this branch.
+- `resolveSettledTurnFinalizationRequest`'s fork copy in `settled-turn-finalization-request.ts`: 11.10's copy in
+  `incomplete-turn-recovery.ts` behaves the same and every importer uses it. The fork file keeps the answer-only
+  resolver.
+- `session-accessor.pending-inputs.collected-sources.ts`: a line-cap split of `finishPendingInputSources`, which 11.10
+  owns in `session-pending-input-live-owner.ts` (with #186073's `userInitiated`).
+- `tools-invoke-http.loop-detection.test.ts` (fork `68d40047169`): #199591 replaced session tool-loop history with a
+  per-turn repeat guard in the agent loop, so `/tools/invoke` calls cannot feed it; the fix's production hunk already
+  equals 11.10's.
+- The 11.7 cron-media workaround in `agent-session-prepare.ts` (`19321429c45`): 11.10's own ended-run refusal
+  replaces it.
+- Tests 11.10 deleted in its consolidations (#198933, #198943) whose fork delta was test-only.
+
+Merge breaks fixed by the lead (auto-merged, not conflicted): a duplicate `finishPendingInputSources` import,
+`AgentRunChannelContext` moved to `command/execution-context.types.ts`, `registerTrustedToolNoStartError` renamed
+`markToolExecutionNotStarted`, 11.10's new sender-media caller of `hydrateMedia` given the fork's Telegram media
+scope, and `readRecentUserAssistantTextFromSqliteTranscript` applying 11.10's `deliveryOnly` (#183190) after the
+window is chosen, as `readRecentTranscriptConversationText` does.
+
+Docs: the #190472 sender-policy sentence in `background-process.md` now starts "Before a Gateway restart": the
+captured requester lives in the in-memory `targetScopes` map, and after a restart durable outcomes use the owning
+session principal's authority, as 11.10's next item says.
+
+11.10's prepared/worker compaction path (`472cd0a2f54`, the default for embedded compaction) wrote its boundary
+through `prepared-compaction-session.ts` with no `shadowedEntryCount`, so the merge commit's checkpoints there render
+`[compaction checkpoint <id>]` without ": shadows N earlier entries". `e87199bbe40` (below) closes it: the plan
+counts the shadowed rows and the worker writes that count (`session-compaction-prepared.worker.ts`); the in-memory
+path still counts them in `session-manager-entries.ts`.
+
+**Release-line fixes 11.10 lacks.** Per the 11.5 precedent, the 11.6 line (what the bots run) was censused against
+11.10: 941 commits not in 11.10; 288 patch-equivalent, 164 with their `-x` source in 11.10, 77 with the same subject,
+32 present by reverse-apply. The 207 remaining non-test, non-release rows were read by hand in two lanes: 175
+PRESENT (most through the same post-cut main source on both lines, or a second `cherry picked from` trailer), 23
+NOT-APPLICABLE, 8 NEEDED, 1 UNSURE. Carried, as picks on 11.10 (`refs/c68acf/1110-picks`):
+
+- `ef720f212f0` from `118c56915df3`: recheck recall authority at publication (sessions.search could return hits from
+  conversations whose sharing was revoked mid-search). Main has its own version, `b66dc6fa3a2`, which does not apply.
+- `d1cb53791da` from `ab2c614025ed` (#198452 follow-up): a throwing first-denial warning left a blocked document
+  request unfailed and the tab paused.
+- `d3eedeb99f5` from `7ca4c3c69590` (#196362): Doctor again clears session titles an older Doctor set to a raw wake
+  marker.
+- `6efc89aff75`, after the merge commit, from `bf1305808b2b` (which the 11.6 line re-applied in this custody shape as
+  `fa613976dc4`). When a host-thread native SQLite open retained an admission while the async owner's `fs.open` was
+  still in flight, custody threw `SQLite descriptor custody changed during admission`, and the async descriptor stayed
+  open and untracked after both retirements. 11.10 and main `40b23868a5d` still throw. Custody now records the second
+  descriptor as an extra and closes it at retirement or publication. `sqlite-database-admission-record.ts` was at the
+  700-line cap, so its write-scope retention ledger and bucket snapshot moved unchanged to
+  `sqlite-database-admission-write-scope-buckets.ts` (same global singleton key; listed in the PR wrapper
+  inventory). The new host and worker cases in `sqlite-database-admission.worker.test.ts` pass at the carry head (2
+  of 2; the file 17 of 17, `sqlite-database-admission.retention.test.ts` 28 of 28) and fail with that error when the
+  three production files are 11.10's (2 failed).
+
+Not carried: `65a86d3a6de8` (QA mock provider only), `c317a25bf66a` (Matrix crypto shutdown; the bots do not run
+Matrix), `9500658d2fdd` (spawn-broker endpoint, only reachable when parent and child differ in platform),
+`525d41b11a8a`'s missing half (update failure report detail only; 11.10's `launchCanary` takes `entryPath`), and the
+UNSURE `bae0ea962463` (a cold recall lane could stall on 2-CPU hosts; the bot hosts have more). The 11.7 to 11.9
+releases' own line (2,004 commits not in 11.10) was not carried: the bots never ran it.
+
+**After the merge commit**, in order:
+
+- `c6a3b9ef7c0` carries the follow-up pushed to upstream #200854 (`197f535527a`): a truncated tail reduced to its last
+  line is headed `last line of N output chars`, not `last 2000 of N`.
+- Static-gate fixes: `c6f89262692` says why `pw-session-navigation-standing.test.ts` mocks the logger without
+  `importOriginal` (the first-denial warning must throw, which the real logger never does); `463a170cf22` shrinks
+  `compaction-safeguard.ts`'s assertion-safety baseline from 3 to 2, as the ratchet asked; the PR wrapper inventory
+  line for the new SQLite module is in `6efc89aff75`.
+- Nine line-cap commits (`e43d7cd57a3` to `c68b512832b`). 11.10 trimmed nine files to the cap, and the fork's delta
+  pushed them over. Each fork hunk moved to a sibling module or test file, and no case was dropped:
+  `attempt-session-runtime-prepare.test` 1,073 to 999 counted lines (29 cases to 30: the trust-set assertions became
+  their own case), `terminal-resolution.test` 1,065 to 995 (98 cases across its files before and after),
+  `subagent-registry-lifecycle-delivery.test-support` 703 to 692, `agent-runner-execution` 703 to 698,
+  `reply-tool-authority` 705 to 677 (the operator key moved to `reply-tool-authority-operator.ts`, byte-identical to
+  upstream #191787's head `f796277c273c`), `doctor-config-flow` 703 to 696, `memory-lancedb/index.ts` 702 to 700,
+  `transcript.ts` 719 to 674, and `session-accessor.sqlite-bounded-context.test` 1,029 to 965 (one case moved to
+  `...bounded-context.reset-compaction.test.ts`; 25 cases before and after).
+- `1537ca1ac18`: `pnpm run deadcode:exports` lists nothing on the 11.10 tag, 27 entries on the 11.7 carry, and 27 on
+  this carry before the commit, 4 of them new. Three came from the `transcript.ts` line-cap move, which left
+  `selectRecentConversationRows`, `groundRecentConversationRows` and `RecentConversationPageReader` used only inside
+  `transcript-recent-grounding.ts` and its test. The reader now lives in `transcript-recent-grounded-read.ts`, and
+  the grounding module is back to the 11.7 carry's bytes. The fourth, `MAX_HISTORY_DIFF_FIELDS` in
+  `prompt-cache-provider-prefix.ts`, lost its importer when 11.10 gave `prompt-cache-history.ts` its own constant;
+  it is no longer exported. After the commit the scan lists 23, every one also on the 11.7 carry (fork debt, not
+  this merge's).
+- `1a133e7cad1`: `6efc89aff75`'s new `sqlite-database-admission-write-scope-buckets.ts` imported the
+  `Admission` and `ScopedWriteRevision` types back from the admission record, and
+  `openclaw-state-read-operation-registry.test.ts` (which counts type imports) failed on the two-file cycle.
+  `ScopedWriteRevision` now lives in the bucket module, which imports nothing from the record. The registry test
+  passes (1 of 1), `check:import-cycles` and `check:madge-import-cycles` report 0, and the admission worker,
+  retention and write-scope tests pass 17, 28 and 14 of 17, 28 and 14.
+- Four fixes for full-suite failures outside compaction (each file 0 failures alone after; counts are failed of
+  total on the carry before):
+  - `29d30b8f067`: `bash-tools.process.poll-timeout.test.ts` (2 of 23) and `bash-tools.process.delivery.test.ts`
+    (1 of 13) are back to 11.10's bytes. The 11.7 carry's `28ccf76e3fc` set `notifyOnExit: false` there because the
+    shared fixture armed an exit wake while 11.7's tests still expected the manual-collection follow-up; 11.10
+    ships the fixture change (#198908 `2a8e0b3c6ed`, #199122 `00636f0c7ab`) and rewrote both tests, so the opt-out
+    now adds the follow-up they no longer expect.
+  - `5cecd78c024`: #199226 (`8fc58f8c027`) changed the connection-failure copy from "in the Control UI" to "in the
+    OpenClaw app". The fork cases in `agent-runner-failure-reply.test.ts` (3 of 25) and
+    `settled-turn-finalization.tool-call-retry.test.ts` (1 of 2) read it from `formatTransportErrorCopy` instead of
+    copying it, and the latter pins `isError: true`, as 11.10's `...provider-error.test.ts` does for that payload.
+  - `04596f24e25`: #202637 (`412ba1d4f88`) stopped copying the running session's own turns into `InboundHistory`.
+    The fork's media replay authority cases (`embedded-agent-subscribe.tools.media.test.ts`, 2 of 7) had no
+    `SessionKey`, so they now restore another session's turns, the path that still copies transcript text; every
+    assertion is kept.
+  - `458e13f8353`: the fork's answered-turn marker (`lastCompletedTurnRequestHash`/`lastCompletedTurnAt`, carried
+    since `1e127ad9166`) was stamped on every `final`, even when the user turn never committed. 11.10's
+    "pending custody survives replacement through cleanup" case in `chat-send-global-identity.test.ts` (1 of 21;
+    the 11.7 carry fails it too) fails the persist with `SessionPendingInputCustodyError`, and the marker still
+    landed. It now records once, after the turn is persisted. All 124 `src/gateway/server-methods/chat*.test.ts`
+    files pass on the combined tree (1,428 tests).
+  - `ui/src/pages/chat/composer-native-drop.browser.test.ts` fails 4 of 6 alone on the carry and on the tag alike
+    (the carry changes nothing under `ui/`): 11.10 on macOS, not this carry.
+- Six compaction fixes (counts are failed of total on the carry before; each file passes alone after):
+  - `e87199bbe40` prices the checkpoint line the committed boundary renders. The fork appends `[compaction checkpoint
+    <id>: shadows N earlier entries]` to the active summary (`de6484af41b`, `781cfee88cd`). 11.10 moved replacement
+    projection into `createCompactionReplacementProjector` (`472cd0a2f54`), which projected the boundary under the
+    work item id with no shadow count, and token pressure now reads content (#190017 `e0ed68c7b84`), so every
+    summary, replay and `tokensAfter` budget priced a line the transcript never shows. This is the 11.5 defect
+    `72fb8088c35` fixed, recurring on the new owner; it put `agent-session-summary-limit.test.ts` (4 of 7) over its
+    window by 5 to 9 tokens. The boundary id is now generated before planning, the native plan counts shadowed rows
+    from its full facts, and id and count travel through finalize to the committed entry. That also clears
+    `preparation.test.ts` (1 of 3; it now expects the line), `session-manager-hydration-stream.test.ts` (1 of 14; it
+    threads the plan's checkpoint, and `compactionId` matched the persisted id all along),
+    `prepared-compaction-plan.test.ts` (4 of 21; the replay budgets drop by the line's 21 estimated tokens, 3577 to
+    3559 and 12417 to 12399, derived beside the assertion) and `compact.delegate.test.ts` (7 of 43; the native policy
+    budget is derived from the plan's random id instead of upstream's literal 618, which it must stay below).
+  - `e0d2fc3ad3c` judges history reduction under the replacement's checkpoint id. With no preferred size the request
+    limit is current history minus one token, and current history was priced with the old id while the replacement had a
+    new random one (random ids price 343 to 357 tokens over 20,000 draws), so a real reduction could read as no
+    progress: two "unchanged" cases in `agent-session-compaction-headroom.test.ts`.
+  - `e57fc31b494` shrinks that file's "new" and "carrier" pending fixtures from 410 to 406 records (92 characters): they
+    were sized for upstream, which renders no line, and the line's 89 characters put the requests at 3857 and 3860
+    against 3840. With the line disabled the file passed 11 of 11, twice. 4 of 11 failed before `e87199bbe40`.
+  - `6bd6aadc32b`: 11.10's `e24d94b8111` records an `openclaw.compaction-attempt` entry when an attempt settles, and the
+    fork's leaf guard (from `1e127ad9166`) read it as a foreign append and refused the commit
+    (`agent-session-compaction-prepared.test.ts`, 1 of 5). The guard now moves onto that one record; any other append
+    still blocks.
+  - `1c2791ea286`: `host-seed.test.ts` (10 of 25; 6 of 18 on the 11.7 carry) now expects the checkpoint line that fork
+    `781cfee88cd` added to seeded context.
+  - `ce32a73a1f1`: 11.10 stores a deterministic floor beside the generated summary (`93e4800f6df`). The fork's
+    `agent-session-compaction.commit-guards.test.ts` (1 of 2) and `...safeguard-budget.test.ts` (1 of 1) compare
+    after `stripSummaryFloor` and bound the generated part by `MAX_COMPACTION_SUMMARY_CHARS`.
+  - Swept at the lane head: `src/agents` (1,104 files: 1,067 passed, 10 skipped, 23 `.live` not selected, and the 4
+    the commits above fix), `src/agents/sessions` (87 passed, 1 skipped, 3 `.live`), `src/agents/harness` (93),
+    `src/agents/embedded-agent-runner` (165, 1 Postgres-only skipped), `src/config/sessions` (428, 6 Postgres-only
+    skipped), `packages/agent-core/src/harness/session` (1) and `src/agents/sessions/compaction` (2): no other
+    failure.
+  - Open, no failing test: the worker path's current-history estimate and
+    `resolveCompactionRetentionBudgetFromTokens` still leave out the active boundary's line (at most 160
+    characters), and the host formatter's `sessions_history` read hint is unpriced, as on 11.7.
+
+**Qualification** (M4 Pro, Node 26.12.1, short `TMPDIR`; the host ran at load 130 to 165 on 14 cores from
+other work throughout).
+
+- Static gate on `c68b512832b`: install, build (125 s), `tsgo:all` (102 s), the assertion-safety ratchet (2,343
+  files, 5,275 grandfathered), the line-cap ratchet (584 changed source files), oxlint on the 581 changed files (no
+  problems), oxfmt, the PR wrapper inventory, the plugin-SDK surface, the mock-export ratchet (6,195 grandfathered
+  factories), conflict markers, prompt snapshots (6 files) and config docs passed. The test-lines ratchet fails (net
+  +21,541 test lines against an allowance of 400 and 3,738 allocation credit), as on the 11.7 carry: the fork's
+  test delta, not this merge.
+- `pnpm check` stage by stage (`--include-architecture --include-test-types`, ratchets against the tag) and `pnpm
+  check:architecture`, on `1a133e7cad1` and on the bare tag side by side: typecheck (production and tests), policy
+  guards and `check:architecture` pass on both. Lint fails on both: over 55,925 linted files the carry has 305
+  diagnostics (27 errors) and the tag 306 (28); the only difference is the tag's max-lines error in
+  `session-accessor.sqlite-bounded-context.test.ts`, which the line-cap commit above cleared. Preflight passes on the
+  tag and fails on the carry in one guard, the SQLite worker ratchet: `src/commands/models/auth-clean.ts:269:
+  unreviewed personal credential writer reference to ...store-runtime.ts:ensureAuthProfileStore`. The 11.7 carry
+  fails it the same way against `v2026.11.7`: the fork's `models auth clean` (`78fc371e00d`, 2026-03) predates the
+  guard, and no carry gate had run `pnpm check`. Not changed here; listing the command as a reviewed caller is a
+  guard exception that needs Alex's decision.
+- Full suite (`scripts/test-projects.mts`, 3 projects in parallel, 2 workers) on `c68b512832b`, 2026-11-25 23:27Z
+  to 2026-11-26 09:28Z: rc 1, 756 shards, 273,663 tests passed, 962 failed, 2,398 skipped, 92 distinct failing
+  files (the parser's 93rd, `first.test.ts`, is a fixture project that `control-ui-e2e-browser-lifetime.test.ts`
+  runs). Each file was rerun alone (1 worker) on the carry and on the bare tag, the two started together:
+  - 52 fail on the tag with the same result (49 with the same failing tests by name; 3 select no tests on macOS).
+    16 need Bash 4 or 5 (the host has 3.2), 5 time out, 5 hit pnpm's self-switch inside a sandbox, 1 hits
+    ENAMETOOLONG, 25 fail otherwise. 11.10 on this host, not this carry.
+  - 22 pass alone on both: load in the full run.
+  - 17 fail on the carry and pass on the tag, or are fork-only tests; an 18th,
+    `ui/src/pages/chat/composer-native-drop.browser.test.ts`, was first rerun under a wrong path. Rerun alone on the
+    11.7 carry `f4fd6097437`, `host-seed.test.ts` (6 of 18) and `chat-send-global-identity.test.ts` (1 of 21)
+    already failed there; the other 15 pass there or do not exist there. The fixes are listed above.
+- On `ce32a73a1f1`, with every fix above: the 17 carry-only files pass alone (`host-seed` 25 of 25, `compact.delegate`
+  43, `prepared-compaction-plan` 21, `session-manager-hydration-stream` 14, `agent-session-compaction-headroom` 11,
+  `agent-session-summary-limit` 7, `agent-session-compaction-prepared` 5, `preparation` 3, the two fork guard tests 2
+  and 1, `poll-timeout` 23, `delivery` 13, `agent-runner-failure-reply` 25, `settled-turn-finalization.tool-call-retry`
+  2, `embedded-agent-subscribe.tools.media` 7, `chat-send-global-identity` 21, the state read registry 1). oxfmt and
+  oxlint pass on the 30 files changed since `1537ca1ac18`; the line-cap ratchet (597 changed source files), both
+  import-cycle checks (0), `tsgo:core` and `tsgo:core:test` (0 errors) and the PR wrapper inventory pass;
+  `deadcode:exports` lists the 23 entries the 11.7 carry already had, none new. The `pnpm check` graph repeats the
+  result above: typecheck, policy and `check:architecture` pass, lint has the same 305 diagnostics against the tag's
+  306, and preflight fails only the SQLite worker ratchet on `auth-clean.ts`.
+- A full-suite rerun on this commit's tree is recorded in the next notes commit.
+
+Not deployed. A deploy needs Alex's go and a release-tag recheck.
