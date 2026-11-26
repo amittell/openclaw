@@ -53,8 +53,6 @@ afterEach(async () => {
 
 function createSession(output = "", id = "process") {
   const session = createProcessSessionFixture({ id, backgrounded: true });
-  // No exit wake here; the carry's shared fixture arms one by default.
-  session.notifyOnExit = false;
   addSession(session);
   if (output) {
     appendOutput(session, "stdout", output);
