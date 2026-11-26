@@ -13,6 +13,7 @@ import type {
 import {
   buildSessionContext,
   countCompactionShadowedEntries,
+  formatCompactionCheckpointHandle,
   iterateSessionContextEntryFacts,
 } from "../../../../packages/agent-core/src/harness/session/session.js";
 import type { CompactionError, Result } from "../../../../packages/agent-core/src/harness/types.js";
@@ -92,7 +93,20 @@ export function prepareAgentCompactionWork(
         : "idempotencyKey" in entry.message && entry.message.idempotencyKey === key),
     historyEstimator: (budget) => {
       contextMessages = budget ? buildSessionContext(pathEntries).messages : [];
-      return () => estimateCompactionHistoryTokens(contextMessages, budget);
+      // The replacement swaps the active checkpoint line for one carrying its own id, and token
+      // pressure reads id characters. Pricing the current line with that id too means only the
+      // summary and retained tail decide whether the replacement reduced history.
+      let priced: AgentMessage[] | undefined;
+      return () =>
+        estimateCompactionHistoryTokens(
+          budget
+            ? (priced ??= buildSessionContext(pathEntries, {
+                formatCheckpointHandle: (handle) =>
+                  formatCompactionCheckpointHandle({ ...handle, entryId: checkpointEntryId }),
+              }).messages)
+            : contextMessages,
+          budget,
+        );
     },
     prepare: (settings, state, constraints, budget) =>
       prepareCompactionEntries(
