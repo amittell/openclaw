@@ -1,5 +1,11 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { Admission, ScopedWriteRevision } from "./sqlite-database-admission-record.js";
+
+// The admission record's write-scope revision lives here so this module imports nothing from the record.
+export type ScopedWriteRevision = {
+  identity: string;
+  // Revision, retirement, and active effect pins share custody across admission snapshots.
+  state: Int32Array<SharedArrayBuffer>;
+};
 
 // Retained bytes and retired keys per write-scope map; the admission record owns the policy.
 export const scopeRetention = resolveGlobalSingleton(
@@ -17,7 +23,7 @@ const EMPTY_WRITE_SCOPE_BUCKETS = Array.from(
 export type WriteScopeBuckets = typeof EMPTY_WRITE_SCOPE_BUCKETS;
 
 export function snapshotWriteScopes(
-  current: Admission["writeScopes"],
+  current: Map<string, ScopedWriteRevision>,
   previous: WriteScopeBuckets = EMPTY_WRITE_SCOPE_BUCKETS,
   keys?: readonly string[],
 ): WriteScopeBuckets {

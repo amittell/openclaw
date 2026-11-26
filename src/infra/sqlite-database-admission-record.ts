@@ -12,6 +12,7 @@ import {
   scopeRetention,
   snapshotWriteScopes,
   writeScopeBytes,
+  type ScopedWriteRevision,
   type WriteScopeBuckets,
 } from "./sqlite-database-admission-write-scope-buckets.js";
 import {
@@ -75,11 +76,7 @@ export type StagedAdmissionFact = AdmissionFactValue &
   Pick<AdmissionFact, "revision" | "schemaDependent"> & {
     ddlRevision: number;
   };
-export type ScopedWriteRevision = {
-  identity: string;
-  // Revision, retirement, and active effect pins share custody across admission snapshots.
-  state: Int32Array<SharedArrayBuffer>;
-};
+export type { ScopedWriteRevision };
 
 const MAX_WRITE_SCOPE_BYTES = 1024 * 1024;
 
