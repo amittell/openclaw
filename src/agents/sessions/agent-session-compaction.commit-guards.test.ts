@@ -1,5 +1,6 @@
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import { stripSummaryFloor } from "../../../packages/agent-core/src/harness/compaction/compaction-floor.js";
 import { agentSessionAutomaticCompaction } from "./agent-session-compaction.js";
 import {
   createAssistant,
@@ -62,10 +63,15 @@ describe("AgentSession compaction commit guards", () => {
     // 9.2 threw on a skipped compaction, so reaching this line was itself proof of completion.
     // 9.3 returns the settled outcome instead, so the guard asserts the completed arm here or
     // it stops proving a summary was produced at all.
-    expect(result.status === "completed" && result.result.summary).toBe("condensed history");
+    if (result.status !== "completed") {
+      throw new Error(`Expected a committed compaction, got ${result.status}`);
+    }
+    // Upstream 93e4800f6df appends the deterministic floor after every generated summary; the
+    // retried model output is the summary before it.
+    expect(stripSummaryFloor(result.result.summary)).toBe("condensed history");
     expect(
       sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
-    ).toMatchObject({ summary: "condensed history" });
+    ).toMatchObject({ summary: result.result.summary });
   });
 
   it("refuses to commit when the session leaf moves during summarization", async () => {

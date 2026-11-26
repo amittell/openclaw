@@ -9,6 +9,10 @@
 import path from "node:path";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  resolveSummaryFloorChars,
+  stripSummaryFloor,
+} from "../../../packages/agent-core/src/harness/compaction/compaction-floor.js";
 import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
@@ -175,13 +179,19 @@ describe("AgentSession safeguard summary budget", () => {
       if (stored?.type !== "compaction") {
         throw new Error("expected a stored compaction boundary");
       }
+      // Upstream 93e4800f6df appends the deterministic floor after the summary, under its own
+      // budget outside the summary cap. The audited summary is the part before that floor.
+      const summary = stripSummaryFloor(stored.summary);
       // The tail sections the audit requires must survive into the stored boundary.
-      expect(stored.summary).toContain("## Pending user asks");
-      expect(stored.summary).toContain("## Exact identifiers");
-      expect(stored.summary).toContain(IDENTIFIER);
+      expect(summary).toContain("## Pending user asks");
+      expect(summary).toContain("## Exact identifiers");
+      expect(summary).toContain(IDENTIFIER);
       expect(audited).toHaveLength(1);
-      expect(stored.summary).toBe(audited[0]);
-      expect(stored.summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+      expect(summary).toBe(audited[0]);
+      expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+      expect(stored.summary.length).toBeLessThanOrEqual(
+        MAX_COMPACTION_SUMMARY_CHARS + resolveSummaryFloorChars(),
+      );
       // The next request is built from the reopened boundary and carries the same facts.
       const requests: Context[] = [];
       streamMocks.streamSimple.mockImplementation((activeModel: Model, context: Context) => {
