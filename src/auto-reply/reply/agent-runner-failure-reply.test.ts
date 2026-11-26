@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
 import { FailoverError } from "../../agents/failover-error.js";
 import { AUTH_PROFILE_COOLDOWN_ERROR_CODE } from "../../agents/failover/error.js";
@@ -7,6 +8,7 @@ import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { throwFallbackFailureSummary } from "../../agents/model-fallback-attempt.js";
 import type { FallbackAttempt } from "../../agents/model-fallback.types.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
+import { formatTransportErrorCopy } from "../../shared/assistant-error-format.js";
 import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import { SkillLibraryError } from "../../skills/skill-library-error.js";
 import type { TemplateContext } from "../templating.js";
@@ -163,12 +165,13 @@ it("preserves transport guidance in a terminal timeout-bucket reply", () => {
 // one "Couldn't connect" sentence, and a classified timeout no longer names the model
 // or a status. The fork pins the ROUTING (transport is not a timeout; a genuine timeout
 // still is). Upstream #191301 names the failing model in the connection copy itself, so
-// the expected transport string is that copy, completed-work caution included.
-const TRANSPORT_FAILURE_REPLY =
-  "⚠️ gpufarm/qwen3.8-27b request failed: Couldn't connect to the AI service. " +
-  "Check your connection, then try again. For details, open Settings → Logs in the " +
-  "Control UI or run `openclaw logs --follow`. " +
-  "Check the conversation for any completed work before trying again.";
+// the expected transport string is that copy, completed-work caution included. The
+// connection sentence is read from its owner, so upstream copy edits need no mirror here.
+const CONNECTION_FAILED_COPY = expectDefined(
+  formatTransportErrorCopy("connect ECONNREFUSED"),
+  "connection-failed transport copy",
+);
+const TRANSPORT_FAILURE_REPLY = `⚠️ gpufarm/qwen3.8-27b request failed: ${CONNECTION_FAILED_COPY} Check the conversation for any completed work before trying again.`;
 const TIMEOUT_FAILURE_REPLY =
   "⚠️ The request took too long. Check the conversation for any completed work before trying again.";
 const gpufarmTimeoutReply = (rawError: string) =>
@@ -224,9 +227,7 @@ it("names the model whose connection failed", () => {
       }),
     )?.text;
 
-  expect(failure({ provider: "gpufarm", model: "qwen3.8-27b" })).toBe(
-    "⚠️ gpufarm/qwen3.8-27b request failed: Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`. Check the conversation for any completed work before trying again.",
-  );
+  expect(failure({ provider: "gpufarm", model: "qwen3.8-27b" })).toBe(TRANSPORT_FAILURE_REPLY);
   // A model id that already carries its provider is not prefixed twice.
   expect(failure({ provider: "openrouter", model: "openrouter/auto" })).toMatch(
     /^⚠️ openrouter\/auto request failed: Couldn't connect/,

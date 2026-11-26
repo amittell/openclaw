@@ -1,12 +1,14 @@
 // The rh-bot shape: a tools-disabled finalization pass calls a tool anyway.
 // Each pass below is a real agent loop with no tools and the first-tool-call
 // stop, judged by the real result projection, inside the real finalization loop.
+import { expectDefined } from "@openclaw/normalization-core";
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Model,
 } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatTransportErrorCopy } from "../../../shared/assistant-error-format.js";
 import {
   prepareSystemAgentRunAdmission,
   type AdmittedRunContext,
@@ -48,8 +50,11 @@ vi.mock("../../run-session-target.js", () => ({
   })),
 }));
 
-const PROVIDER_FAILURE_TEXT =
-  "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
+// The fixture's provider failure is a refused connection; its copy is read from the owner.
+const PROVIDER_FAILURE_TEXT = expectDefined(
+  formatTransportErrorCopy("connect ECONNREFUSED"),
+  "connection-failed transport copy",
+);
 const answer = "The note is saved and the report is complete.";
 
 const model: Model = {
@@ -219,7 +224,7 @@ describe("tool-free finalization after a stopped tool call", () => {
     expect(result.terminalState).toBe(input.initial.terminalState);
     expect(result.attempt.terminal).toBe(input.initial.attempt.terminal);
     expect(result.prepared.payloadsWithToolMedia).toEqual([
-      expect.objectContaining({ text: PROVIDER_FAILURE_TEXT }),
+      expect.objectContaining({ text: PROVIDER_FAILURE_TEXT, isError: true }),
     ]);
   });
 });
