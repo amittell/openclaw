@@ -282,11 +282,9 @@ describe("modelsAuthCleanCommand", () => {
     expect(runtime.logs.join("\n")).toContain("Nothing to clean");
   });
 
-  it("default-agent probe uses persisted store; migration trigger uses readOnly:false after guards pass", async () => {
-    // The planning probe must inspect only the persisted main-agent store so
-    // runtime-only external profiles do not affect toRemove. After guards pass,
-    // a separate write-enabled ensureAuthProfileStore call still triggers any
-    // legacy migration before the lock-backed update runs.
+  it("default agent: plans from the persisted store and writes only through the lock", async () => {
+    // A write-enabled ensureAuthProfileStore would sync external CLI credentials outside
+    // the lock; retired JSON stores are imported by `openclaw doctor --fix` instead.
     const store = makeStore(["anthropic:me.com", "anthropic:stale"]);
 
     mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:me.com"]));
@@ -298,19 +296,12 @@ describe("modelsAuthCleanCommand", () => {
     expect(mocks.loadAuthProfileStoreWithoutExternalProfiles).toHaveBeenCalledWith(
       expect.any(String),
     );
-    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ readOnly: false }),
-    );
+    expect(mocks.ensureAuthProfileStore).not.toHaveBeenCalled();
+    expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledTimes(1);
   });
 
-  it("probe uses readOnly:true; migration trigger uses readOnly:false after guards pass (non-default agent)", async () => {
-    // #2915530629: same as default agent path — probe is always readOnly:true;
-    // migration trigger uses readOnly:false after guards pass. (#2914491523, #2914711181)
-    // #2915653312: migration trigger must also pass skipInheritance:true so that
-    // the main-agent fallback inside loadAuthProfileStoreForAgent is suppressed —
-    // without it, a subagent with no local store would clone main credentials
-    // before cleanup, causing scope bleed and a misleading no-op.
+  it("non-default agent: one readOnly probe of its own store, then the locked write", async () => {
+    // #2915653312: the only read targets the worker's agentDir, never main's or undefined.
     const store = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
     const workerAgentDir = "/home/user/.openclaw/agents/worker/agent";
 
@@ -322,19 +313,10 @@ describe("modelsAuthCleanCommand", () => {
 
     await modelsAuthCleanCommand({ agent: "worker" }, makeRuntime()); // no dryRun
 
-    // Probe call: readOnly:true (always, even for non-dryRun); agentDir is the
-    // worker-specific path, not the main agent path.
-    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalledWith(
-      workerAgentDir,
-      expect.objectContaining({ readOnly: true }),
-    );
-    // Migration trigger call: readOnly:false (after guards pass, before lock).
-    // Must pass skipInheritance:true to prevent the main-agent fallback from
-    // cloning main profiles into the worker file before cleanup. (#2915653312)
-    expect(mocks.loadAgentLocalAuthProfileStore).toHaveBeenCalledWith(
-      workerAgentDir,
-      expect.objectContaining({ readOnly: false, skipInheritance: true }),
-    );
+    expect(mocks.loadAgentLocalAuthProfileStore.mock.calls).toEqual([
+      [workerAgentDir, expect.objectContaining({ readOnly: true })],
+    ]);
+    expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps profiles referenced only in store.order (not in cfg.auth.profiles or cfg.auth.order)", async () => {
@@ -454,6 +436,7 @@ describe("modelsAuthCleanCommand", () => {
     );
 
     expect(plan).toMatchObject({ toRemove: ["anthropic:manual"], dryRun: false });
+    expect(plan.authStorePath).toMatch(/agents\/main\/agent\/openclaw-agent\.sqlite$/);
     expect(result).toMatchObject({ ok: true, removed: 1 });
   });
 
@@ -609,7 +592,7 @@ describe("modelsAuthCleanCommand", () => {
 
   it("non-default agent: passes agentLocalOnly:true to updateAuthProfileStoreWithLock", async () => {
     // Ensures the write path uses agent-local-only loading, preventing main-store
-    // profiles from being persisted into the agent-local auth-profiles.json file.
+    // profiles from being persisted into the agent-local store.
     const agentLocalStore = makeStore(["anthropic:agent-profile", "anthropic:agent-stale"]);
 
     mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:agent-profile"]));
@@ -623,36 +606,6 @@ describe("modelsAuthCleanCommand", () => {
     expect(mocks.updateAuthProfileStoreWithLock).toHaveBeenCalledWith(
       expect.objectContaining({ agentLocalOnly: true }),
     );
-  });
-
-  it("non-main agent: pre-lock readOnly:false migration trigger passes agent-specific agentDir, not main path (#2915653312)", async () => {
-    // Guard: the pre-lock readOnly:false migration trigger must explicitly pass the
-    // agent-specific agentDir to loadAgentLocalAuthProfileStore — not the default
-    // (main) path and not undefined.  Without the explicit agentDir, the call
-    // resolves to the main agent's auth-profiles.json and cleanup silently operates
-    // on the wrong store (scope bleed, misleading no-op). (#2915653312)
-    const workerAgentDir = "/home/user/.openclaw/agents/worker/agent";
-    const mainAgentDir = "/home/user/.openclaw/agents/main/agent"; // default mock value
-    const store = makeStore(["anthropic:worker-profile", "anthropic:worker-stale"]);
-
-    mocks.loadModelsConfig.mockResolvedValue(makeCfg(["anthropic:worker-profile"]));
-    mocks.resolveKnownAgentId.mockReturnValueOnce("worker");
-    mocks.resolveAgentDir.mockReturnValueOnce(workerAgentDir);
-    mocks.loadAgentLocalAuthProfileStore.mockReturnValue(store);
-    captureUpdater(store);
-
-    await modelsAuthCleanCommand({ agent: "worker" }, makeRuntime());
-
-    // Every call to loadAgentLocalAuthProfileStore must use the worker-specific
-    // agentDir — never the main agent dir and never undefined (which would also
-    // resolve to the main dir).
-    const calls = mocks.loadAgentLocalAuthProfileStore.mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    for (const [dir] of calls) {
-      expect(dir).toBe(workerAgentDir);
-      expect(dir).not.toBe(mainAgentDir);
-      expect(dir).not.toBeUndefined();
-    }
   });
 
   it("default agent: does not set agentLocalOnly on updateAuthProfileStoreWithLock", async () => {

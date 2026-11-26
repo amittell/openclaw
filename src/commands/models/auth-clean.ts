@@ -1,11 +1,9 @@
 import path from "node:path";
 import { listAgentEntries } from "../../agents/agent-roster.js";
 import { resolveAgentDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
-import {
-  ensureAuthProfileStore,
-  loadAuthProfileStoreWithoutExternalProfiles,
-} from "../../agents/auth-profiles.js";
+import { loadAuthProfileStoreWithoutExternalProfiles } from "../../agents/auth-profiles.js";
 import { sanitizeProfileIdForDisplay } from "../../agents/auth-profiles/sanitize.js";
+import { resolveAuthProfileDatabasePath } from "../../agents/auth-profiles/sqlite.js";
 import {
   loadAgentLocalAuthProfileStore,
   updateAuthProfileStoreWithLock,
@@ -62,8 +60,8 @@ function collectMediaProfileIds(cfg: Awaited<ReturnType<typeof loadModelsConfig>
 }
 
 /**
- * Remove stale profiles from auth-profiles.json that are no longer present in
- * openclaw.json auth.profiles, auth.order, or tools.media model entries.
+ * Remove stale profiles from the agent's auth profile store that are no longer
+ * present in openclaw.json auth.profiles, auth.order, or tools.media model entries.
  * Prevents ghost profiles (e.g. anthropic:manual, anthropic:user-me.com) from
  * accumulating and silently corrupting auth order.
  *
@@ -80,7 +78,7 @@ export async function modelsAuthCleanCommand(
   const requestedAgentId = opts.agent?.trim();
   const agentId = requestedAgentId ? resolveKnownAgentId(cfg, requestedAgentId) : defaultAgentId;
   const agentDir = resolveAgentDir(cfg, agentId);
-  const authStorePath = shortenHomePath(`${agentDir}/auth-profiles.json`);
+  const authStorePath = shortenHomePath(resolveAuthProfileDatabasePath(agentDir));
 
   // Determine whether agentDir resolves to the main agent directory.
   // We compare resolved paths rather than checking (agentId === defaultAgentId) because
@@ -127,10 +125,8 @@ export async function modelsAuthCleanCommand(
   const configuredProfiles = new Set<string>(configDerivedProfileIds);
 
   // Load the store for inspection (collect storeProfileIds and storeOrder).
-  // Probe phase is always readOnly:true — a write-capable store must never be opened
-  // before guards pass and cleanup is confirmed to proceed. A separate write-enabled
-  // load is deferred to after all guards pass (see below) to trigger legacy migration.
-  // (#2914491523, #2914711181, #2915530629)
+  // Both probes are read-only, so neither syncs external CLI credentials into the
+  // store; the locked update below is the command's only write. (#2915530629)
   const storeLoadOpts = { allowKeychainPrompt: false, readOnly: true };
   const store = isMainAgentDir
     ? loadAuthProfileStoreWithoutExternalProfiles(agentDir)
@@ -252,29 +248,11 @@ export async function modelsAuthCleanCommand(
     return;
   }
 
-  // Trigger legacy auth.json → auth-profiles.json migration with a write-enabled
-  // load now that all guards have passed and cleanup is confirmed to proceed.
-  // The probe above used readOnly:true (suppressing migration writes); running a
-  // readOnly:false load here ensures the legacy store is persisted before
-  // updateAuthProfileStoreWithLock's ensureAuthStoreFile can create an empty
-  // placeholder (which would cause the lock-internal load to see an empty store
-  // and skip all profile removals). (#2914491523, #2914711181)
-  //
-  // For non-main agents, skipInheritance:true prevents the main-agent fallback
-  // inside loadAuthProfileStoreForAgent from cloning main profiles into the
-  // subagent file when auth-profiles.json is absent.  Without it, a subagent
-  // with no local store would materialise main credentials before cleanup and
-  // skip the intended legacy migration, causing scope bleed. (#2915653312)
-  if (isMainAgentDir) {
-    ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false, readOnly: false });
-  } else {
-    loadAgentLocalAuthProfileStore(agentDir, {
-      allowKeychainPrompt: false,
-      readOnly: false,
-      skipInheritance: true,
-    });
-  }
-
+  // The locked update is the command's only write; it reloads this agent's own rows
+  // inside the transaction. Retired auth.json/auth-profiles.json files are imported by
+  // `openclaw doctor --fix`, not by a runtime load (docs/concepts/oauth.md), so a
+  // write-enabled load here would migrate nothing and could only sync external CLI
+  // credentials outside the lock.
   // Track actual removals inside the lock (concurrent gateway writes may have
   // already cleaned some ids between our initial read and lock acquisition).
   let actualRemoved = 0;
@@ -283,8 +261,8 @@ export async function modelsAuthCleanCommand(
     agentDir,
     // For non-main agent directories the write target is the agent-local file only.
     // Setting agentLocalOnly ensures the store loaded inside the lock is the
-    // agent-local view (not the merged main+agent view returned by
-    // ensureAuthProfileStore), which prevents main-store profiles from being
+    // agent-local view (not the merged main+agent view a runtime read returns),
+    // which prevents main-store profiles from being
     // written into the agent-local file (credential scope bleed).
     agentLocalOnly: !isMainAgentDir,
     updater: (freshStore: AuthProfileStore) => {
@@ -353,7 +331,7 @@ export async function modelsAuthCleanCommand(
     // lock contention. The original message was misleading; use a generic message
     // so the error accurately reflects that any write failure is possible.
     throw new Error(
-      "Failed to update auth-profiles.json (write failed — check for lock contention, I/O errors, or permission issues).",
+      "Failed to update the auth profile store (write failed — check for lock contention, I/O errors, or permission issues).",
     );
   }
 
