@@ -20,6 +20,7 @@ import {
 } from "../../../packages/agent-core/src/harness/compaction/utils.js";
 import { convertToLlm } from "../../../packages/agent-core/src/harness/messages.js";
 import {
+  countCompactionShadowedEntries,
   iterateSessionContextEntryFacts,
   projectSessionContextMessage,
 } from "../../../packages/agent-core/src/harness/session/session.js";
@@ -230,10 +231,12 @@ export function prepareCompactionPlan(
     );
     return entries.flatMap((entry, index) => (selected.has(index) ? [entry.sourceIndex] : []));
   };
+  const checkpointEntryId = options.work.checkpointEntryId ?? options.work.itemId;
   const replacement = (firstKeptEntryId: string, tokensBefore: number) =>
     createCompactionReplacementProjector(
       retainedSequences(firstKeptEntryId).map(source.readEntry),
-      options.work.itemId,
+      checkpointEntryId,
+      countCompactionShadowedEntries(entries, firstKeptEntryId),
     )({ firstKeptEntryId, tokensBefore }, "");
   const work = prepareAgentCompactionWorkFromFacts(
     entries,
@@ -440,6 +443,10 @@ export function prepareCompactionPlan(
         ),
       },
       retainedSequences: retainedSequences(preparation.firstKeptEntryId),
+      checkpoint: {
+        entryId: checkpointEntryId,
+        shadowedEntryCount: countCompactionShadowedEntries(entries, preparation.firstKeptEntryId),
+      },
       summaryReplayTokenBudget,
     },
   };

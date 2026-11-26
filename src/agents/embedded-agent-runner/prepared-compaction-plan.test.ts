@@ -577,7 +577,12 @@ it.each(["active", "empty-tools", "no-tools", "model-change"])(
       if (maxSummaryChars === 20000) {
         expect(native.plan.requestBudget?.fixedTokens).toBe(variant === "active" ? 10640 : 32);
       } else {
-        expect(native.plan.summaryReplayTokenBudget).toBe(variant === "active" ? 3577 : 12417);
+        // Upstream's 3577/12417 less the carry's checkpoint line. The replay budget is
+        // floor((window - reserve - replacement) / 1.2) - 1, which upstream leaves at
+        // floor(4294 / 1.2) - 1 and floor(14902 / 1.2) - 1. "\n[compaction checkpoint
+        // compaction: shadows N earlier entries]" adds 21 estimated tokens to the replacement:
+        // floor(4273 / 1.2) - 1 = 3559 and floor(14881 / 1.2) - 1 = 12399.
+        expect(native.plan.summaryReplayTokenBudget).toBe(variant === "active" ? 3559 : 12399);
       }
     }
   },

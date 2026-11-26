@@ -12,6 +12,7 @@ import type {
 } from "../../../../packages/agent-core/src/harness/compaction/compaction.js";
 import {
   buildSessionContext,
+  countCompactionShadowedEntries,
   iterateSessionContextEntryFacts,
 } from "../../../../packages/agent-core/src/harness/session/session.js";
 import type { CompactionError, Result } from "../../../../packages/agent-core/src/harness/types.js";
@@ -80,7 +81,8 @@ export function prepareAgentCompactionWork(
   onMessageProjection?: CompactionMessageProjection,
 ): AgentCompactionWorkPreparation {
   let contextMessages: AgentMessage[] = [];
-  const projectReplacement = createCompactionReplacementProjector(pathEntries, options.itemId);
+  const checkpointEntryId = options.checkpointEntryId ?? options.itemId;
+  const projectReplacement = createCompactionReplacementProjector(pathEntries, checkpointEntryId);
   const work = prepareAgentCompactionSource(pathEntries, options, {
     isPendingUser: (entry, key) =>
       entry.type === "message" &&
@@ -269,10 +271,16 @@ function prepareAgentCompactionSource<
   };
 }
 
-/** One projection owner for full history and the private retained-only consumer. */
+/**
+ * One projection owner for full history and the private retained-only consumer. The fork renders
+ * a checkpoint line with the active boundary's id and shadow count, and token estimates read its
+ * content, so callers pass the id the committed boundary will carry. A retained-only consumer
+ * passes the count its full facts computed; full history is counted here.
+ */
 export function createCompactionReplacementProjector(
   pathEntries: SessionEntry[],
-  itemId: string,
+  entryId: string,
+  shadowedEntryCount?: number,
 ): ProjectCompactionReplacement {
   return (result: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">, summary: string) =>
     buildSessionContext([
@@ -280,10 +288,13 @@ export function createCompactionReplacementProjector(
       {
         ...result,
         type: "compaction",
-        id: itemId,
+        id: entryId,
         parentId: pathEntries.at(-1)?.id ?? null,
         timestamp: new Date().toISOString(),
         summary,
+        shadowedEntryCount:
+          shadowedEntryCount ??
+          countCompactionShadowedEntries(pathEntries, result.firstKeptEntryId),
       },
     ]).messages;
 }

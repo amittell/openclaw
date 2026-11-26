@@ -8,6 +8,7 @@ import type {
 } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import type { ConversationEntryDescriptor } from "../../../packages/agent-core/src/harness/compaction/conversation-serialization.js";
 import type { ConversationMessageFact } from "../../../packages/agent-core/src/harness/compaction/utils.js";
+import type { CompactionCheckpointHandle } from "../../../packages/agent-core/src/harness/session/session.js";
 import type { CompactionError } from "../../../packages/agent-core/src/harness/types.js";
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import type { CompactionContextMessageFact } from "../agent-hooks/compaction-safeguard-context.js";
@@ -84,6 +85,8 @@ export type PreparedCompactionPlan = {
   };
   /** Only the future retained suffix; never the history being summarized. */
   retainedSequences: number[];
+  /** The committed boundary's id and shadow count, which its checkpoint line renders. */
+  checkpoint: Required<CompactionCheckpointHandle>;
 } & (
   | {
       deterministic: Extract<ReturnType<typeof compactWithoutSummary>, { ok: true }>["value"];

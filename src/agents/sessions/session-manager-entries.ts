@@ -2,7 +2,10 @@ import {
   buildSessionContext as buildCoreSessionContext,
   countCompactionShadowedEntries,
 } from "../../../packages/agent-core/src/harness/session/session.js";
-import type { BuildSessionContextOptions } from "../../../packages/agent-core/src/index.js";
+import type {
+  BuildSessionContextOptions,
+  CompactionCheckpointHandle,
+} from "../../../packages/agent-core/src/index.js";
 import { cloneTranscriptView } from "../../config/sessions/transcript-snapshot.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
@@ -83,7 +86,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
     fromHook?: boolean,
     metadata?: CompactionEntry["__openclaw"],
     tokensAfter?: number,
-    shadowedEntryCount?: number,
+    checkpoint?: Partial<CompactionCheckpointHandle>,
   ): Promise<string> {
     const entry = createSessionCompactionEntry(
       this.appendParentId,
@@ -94,7 +97,11 @@ export class SessionManagerEntries extends SessionManagerAppend {
       fromHook,
       metadata,
       tokensAfter,
-      shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
+      {
+        ...checkpoint,
+        shadowedEntryCount:
+          checkpoint?.shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
+      },
     );
     await this.appendEntryAsync(entry, {
       invalidateSerializedPrefixCache: fromHook === true || details !== undefined,
@@ -111,7 +118,7 @@ export class SessionManagerEntries extends SessionManagerAppend {
     fromHook?: boolean,
     metadata?: CompactionEntry["__openclaw"],
     tokensAfter?: number,
-    shadowedEntryCount?: number,
+    checkpoint?: Partial<CompactionCheckpointHandle>,
   ): string {
     prepareSessionManagerSync("appendCompaction", this.persistenceTarget, this);
     const entry = createSessionCompactionEntry(
@@ -123,7 +130,11 @@ export class SessionManagerEntries extends SessionManagerAppend {
       fromHook,
       metadata,
       tokensAfter,
-      shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
+      {
+        ...checkpoint,
+        shadowedEntryCount:
+          checkpoint?.shadowedEntryCount ?? this.countShadowedEntries(firstKeptEntryId),
+      },
     );
     this.appendEntry(entry, {
       invalidateSerializedPrefixCache: fromHook === true || details !== undefined,

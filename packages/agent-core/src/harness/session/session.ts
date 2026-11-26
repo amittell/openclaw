@@ -295,13 +295,20 @@ export function formatCompactionCheckpointHandle(
   return `[compaction checkpoint ${handle.entryId}${facts.length ? `: ${facts.join("; ")}` : ""}]`;
 }
 
-function isBoundaryEntry(entry: SessionTreeEntry): entry is ContextBoundary {
-  return entry.type === "compaction" || entry.type === "reset";
+function isBoundaryType(type: SessionTreeEntry["type"]): boolean {
+  return type === "compaction" || type === "reset";
 }
+
+function isBoundaryEntry(entry: SessionTreeEntry): entry is ContextBoundary {
+  return isBoundaryType(entry.type);
+}
+
+/** The only fields the shadow count reads; entries and their extracted facts both carry them. */
+type ShadowCountEntry = Pick<SessionContextEntryFact, "id" | "type" | "firstKeptEntryId">;
 
 /** Index where a boundary's kept prefix starts; the boundary itself when it kept nothing. */
 function resolveKeptPrefixIndex(
-  pathEntries: readonly SessionTreeEntry[],
+  pathEntries: readonly ShadowCountEntry[],
   firstKeptEntryId: string | undefined,
   boundaryIdx: number,
 ): number {
@@ -318,21 +325,21 @@ function resolveKeptPrefixIndex(
  * Writers persist this with the boundary. A bounded read after the compaction no longer holds the
  * rows it shadows, so counting there reported 0 where a full read reported the real figure, and
  * the two readers rendered different context bytes. Rows a bounded load had already omitted when
- * the compaction was written are not counted; the summary did not cover them either.
+ * the compaction was written are not counted; the summary did not cover them either. The worker
+ * planner counts from its extracted facts: the retained rows it projects no longer hold the span.
  */
 export function countCompactionShadowedEntries(
-  pathEntries: readonly SessionTreeEntry[],
+  pathEntries: readonly ShadowCountEntry[],
   firstKeptEntryId: string,
 ): number {
-  const previousIdx = pathEntries.findLastIndex(isBoundaryEntry);
-  const previous = pathEntries[previousIdx];
+  const previousIdx = pathEntries.findLastIndex((entry) => isBoundaryType(entry.type));
   const spanStart =
-    previous && isBoundaryEntry(previous)
-      ? resolveKeptPrefixIndex(pathEntries, previous.firstKeptEntryId, previousIdx)
+    previousIdx >= 0
+      ? resolveKeptPrefixIndex(pathEntries, pathEntries[previousIdx]?.firstKeptEntryId, previousIdx)
       : 0;
   return pathEntries
     .slice(spanStart, resolveKeptPrefixIndex(pathEntries, firstKeptEntryId, pathEntries.length))
-    .filter((entry) => entry.type === "message" || isBoundaryEntry(entry)).length;
+    .filter((entry) => entry.type === "message" || isBoundaryType(entry.type)).length;
 }
 
 /** Hydrate selected messages lazily so bounded consumers can stop before later payloads. */

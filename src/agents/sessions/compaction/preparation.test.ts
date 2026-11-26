@@ -4,6 +4,7 @@ import { collectCompactionPreparationEntryFact } from "../../../../packages/agen
 import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../../packages/agent-core/src/harness/compaction/compaction.js";
 import { projectSessionContextMessage } from "../../../../packages/agent-core/src/harness/session/session.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
+import { expectedCompactionSummary } from "../../test-helpers/compaction-checkpoint.js";
 import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import {
   collectMessageTokenPressureFact,
@@ -172,7 +173,14 @@ describe("prepareAgentCompactionWork", () => {
     });
     const replacement = planned.projectReplacement(planned.preparation, "Checkpoint");
     expect(replacement).toEqual([
-      expect.objectContaining({ role: "compactionSummary", summary: "Checkpoint" }),
+      expect.objectContaining({
+        role: "compactionSummary",
+        // The carry's checkpoint line is priced with the replacement; it shadows `history`.
+        summary: expectedCompactionSummary("Checkpoint", {
+          entryId: input.itemId,
+          shadowedEntryCount: 1,
+        }),
+      }),
       pending.message,
       answer.message,
     ]);

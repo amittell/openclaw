@@ -93,10 +93,11 @@ export async function readPreparedSessionCompaction(
     ) {
       throw new Error("Compaction must retain the unprocessed pending user request.");
     }
-    const replacement = createCompactionReplacementProjector(retained, operation.work.itemId)(
-      operation.summary,
-      operation.summary.summary,
-    );
+    const replacement = createCompactionReplacementProjector(
+      retained,
+      operation.work.checkpoint.entryId,
+      operation.work.checkpoint.shadowedEntryCount,
+    )(operation.summary, operation.summary.summary);
     const budget = operation.work.requestBudget;
     if (
       budget &&

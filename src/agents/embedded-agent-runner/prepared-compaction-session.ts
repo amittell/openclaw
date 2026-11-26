@@ -188,7 +188,12 @@ export async function prepareEmbeddedCompactionSession(
         kind: "plan",
         source,
         options: {
-          work: { ...work, summaryOutputPolicy: outputPolicy },
+          // Each plan commits at most one boundary, which carries the id its budgets priced.
+          work: {
+            ...work,
+            summaryOutputPolicy: outputPolicy,
+            checkpointEntryId: generateSessionEntryId(),
+          },
           safeguard: Boolean(safeguard),
           recentTurnsPreserve: safeguard?.runtime.recentTurnsPreserve,
           qualityGuardEnabled: safeguard?.runtime.qualityGuardEnabled ?? false,
@@ -438,6 +443,7 @@ export async function prepareEmbeddedCompactionSession(
             requestBudget: plan.requestBudget,
             requestTokenLimit: plan.requestTokenLimit,
             pendingEntryId: plan.pendingEntryId,
+            checkpoint: plan.checkpoint,
           },
         },
         options.signal,
@@ -458,6 +464,8 @@ export async function prepareEmbeddedCompactionSession(
           fromHook,
           { itemId: work.itemId },
           finalized.tokensAfter,
+          // The plan counted the shadowed rows while it held them; it and finalize priced this line.
+          plan.checkpoint,
         ),
         appendIntent: "active-branch" as const,
         expectedMutationAt: finalized.transcriptMutationAt,

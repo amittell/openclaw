@@ -89,7 +89,7 @@ async function appendBranchEntry(params: {
         entry.tokensAfter,
         // Rewrites map rows one to one, so the original count still holds, and the rewritten
         // branch may be a bounded load that no longer holds the rows it shadows.
-        entry.shadowedEntryCount,
+        { shadowedEntryCount: entry.shadowedEntryCount },
       );
     }
     case "reset":

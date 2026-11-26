@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { CompactionCheckpointHandle } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
@@ -107,11 +108,13 @@ export function createSessionCompactionEntry(
   fromHook?: boolean,
   metadata?: CompactionEntry["__openclaw"],
   tokensAfter?: number,
-  shadowedEntryCount?: number,
+  // The fork's checkpoint line renders both; a writer that priced it passes the id it priced.
+  checkpoint?: Partial<CompactionCheckpointHandle>,
 ): CompactionEntry {
+  const shadowedEntryCount = checkpoint?.shadowedEntryCount;
   return {
     type: "compaction",
-    id: generateSessionEntryId(),
+    id: checkpoint?.entryId ?? generateSessionEntryId(),
     parentId,
     timestamp: new Date().toISOString(),
     summary,

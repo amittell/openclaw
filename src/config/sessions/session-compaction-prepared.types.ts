@@ -61,7 +61,7 @@ export type SessionPreparedCompactionInput = Omit<
         summary: CompactionResult;
         work: Pick<
           PreparedCompactionPlan,
-          "requestBudget" | "requestTokenLimit" | "pendingEntryId"
+          "requestBudget" | "requestTokenLimit" | "pendingEntryId" | "checkpoint"
         > & { itemId: string };
       };
 };

@@ -30,6 +30,11 @@ export type CompactionSummaryOutputPolicy = "none" | "retry-invalid-once" | "det
 
 export type AgentCompactionPreparationOptions = CompactionRequestConstraints & {
   itemId: string;
+  /**
+   * Id the committed boundary will carry, generated before planning. The fork's checkpoint line
+   * renders it and token estimates read its characters, so pricing needs the same id.
+   */
+  checkpointEntryId?: string;
   settings: CompactionSettings;
   /** SDK work mode, not the foreground runtime's trigger: budgeted work can be manual. */
   mode: "manual" | "auto";

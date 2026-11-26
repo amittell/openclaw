@@ -23,7 +23,8 @@ export function registerNativeCompactionPolicyTests(params: {
   it.each(["summary", "floor", "timeout", "timeout-cancel"] as const)(
     "uses the execution policy for native budgeted preparation without pending input (%s)",
     async (route) => {
-      const { sessions, accessor, workspaceDir, accounting, delegate } = params.runtime();
+      const { sessions, accessor, workspaceDir, accounting, delegate, requestBudgets } =
+        params.runtime();
       const fixture = await params.createFixture();
       const target = {
         ...fixture.target,
@@ -72,13 +73,14 @@ export function registerNativeCompactionPolicyTests(params: {
           }),
         );
       }
+      const requestBudget = {
+        contextWindow: 1_500,
+        reserveTokens: 100,
+        fixedTokens: 100,
+        pendingTokens: 0,
+      };
       accounting.attachCompactionAccountingRecorder(runtimeContext, {
-        requestBudget: {
-          contextWindow: 1_500,
-          reserveTokens: 100,
-          fixedTokens: 100,
-          pendingTokens: 0,
-        },
+        requestBudget,
         recordCompaction: fixture.recordCompaction,
       });
       const native = await import("../../config/sessions/session-compaction-prepared.js");
@@ -137,9 +139,33 @@ export function registerNativeCompactionPolicyTests(params: {
             },
           },
         });
+        if (plan?.status !== "prepared") {
+          throw new Error("Expected the native compaction plan");
+        }
+        // Upstream pins 618 = floor((1400 - 657) / 1.2) - 1. The carry's checkpoint line
+        // renders the random id this plan reserved for the boundary, and token pressure reads
+        // id characters, so the budget is priced from the plan's own replacement.
+        const { createCompactionReplacementProjector } =
+          await import("../sessions/compaction/preparation.js");
+        const { checkpoint, preparation } = plan.plan;
+        const replacement = createCompactionReplacementProjector(
+          manager.getBranch().filter((entry) => ids.slice(6).includes(entry.id)),
+          checkpoint.entryId,
+          checkpoint.shadowedEntryCount,
+        )(preparation, "");
+        const summaryTokenBudget =
+          Math.floor(
+            (1_400 - requestBudgets.estimateCompactedRequestTokens(replacement, requestBudget)) /
+              1.2,
+          ) - 1;
+        expect.soft(summaryTokenBudget).toBeLessThan(618);
         expect.soft(plan).toMatchObject({
           status: "prepared",
-          plan: { preparation: { firstKeptEntryId: ids[6], summaryTokenBudget: 618 } },
+          plan: {
+            requestTokenLimit: 1_400,
+            checkpoint: { shadowedEntryCount: 6 },
+            preparation: { firstKeptEntryId: ids[6], summaryTokenBudget },
+          },
         });
         expect(result, JSON.stringify(result)).toMatchObject({
           ok: true,

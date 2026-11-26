@@ -222,9 +222,12 @@ it("prepares and rerenders captured rows without hydrating summarized history on
         version: prepared.version,
         retainedSequences: prepared.plan.retainedSequences,
         summary: finalizedSummary,
-        work: { itemId: work.itemId },
+        work: { itemId: work.itemId, checkpoint: prepared.plan.checkpoint },
       };
-      const originalReplacement = createCompactionReplacementProjector(branch, work.itemId)(
+      // The carry's checkpoint line renders the committed boundary's id, so every projection
+      // prices the id the plan reserved for it.
+      const checkpointEntryId = prepared.plan.checkpoint.entryId;
+      const originalReplacement = createCompactionReplacementProjector(branch, checkpointEntryId)(
         finalizedSummary,
         finalizedSummary.summary,
       );
@@ -242,6 +245,7 @@ it("prepares and rerenders captured rows without hydrating summarized history on
           ...finalizeOperation,
           work: {
             itemId: work.itemId,
+            checkpoint: prepared.plan.checkpoint,
             requestBudget: budget,
             requestTokenLimit: estimateCompactedRequestTokens(originalReplacement, budget) + 1,
           },
@@ -260,6 +264,7 @@ it("prepares and rerenders captured rows without hydrating summarized history on
         true,
         { itemId: work.itemId },
         finalized.tokensAfter,
+        prepared.plan.checkpoint,
       );
       await persistCompactionBoundaryWithSessionEntryAsync(
         target,
@@ -277,10 +282,10 @@ it("prepares and rerenders captured rows without hydrating summarized history on
       );
       const actual = (await SessionManager.openModelContextAsync(target)).buildSessionContext()
         .messages;
-      const expectedKept = createCompactionReplacementProjector(source.getBranch(), work.itemId)(
-        finalizedSummary,
-        finalizedSummary.summary,
-      );
+      const expectedKept = createCompactionReplacementProjector(
+        source.getBranch(),
+        checkpointEntryId,
+      )(finalizedSummary, finalizedSummary.summary);
       const withoutTime = (messages: unknown) =>
         JSON.parse(
           JSON.stringify(messages, (key, value) => (key === "timestamp" ? undefined : value)),

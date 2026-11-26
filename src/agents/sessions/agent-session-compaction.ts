@@ -304,8 +304,11 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     // the awaited hook/summarizer can outlive an append, and a compaction committed under
     // a moved leaf would shadow entries it never summarized.
     const preparedLeafId = this.sessionManager.getLeafId();
+    // One boundary per attempt: the budgets below price its checkpoint line with this id.
+    const checkpointEntryId = generateSessionEntryId();
     const prepared = prepareAgentCompactionWork(pathEntries, {
       ...options,
+      checkpointEntryId,
       contextWindow: model.contextWindow,
       systemPrompt: this.agent.state.systemPrompt,
       tools: this.agent.state.tools,
@@ -468,6 +471,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           fromExtension,
           { itemId: options.itemId },
           tokensAfter,
+          { entryId: checkpointEntryId },
         );
       const target = this.sessionManager.getSessionTarget();
       const entryId = await (target
