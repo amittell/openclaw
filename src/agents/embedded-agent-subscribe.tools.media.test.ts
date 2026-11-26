@@ -107,6 +107,21 @@ async function openPersistedSessionManager() {
   return { root, sessionManager: SessionManager.open(target, root), target };
 }
 
+/**
+ * A channel turn that restores the recorded session's transcript into flat inbound history.
+ * Since #202637 the running session's own turns are not copied (its replay already carries
+ * them), so the turn runs in another session and reads this one's grounded rows.
+ */
+function restoringTurnContext(): FinalizedMsgContext {
+  return {
+    Body: "continue",
+    RawBody: "continue",
+    CommandBody: "continue",
+    SessionKey: "agent:main:restoring-turn",
+    SessionTranscriptContext: { historyLimit: 10 },
+  } as FinalizedMsgContext;
+}
+
 describe("persisted local-media replay authority", () => {
   beforeEach(() => {
     setRuntimeConfigSnapshot({});
@@ -233,12 +248,7 @@ describe("persisted local-media replay authority", () => {
       expect(restoredRun).toBe(guarded);
       expect(authorizations).toEqual([false, true, false, true]);
 
-      const ctx = {
-        Body: "continue",
-        RawBody: "continue",
-        CommandBody: "continue",
-        SessionTranscriptContext: { historyLimit: 10 },
-      } as FinalizedMsgContext;
+      const ctx = restoringTurnContext();
       await mergeSessionTranscriptContext({
         agentId: target.agentId,
         ctx,
@@ -357,12 +367,7 @@ describe("persisted local-media replay authority", () => {
       ]) {
         guarded.appendMessage(message as Parameters<typeof guarded.appendMessage>[0]);
       }
-      const ctx = {
-        Body: "continue",
-        RawBody: "continue",
-        CommandBody: "continue",
-        SessionTranscriptContext: { historyLimit: 10 },
-      } as FinalizedMsgContext;
+      const ctx = restoringTurnContext();
       await mergeSessionTranscriptContext({
         agentId: target.agentId,
         ctx,
