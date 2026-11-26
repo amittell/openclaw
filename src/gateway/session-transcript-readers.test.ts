@@ -82,6 +82,36 @@ describe("session transcript reader facade", () => {
     });
   });
 
+  test("reads a compaction's shadowed span without host transcript SQL", async () => {
+    // m1 m2 c1(keeps m2) m3: c1 shadows m1 only.
+    const scope = await writeTranscript("compaction-shadow", [
+      event("m1", null, { role: "user", content: "one" }),
+      event("m2", "m1", { role: "assistant", content: "two" }),
+      {
+        type: "compaction",
+        id: "c1",
+        parentId: "m2",
+        timestamp: "2026-08-15T00:00:01.000Z",
+        summary: "first",
+        firstKeptEntryId: "m2",
+        tokensBefore: 10,
+      },
+      event("m3", "c1", { role: "user", content: "three" }),
+    ]);
+    const read = () =>
+      readers.readSessionMessagesShadowedByCompactionAsync(scope, {
+        compactionId: "c1",
+        maxMessages: 10,
+        offset: 0,
+      });
+    await read();
+    const hostSql = observeHostDataSql();
+    const span = await read().finally(() => hostSql.restore());
+    expect(hostSql.queries).toEqual([]);
+    expect(span).toMatchObject({ offset: 0, totalMessages: 1 });
+    expect(span?.messages).toMatchObject([{ role: "user", content: "one" }]);
+  });
+
   test("sizes CLI output from the context marker when counters cover the whole turn", async () => {
     const scope = await writeTranscript("cli-turn-usage", [
       event("answer", null, {

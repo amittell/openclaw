@@ -133,6 +133,12 @@ export async function readSessionHistoryRequest(
       result: options.readers.readConversationBinding(request.params.conversationRef),
     };
   }
+  if (request.kind === "compaction-shadow") {
+    return {
+      kind: "compaction-shadow",
+      result: options.readers.readCompactionShadowPage(request.params.options),
+    };
+  }
   if (request.kind === "transcript-binding") {
     return {
       kind: "transcript-binding",

@@ -21,6 +21,10 @@ import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js"
 import type { ConversationRecord } from "./conversation-registry.types.js";
 import type { LegacyCompactionMetrics } from "./legacy-compaction-history.js";
 import type {
+  SessionTranscriptCompactionShadowPage,
+  SessionTranscriptCompactionShadowPageOptions,
+} from "./session-accessor.sqlite-compaction-shadow-page.types.js";
+import type {
   SessionTranscriptBoundedMessageTailOptions,
   SessionTranscriptBoundedMessageTailPage,
   SessionTranscriptMessageEventPage,
@@ -245,6 +249,13 @@ export type SessionHistoryWorkerRequest =
       params: { target: SessionTranscriptReadScope; conversationRef: string };
     }
   | {
+      kind: "compaction-shadow";
+      params: {
+        target: SessionTranscriptReadScope;
+        options: SessionTranscriptCompactionShadowPageOptions;
+      };
+    }
+  | {
       kind: "artifacts";
       params: { target: SessionTranscriptReadScope; query: SessionArtifactReadQuery };
     }
@@ -320,6 +331,7 @@ export type SessionHistoryWorkerResult =
   | { kind: "summary"; result: SessionTranscriptSummaryResult }
   | { kind: "reactions"; result: Record<string, StoredMessageReactionSummary[]> }
   | { kind: "conversation-binding"; result: SessionConversationBinding | null }
+  | { kind: "compaction-shadow"; result: SessionTranscriptCompactionShadowPage | undefined }
   | { kind: "artifacts"; result: SessionArtifactReadResult }
   | { kind: "message-page" | "recent-page"; result: ReadRecentSessionMessagesResult }
   | { kind: "around-id"; result: ReadSessionMessagesAroundIdResult }

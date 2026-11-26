@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { appendTranscriptEvent, persistSessionTranscriptTurn } from "./session-accessor.js";
-import { readSessionTranscriptCompactionShadowPage } from "./session-accessor.sqlite-history-events.js";
+import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
+import { readSessionTranscriptCompactionShadowPageFromProjection } from "./session-accessor.sqlite-compaction-shadow-page.js";
+import type { SessionTranscriptCompactionShadowPageOptions } from "./session-accessor.sqlite-compaction-shadow-page.types.js";
 import {
   historyEventId,
   readSessionTranscriptHistoryEvents,
@@ -9,6 +11,10 @@ import {
 
 describe("SQLite transcript compaction shadow pages", () => {
   const scope = useHistoryEventScope();
+  const readShadowPage = (options: SessionTranscriptCompactionShadowPageOptions) =>
+    withCurrentProjectionSnapshot(scope, (projection) =>
+      readSessionTranscriptCompactionShadowPageFromProjection(projection, options),
+    );
 
   it("resolves the span each of two successive compactions shadows", async () => {
     // m1 m2 [m3 m4] c1(keeps m3) m5 m6 [m7] c2(keeps m7) m8
@@ -65,12 +71,12 @@ describe("SQLite transcript compaction shadow pages", () => {
       "m8",
     ]);
 
-    const first = readSessionTranscriptCompactionShadowPage(scope, {
+    const first = readShadowPage({
       compactionId: "c1",
       maxMessages: 10,
       offset: 0,
     });
-    const second = readSessionTranscriptCompactionShadowPage(scope, {
+    const second = readShadowPage({
       compactionId: "c2",
       maxMessages: 10,
       offset: 0,
@@ -84,17 +90,17 @@ describe("SQLite transcript compaction shadow pages", () => {
     expect(ids(second?.events)).toEqual(["m3", "m4", "c1", "m5", "m6"]);
     expect(second?.events.map(({ seq }) => seq)).toEqual([1, 2, 3, 4, 5]);
 
-    const newest = readSessionTranscriptCompactionShadowPage(scope, {
+    const newest = readShadowPage({
       compactionId: "c2",
       maxMessages: 2,
       offset: 0,
     });
-    const older = readSessionTranscriptCompactionShadowPage(scope, {
+    const older = readShadowPage({
       compactionId: "c2",
       maxMessages: 2,
       offset: 2,
     });
-    const oldest = readSessionTranscriptCompactionShadowPage(scope, {
+    const oldest = readShadowPage({
       compactionId: "c2",
       maxMessages: 2,
       offset: 4,
@@ -106,7 +112,7 @@ describe("SQLite transcript compaction shadow pages", () => {
 
     for (const compactionId of ["m5", "missing"]) {
       expect(
-        readSessionTranscriptCompactionShadowPage(scope, {
+        readShadowPage({
           compactionId,
           maxMessages: 10,
           offset: 0,

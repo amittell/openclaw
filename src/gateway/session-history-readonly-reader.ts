@@ -3,6 +3,8 @@ import {
   readRecentSessionTranscriptMessageEventsFromProjection,
   readSessionTranscriptBoundedMessageTailPageFromProjection,
 } from "../config/sessions/session-accessor.sqlite-active-events-read.js";
+import { readSessionTranscriptCompactionShadowPageFromProjection } from "../config/sessions/session-accessor.sqlite-compaction-shadow-page.js";
+import type { SessionTranscriptCompactionShadowPageOptions } from "../config/sessions/session-accessor.sqlite-compaction-shadow-page.types.js";
 import { resolveConversationInDatabase } from "../config/sessions/session-accessor.sqlite-conversation-read.js";
 import { readSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { readSessionTranscriptRunInputVisibilityFromProjection } from "../config/sessions/session-accessor.sqlite-history-input-visibility.js";
@@ -225,6 +227,10 @@ export function createReadonlySessionHistoryReader(
       readSnapshot((projection) => readSessionTranscriptBindingFromProjection(projection)),
     readTranscriptDisplayDelta: (limits: SessionTranscriptRawDeltaLimits) =>
       readSnapshot((projection) => readTranscriptDisplayDeltaFromProjection(projection, limits)),
+    readCompactionShadowPage: (options: SessionTranscriptCompactionShadowPageOptions) =>
+      readSnapshot((projection) =>
+        readSessionTranscriptCompactionShadowPageFromProjection(projection, options),
+      ),
     ...createSessionTranscriptReader({
       subagentCoordination,
       resolveTarget: async () => target.transcript,

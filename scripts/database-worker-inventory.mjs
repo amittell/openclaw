@@ -737,6 +737,17 @@ const reviewedOperations = new Map([
     ],
   ],
   [
+    "src/config/sessions/session-accessor.sqlite-active-message-positions.ts",
+    [
+      {
+        tier: "T3",
+        operations: ["readActiveMessagePositionRows"],
+        evidence:
+          "Callers are readTranscriptDisplayDeltaFromProjection (worker-only, above) and resolveKeptPrefixStart, whose only caller is readSessionTranscriptCompactionShadowPageFromProjection. That reader runs only in the readonly history reader's snapshot, whose sole production constructor is gateway/session-history-worker-reader.ts inside session-transcript.worker.ts.",
+      },
+    ],
+  ],
+  [
     "src/config/sessions/session-accessor.sqlite-history-input-visibility.ts",
     [
       {

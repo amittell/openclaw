@@ -3,7 +3,6 @@ import {
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.sqlite-active-events.js";
 import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.sqlite-contract.js";
-import { readSessionTranscriptCompactionShadowPage } from "../config/sessions/session-accessor.sqlite-history-events.js";
 import type { SessionTranscriptBoundedMessageTailOptions } from "../config/sessions/session-accessor.sqlite-projection-read.js";
 import { bindSessionTranscriptStoreScope } from "../config/sessions/session-accessor.transcript-target.js";
 import { withSessionActorStorage } from "../config/sessions/session-actor-storage-acquisition.js";
@@ -397,7 +396,13 @@ export async function readSessionMessagesShadowedByCompactionAsync(
   opts: { compactionId: string; maxMessages: number; offset: number },
 ): Promise<(ReadRecentSessionMessagesResult & { offset: number }) | undefined> {
   const target = await resolveTranscriptReadTarget(scope);
-  const page = readSessionTranscriptCompactionShadowPage(toTranscriptReadScope(target), opts);
+  // The span is SQLite rows, so the history worker reads it, as for every sibling reader here.
+  const { readSessionHistoryPageInWorker } =
+    await import("../config/sessions/session-history-worker-runtime.js");
+  const page = await readSessionHistoryPageInWorker({
+    kind: "compaction-shadow",
+    params: { target: toTranscriptReadScope(target), options: opts },
+  });
   return page
     ? {
         messages: projectSqliteHistoryEvents(page.events),
