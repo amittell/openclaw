@@ -33,10 +33,13 @@ function inputTokens(
   );
 }
 
+// The carry's checkpoint line adds 89 JSON chars to the compacted request: an escaped
+// newline (2), "[compaction checkpoint " (23), the id (36) and ": shadows N earlier
+// entries]" (28). Four fewer 23-char records keep the slack the upstream fixture had at 410.
 it.each([
-  { records: 410, ingress: "new" },
-  { records: 410, ingress: "persisted" },
-  { records: 410, ingress: "carrier" },
+  { records: 406, ingress: "new" },
+  { records: 406, ingress: "persisted" },
+  { records: 406, ingress: "carrier" },
   { records: 200, ingress: "replayed carrier", queued: true },
 ])(
   "preserves $ingress pending input with $records records during pre-prompt compaction",
