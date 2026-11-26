@@ -5707,11 +5707,12 @@ other work throughout).
   guards and `check:architecture` pass on both. Lint fails on both: over 55,925 linted files the carry has 305
   diagnostics (27 errors) and the tag 306 (28); the only difference is the tag's max-lines error in
   `session-accessor.sqlite-bounded-context.test.ts`, which the line-cap commit above cleared. Preflight passes on the
-  tag and fails on the carry in one guard, the SQLite worker ratchet: `src/commands/models/auth-clean.ts:269:
+  tag and fails on the carry in the SQLite worker ratchet, at its first guard: `src/commands/models/auth-clean.ts:269:
   unreviewed personal credential writer reference to ...store-runtime.ts:ensureAuthProfileStore`. The 11.7 carry
   fails it the same way against `v2026.11.7`: the fork's `models auth clean` (`78fc371e00d`, 2026-03) predates the
-  guard, and no carry gate had run `pnpm check`. Not changed here; listing the command as a reviewed caller is a
-  guard exception that needs Alex's decision.
+  guard, and no carry gate had run `pnpm check`. That guard ends the ratchet before its T1 call-count comparison
+  runs, so it also hid a T1 failure (whether the 11.7 carry has it too was not measured: the same guard stops it
+  first). Both are fixed after qualification, below.
 - Full suite (`scripts/test-projects.mts`, 3 projects in parallel, 2 workers) on `c68b512832b`, 2026-11-25 23:27Z
   to 2026-11-26 09:28Z: rc 1, 756 shards, 273,663 tests passed, 962 failed, 2,398 skipped, 92 distinct failing
   files (the parser's 93rd, `first.test.ts`, is a fixture project that `control-ui-e2e-browser-lifetime.test.ts`
@@ -5733,7 +5734,43 @@ other work throughout).
   import-cycle checks (0), `tsgo:core` and `tsgo:core:test` (0 errors) and the PR wrapper inventory pass;
   `deadcode:exports` lists the 23 entries the 11.7 carry already had, none new. The `pnpm check` graph repeats the
   result above: typecheck, policy and `check:architecture` pass, lint has the same 305 diagnostics against the tag's
-  306, and preflight fails only the SQLite worker ratchet on `auth-clean.ts`.
-- A full-suite rerun on this commit's tree is recorded in the next notes commit.
+  306, and preflight fails the SQLite worker ratchet's credential guard on `auth-clean.ts`, which hid the T1 failure
+  below.
+- A full-suite rerun on `43a4c4348cd`'s tree is recorded with the deploy.
 
-Not deployed. A deploy needs Alex's go and a release-tag recheck.
+**After qualification** (Alex, #675 and #676, 2026-11-26).
+
+- `bd2b6654903` (#675: rework the command): `models auth clean` no longer opens the store write-enabled before its
+  lock. The 11.10 auth store is SQLite (`<agentDir>/openclaw-agent.sqlite`), and retired `auth.json` and
+  `auth-profiles.json` files are imported by `openclaw doctor --fix`, not by a runtime load, so the pre-lock
+  `readOnly: false` load migrated nothing and could only sync external CLI credentials outside the lock. Both
+  probes are now read-only, the locked update is the only write, and the plan's store path names the SQLite file.
+  `auth-clean.test.ts` 36 of 36 (the previous command fails 3 of them), `models-cli` 33 of 33. With the guard
+  passing, the ratchet reached its T1 comparison and failed it: `SQLite T1 live calls: 166 -> 167`, one
+  `executeSqliteQuerySync` at `session-accessor.sqlite-active-message-positions.ts:23`.
+- `99bd92a4336` (#676: move the read to the worker, classify the file T3): that call serves
+  `readSessionMessagesShadowedByCompactionAsync`, the `chat.history` read of the span a compaction summarized, which
+  ran on the Gateway main thread; every sibling reader in `session-transcript-readers.ts` already used the history
+  worker. The deployed 11.6 carry has the same code. The span is now a projection reader served from the worker's
+  readonly snapshot (request `compaction-shadow`), its types are a leaf `*.types.ts` (a type import from the reader
+  module closed a madge cycle through `session-history-types.ts`), and the file has a T3 inventory entry naming its
+  callers. A new facade test
+  reads the span with no host transcript SQL; on the previous code it records 12 host statements. The ratchet passes
+  (166 -> 166). The shadow-page, both history-events, readonly-reader, chat-history-pages and history-worker
+  runtime, lifecycle and error tests pass (9 files, 137 tests), as do oxfmt, oxlint, both import-cycle checks (0),
+  the line-cap ratchet, `tsgo:core` and `tsgo:core:test` (0 errors). `deadcode:exports` lists 22 entries: the 11.7
+  carry's 23 less the type re-export this commit removed.
+- The pre-commit hook these two commits ran is the one `core.hooksPath` names in the M4 checkout's config, an older
+  copy that only runs `oxfmt --write`; it found no `node` and formatted nothing. oxfmt had already passed on every
+  staged file. The tree's own hook, `guard-staged-content.mjs`, scans for the literals `hooks.blockedLiteralsFile`
+  lists, which that checkout does not set, so it would have scanned nothing.
+- Kit markers: 39 of the 11.6 kit's 44 are in this carry's source. `createContextTotalTokensWriter` left in this
+  merge (retired above). The other four were already absent from the deployed 11.6 sha `65eb3e94cb1`, whose
+  verifier derived its 42 markers from source and so never expected them: `renderTransportFailureReplyCopy` (retired
+  by the #191301 port `79f87485d26`, Alex 11-10), `metadataOnlySignalKill` (retired in the 11.5-beta.4 carry),
+  `holdReplyRunSuccessorAdmissionForCommandExchange` (the branch-native #195612 fix `b97f7b0c6c0`, replaced on
+  11.5-beta.4 by the PR itself, which upstream merged), and the automation-refusal copy, which now reads "...or a
+  key in the environment or provider config" in the same file.
+
+Not deployed. Alex's #675 A4: check for a newer upstream release tag first; with none, deploy if the full-suite
+rerun shows no carry-only failure beyond the classified files.
