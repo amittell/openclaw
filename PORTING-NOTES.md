@@ -5800,11 +5800,14 @@ fork markers in the dist.
   in `transport-status-*.mjs`, with no spaces and backtick strings, and the spaced pattern matched nothing. The
   kit's verifier now accepts both forms, and `sessionEventToolNames` left its upstream sanity list (0 files in
   `v2026.11.10` and in `65eb3e94cb1`, 2 in `v2026.11.1`).
-- rh-bot's 11.10 gateway log has no `[model-fetch]` lines: 0 since the restart, 173 in the 3 MB before it. The
-  emitter (`packages/ai/src/transports/model-transport-debug.ts`) is the same in both, and logs at debug unless an
-  `OPENCLAW_DEBUG_*` variable is set; neither the gateway's environment nor its plist sets one, and the config has
-  no `logging` key. Cause not found. The verifier's model-fetch counts read 0 of 0 there, so its local-only
-  result rests on the config check; every provider the log names since the restart is `gpufarm/qwen3.8-27b`.
+- rh-bot's 11.10 gateway log has no `[model-fetch]` lines since the restart, because no model call failed. A
+  successful call logs nothing at info on these builds: `start` goes through `emitModelTransportDebug`, which
+  logs at debug unless an `OPENCLAW_DEBUG_*` variable is set (none is), and rh-bot's log has no `start` line after
+  2026-09-24 and no `status=200` response after 2026-10-30. Between the 11.6 deploy and the 11.10 restart all 62
+  such lines were failures: 34 `error`, 26 `status=502`, one 500 and one 404. (The previous notes commit called
+  the lines missing on 11.10 with the cause not found; that was wrong.) The verifier's model-fetch counts, 0 of 0,
+  therefore cannot show which provider answered. Its local-only result rests on the config check and the log's
+  provider mentions, all `gpufarm/qwen3.8-27b` on rh-bot.
 
 **mac-mini: disk, then the deploy without the idle gate (Alex, #677 to #679).**
 
