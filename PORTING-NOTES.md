@@ -5772,5 +5772,57 @@ other work throughout).
   11.5-beta.4 by the PR itself, which upstream merged), and the automation-refusal copy, which now reads "...or a
   key in the environment or provider config" in the same file.
 
-Not deployed. Alex's #675 A4: check for a newer upstream release tag first; with none, deploy if the full-suite
-rerun shows no carry-only failure beyond the classified files.
+**Full-suite rerun** (Alex's #675 A4). The whole suite on `43a4c4348cd`'s tree on the M4 (8:42 AM to 6:06 PM EST,
+2026-11-26, 33,881 s, the same 756 shards) failed 65 files and 485 tests, against 93 and 542 in the classified run
+on `c68b512832b`. 62 files fail in both runs, and 31 classified files now pass. Three files fail only in the
+rerun, `extensions/knowledge/src/evidence-reconciliation.test.ts` (`RangeError: Maximum call stack size exceeded`
+inside `marked`), `src/cli/update-cli/update-command-admission-schema.test.ts` (fs-safe: `private Darwin creation
+requires native descriptor ACL inspection`) and `src/infra/openclaw-process-census.native.test.ts` (`Host process
+census is incomplete`), plus one new failing test in a file that already failed,
+`bash-tools.exec-group-cleanup.real > tracks every survivor of one command past the cap`. Each of the four passes
+alone on the deploy head `112d6ec4666` and on bare `v2026.11.10`, run side by side, twice: 16 of 16 runs. In the
+suite the exec-group test took 10.1 s against 4.8 s alone. No failure is carry-only. The rerun left an untracked
+`openclaw-agent.sqlite` (700 KB, written at 12:44 PM EST) in its worktree's root; which test writes it was not
+traced.
+
+**Deployed to rh-bot (6:21 PM EST, 2026-11-26).** Tags rechecked first: no tag newer than `v2026.11.10`, npm
+`latest` 2026.11.10. The bundle `dist-bundle-112d6ec46669.tar` (558 MB, sha256 `a8ced54b901a…`) is a plain
+`pnpm build` of `112d6ec4666` on the M4 (211 s). The idle gate opened at once. The gateway was down from 6:37:23 to
+6:43:17 PM. Doctor took 123 s (106 s on 11.6) and moved the coder, main and openclaw agent DBs from 38 to 42; the
+state DB is at 40. The build id names the head, healthz and readyz 200, config changed only by
+`lastTouchedVersion` and two new `skillWorkshopPlugin` / `skillLibraryToolSplit` flags, plist unchanged,
+local-only PASS. `respond-check.sh` answered `pong` in 10 s through the gateway and the Telegram account probed
+ok. A second verify at 9:06 PM: 9 inbound turns completed, 3 sends, 0 errored turns or provider errors, 40 of 40
+fork markers in the dist.
+
+- The first verify read one marker MISSING while its code shipped. `v2026.11.10`'s `tsdown.config.ts` sets minify
+  `codegen: true` (11.6 had `codegen: false`), so the dist reads ``const t=e.kind===`failed-retryable`&&l();``
+  in `transport-status-*.mjs`, with no spaces and backtick strings, and the spaced pattern matched nothing. The
+  kit's verifier now accepts both forms, and `sessionEventToolNames` left its upstream sanity list (0 files in
+  `v2026.11.10` and in `65eb3e94cb1`, 2 in `v2026.11.1`).
+- rh-bot's 11.10 gateway log has no `[model-fetch]` lines: 0 since the restart, 173 in the 3 MB before it. The
+  emitter (`packages/ai/src/transports/model-transport-debug.ts`) is the same in both, and logs at debug unless an
+  `OPENCLAW_DEBUG_*` variable is set; neither the gateway's environment nor its plist sets one, and the config has
+  no `logging` key. Cause not found. The verifier's model-fetch counts read 0 of 0 there, so its local-only
+  result rests on the config check; every provider the log names since the restart is `gpufarm/qwen3.8-27b`.
+
+**mac-mini: disk, then the deploy without the idle gate (Alex, #677 to #679).**
+
+- Disk (#677): the three doctor captures in `~/.openclaw.update-captures` (18.7 GiB, from the 11-17 and 11-20
+  deploys) and the 11-17 `.pre-startup-migration` backups beside the DBs (6.2 GiB) moved to `/Volumes/Storage`,
+  43,087 files, each verified at the destination. Free space went only from 10.99 to 19.62 GiB. Deleting the
+  5:00 AM Time Machine local snapshot (#678) changed nothing measurable at first (19.58 to 19.75 GiB; the kernel
+  logged the purge done in 1.5 s), and a 7 GiB floor waiver followed (#679). By 9:03 PM free space read 42.6 GiB,
+  so the preflight passed the normal 15 GiB floor and the waiver went unused. What freed the last 23 GiB between
+  6:21 and 9:03 PM was not measured; #680 retracts the APFS-clone explanation the #679 question gave.
+- Window: Alex's direct chat went quiet at 9:25 PM, then ailybot's subagents and the main fleet loop kept the
+  120 s gap shut until the 11:00 PM deadline. The deploy launched at 11:00:37 PM with only the ingress and
+  running-task terms.
+- Deploy: rc 0. The gateway was down from 11:11:55 to 11:47:31 PM, 36 minutes: the DB backup to the USB volume
+  took 20.6 of them, doctor 9.6 (575 s), and moved the main, ratbot, ailybot and openclaw agent DBs from 38 to 42.
+  Free space on the internal disk went from 37.9 to 29.7 GiB across the deploy.
+- Verify: 40 of 40 fork markers in the dist, healthz and readyz 200, the same config changes as rh-bot, plist
+  unchanged, local-only PASS. `respond-check.sh` answered `pong` in 29 s, and the ailybot, default and ratbot
+  Telegram accounts probed ok. In the first 18 minutes the log named one provider,
+  `gpufarm/qwen38-27b-rtx5090-prod` (8 mentions), and no `[model-fetch]` lines; 1 ingress turn completed and none
+  errored. RSS was 2.15 GB at 4 minutes and 1.49 GB at 18, event-loop p99 214 ms and then 22.8 ms.
